@@ -1,0 +1,105 @@
+---
+# Builds the dav-engine container image and deploys all Tekton Task definitions.
+
+# --- Engine Image Build ---
+
+- name: Copy engine source to provisioner
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../engine/"
+    dest: "/tmp/dav-engine-build/"
+    mode: "0644"
+
+- name: Check if engine BuildConfig exists
+  kubernetes.core.k8s_info:
+    kind: BuildConfig
+    api_version: build.openshift.io/v1
+    namespace: "{{ dav_namespace }}"
+    name: dav-engine
+  register: engine_bc_check
+
+- name: Create engine ImageStream
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: image.openshift.io/v1
+      kind: ImageStream
+      metadata:
+        name: dav-engine
+        namespace: "{{ dav_namespace }}"
+  when: engine_bc_check.resources | length == 0
+
+- name: Create engine BuildConfig
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: build.openshift.io/v1
+      kind: BuildConfig
+      metadata:
+        name: dav-engine
+        namespace: "{{ dav_namespace }}"
+      spec:
+        source:
+          type: Binary
+        strategy:
+          type: Docker
+          dockerStrategy:
+            dockerfilePath: Containerfile
+        output:
+          to:
+            kind: ImageStreamTag
+            name: "dav-engine:latest"
+  when: engine_bc_check.resources | length == 0
+
+- name: Build engine container image
+  ansible.builtin.command:
+    cmd: >-
+      oc start-build dav-engine
+      --from-dir=/tmp/dav-engine-build
+      -n {{ dav_namespace }}
+      --wait
+  register: engine_build_result
+
+- name: Report engine build
+  ansible.builtin.debug:
+    msg: "Engine build: {{ engine_build_result.stdout | default('completed') }}"
+
+- name: Clean up engine build context
+  ansible.builtin.file:
+    path: /tmp/dav-engine-build
+    state: absent
+
+# --- Tekton Task Definitions ---
+
+- name: Create Tekton tasks staging directory
+  ansible.builtin.file:
+    path: /tmp/dav-tekton-tasks
+    state: directory
+    mode: "0755"
+
+- name: Render templated Tekton task definitions
+  ansible.builtin.template:
+    src: "{{ item }}"
+    dest: "/tmp/dav-tekton-tasks/{{ item | basename | regex_replace('\\.j2$', '') }}"
+    mode: "0644"
+  with_fileglob:
+    - "{{ role_path }}/templates/tekton-tasks/*.j2"
+
+- name: Copy non-templated Tekton task definitions
+  ansible.builtin.copy:
+    src: "tekton-tasks/"
+    dest: "/tmp/dav-tekton-tasks/"
+    mode: "0644"
+
+- name: Apply all Tekton Task definitions
+  ansible.builtin.shell:
+    cmd: "oc apply -f /tmp/dav-tekton-tasks/ -n {{ dav_namespace }}"
+  register: tasks_result
+
+- name: Report Tekton tasks
+  ansible.builtin.debug:
+    msg: "{{ tasks_result.stdout }}"
+
+- name: Clean up task definitions
+  ansible.builtin.file:
+    path: /tmp/dav-tekton-tasks
+    state: absent

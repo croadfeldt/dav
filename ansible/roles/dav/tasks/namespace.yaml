@@ -1,0 +1,131 @@
+---
+- name: Create namespace
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ dav_namespace }}"
+        labels:
+          app.kubernetes.io/part-of: dav
+
+- name: Create service account
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ dav_service_account }}"
+        namespace: "{{ dav_namespace }}"
+
+- name: Create pipeline role
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: dav-pipeline-role
+        namespace: "{{ dav_namespace }}"
+      rules:
+        - apiGroups: [""]
+          resources: ["persistentvolumeclaims"]
+          verbs: ["get", "list"]
+        - apiGroups: [""]
+          resources: ["secrets"]
+          verbs: ["get"]
+          resourceNames: ["github-webhook-secret"]
+        - apiGroups: [""]
+          resources: ["pods", "pods/log"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: [""]
+          resources: ["configmaps", "serviceaccounts"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: ["triggers.tekton.dev"]
+          resources: ["eventlisteners", "triggers", "triggerbindings", "triggertemplates", "interceptors"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: ["tekton.dev"]
+          resources: ["pipelineruns", "pipelines", "taskruns", "tasks"]
+          verbs: ["create", "get", "list", "watch"]
+
+- name: Bind pipeline role
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: dav-pipeline-binding
+        namespace: "{{ dav_namespace }}"
+      subjects:
+        - kind: ServiceAccount
+          name: "{{ dav_service_account }}"
+          namespace: "{{ dav_namespace }}"
+      roleRef:
+        kind: Role
+        name: dav-pipeline-role
+        apiGroup: rbac.authorization.k8s.io
+
+- name: Create ClusterRole for Tekton cluster-scoped resources
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: dav-pipeline-clusterrole
+      rules:
+        - apiGroups: ["triggers.tekton.dev"]
+          resources: ["clusterinterceptors"]
+          verbs: ["get", "list", "watch"]
+
+- name: Bind ClusterRole to pipeline SA
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: dav-pipeline-cluster-binding
+      subjects:
+        - kind: ServiceAccount
+          name: "{{ dav_service_account }}"
+          namespace: "{{ dav_namespace }}"
+      roleRef:
+        kind: ClusterRole
+        name: dav-pipeline-clusterrole
+        apiGroup: rbac.authorization.k8s.io
+
+- name: Create workspace PVC
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: "{{ dav_workspace_pvc_name }}"
+        namespace: "{{ dav_namespace }}"
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: "{{ dav_workspace_pvc_size }}"
+
+- name: Create vLLM model cache PVC
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: vllm-model-cache
+        namespace: "{{ dav_namespace }}"
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: "{{ dav_model_cache_pvc_size }}"

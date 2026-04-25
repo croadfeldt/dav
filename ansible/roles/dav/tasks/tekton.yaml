@@ -1,0 +1,145 @@
+---
+# Deploy the DAV stage 2 Tekton pipeline.
+#
+# The pipeline clones the consumer's spec + corpus repos in parallel and
+# then runs DAV stage 2 across the entire corpus in a single container
+# (engine-side iteration). See pipeline-stage2.yaml.j2 for the structure.
+#
+# The two reusable tasks (dav-git-sync, dav-run-corpus) live under
+# templates/tekton-tasks/ and are applied by the engine.yaml task
+# (which globs that directory). This file applies the pipeline plus
+# the trigger plumbing.
+
+- name: Apply DAV stage 2 pipeline
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'pipeline-stage2.yaml.j2') | from_yaml }}"
+
+- name: Apply trigger binding
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition:
+      apiVersion: triggers.tekton.dev/v1beta1
+      kind: TriggerBinding
+      metadata:
+        name: dav-trigger-binding
+        namespace: "{{ dav_namespace }}"
+      spec:
+        params:
+          - name: commit-sha
+            value: $(body.after)
+          - name: pr-number
+            value: $(body.pull_request.number)
+
+- name: Apply trigger template
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition:
+      apiVersion: triggers.tekton.dev/v1beta1
+      kind: TriggerTemplate
+      metadata:
+        name: dav-trigger-template
+        namespace: "{{ dav_namespace }}"
+      spec:
+        params:
+          - name: commit-sha
+          - name: pr-number
+            default: ""
+        resourcetemplates:
+          - apiVersion: tekton.dev/v1
+            kind: PipelineRun
+            metadata:
+              generateName: dav-stage2-
+            spec:
+              pipelineRef:
+                name: dav-stage2
+              workspaces:
+                - name: shared-data
+                  persistentVolumeClaim:
+                    claimName: "{{ dav_workspace_pvc_name }}"
+              taskRunTemplate:
+                serviceAccountName: "{{ dav_service_account }}"
+
+- name: Apply event listener
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition:
+      apiVersion: triggers.tekton.dev/v1beta1
+      kind: EventListener
+      metadata:
+        name: dav-repo-listener
+        namespace: "{{ dav_namespace }}"
+      spec:
+        serviceAccountName: "{{ dav_service_account }}"
+        triggers:
+          - name: on-push
+            interceptors:
+              - ref:
+                  name: github
+                params:
+                  - name: secretRef
+                    value:
+                      secretName: github-webhook-secret
+                      secretKey: secret
+                  - name: eventTypes
+                    value:
+                      - push
+                      - pull_request
+            bindings:
+              - ref: dav-trigger-binding
+            template:
+              ref: dav-trigger-template
+
+- name: Create webhook route
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition:
+      apiVersion: route.openshift.io/v1
+      kind: Route
+      metadata:
+        name: dav-webhook
+        namespace: "{{ dav_namespace }}"
+      spec:
+        host: "{{ dav_webhook_hostname }}"
+        to:
+          kind: Service
+          name: el-dav-repo-listener
+        port:
+          targetPort: http-listener
+        tls:
+          termination: edge
+
+- name: Get webhook URL
+  kubernetes.core.k8s_info:
+    kind: Route
+    namespace: "{{ dav_namespace }}"
+    name: dav-webhook
+  register: webhook_route
+  ignore_errors: true
+
+- name: Report webhook URL
+  ansible.builtin.debug:
+    msg: >-
+      {% if webhook_route.resources | default([]) | length > 0 %}
+      Webhook URL: https://{{ webhook_route.resources[0].spec.host }}
+      Configure this in GitHub repo settings → Webhooks → Payload URL
+      {% else %}
+      Webhook Route created but not yet admitted.
+      The EventListener service (el-dav-repo-listener) may still be starting.
+      Check with: oc get route dav-webhook -n {{ dav_namespace }}
+      {% endif %}

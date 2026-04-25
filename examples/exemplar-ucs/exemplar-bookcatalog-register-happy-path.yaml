@@ -1,0 +1,75 @@
+# Exemplar use case #1 — happy path
+#
+# Demonstrates a v1.0 UC for a clean happy-path scenario. Every required
+# field populated with intent that's actionable, success_criteria that
+# are testable, and dimensions that classify the test cleanly.
+#
+# Domain: a fictional BookCatalog service that lets librarians register
+# new books. Deliberately non-DCM so this exemplar transfers cleanly to
+# any consumer.
+#
+# Reading guide: this is what a "good" v1.0 UC looks like. Use it as a
+# template.
+
+uuid: uc-bookcatalog-register-happy-path
+
+# handle: <category>/<descriptor>
+# Category groups related UCs; descriptor is a slug summary.
+handle: bookcatalog/register-book-happy-path
+
+scenario:
+  description: |
+    A librarian registers a new book in the BookCatalog service via the
+    standard registration flow. The book record passes ISBN validation,
+    is enriched with metadata from the OpenLibrary lookup provider, and
+    is persisted with a generated catalog ID.
+
+  actor:
+    persona: librarian
+    profile: standard
+
+  intent: |
+    Register a new book record in the BookCatalog with full metadata
+    enrichment.
+
+  # Each criterion is independently testable. If any one fails, the UC
+  # fails. Authors should write criteria as concrete observable conditions.
+  success_criteria:
+    - Book record persists with a non-empty catalog_id field
+    - OpenLibrary metadata is merged into the record (title, author, year)
+    - Audit log records who registered the book and when
+    - ISBN validation passed (10 or 13 digit, valid checksum)
+
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: hard_dependencies
+    policy_complexity: single_gatekeeper
+    provider_landscape: multiple_eligible
+    governance_context: standard_governance
+    failure_mode: happy_path
+
+  profile: standard
+
+  # Domain interactions: where in the consumer's spec the analyzer
+  # should find evidence of how this UC is supported. Maps roughly to
+  # spec sections.
+  expected_domain_interactions:
+    - domain: registration-api
+      interaction: POST /books endpoint accepts a book registration request
+    - domain: validation
+      interaction: ISBN format and checksum validation
+    - domain: enrichment
+      interaction: OpenLibrary lookup provider fetches and merges metadata
+    - domain: persistence
+      interaction: New record is committed with a generated catalog_id
+    - domain: audit
+      interaction: Registration event is logged with actor identity
+
+generated_by:
+  mode: regression
+  source: human-authored
+
+tags:
+  - exemplar
+  - happy-path
+  - registration

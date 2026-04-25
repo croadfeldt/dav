@@ -1,0 +1,75 @@
+---
+# Tekton Task: clone a git repo into a configurable subdirectory of
+# the workspace. Used by pipeline-stage2 (twice — once for the consumer
+# spec repo, once for the consumer corpus repo).
+#
+# The target-subdir param lets one task definition handle both the
+# spec and the corpus clones in the same pipeline run.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: dav-git-sync
+  namespace: {{ dav_namespace }}
+  annotations:
+    # --- Sourcing metadata ---
+    # Defaults track consumer_spec_repo_*. Pipelines may override.
+    dav.dev/source-type: "consumer"
+    dav.dev/source-repo-url-default: "{{ consumer_spec_repo_url }}"
+    dav.dev/source-repo-branch-default: "{{ consumer_spec_repo_branch }}"
+    dav.dev/last-applied-at: "{{ ansible_date_time.iso8601 }}"
+spec:
+  description: |
+    Clone a git repo into a subdirectory of the shared workspace.
+  params:
+    - name: repo-url
+      type: string
+      default: "{{ consumer_spec_repo_url }}"
+    - name: repo-branch
+      type: string
+      default: "{{ consumer_spec_repo_branch }}"
+    - name: target-subdir
+      type: string
+      description: |
+        Subdirectory of the workspace to clone into (e.g. "spec" or
+        "corpus"). Will be created if it doesn't exist; will be reused
+        if it does (fetch + checkout).
+      default: "repo"
+    - name: commit-sha
+      type: string
+      description: |
+        Optional commit SHA to check out after cloning. Empty string
+        means use the branch HEAD.
+      default: ""
+  workspaces:
+    - name: source
+      description: Shared workspace where the repo will be cloned.
+  steps:
+    - name: clone
+      image: alpine/git:latest
+      script: |
+        #!/bin/sh
+        set -e
+        TARGET_DIR="$(workspaces.source.path)/$(params.target-subdir)"
+
+        if [ -d "$TARGET_DIR/.git" ]; then
+          echo "Repo at $TARGET_DIR exists; fetching updates..."
+          cd "$TARGET_DIR"
+          git fetch origin
+          if [ -n "$(params.commit-sha)" ]; then
+            git checkout $(params.commit-sha) || git checkout $(params.repo-branch)
+          else
+            git checkout $(params.repo-branch)
+            git pull origin $(params.repo-branch) || true
+          fi
+        else
+          echo "Cloning $(params.repo-url) into $TARGET_DIR..."
+          git clone --branch $(params.repo-branch) $(params.repo-url) "$TARGET_DIR"
+          cd "$TARGET_DIR"
+          if [ -n "$(params.commit-sha)" ]; then
+            git checkout $(params.commit-sha) || true
+          fi
+        fi
+
+        echo "HEAD: $(git rev-parse HEAD)"
+        echo "Branch: $(params.repo-branch)"
+        echo "Files: $(find . -name '*.yaml' -o -name '*.md' 2>/dev/null | wc -l)"

@@ -1,0 +1,73 @@
+# Minimal-consumer (TinyURL) reference consumer profile
+#
+# Demonstrates the consumer-profile mechanism for a synthetic non-DCM
+# consumer. TinyURL is a deliberately tiny domain (URL shortener) — its
+# vocabulary is small, illustrating that a consumer doesn't need DCM's
+# breadth of dimensions to use DAV.
+#
+# This profile is for the *vocabulary swap* demonstration. It does NOT
+# claim that the existing examples/minimal-consumer/dav/use-cases/*.yaml
+# files validate against DAV's v1.0 UseCase shape — those use a simpler
+# ad-hoc shape with uc_type/domain/expected_components fields, which
+# predates ε.1's profile mechanism. Bringing those UCs into the v1.0
+# UseCase shape is tracked as a follow-up.
+#
+# See specs/05-use-case-schema.md (post-ε.1) for the profile shape.
+# See examples/dcm-reference-profile.yaml for the DCM reference (full
+# vocabulary across all 9 dimensions).
+
+framework_name: "TinyURL (example minimal consumer)"
+framework_short: "TinyURL"
+consumer_id: "tinyurl"
+schema_version: "1.0"
+
+abstractions_summary: "Endpoint, Storage, Auth"
+provider_summary: "request handlers (three types: api, worker, scheduler)"
+policy_summary: "rate limiting and suspension checks"
+
+# Smaller vocabularies suited to a synthetic URL-shortener domain.
+# Each list is intentionally minimal — just enough to show that a
+# non-DCM consumer can ship its own profile.
+
+lifecycle_phases:
+  - create_link
+  - resolve_link
+  - delete_link
+  - update_link
+
+resource_complexities:
+  - simple_link
+  - aliased_link
+  - tracked_link
+
+policy_complexities:
+  - none
+  - rate_limited
+  - suspension_aware
+
+provider_landscapes:
+  - single_handler
+  - load_balanced
+
+governance_contexts:
+  - public
+  - authenticated
+
+failure_modes:
+  - happy_path
+  - invalid_input
+  - rate_limited
+  - suspended_user
+
+profiles:
+  - dev
+  - prod
+
+provider_types:
+  - api
+  - worker
+  - scheduler
+
+policy_modes:
+  - inline
+  - background

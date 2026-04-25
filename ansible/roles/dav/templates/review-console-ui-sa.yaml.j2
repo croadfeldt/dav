@@ -1,0 +1,14 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dav-review-ui
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-ui
+{% if review_console_enable_oauth %}
+  annotations:
+    serviceaccounts.openshift.io/oauth-redirectreference.primary: >-
+      {"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"dav-review-ui"}}
+{% endif %}

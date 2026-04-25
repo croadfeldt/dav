@@ -1,0 +1,367 @@
+---
+# Review Console — Postgres-backed team review UI for the DCM corpus.
+# Mirrors the build + deploy pattern from mcp_servers.yaml and engine.yaml
+# (BuildConfig + ImageStream + binary build, server_side_apply, git-clone
+# init container for corpus).
+
+# --- Prerequisite secrets check ---
+
+- name: Verify review console DB password is set in vault
+  ansible.builtin.assert:
+    that:
+      - vault_review_console_db_password is defined
+      - vault_review_console_db_password | length >= 16
+    fail_msg: >-
+      vault_review_console_db_password must be set in
+      inventory/group_vars/all/vault.yaml (min 16 chars).
+      Run: ansible-playbook playbook.yaml --tags secrets  (after editing vault)
+
+- name: Verify review console session secret is set in vault
+  ansible.builtin.assert:
+    that:
+      - vault_review_console_session_secret is defined
+      - vault_review_console_session_secret | length >= 32
+    fail_msg: >-
+      vault_review_console_session_secret must be set in vault.yaml
+      (min 32 chars).
+  when: review_console_enable_oauth | bool
+
+# --- API image build (BuildConfig + binary build) ---
+
+- name: Copy review console source to provisioner
+  ansible.builtin.copy:
+    src: "review-console/"
+    dest: "/tmp/dav-review-build/"
+    mode: "0644"
+  when: review_console_build_images | bool
+
+- name: Check if review console API ImageStream exists
+  kubernetes.core.k8s_info:
+    kind: ImageStream
+    api_version: image.openshift.io/v1
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-api
+  register: review_api_is_check
+  when: review_console_build_images | bool
+
+- name: Create review console API ImageStream
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: image.openshift.io/v1
+      kind: ImageStream
+      metadata:
+        name: dav-review-api
+        namespace: "{{ dav_namespace }}"
+  when:
+    - review_console_build_images | bool
+    - review_api_is_check.resources | length == 0
+
+- name: Check if review console API BuildConfig exists
+  kubernetes.core.k8s_info:
+    kind: BuildConfig
+    api_version: build.openshift.io/v1
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-api
+  register: review_api_bc_check
+  when: review_console_build_images | bool
+
+- name: Create review console API BuildConfig
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: build.openshift.io/v1
+      kind: BuildConfig
+      metadata:
+        name: dav-review-api
+        namespace: "{{ dav_namespace }}"
+      spec:
+        source:
+          type: Binary
+        strategy:
+          type: Docker
+          dockerStrategy:
+            dockerfilePath: Containerfile
+        output:
+          to:
+            kind: ImageStreamTag
+            name: "dav-review-api:latest"
+  when:
+    - review_console_build_images | bool
+    - review_api_bc_check.resources | length == 0
+
+- name: Start binary build for review console API
+  ansible.builtin.command:
+    cmd: >-
+      oc start-build dav-review-api
+      --from-dir=/tmp/dav-review-build/api
+      -n {{ dav_namespace }}
+      --wait
+  register: review_api_build
+  when: review_console_build_images | bool
+
+- name: Report API build result
+  ansible.builtin.debug:
+    msg: "Review API build: {{ review_api_build.stdout | default('skipped') }}"
+  when: review_console_build_images | bool
+
+# --- UI image build (BuildConfig + binary build) ---
+
+- name: Check if review console UI ImageStream exists
+  kubernetes.core.k8s_info:
+    kind: ImageStream
+    api_version: image.openshift.io/v1
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-ui
+  register: review_ui_is_check
+  when: review_console_build_images | bool
+
+- name: Create review console UI ImageStream
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: image.openshift.io/v1
+      kind: ImageStream
+      metadata:
+        name: dav-review-ui
+        namespace: "{{ dav_namespace }}"
+  when:
+    - review_console_build_images | bool
+    - review_ui_is_check.resources | length == 0
+
+- name: Check if review console UI BuildConfig exists
+  kubernetes.core.k8s_info:
+    kind: BuildConfig
+    api_version: build.openshift.io/v1
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-ui
+  register: review_ui_bc_check
+  when: review_console_build_images | bool
+
+- name: Create review console UI BuildConfig
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: build.openshift.io/v1
+      kind: BuildConfig
+      metadata:
+        name: dav-review-ui
+        namespace: "{{ dav_namespace }}"
+      spec:
+        source:
+          type: Binary
+        strategy:
+          type: Docker
+          dockerStrategy:
+            dockerfilePath: Containerfile
+        output:
+          to:
+            kind: ImageStreamTag
+            name: "dav-review-ui:latest"
+  when:
+    - review_console_build_images | bool
+    - review_ui_bc_check.resources | length == 0
+
+- name: Start binary build for review console UI
+  ansible.builtin.command:
+    cmd: >-
+      oc start-build dav-review-ui
+      --from-dir=/tmp/dav-review-build/ui
+      -n {{ dav_namespace }}
+      --wait
+  register: review_ui_build
+  when: review_console_build_images | bool
+
+- name: Report UI build result
+  ansible.builtin.debug:
+    msg: "Review UI build: {{ review_ui_build.stdout | default('skipped') }}"
+  when: review_console_build_images | bool
+
+- name: Clean up review console build context
+  ansible.builtin.file:
+    path: /tmp/dav-review-build
+    state: absent
+  when: review_console_build_images | bool
+
+# --- Database (Postgres) ---
+
+- name: Deploy review console Postgres PVC
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-db-pvc.yaml.j2') | from_yaml }}"
+
+- name: Deploy review console Postgres Service
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-db-service.yaml.j2') | from_yaml }}"
+
+- name: Check if review console Postgres Deployment exists
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-db
+  register: review_db_existing
+
+- name: Deploy review console Postgres
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-db-deployment.yaml.j2') | from_yaml }}"
+
+- name: Wait for review console Postgres rollout
+  ansible.builtin.command:
+    cmd: "oc rollout status deployment/dav-review-db -n {{ dav_namespace }} --timeout=180s"
+  register: review_db_rollout
+  changed_when: false
+
+# --- API Deployment ---
+
+- name: Deploy review console API ServiceAccount
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-api-sa.yaml.j2') | from_yaml }}"
+
+- name: Deploy review console sourcing Role + RoleBinding
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ item }}"
+  loop: "{{ lookup('template', 'review-console-sourcing-rbac.yaml.j2') | from_yaml_all | list }}"
+
+- name: Deploy review console self-test Role + RoleBinding
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ item }}"
+  loop: "{{ lookup('template', 'review-console-self-test-rbac.yaml.j2') | from_yaml_all | list }}"
+  when: review_console_runs_trigger_enabled | bool
+
+- name: Check if review console API Deployment exists
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-api
+  register: review_api_existing
+
+- name: Deploy review console API
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-api-deployment.yaml.j2') | from_yaml }}"
+  register: review_api_deploy
+
+- name: Deploy review console API Service
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-api-service.yaml.j2') | from_yaml }}"
+
+- name: Restart review console API if updated (not on initial create)
+  ansible.builtin.command:
+    cmd: "oc rollout restart deployment/dav-review-api -n {{ dav_namespace }}"
+  when:
+    - review_api_deploy.changed
+    - review_api_existing.resources | length > 0
+
+- name: Wait for review console API rollout
+  ansible.builtin.command:
+    cmd: "oc rollout status deployment/dav-review-api -n {{ dav_namespace }} --timeout=180s"
+  register: review_api_rollout
+  changed_when: false
+
+# --- UI Deployment ---
+
+- name: Deploy review console UI ServiceAccount
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-ui-sa.yaml.j2') | from_yaml }}"
+
+# --- ConfigMaps use force:true (PUT) instead of server_side_apply because
+# SSA merges data keys — renaming or removing a key leaves the old one in
+# place. force:true replaces the object wholesale, which is what we want
+# for ConfigMaps that hold generated file content.
+
+- name: Deploy review console UI HTML ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    force: true
+    definition: "{{ lookup('template', 'review-console-ui-html-cm.yaml.j2') | from_yaml }}"
+  register: review_ui_html_cm
+
+- name: Deploy review console UI nginx ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    force: true
+    definition: "{{ lookup('template', 'review-console-ui-nginx-cm.yaml.j2') | from_yaml }}"
+  register: review_ui_nginx_cm
+
+- name: Deploy review console UI Service
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-ui-service.yaml.j2') | from_yaml }}"
+
+- name: Check if review console UI Deployment exists
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-ui
+  register: review_ui_existing
+
+- name: Deploy review console UI
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-ui-deployment.yaml.j2') | from_yaml }}"
+  register: review_ui_deploy
+
+- name: Restart review console UI if ConfigMaps or Deployment changed
+  ansible.builtin.command:
+    cmd: "oc rollout restart deployment/dav-review-ui -n {{ dav_namespace }}"
+  when:
+    - review_ui_existing.resources | length > 0
+    - (review_ui_deploy.changed or review_ui_html_cm.changed or review_ui_nginx_cm.changed)
+
+- name: Wait for review console UI rollout
+  ansible.builtin.command:
+    cmd: "oc rollout status deployment/dav-review-ui -n {{ dav_namespace }} --timeout=180s"
+  register: review_ui_rollout
+  changed_when: false
+
+- name: Deploy review console Route
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-ui-route.yaml.j2') | from_yaml }}"
+
+- name: Report review console URL
+  ansible.builtin.debug:
+    msg: "Review Console → https://{{ review_console_hostname }}"

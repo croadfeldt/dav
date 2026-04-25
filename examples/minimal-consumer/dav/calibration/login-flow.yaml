@@ -1,0 +1,262 @@
+use_case_uuid: tinyurl-uc-001
+
+calibration_metadata:
+  authored_by: dav-example
+  authored_at: 2026-04-24
+  reviewed_by: null
+  review_date: null
+  notes: >
+    Human-authored reference analysis for the login-flow UC. Describes what
+    a correct analysis should contain when DAV is run against the TinyURL
+    spec as of the dates above. Used by DAV's calibration scoring to measure
+    predictable correctness.
+  spec_revision: "v1.0-initial"
+  expected_agreement:
+    verdict: exact_match
+    components: f1_at_least_0.8
+    gaps: f1_at_least_0.7
+    overall_confidence_band: within_one_band
+
+analysis_metadata:
+  model: null                         # Calibration refs are not machine-generated
+  endpoint_url: null
+  timestamp: null
+  engine_version: null
+  engine_commit: null
+  consumer_version: "minimal-consumer@initial"
+  mode: null                          # Not a machine run
+  run_id: "calibration-login-flow-001"
+  tool_call_count: null
+  total_tokens: null
+  wall_time_seconds: null
+  sample_count: null
+  sample_seeds: null
+
+scope:
+  type: global
+  value: null
+
+components_required:
+  - id: user_lookup_by_email
+    role: Retrieves the User record for the email submitted at login.
+    confidence:
+      label: high
+      score: 85
+      band: very_high
+      factors:
+        base_from_label: 85
+        override_rationale: null
+    rationale: >
+      Doc 03 §3.2 step 2 describes "System looks up User by email" — a clear
+      component boundary.
+    spec_refs:
+      - "03-authentication.md/Login"
+
+  - id: suspension_check
+    role: Refuses login for suspended accounts without checking the password.
+    confidence:
+      label: high
+      score: 85
+      band: very_high
+      factors:
+        base_from_label: 85
+        override_rationale: null
+    rationale: >
+      Doc 03 §3.2 step 3 is explicit: "If is_suspended, return 403 without
+      checking password."
+    spec_refs:
+      - "03-authentication.md/Login"
+
+  - id: password_verification
+    role: Verifies submitted password against bcrypt hash in the User record.
+    confidence:
+      label: high
+      score: 85
+      band: very_high
+      factors:
+        base_from_label: 85
+        override_rationale: null
+    rationale: >
+      Doc 03 §3.2 step 4 specifies bcrypt verification; Doc 03 §3.1 confirms
+      bcrypt with cost factor 12 is used at registration.
+    spec_refs:
+      - "03-authentication.md/Login"
+      - "03-authentication.md/Registration"
+
+  - id: session_issuance
+    role: Issues a signed session cookie on successful authentication.
+    confidence:
+      label: high
+      score: 85
+      band: very_high
+      factors:
+        base_from_label: 85
+        override_rationale: null
+    rationale: >
+      Doc 03 §3.2 step 5 describes session issuance; Doc 03 §3.3 elaborates
+      on cookie signing and 7-day validity.
+    spec_refs:
+      - "03-authentication.md/Login"
+      - "03-authentication.md/Session"
+
+  - id: rate_limiter
+    role: Throttles login attempts to prevent brute-force credential guessing.
+    confidence:
+      label: high
+      score: 85
+      band: very_high
+      factors:
+        base_from_label: 85
+        override_rationale: null
+    rationale: >
+      Doc 03 §3.5 specifies 5 attempts per email per 15 minutes.
+    spec_refs:
+      - "03-authentication.md/Rate limiting"
+
+data_model_touched:
+  - entity: User
+    fields_accessed:
+      - email
+      - password_hash
+      - is_suspended
+      - last_login_at
+    operations:
+      - read
+      - write
+    confidence:
+      label: high
+      score: 85
+      band: very_high
+      factors:
+        base_from_label: 85
+        override_rationale: null
+    rationale: >
+      Login reads email, password_hash, and is_suspended to authenticate;
+      writes last_login_at on success.
+    spec_refs:
+      - "02-data-model.md/User"
+      - "03-authentication.md/Login"
+
+capabilities_invoked:
+  - id: authenticate
+    usage: Core capability — verifies user credentials and establishes identity.
+    confidence:
+      label: high
+      score: 85
+      band: very_high
+      factors:
+        base_from_label: 85
+        override_rationale: null
+    rationale: >
+      The login flow is the canonical path for authentication in the system.
+    spec_refs:
+      - "03-authentication.md/Login"
+
+  - id: issue_session
+    usage: Creates a signed session cookie the user can present on subsequent requests.
+    confidence:
+      label: high
+      score: 85
+      band: very_high
+      factors:
+        base_from_label: 85
+        override_rationale: null
+    rationale: >
+      Doc 03 §3.3 defines the session cookie mechanism explicitly.
+    spec_refs:
+      - "03-authentication.md/Session"
+
+  - id: rate_limit
+    usage: Constrains login attempts per email to prevent brute force.
+    confidence:
+      label: high
+      score: 85
+      band: very_high
+      factors:
+        base_from_label: 85
+        override_rationale: null
+    rationale: >
+      Doc 03 §3.5 describes the login rate limit: 5 attempts per email per
+      15 minutes.
+    spec_refs:
+      - "03-authentication.md/Rate limiting"
+
+provider_types_involved: []
+policy_modes_required: []
+
+gaps_identified:
+  - description: >
+      No password reset flow is specified in v1.0.
+    severity:
+      label: moderate
+      score: 55
+      band: medium
+      factors:
+        base_from_label: 50
+        override_rationale: "Missing reset is explicitly acknowledged in spec; severity reflects user experience impact, not hidden gap"
+    confidence:
+      label: high
+      score: 85
+      band: very_high
+      factors:
+        base_from_label: 85
+        override_rationale: null
+    rationale: >
+      Doc 03 §3.4 explicitly defers password reset to v1.1. This is a real
+      gap in the user-experience sense (locked-out users must contact an
+      admin) but it is not a hidden gap — it's acknowledged in the spec.
+    recommendation: >
+      Keep the v1.0 scope limit but add a note in the login error response
+      so users know how to recover a lost password (contact admin).
+    spec_refs_consulted:
+      - "03-authentication.md/Password reset"
+    spec_refs_missing: null             # Not missing; explicitly deferred
+
+  - description: >
+      The spec does not specify timing-attack-resistant comparison for password verification.
+    severity:
+      label: minor
+      score: 30
+      band: low
+      factors:
+        base_from_label: 30
+        override_rationale: null
+    confidence:
+      label: medium
+      score: 50
+      band: medium
+      factors:
+        base_from_label: 50
+        override_rationale: null
+    rationale: >
+      Doc 03 §3.2 mentions bcrypt verification but does not explicitly state
+      that the comparison is constant-time. bcrypt implementations typically
+      are constant-time internally, but the spec should make the requirement
+      explicit to prevent future drift if the hash algorithm changes.
+    recommendation: >
+      Add a sentence to Doc 03 §3.2 noting that password verification must
+      use a constant-time comparison to prevent timing-based credential
+      enumeration.
+    spec_refs_consulted:
+      - "03-authentication.md/Login"
+    spec_refs_missing: "Explicit constant-time-comparison requirement"
+
+summary:
+  verdict: supported
+  overall_confidence:
+    label: high
+    score: 83
+    band: very_high
+    factors:
+      base_from_label: 85
+      override_rationale: "Two documented gaps (one acknowledged deferral, one minor spec omission) warrant slight confidence dampening"
+  notes: >
+    TinyURL's authentication spec describes a coherent login flow with
+    appropriate components (user lookup, suspension check, password
+    verification, session issuance, rate limiting). The flow is
+    internally consistent. Two gaps remain: password reset is explicitly
+    deferred to v1.1 (moderate severity), and constant-time comparison is
+    not explicitly required (minor severity). Neither blocks the scenario.
+
+tool_call_trace: []                     # Calibration refs don't record tool calls
+sample_annotations: null                # Calibration refs are single-sample by nature

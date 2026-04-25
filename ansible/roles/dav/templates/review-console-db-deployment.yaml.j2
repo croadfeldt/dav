@@ -1,0 +1,72 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dav-review-db
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-db
+spec:
+  replicas: 1
+  strategy:
+    # RWO PVC cannot be attached to two pods at once.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dav-review
+      component: review-console-db
+  template:
+    metadata:
+      labels:
+        app: dav-review
+        component: review-console-db
+    spec:
+      containers:
+        - name: postgres
+          image: {{ review_console_postgres_image }}
+          ports:
+            - containerPort: 5432
+              name: postgres
+          env:
+            - name: POSTGRESQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: dav-review-db-creds
+                  key: database-user
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dav-review-db-creds
+                  key: database-password
+            - name: POSTGRESQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: dav-review-db-creds
+                  key: database-name
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/pgsql/data
+          readinessProbe:
+            exec:
+              command: ["/usr/libexec/check-container"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["/usr/libexec/check-container", "--live"]
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            timeoutSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+      volumes:
+        - name: pgdata
+          persistentVolumeClaim:
+            claimName: dav-review-db

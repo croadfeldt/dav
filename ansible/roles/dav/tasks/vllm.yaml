@@ -1,0 +1,46 @@
+---
+- name: Check if vLLM deployment exists
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ dav_namespace }}"
+    name: vllm-tier3
+  register: vllm_existing
+
+- name: Deploy vLLM Tier 2 inference
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'vllm-tier3.yaml.j2') | from_yaml_all | list }}"
+    wait: false
+  register: vllm_deploy
+
+- name: Restart vLLM deployment if updated (not on initial create)
+  ansible.builtin.command:
+    cmd: "oc rollout restart deployment/vllm-tier3 -n {{ dav_namespace }}"
+  when:
+    - vllm_deploy.changed
+    - vllm_existing.resources | length > 0
+
+- name: Wait for vLLM pod to be scheduled
+  kubernetes.core.k8s_info:
+    kind: Pod
+    namespace: "{{ dav_namespace }}"
+    label_selectors:
+      - "app=vllm-tier3"
+  register: vllm_pods
+  until: >-
+    vllm_pods.resources | length > 0 and
+    vllm_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+    or
+    vllm_pods.resources | selectattr('status.phase', 'equalto', 'Pending') | list | length > 0
+  retries: 12
+  delay: 10
+
+- name: Report vLLM status
+  ansible.builtin.debug:
+    msg: >-
+      vLLM pod scheduled on {{ vllm_pods.resources[0].spec.nodeName | default('pending') }}.
+      Model loading may take 2-5 minutes. Check readiness:
+      oc get pods -n {{ dav_namespace }} -l app=vllm-tier3 -w

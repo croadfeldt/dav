@@ -1,0 +1,38 @@
+# DCM Review API — FastAPI + asyncpg on UBI9
+# Runs as arbitrary non-root UID (OpenShift restricted-v2 SCC compliant).
+
+FROM registry.access.redhat.com/ubi9/python-311:latest
+
+LABEL org.opencontainers.image.title="dav-review-api" \
+      org.opencontainers.image.description="DCM Corpus Review API" \
+      org.opencontainers.image.source="https://github.com/dcm-project" \
+      io.k8s.display-name="DCM Review API" \
+      io.openshift.expose-services="8000:http"
+
+USER 0
+WORKDIR /opt/app-root/src
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+COPY app/ ./app/
+
+# Ensure arbitrary UID can read
+RUN chgrp -R 0 /opt/app-root/src && \
+    chmod -R g=u /opt/app-root/src
+
+USER 1001
+
+EXPOSE 8000
+
+# Defaults; override with env in manifests.
+ENV LOG_LEVEL=INFO \
+    CORPUS_PATH=/etc/dav-review/corpus.json \
+    PYTHONUNBUFFERED=1
+
+CMD ["uvicorn", "app.main:app", \
+     "--host", "0.0.0.0", \
+     "--port", "8000", \
+     "--proxy-headers", \
+     "--forwarded-allow-ips", "*"]

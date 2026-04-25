@@ -1,0 +1,56 @@
+# Stage configuration for the TinyURL minimal-consumer example.
+#
+# Declares which DAV stages run for this consumer's content, with what
+# parameters, and in what order. DAV reads this file at deployment time to
+# configure the pipeline.
+#
+# Spec reference: DAV spec 02 (Stage Model) — pending full authoring, but the
+# shape below is stable enough for the minimal consumer.
+
+consumer_name: minimal-consumer
+consumer_path_python: minimal_consumer   # Import root for assertion modules
+
+stages:
+  # Stage 0 — run assertion UCs.
+  # Pre-LLM, deterministic, hard-gate-capable.
+  - name: stage0_assertions
+    enabled: true
+    params:
+      run_hybrid_assertion_portion: true    # Run assertion of hybrid UCs at this stage
+    selectors:
+      uc_types: [assertion, hybrid]
+
+  # Stage 2 — the core analytical pass.
+  # LLM-assisted; runs against the spec corpus via MCP tools.
+  - name: stage2_analyze
+    enabled: true
+    params:
+      max_turns: 25                         # Agent turn budget per sample
+      tools:
+        - search_docs
+        - get_document
+        - get_document_section
+        - list_documents
+    selectors:
+      uc_types: [analytical, hybrid]        # hybrid runs here ONLY if stage0 passed
+
+# Content layout — where DAV finds the consumer's content within its tree.
+content:
+  spec_root: dav/spec
+  use_case_root: dav/use-cases
+  prompt_root: dav/prompts
+  calibration_root: dav/calibration
+  assertion_module_root: dav/assertions    # Python packages under here
+
+# Inference endpoint — the model DAV talks to.
+# The concrete endpoint is supplied at deployment time; this section only
+# declares the contract.
+inference:
+  endpoint_contract: openai_compatible
+  model_family_expected: qwen              # For prompt-template compatibility
+  # URL and model name are injected at deployment time, not hardcoded here.
+
+# Default mode for ad-hoc runs (CLI default). CI and Review Console can override.
+default_mode: verification
+default_sample_count: 3
+default_sample_seeds: [42, 123, 456]

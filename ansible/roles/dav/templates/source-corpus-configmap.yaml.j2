@@ -1,0 +1,34 @@
+---
+# DCM Corpus Sourcing ConfigMap
+# ---
+# Single source of truth for "which corpus does the review-console API clone?".
+#
+# This ConfigMap is the authoritative state for corpus sourcing. Both the
+# Ansible playbook and the review-console web UI read and write it:
+#
+#   Ansible: creates on first deploy, DOES NOT overwrite thereafter.
+#            See dav-source-spec ConfigMap for the full Ansible/runtime
+#            mutual-exclusion pattern.
+#
+#   Web UI:  POST /api/sources/corpus updates data.repo_url/repo_branch,
+#            stamps `last-applied-by` and `last-applied-at`, then triggers
+#            a fresh review-console-api rollout so the init-container
+#            re-clones the new corpus.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dav-source-corpus
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav
+    component: sourcing
+    dav.dev/source-type: "corpus"
+  annotations:
+    dav.dev/managed-by: "ansible"
+    dav.dev/last-applied-by: "ansible"
+    dav.dev/last-applied-at: "{{ ansible_date_time.iso8601 }}"
+    dav.dev/ansible-managed-initial-url: "{{ consumer_corpus_repo_url }}"
+    dav.dev/ansible-managed-initial-branch: "{{ consumer_corpus_repo_branch }}"
+data:
+  repo_url: "{{ consumer_corpus_repo_url }}"
+  repo_branch: "{{ consumer_corpus_repo_branch }}"

@@ -1,0 +1,103 @@
+---
+# DAV System — Configuration Variables
+# Secrets are in vault.yaml (ansible-vault encrypted)
+
+# --- OpenShift ---
+dav_namespace: dav
+dav_service_account: dav-pipeline-sa
+
+# --- Workspace ---
+dav_workspace_pvc_size: 20Gi
+dav_workspace_pvc_name: dav-workspace
+dav_model_cache_pvc_size: 40Gi
+
+# --- Inference Tiers (priority order: quality > power > speed) ---
+
+# Tier 1: llama.cpp serving on vis.roadfeldt.com (bare-metal, rootless
+# Podman, dual AMD R9700 GPUs, Qwen3-32B-Q8_0 split-layer). Lives outside
+# the cluster on the home lab network. Port 8000 reachable from the OCP
+# worker subnet. OpenAI-compatible API, exposes /v1/chat/completions with
+# tool calling support (enabled via --jinja flag in the quadlet).
+inference_primary_endpoint: "http://vis.roadfeldt.com:8000/v1"
+inference_primary_model: "qwen"                  # llama.cpp accepts any model name in requests
+inference_primary_backend: "llamacpp"
+inference_primary_model_hf_repo: "bartowski/Qwen3-32B-GGUF"
+inference_primary_model_filename: "Qwen3-32B-Q8_0.gguf"
+inference_primary_model_format: "GGUF Q8_0"
+inference_primary_model_params: "32B"
+inference_primary_model_topology: "dual-R9700 split-layer"
+inference_primary_context_length: 32768
+
+# Tier 2: NVIDIA 4060 Ti vLLM on ocp-worker02 (14B AWQ, in-cluster fallback)
+inference_fallback_endpoint: "http://vllm-tier3.{{ dav_namespace }}.svc:8000/v1"
+vllm_tier3_model: "casperhansen/deepseek-r1-distill-qwen-14b-awq"
+vllm_tier3_max_model_len: 16384
+vllm_tier3_image: "vllm/vllm-openai:latest"
+vllm_tier3_gpu_node_label: "nvidia.com/gpu.present"
+vllm_tier3_gpu_node_value: "true"
+vllm_tier3_cpu_request: "2"
+vllm_tier3_cpu_limit: "8"
+vllm_tier3_memory_request: "8Gi"
+vllm_tier3_memory_limit: "24Gi"
+vllm_tier3_readiness_delay: 120
+vllm_tier3_liveness_delay: 180
+
+# --- Stage 4: Manual Review ---
+# Stage 4 generates a review package for manual consumption in Claude Project.
+# No Claude API key required. Uses Max subscription via Project session.
+
+# --- Tekton Pipeline ---
+dav_pipeline_test_count: "500"
+
+# --- Consumer spec repo (architecture docs served by MCP to Stage 2 analyzer) ---
+# This repo holds the consumer's architectural specification. DAV's MCP server
+# clones it and exposes the docs to the Stage 2 analyzer. The default URL
+# below points at DCM, the framework's first consumer; override for other
+# consumers via group_vars or a separate inventory.
+consumer_spec_repo_url: "https://github.com/croadfeldt/dcm.git"
+consumer_spec_repo_branch: "main"
+
+# --- Consumer corpus repo (use cases + baselines read by engine + review console) ---
+# Holds the consumer's use cases (consumer-specific test scenarios DAV evaluates)
+# and the analysis baselines used by the regression comparator. Like the spec
+# repo, default points at DCM's corpus.
+consumer_corpus_repo_url: "https://github.com/croadfeldt/dav-content-corpus.git"
+consumer_corpus_repo_branch: "main"
+
+# --- MCP Servers ---
+mcp_docs_image: "{{ dav_registry }}/dav-docs-mcp:latest"
+mcp_tests_image: "{{ dav_registry }}/dav-tests-mcp:latest"
+mcp_git_image: "{{ dav_registry }}/dav-git-mcp:latest"
+dav_registry: "image-registry.openshift-image-registry.svc:5000/{{ dav_namespace }}"
+
+# --- Webhook Route ---
+dav_webhook_hostname: "dav-webhook.apps.ocp.roadfeldt.com"
+
+# --- Container build ---
+dav_build_mcp_images: true
+
+# --- Review Console ---
+# Team-backed review UI for the DCM corpus. Deployed alongside the rest of
+# dav, shares the internal registry and apps.roadfeldt.com domain.
+review_console_enable_oauth: true
+review_console_build_images: true
+review_console_hostname: "dav-review.apps.ocp.roadfeldt.com"
+
+# Postgres backing store (single-replica, PVC-backed)
+review_console_db_name: dav_review
+review_console_db_user: dav_review
+review_console_db_storage_size: 2Gi
+review_console_db_storage_class: ""   # empty = cluster default
+review_console_postgres_image: "quay.io/sclorg/postgresql-16-c9s:latest"
+
+# OAuth proxy for OpenShift SSO (injects X-Forwarded-User into API requests)
+review_console_oauth_proxy_image: "quay.io/openshift/origin-oauth-proxy:4.14"
+
+# Images (built in-cluster via BuildConfig + ImageStream, pushed to internal registry)
+review_console_image_api: "{{ dav_registry }}/dav-review-api:latest"
+review_console_image_ui: "{{ dav_registry }}/dav-review-ui:latest"
+
+# Corpus content filters — what the review console indexes from the corpus repo.
+# (Repo/branch live in consumer_corpus_repo_url / consumer_corpus_repo_branch above.)
+review_console_corpus_include: "*.md,*.yml,*.yaml,*.json,*.sql,*.py,*.go,*.rst,*.txt,*.toml,*.ini"
+review_console_corpus_exclude: ".git,node_modules,.venv,__pycache__,dist,build,*.pyc,*.lock"

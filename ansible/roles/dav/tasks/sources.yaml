@@ -1,0 +1,94 @@
+---
+# DAV — Sourcing Configuration
+# ---
+# Creates the sourcing ConfigMaps that are the runtime source of truth for
+# "which DCM spec does the MCP serve" and "which corpus does the review
+# console read".
+#
+# Both ConfigMaps are create-if-absent: Ansible plants the initial values
+# from consumer_spec_repo_* / consumer_corpus_repo_* vars, but does NOT overwrite
+# subsequent changes made by the web UI. This lets an architect switch
+# refs via the UI without fear of the next playbook run reverting them.
+#
+# The sourcing RBAC (Role + RoleBinding) is also deployed here so it is
+# guaranteed in place before the review-console API pod starts — which
+# needs it to read the ConfigMaps and patch Deployments on UI actions.
+#
+# Reconciliation semantics (see comments in the ConfigMap templates):
+#   - If the object does not exist   -> Ansible creates it with data from vars
+#   - If it exists and managed-by=ansible  -> Ansible may update data (not
+#                                             implemented yet; currently
+#                                             leaves alone since vars
+#                                             rarely change. If you need
+#                                             Ansible to push a new default,
+#                                             edit the ConfigMap directly or
+#                                             add a `--tags sources-force`
+#                                             branch here.)
+#   - If it exists and managed-by=runtime  -> Ansible leaves data alone;
+#                                             the UI owns the values.
+
+# --- Spec sourcing ConfigMap ---
+
+- name: Check if dav-source-spec ConfigMap exists
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    namespace: "{{ dav_namespace }}"
+    name: dav-source-spec
+  register: source_spec_existing
+
+- name: Create dav-source-spec ConfigMap (first-time only)
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'source-spec-configmap.yaml.j2') | from_yaml }}"
+  when: source_spec_existing.resources | length == 0
+
+- name: Report dav-source-spec state
+  ansible.builtin.debug:
+    msg: >-
+      {% if source_spec_existing.resources | length == 0 %}
+      Created dav-source-spec ConfigMap from vars
+      ({{ consumer_spec_repo_url }}#{{ consumer_spec_repo_branch }}).
+      {% else %}
+      dav-source-spec already exists
+      ({{ source_spec_existing.resources[0].data.repo_url }}#{{
+      source_spec_existing.resources[0].data.repo_branch }}) —
+      managed-by={{
+      source_spec_existing.resources[0].metadata.annotations.get(
+      'dav.dev/managed-by', '(unset)') }} — leaving alone.
+      {% endif %}
+
+# --- Corpus sourcing ConfigMap ---
+
+- name: Check if dav-source-corpus ConfigMap exists
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    namespace: "{{ dav_namespace }}"
+    name: dav-source-corpus
+  register: source_corpus_existing
+
+- name: Create dav-source-corpus ConfigMap (first-time only)
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'source-corpus-configmap.yaml.j2') | from_yaml }}"
+  when: source_corpus_existing.resources | length == 0
+
+- name: Report dav-source-corpus state
+  ansible.builtin.debug:
+    msg: >-
+      {% if source_corpus_existing.resources | length == 0 %}
+      Created dav-source-corpus ConfigMap from vars
+      ({{ consumer_corpus_repo_url }}#{{ consumer_corpus_repo_branch }}).
+      {% else %}
+      dav-source-corpus already exists
+      ({{ source_corpus_existing.resources[0].data.repo_url }}#{{
+      source_corpus_existing.resources[0].data.repo_branch }}) —
+      managed-by={{
+      source_corpus_existing.resources[0].metadata.annotations.get(
+      'dav.dev/managed-by', '(unset)') }} — leaving alone.
+      {% endif %}
+
+# NOTE: The sourcing RBAC (Role + RoleBinding binding the dav-review-api
+# ServiceAccount to read/patch the ConfigMaps and Deployments) is deployed
+# in review_console.yaml right after the dav-review-api ServiceAccount is
+# created, to keep the SA and its bindings co-located and avoid a
+# transient dangling-subject RoleBinding.

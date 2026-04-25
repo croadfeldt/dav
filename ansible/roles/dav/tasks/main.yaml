@@ -1,0 +1,74 @@
+---
+# DAV Role — Main Task File
+# Each include is independently taggable for partial deployments.
+
+- name: Install OpenShift Pipelines operator
+  ansible.builtin.import_tasks: operator.yaml
+  tags:
+    - operator
+    - infrastructure
+
+- name: Deploy namespace, RBAC, and PVCs
+  ansible.builtin.import_tasks: namespace.yaml
+  tags:
+    - namespace
+    - infrastructure
+
+- name: Create or update secrets
+  ansible.builtin.import_tasks: secrets.yaml
+  tags:
+    - secrets
+    - never  # Only runs when explicitly tagged: --tags secrets
+
+- name: Deploy sourcing ConfigMaps (spec + corpus)
+  ansible.builtin.import_tasks: sources.yaml
+  tags:
+    - sources
+    - infrastructure
+
+- name: Deploy vLLM Tier 3 inference
+  ansible.builtin.import_tasks: vllm.yaml
+  tags:
+    - vllm
+    - inference
+
+- name: Build and deploy MCP servers
+  ansible.builtin.import_tasks: mcp_servers.yaml
+  tags:
+    - mcp
+    - infrastructure
+
+- name: Build engine image and deploy Tekton Tasks
+  ansible.builtin.import_tasks: engine.yaml
+  tags:
+    - engine
+    - pipeline
+
+- name: Deploy Tekton pipeline and triggers
+  ansible.builtin.import_tasks: tekton.yaml
+  tags:
+    - tekton
+    - pipeline
+
+- name: Deploy test corpus and schema
+  ansible.builtin.import_tasks: corpus.yaml
+  tags:
+    - corpus
+    - schema
+
+- name: Deploy review console (UI + API + Postgres)
+  ansible.builtin.import_tasks: review_console.yaml
+  tags:
+    - review-console
+    - review
+
+- name: Deploy inference quality test rig (A/B comparison harness)
+  ansible.builtin.import_tasks: inference_quality_test.yaml
+  tags:
+    - inference-test
+    - never   # explicit opt-in: --tags inference-test
+
+- name: Validate deployment health
+  ansible.builtin.import_tasks: validate.yaml
+  tags:
+    - validate

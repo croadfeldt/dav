@@ -1,0 +1,115 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dav-review-ui
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-ui
+  annotations:
+    image.openshift.io/triggers: |-
+      [{"from":{"kind":"ImageStreamTag","name":"dav-review-ui:latest"},
+        "fieldPath":"spec.template.spec.containers[?(@.name==\"nginx\")].image"}]
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: dav-review
+      component: review-console-ui
+  template:
+    metadata:
+      labels:
+        app: dav-review
+        component: review-console-ui
+    spec:
+      serviceAccountName: dav-review-ui
+      containers:
+        - name: nginx
+          image: "{{ review_console_image_ui }}"
+          ports:
+            - containerPort: 8080
+              name: http
+          volumeMounts:
+            - name: html
+              mountPath: /opt/app-root/src
+              readOnly: true
+            - name: nginx-config
+              mountPath: /opt/app-root/etc/nginx.default.d
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+{% if review_console_enable_oauth %}
+        - name: oauth-proxy
+          image: {{ review_console_oauth_proxy_image }}
+          args:
+            - --provider=openshift
+            - --https-address=:8443
+            - --http-address=
+            - --openshift-service-account=dav-review-ui
+            - --upstream=http://localhost:8080
+            - --tls-cert=/etc/tls/private/tls.crt
+            - --tls-key=/etc/tls/private/tls.key
+            - --cookie-secret-file=/etc/proxy/secrets/session-secret
+            - --pass-user-headers=true
+            - --pass-access-token=false
+            - --set-xauthrequest=true
+            - --skip-auth-regex=^/healthz$
+          ports:
+            - containerPort: 8443
+              name: https
+          volumeMounts:
+            - name: proxy-tls
+              mountPath: /etc/tls/private
+              readOnly: true
+            - name: proxy-secrets
+              mountPath: /etc/proxy/secrets
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /oauth/healthz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "10m", memory: "32Mi" }
+            limits:   { cpu: "100m", memory: "128Mi" }
+{% endif %}
+      volumes:
+        - name: html
+          configMap:
+            name: dav-review-ui-html
+        - name: nginx-config
+          configMap:
+            name: dav-review-ui-nginx
+{% if review_console_enable_oauth %}
+        - name: proxy-tls
+          secret:
+            secretName: dav-review-ui-tls
+        - name: proxy-secrets
+          secret:
+            secretName: dav-review-ui-session
+{% endif %}

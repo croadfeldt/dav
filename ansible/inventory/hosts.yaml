@@ -1,0 +1,15 @@
+---
+# The playbook runs on the local machine and talks to the OpenShift
+# cluster directly via oc/kubectl. A valid kubeconfig must be active:
+# the kubernetes.core.k8s* modules use the current kubeconfig context.
+#
+# Verify readiness before running the playbook:
+#   oc whoami
+#   oc get projects >/dev/null
+all:
+  children:
+    ocp_provisioner:
+      hosts:
+        localhost:
+          ansible_connection: local
+          ansible_python_interpreter: "{{ ansible_playbook_python }}"

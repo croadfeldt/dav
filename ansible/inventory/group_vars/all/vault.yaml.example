@@ -1,0 +1,22 @@
+---
+# Example vault structure — copy to vault.yaml, populate, then encrypt with
+# `ansible-vault encrypt inventory/group_vars/all/vault.yaml`.
+#
+# Generate strong values:
+#   openssl rand -base64 32   # for db_password (use at least 16 chars)
+#   openssl rand -base64 48   # for session_secret (use at least 32 chars)
+
+# Existing — GitHub webhook for the Tekton pipeline
+vault_github_webhook_secret: "replace-with-your-github-webhook-secret"
+
+# Review Console — Postgres credentials
+# Used by: tasks/secrets.yaml → Secret/dcm-review-db-creds
+# Read by: review-console-db-deployment.yaml.j2 (as POSTGRESQL_PASSWORD)
+#          review-console-api-deployment.yaml.j2 (via dsn)
+vault_review_console_db_password: "replace-with-32-char-random-password"
+
+# Review Console — oauth-proxy session cookie secret
+# Used by: tasks/secrets.yaml → Secret/dcm-review-ui-session
+# Read by: the oauth-proxy sidecar in the UI Deployment
+# Only required when review_console_enable_oauth=true (the default).
+vault_review_console_session_secret: "replace-with-48-char-random-value"

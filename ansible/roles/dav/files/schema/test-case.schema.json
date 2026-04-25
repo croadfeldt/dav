@@ -1,0 +1,343 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dcm-project.github.io/self-test/schema/test-case.schema.json",
+  "title": "DCM Architecture Test Case",
+  "description": "A test case for validating the DCM architecture specification against the four design priorities.",
+  "type": "object",
+  "required": ["uuid", "handle", "version", "scenario", "inputs", "expected_outcomes", "evaluation"],
+  "properties": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^tc-[a-z0-9-]+$",
+      "description": "Stable unique identifier for this test case."
+    },
+    "handle": {
+      "type": "string",
+      "pattern": "^test/[a-z0-9-]+/[a-z0-9-]+$",
+      "description": "Human-readable handle: test/{profile_or_category}/{name}"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "default": "1.0.0"
+    },
+    "generated_by": {
+      "type": "string",
+      "enum": ["human", "random_generator", "ai_stage2", "ai_adhoc"],
+      "description": "How this test case was created."
+    },
+    "scenario": {
+      "$ref": "#/$defs/Scenario"
+    },
+    "inputs": {
+      "$ref": "#/$defs/Inputs"
+    },
+    "expected_outcomes": {
+      "$ref": "#/$defs/ExpectedOutcomes"
+    },
+    "evaluation": {
+      "$ref": "#/$defs/Evaluation"
+    }
+  },
+  "$defs": {
+    "Scenario": {
+      "type": "object",
+      "required": ["description", "dimensions", "profiles"],
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of what this test exercises."
+        },
+        "dimensions": {
+          "$ref": "#/$defs/Dimensions"
+        },
+        "profiles": {
+          "oneOf": [
+            { "type": "string", "enum": ["minimal", "dev", "standard", "prod", "fsi", "sovereign"] },
+            {
+              "type": "array",
+              "items": { "type": "string", "enum": ["minimal", "dev", "standard", "prod", "fsi", "sovereign"] },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          ],
+          "description": "Profile(s) to execute against. String for single, array for cross-profile."
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["document", "section"],
+            "properties": {
+              "document": { "type": "string", "description": "Document handle, e.g. '00-foundations' or 'A-provider-contract'" },
+              "section": { "type": "string" },
+              "system_policy": { "type": "string", "pattern": "^[A-Z]+-\\d+$", "description": "e.g. GRP-001, PLC-003, DPO-005" }
+            }
+          },
+          "description": "Architecture documents and system policies this test exercises."
+        }
+      }
+    },
+    "Dimensions": {
+      "type": "object",
+      "required": ["lifecycle_phase", "resource_complexity", "policy_complexity", "provider_landscape", "governance_context", "failure_mode"],
+      "properties": {
+        "lifecycle_phase": {
+          "type": "string",
+          "enum": [
+            "new_request",
+            "modification",
+            "decommission",
+            "drift_detection",
+            "brownfield_ingestion",
+            "rehydration_faithful",
+            "rehydration_provider_portable",
+            "rehydration_historical_exact",
+            "rehydration_historical_portable",
+            "expiry_enforcement"
+          ]
+        },
+        "resource_complexity": {
+          "type": "string",
+          "enum": [
+            "single_no_deps",
+            "hard_dependencies",
+            "compound_service",
+            "conditional_soft_deps",
+            "process_resource",
+            "cross_dependency_payload"
+          ]
+        },
+        "policy_complexity": {
+          "type": "string",
+          "enum": [
+            "system_defaults_only",
+            "single_gatekeeper",
+            "multi_policy_chain",
+            "conflicting_policies",
+            "orchestration_flow_static",
+            "dynamic_conditional_flow",
+            "cross_domain_constraint",
+            "human_escalation_required",
+            "governance_matrix_enforcement",
+            "recovery_policy"
+          ]
+        },
+        "provider_landscape": {
+          "type": "string",
+          "enum": [
+            "single_eligible",
+            "multiple_eligible",
+            "none_eligible",
+            "capacity_exhaustion",
+            "provider_failure_mid_realization",
+            "provider_timeout_then_late",
+            "provider_update_preauthorized",
+            "provider_update_requires_review"
+          ]
+        },
+        "governance_context": {
+          "type": "string",
+          "enum": [
+            "single_tenant",
+            "nested_tenants",
+            "cross_tenant_authorized",
+            "federated_tenants",
+            "data_classification_escalation",
+            "accreditation_gap",
+            "governance_matrix_strip_or_deny"
+          ]
+        },
+        "failure_mode": {
+          "type": "string",
+          "enum": [
+            "none",
+            "provider_dispatch_timeout",
+            "partial_realization",
+            "compensation_failure",
+            "circular_dependency",
+            "concurrent_modification",
+            "convergence_failure",
+            "late_realization"
+          ]
+        }
+      }
+    },
+    "Inputs": {
+      "type": "object",
+      "required": ["intent_payload"],
+      "properties": {
+        "intent_payload": {
+          "type": "object",
+          "required": ["resource_type"],
+          "properties": {
+            "resource_type": { "type": "string", "description": "e.g. Compute.VirtualMachine, Network.FirewallRule" },
+            "fields": { "type": "object", "description": "Field values with override metadata." },
+            "tenant_uuid": { "type": "string" },
+            "dependencies": { "type": "array", "items": { "type": "object" } },
+            "layer_exclusions": { "type": "array", "items": { "type": "object" } }
+          }
+        },
+        "active_policies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PolicyArtifact" },
+          "description": "Policy artifacts in scope for this test."
+        },
+        "active_layers": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "Layer artifacts in scope."
+        },
+        "provider_registry": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ProviderRegistration" },
+          "description": "Registered providers and capabilities."
+        },
+        "tenant_structure": {
+          "type": "object",
+          "description": "Tenant hierarchy for governance context."
+        },
+        "sovereignty_zones": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "existing_entities": {
+          "type": "array",
+          "items": { "type": "object" },
+          "description": "Pre-existing state for modification/drift/decommission scenarios."
+        }
+      }
+    },
+    "PolicyArtifact": {
+      "type": "object",
+      "required": ["uuid", "type", "domain", "status"],
+      "properties": {
+        "uuid": { "type": "string" },
+        "handle": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": ["gatekeeper", "validation", "transformation", "recovery", "orchestration_flow", "governance_matrix", "lifecycle", "itsm_action"]
+        },
+        "domain": {
+          "type": "string",
+          "enum": ["system", "platform", "tenant", "service", "provider", "request"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["developing", "proposed", "active", "deprecated", "retired"]
+        },
+        "match_conditions": { "type": "object" },
+        "output": { "type": "object" }
+      }
+    },
+    "ProviderRegistration": {
+      "type": "object",
+      "required": ["uuid", "type", "capabilities"],
+      "properties": {
+        "uuid": { "type": "string" },
+        "type": {
+          "type": "string",
+          "enum": ["service_provider", "information_provider", "meta_provider", "auth_provider", "peer_dcm", "process_provider"]
+        },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "resource_types": { "type": "array", "items": { "type": "string" } },
+        "sovereignty_zones": { "type": "array", "items": { "type": "string" } },
+        "accreditations": { "type": "array", "items": { "type": "string" } },
+        "capacity": { "type": "object" }
+      }
+    },
+    "ExpectedOutcomes": {
+      "type": "object",
+      "required": ["pipeline_result"],
+      "properties": {
+        "pipeline_result": {
+          "type": "string",
+          "enum": ["completed", "rejected", "escalated", "failed_with_recovery"]
+        },
+        "final_entity_state": {
+          "type": "string",
+          "enum": [
+            "OPERATIONAL", "DECOMMISSIONED", "PENDING_REVIEW", "DEGRADED",
+            "MAINTENANCE", "SUSPENDED", "TIMEOUT_PENDING",
+            "LATE_REALIZATION_PENDING", "INDETERMINATE_REALIZATION",
+            "COMPENSATION_FAILED", "PENDING_EXPIRY_ACTION"
+          ]
+        },
+        "state_transitions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Ordered entity state transitions, e.g. ['REQUESTED', 'PENDING', 'PROVISIONING', 'OPERATIONAL']"
+        },
+        "policies_fired": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "uuid": { "type": "string" },
+              "type": { "type": "string" },
+              "output": { "type": "string", "enum": ["allow", "deny", "pass", "fail", "mutate", "escalate"] }
+            }
+          }
+        },
+        "placement_decision": {
+          "type": "object",
+          "properties": {
+            "provider_uuid": { "type": "string" },
+            "reason": { "type": "string" },
+            "eliminated_by": { "type": "string", "description": "Which placement step eliminated candidates." }
+          }
+        },
+        "provenance_chain_valid": { "type": "boolean" },
+        "security_checks_passed": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["identity", "authorization", "accreditation", "matrix", "sovereignty"] }
+        },
+        "audit_records_produced": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "granularity": { "type": "string", "enum": ["stage", "mutation", "field"] },
+              "urgency": { "type": "string", "enum": ["low", "medium", "high", "critical"] }
+            }
+          }
+        },
+        "recovery_action": {
+          "type": "string",
+          "enum": ["DRIFT_RECONCILE", "DISCARD_AND_REQUEUE", "NOTIFY_AND_WAIT"]
+        },
+        "convergence_passes": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "escalation_reason": { "type": "string" }
+      }
+    },
+    "Evaluation": {
+      "type": "object",
+      "required": ["p1_security", "p4_fit_for_purpose"],
+      "properties": {
+        "p1_security": { "$ref": "#/$defs/PriorityScore" },
+        "p2_ease_of_use": { "$ref": "#/$defs/PriorityScore" },
+        "p3_extensibility": { "$ref": "#/$defs/PriorityScore" },
+        "p4_fit_for_purpose": { "$ref": "#/$defs/PriorityScore" }
+      }
+    },
+    "PriorityScore": {
+      "type": "object",
+      "required": ["score"],
+      "properties": {
+        "score": { "type": "string", "enum": ["pass", "fail", "deferred"] },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["check", "result"],
+            "properties": {
+              "check": { "type": "string" },
+              "result": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

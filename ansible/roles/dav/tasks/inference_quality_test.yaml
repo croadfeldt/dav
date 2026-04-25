@@ -1,0 +1,109 @@
+---
+# Inference Quality Test — external llama.cpp health + coherence probe.
+#
+# As of v0.7.0, local inference lives outside the OCP cluster on a
+# dedicated Fedora 43 host (vis.roadfeldt.com) running rootless
+# Podman with systemd quadlet lifecycle. The host serves Qwen2.5-32B
+# in GGUF Q4_K_M format across dual AMD R9700 GPUs via llama.cpp
+# tensor parallelism.
+#
+# See docs/R9700_DEBUGGING_HANDOFF.md for the full context on why
+# inference moved off OCP (vLLM gfx1201 Qwen special-token bug) and
+# how the external host is configured.
+#
+# This task replaces the previous in-cluster vllm-test deployment.
+# It does NOT deploy anything to the cluster; it verifies the external
+# endpoint is healthy and produces coherent output before the pipeline
+# relies on it.
+#
+# Deprecated files (removed from this task path):
+#   - templates/inference-test-vllm-deployment.yaml.j2
+#   - templates/inference-test-pvc.yaml.j2
+#   - templates/inference-test-service.yaml.j2
+#   - all `vllm-test` namespace resources
+#
+# When it's time to revisit in-cluster inference (likely Q3 2026 with
+# ROCm 7.1+ and vLLM 0.20+), restore these templates from git history.
+
+- name: Verify primary inference endpoint is reachable
+  ansible.builtin.uri:
+    url: "{{ inference_primary_endpoint }}/models"
+    method: GET
+    return_content: yes
+    status_code: 200
+    timeout: 10
+  register: primary_endpoint_check
+  retries: 3
+  delay: 5
+  until: primary_endpoint_check is success
+
+- name: Report primary endpoint model list
+  ansible.builtin.debug:
+    msg: >
+      Primary inference endpoint at {{ inference_primary_endpoint }} is reachable.
+      Expected served model: {{ inference_primary_model }}.
+      Models returned: {{ primary_endpoint_check.json.data | map(attribute='id') | list }}
+
+- name: Run coherence probe against primary endpoint
+  ansible.builtin.uri:
+    url: "{{ inference_primary_endpoint }}/chat/completions"
+    method: POST
+    body_format: json
+    body:
+      model: "{{ inference_primary_model }}"
+      messages:
+        # /no_think disables Qwen3 thinking mode. Without this, Qwen3 routes
+        # its reasoning chain to `reasoning_content` and leaves `content`
+        # empty, which trips the assertion below. This mirrors exactly what
+        # the engine's Stage 1 and Stage 2 system prompts do — the probe
+        # must use the same path the engine depends on so that if /no_think
+        # ever stops suppressing thinking mode, the probe catches it.
+        - role: system
+          content: "/no_think"
+        - role: user
+          content: "What is 2+2? Answer with just the number."
+      max_tokens: 16
+      temperature: 0
+    status_code: 200
+    timeout: 60
+  register: coherence_probe
+
+- name: Assert coherent output (guards against garbage-token bugs and thinking-mode leaks)
+  ansible.builtin.assert:
+    that:
+      - coherence_probe.json.choices[0].message.content | trim | length > 0
+      - coherence_probe.json.choices[0].message.content | trim != '!'
+      - "'!!!!!' not in coherence_probe.json.choices[0].message.content"
+      - "'4' in coherence_probe.json.choices[0].message.content"
+      # If reasoning_content is non-empty while content is populated, the
+      # engine still works (it reads content only) — but flag it as a
+      # diagnostic hint rather than failing the probe.
+    fail_msg: >
+      Coherence probe returned suspicious output:
+      "{{ coherence_probe.json.choices[0].message.content | default('(empty)') }}".
+      If content is empty and reasoning_content is populated
+      ({{ coherence_probe.json.choices[0].message.reasoning_content | default('(none)') | truncate(100) }}),
+      then /no_think is not being honored by the backend's chat template.
+      Otherwise this may indicate the vLLM gfx1201 special-token bug has
+      resurfaced, or the backend on {{ inference_primary_endpoint }} has
+      changed. Investigate before relying on the pipeline.
+    success_msg: >
+      Primary inference endpoint is producing coherent output.
+      Response: {{ coherence_probe.json.choices[0].message.content | trim }}
+      ({{ coherence_probe.json.usage.completion_tokens }} tokens in
+      {{ (coherence_probe.elapsed | default(0)) | round(2) }}s).
+
+- name: Verify fallback endpoint is reachable
+  ansible.builtin.uri:
+    url: "{{ inference_fallback_endpoint }}/models"
+    method: GET
+    status_code: 200
+    timeout: 10
+  register: fallback_check
+  failed_when: false
+
+- name: Report fallback endpoint state
+  ansible.builtin.debug:
+    msg: >
+      Fallback endpoint at {{ inference_fallback_endpoint }}:
+      {{ 'reachable' if fallback_check.status == 200 else 'UNREACHABLE — pipeline has no automatic failover path if primary degrades' }}

@@ -1,0 +1,44 @@
+---
+# Role defaults — overridden by inventory/group_vars/all/vars.yaml
+dav_namespace: dav
+dav_service_account: dav-pipeline-sa
+dav_workspace_pvc_size: 20Gi
+dav_workspace_pvc_name: dav-workspace
+dav_model_cache_pvc_size: 40Gi
+vllm_tier3_model: "casperhansen/deepseek-r1-distill-qwen-14b-awq"
+vllm_tier3_image: "vllm/vllm-openai:latest"
+vllm_r9700_endpoint: "http://vllm-r9700.vllm-r9700.svc:8000/v1"
+dav_pipeline_test_count: "500"
+dav_build_mcp_images: false
+
+# --- Review Console ---
+review_console_enable_oauth: true
+review_console_build_images: true
+review_console_hostname: "dav-review.apps.ocp.roadfeldt.com"
+review_console_db_name: dav_review
+review_console_db_user: dav_review
+review_console_db_storage_size: 2Gi
+review_console_db_storage_class: ""
+review_console_postgres_image: "quay.io/sclorg/postgresql-16-c9s:latest"
+review_console_oauth_proxy_image: "quay.io/openshift/origin-oauth-proxy:4.14"
+review_console_image_api: "{{ dav_registry }}/dav-review-api:latest"
+review_console_image_ui: "{{ dav_registry }}/dav-review-ui:latest"
+review_console_corpus_include: "*.md,*.yml,*.yaml,*.json,*.sql,*.py,*.go,*.rst,*.txt,*.toml,*.ini"
+review_console_corpus_exclude: ".git,node_modules,.venv,__pycache__,dist,build,*.pyc,*.lock"
+
+# --- Primary inference endpoint health check ---
+# Primary inference lives on an external host that exposes an OpenAI-compatible
+# /v1 endpoint. The endpoint is managed out of band (not by this Ansible
+# playbook). This playbook's responsibility for the primary endpoint is
+# limited to (a) verifying reachability and coherence before relying on it,
+# and (b) recording the expected configuration for operator reference.
+# See roles/dav/tasks/inference_quality_test.yaml.
+#
+# Concrete endpoint URL, model name, and topology come from
+# inventory/group_vars/all/vars.yaml (`inference_primary_*` keys).
+
+# --- Pipeline trigger from review console ---
+# Lets authenticated review-console users trigger DAV pipeline runs.
+review_console_runs_trigger_enabled: true
+review_console_runs_pipeline_name: "dav-stage2"
+review_console_runs_pipelinerun_listing_label: "app.kubernetes.io/part-of=dav"

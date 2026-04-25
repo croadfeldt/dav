@@ -1,0 +1,74 @@
+# Exemplar use case #2 — gap discovery
+#
+# Demonstrates a v1.0 UC that probes for architectural gaps. When the
+# analyzer runs this against a BookCatalog spec, it should expose
+# whether the spec actually documents how policy violations are handled,
+# or whether the topic is glossed over.
+#
+# This is the OTHER kind of UC every consumer needs: not happy paths,
+# but the awkward edges where the architecture's documentation is
+# usually thinnest. The verdict here might be "partially_supported"
+# even when the architecture exists, if the docs don't articulate it.
+#
+# Reading guide: contrast with exemplar #1 to see how dimensions shift
+# when a UC is probing for gaps rather than confirming a happy path.
+
+uuid: uc-bookcatalog-policy-violation-rollback
+
+handle: bookcatalog/policy-violation-rollback
+
+scenario:
+  description: |
+    A librarian attempts to register a book that violates the
+    publication-date policy (e.g., a publication year in the future
+    for a non-pre-order profile). The system must reject the
+    registration cleanly: no partial state persists, the audit log
+    captures the rejection with the policy that fired, and the
+    librarian receives an actionable error message.
+
+  actor:
+    persona: librarian
+    profile: standard
+
+  intent: |
+    Verify the architecture documents how policy violations are
+    detected, rejected, and rolled back without leaving partial state.
+
+  success_criteria:
+    - Registration returns a 4xx error with the violated policy named
+    - No book record is persisted (rollback is complete, not partial)
+    - Audit log records the attempted registration and the policy that fired
+    - Error message identifies the field, the policy name, and the violation
+    - Subsequent valid registrations are not affected by the rollback
+
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: hard_dependencies
+    policy_complexity: conflicting_policies
+    provider_landscape: multiple_eligible
+    governance_context: audit_heavy
+    failure_mode: policy_violation
+
+  profile: standard
+
+  expected_domain_interactions:
+    - domain: registration-api
+      interaction: POST /books endpoint returns structured policy-violation error
+    - domain: policy-engine
+      interaction: Publication-date policy evaluates registration request
+    - domain: rollback
+      interaction: Failed validation triggers cleanup of any partial state
+    - domain: audit
+      interaction: Rejection event is logged with policy name and violated field
+    - domain: error-response
+      interaction: Client-facing error structure includes policy_name, field, message
+
+generated_by:
+  mode: regression
+  source: human-authored
+
+tags:
+  - exemplar
+  - gap-discovery
+  - policy-violation
+  - rollback

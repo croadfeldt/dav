@@ -1,0 +1,62 @@
+use_case_uuid: tinyurl-uc-002
+uc_type: hybrid
+domain: authentication
+description: Auth spec contains all required sections and those sections describe a consistent flow.
+gate_class: mixed
+
+metadata:
+  author: dav-example
+  created: 2026-04-24
+  tags: [authentication, structural]
+  references:
+    - "03-authentication.md"
+
+assertion:
+  module: minimal_consumer.assertions.auth_spec_check
+  function: check_auth_spec_sections
+  args:
+    spec_path: dav/spec/03-authentication.md
+    required_sections:
+      - "Registration"
+      - "Login"
+      - "Session"
+      - "Rate limiting"
+  timeout_seconds: 5
+
+analytical:
+  scenario: |
+    The authentication spec (Doc 03) describes four flows: registration, login, session
+    management, and rate limiting. These sections should describe a flow that is internally
+    consistent — for example, the rate limit described in the login section should match
+    the rate limit described in the rate-limiting section, if both exist.
+
+    A reader of Doc 03 should come away with a clear understanding of how a user's
+    credentials become a session, how that session is validated on subsequent calls, and
+    how the system defends against brute-force attacks.
+
+  success_criteria:
+    - free_form: >
+        The spec describes the full credentials-to-session lifecycle without internal
+        contradictions.
+    - free_form: >
+        Any rate limits mentioned in one section match those in other sections.
+    - free_form: >
+        Gaps (e.g., missing password reset) are explicitly acknowledged rather than
+        silently omitted.
+
+  expected_components:
+    - registration_endpoint
+    - login_endpoint
+    - session_issuance
+    - rate_limiter
+  expected_capabilities:
+    - authenticate
+    - register_user
+    - issue_session
+    - rate_limit
+  expected_gaps:
+    - "password reset not in v1.0"
+
+  focus_areas:
+    - internal_consistency
+    - explicit_gap_acknowledgement

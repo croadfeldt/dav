@@ -1,0 +1,9 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dav-review-api
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-api

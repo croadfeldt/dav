@@ -1,0 +1,18 @@
+use_case_uuid: tinyurl-assert-001
+uc_type: assertion
+domain: spec_integrity
+description: All referenced spec doc handles in UCs resolve to real documents.
+gate_class: hard
+
+metadata:
+  author: dav-example
+  created: 2026-04-24
+  tags: [corpus-hygiene]
+
+assertion:
+  module: minimal_consumer.assertions.doc_existence
+  function: check_referenced_docs_exist
+  args:
+    spec_root: dav/spec
+    use_case_root: dav/use-cases
+  timeout_seconds: 10

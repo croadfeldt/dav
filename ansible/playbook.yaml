@@ -1,0 +1,53 @@
+---
+# DAV System — Full Deployment Playbook
+#
+# Deploys/updates the complete self-testing system:
+#   - OpenShift namespace, RBAC, PVCs, secrets
+#   - vLLM Tier 3 inference on GPU node
+#   - MCP servers (docs, tests, git)
+#   - Tekton pipeline, triggers, event listener, route
+#   - Review Console (UI + API + Postgres)
+#   - Inference Quality Test rig (opt-in, --tags inference-test)
+#
+# Usage:
+#   # Full deployment
+#   ansible-playbook playbook.yaml
+#
+#   # Deploy only specific components
+#   ansible-playbook playbook.yaml --tags review-console
+#   ansible-playbook playbook.yaml --tags vllm
+#   ansible-playbook playbook.yaml --tags tekton
+#   ansible-playbook playbook.yaml --tags mcp
+#   ansible-playbook playbook.yaml --tags inference-test    # explicit opt-in
+#
+#   # First-time setup (includes secret creation)
+#   ansible-playbook playbook.yaml --tags all,secrets
+#
+# This playbook runs from localhost. It requires:
+#   - oc/kubectl on the local PATH
+#   - valid kubeconfig with an active login to the target cluster
+#     (check: `oc whoami`)
+#   - vault.yaml decryptable (ansible-vault password or --ask-vault-pass)
+#
+# Secrets:
+#   Encrypted with ansible-vault in inventory/group_vars/all/vault.yaml
+#   ansible-vault edit inventory/group_vars/all/vault.yaml
+
+- name: Deploy DCM self-test system to OpenShift
+  hosts: ocp_provisioner
+  gather_facts: true
+  tasks:
+    - name: Verify active OpenShift login
+      ansible.builtin.command: oc whoami
+      register: oc_whoami
+      changed_when: false
+      failed_when: oc_whoami.rc != 0
+      tags: always
+
+    - name: Report active cluster user
+      ansible.builtin.debug:
+        msg: "Deploying as {{ oc_whoami.stdout }} to cluster (running from {{ inventory_hostname }})"
+      tags: always
+
+  roles:
+    - role: dav

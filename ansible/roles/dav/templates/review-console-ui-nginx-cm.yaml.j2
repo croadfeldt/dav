@@ -1,0 +1,49 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dav-review-ui-nginx
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-ui
+data:
+  # UBI nginx-124 bakes its own `server { listen 8080 default_server; ... }`
+  # directly into /etc/nginx/nginx.conf and includes this directory from
+  # inside that block. We contribute location{} directives only — no
+  # surrounding server{} wrapper — and they merge into the image's server.
+  review.conf: |
+    # Security headers applied to all responses from this server.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+    location = /healthz {
+        access_log off;
+        return 200 "ok\n";
+        add_header Content-Type text/plain;
+    }
+
+    location /api/ {
+        proxy_pass http://dav-review-api:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Pass oauth-proxy auth headers through so the API can attribute
+        # reviews to the authenticated user.
+        proxy_set_header X-Forwarded-User $http_x_forwarded_user;
+        proxy_set_header X-Forwarded-Email $http_x_forwarded_email;
+        proxy_set_header X-Auth-Request-User $http_x_auth_request_user;
+        proxy_set_header X-Auth-Request-Email $http_x_auth_request_email;
+
+        proxy_connect_timeout 10s;
+        proxy_send_timeout    60s;
+        proxy_read_timeout    60s;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }

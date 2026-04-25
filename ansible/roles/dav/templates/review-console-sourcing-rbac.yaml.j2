@@ -1,0 +1,81 @@
+---
+# DCM Sourcing RBAC
+# ---
+# Grants the review-console API ServiceAccount (`dav-review-api`) the minimum
+# permissions needed to switch spec/corpus sources via the web UI:
+#
+#   1. Read + patch the two sourcing ConfigMaps (dav-source-spec,
+#      dav-source-corpus) to update repo URL and branch.
+#   2. Read + patch the two affected Deployments (dav-docs-mcp and
+#      dav-review-api itself) to trigger rollout and mirror the
+#      dav.dev/source-* annotations so `oc describe` reflects
+#      current state without reading the ConfigMap.
+#   3. Read Deployment status to report rollout progress back to the UI.
+#
+# Narrow by resourceName wherever possible so this Role cannot accidentally
+# grant broader cluster access if the SA is compromised.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dav-review-sourcing
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-sourcing
+rules:
+  # The two sourcing ConfigMaps — read + patch
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["dav-source-spec", "dav-source-corpus"]
+    verbs: ["get", "patch", "update"]
+
+  # List permission on the configmaps collection (needed by k8s client to
+  # watch/fetch both). Scoped to collection list, not wildcard resourceName.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["list"]
+
+  # The two Deployments the UI can retarget — get + patch (for annotation
+  # mirror + rolling-restart via pod template annotation)
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["dav-docs-mcp", "dav-review-api"]
+    verbs: ["get", "patch"]
+
+  # List for Deployments collection (status polling may iterate)
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["list"]
+
+  # Deployment status — for reporting rollout progress to the UI
+  - apiGroups: ["apps"]
+    resources: ["deployments/status"]
+    verbs: ["get"]
+
+  # Pods — list + get so the UI status endpoint can verify the new pod
+  # came up after a rollout and surface init-container logs if it failed
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dav-review-sourcing
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-sourcing
+subjects:
+  - kind: ServiceAccount
+    name: dav-review-api
+    namespace: {{ dav_namespace }}
+roleRef:
+  kind: Role
+  name: dav-review-sourcing
+  apiGroup: rbac.authorization.k8s.io

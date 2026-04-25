@@ -1,0 +1,119 @@
+---
+- name: Copy MCP server source to build context
+  ansible.builtin.copy:
+    src: "mcp-servers/"
+    dest: "/tmp/dav-mcp-build/"
+    mode: "0644"
+  when: dav_build_mcp_images | bool
+
+- name: Check if BuildConfig exists
+  kubernetes.core.k8s_info:
+    kind: BuildConfig
+    api_version: build.openshift.io/v1
+    namespace: "{{ dav_namespace }}"
+    name: dav-docs-mcp
+  register: bc_check
+  when: dav_build_mcp_images | bool
+
+- name: Create BuildConfig for dav-docs-mcp
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: build.openshift.io/v1
+      kind: BuildConfig
+      metadata:
+        name: dav-docs-mcp
+        namespace: "{{ dav_namespace }}"
+      spec:
+        source:
+          type: Binary
+        strategy:
+          type: Docker
+          dockerStrategy:
+            dockerfilePath: Containerfile
+        output:
+          to:
+            kind: ImageStreamTag
+            name: "dav-docs-mcp:latest"
+  when:
+    - dav_build_mcp_images | bool
+    - bc_check.resources | length == 0
+
+- name: Check if ImageStream exists
+  kubernetes.core.k8s_info:
+    kind: ImageStream
+    api_version: image.openshift.io/v1
+    namespace: "{{ dav_namespace }}"
+    name: dav-docs-mcp
+  register: is_check
+  when: dav_build_mcp_images | bool
+
+- name: Create ImageStream for dav-docs-mcp
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: image.openshift.io/v1
+      kind: ImageStream
+      metadata:
+        name: dav-docs-mcp
+        namespace: "{{ dav_namespace }}"
+  when:
+    - dav_build_mcp_images | bool
+    - is_check.resources | length == 0
+
+- name: Start binary build for dav-docs-mcp
+  ansible.builtin.command:
+    cmd: >-
+      oc start-build dav-docs-mcp
+      --from-dir=/tmp/dav-mcp-build/dav-docs-mcp
+      -n {{ dav_namespace }}
+      --wait
+  register: build_result
+  when: dav_build_mcp_images | bool
+
+- name: Report build result
+  ansible.builtin.debug:
+    msg: "MCP server build: {{ build_result.stdout | default('skipped') }}"
+  when: dav_build_mcp_images | bool
+
+- name: Check if dav-docs-mcp deployment exists
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ dav_namespace }}"
+    name: dav-docs-mcp
+  register: mcp_existing
+
+- name: Deploy dav-docs-mcp server
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'mcp-docs-deployment.yaml.j2') | from_yaml_all | list }}"
+  register: mcp_deploy
+
+- name: Restart dav-docs-mcp deployment if updated (not on initial create)
+  ansible.builtin.command:
+    cmd: "oc rollout restart deployment/dav-docs-mcp -n {{ dav_namespace }}"
+  when:
+    - mcp_existing.resources | length > 0
+    - mcp_deploy.changed or (build_result is defined and build_result.changed)
+
+- name: Wait for dav-docs-mcp rollout to complete
+  ansible.builtin.command:
+    cmd: "oc rollout status deployment/dav-docs-mcp -n {{ dav_namespace }} --timeout=120s"
+  register: rollout_status
+  ignore_errors: true
+  when:
+    - mcp_existing.resources | length > 0
+    - mcp_deploy.changed or (build_result is defined and build_result.changed)
+
+- name: Report MCP server status
+  ansible.builtin.debug:
+    msg: "{{ rollout_status.stdout | default('No changes or fresh deploy — no restart needed') }}"
+
+- name: Clean up build context
+  ansible.builtin.file:
+    path: /tmp/dav-mcp-build
+    state: absent
+  when: dav_build_mcp_images | bool

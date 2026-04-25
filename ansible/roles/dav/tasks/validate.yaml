@@ -1,0 +1,138 @@
+---
+- name: Check namespace exists
+  kubernetes.core.k8s_info:
+    kind: Namespace
+    name: "{{ dav_namespace }}"
+  register: ns_check
+  failed_when: ns_check.resources | length == 0
+
+- name: Check OpenShift Pipelines operator
+  kubernetes.core.k8s_info:
+    kind: Subscription
+    api_version: operators.coreos.com/v1alpha1
+    namespace: openshift-operators
+    name: openshift-pipelines-operator-rh
+  register: operator_check
+
+- name: Check primary inference endpoint (active test experiment)
+  ansible.builtin.uri:
+    url: "{{ inference_primary_endpoint | replace('/v1', '') }}/v1/models"
+    method: GET
+    timeout: 10
+  register: primary_inference_check
+  ignore_errors: true
+
+- name: Check vLLM deployment (Tier 2 inference)
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ dav_namespace }}"
+    name: vllm-tier3
+  register: vllm_check
+
+- name: Check MCP docs server deployment
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ dav_namespace }}"
+    name: dav-docs-mcp
+  register: mcp_check
+
+- name: Check pipeline exists
+  kubernetes.core.k8s_info:
+    kind: Pipeline
+    api_version: tekton.dev/v1
+    namespace: "{{ dav_namespace }}"
+    name: dav
+  register: pipeline_check
+
+- name: Check event listener
+  kubernetes.core.k8s_info:
+    kind: EventListener
+    api_version: triggers.tekton.dev/v1beta1
+    namespace: "{{ dav_namespace }}"
+    name: dav-repo-listener
+  register: el_check
+
+- name: Check webhook route
+  kubernetes.core.k8s_info:
+    kind: Route
+    namespace: "{{ dav_namespace }}"
+    name: dav-webhook
+  register: route_check
+
+# --- Review Console health ---
+
+- name: Check review console Postgres
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-db
+  register: review_db_check
+
+- name: Check review console API
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-api
+  register: review_api_check
+
+- name: Check review console UI
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-ui
+  register: review_ui_check
+
+- name: Check review console route
+  kubernetes.core.k8s_info:
+    kind: Route
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-ui
+  register: review_route_check
+
+# --- Primary inference endpoint health (external llama.cpp) ---
+# The primary endpoint runs outside the cluster on vis.roadfeldt.com.
+# We don't own its lifecycle here, but a reachability check in the
+# validate summary is useful so the operator sees at-a-glance whether
+# the pipeline has a healthy inference target.
+# See docs/local-inference.md.
+
+- name: Probe primary inference endpoint (reachability only)
+  ansible.builtin.uri:
+    url: "{{ inference_primary_endpoint }}/models"
+    method: GET
+    status_code: 200
+    timeout: 5
+  register: primary_inference_check
+  failed_when: false
+
+- name: Deployment health summary
+  ansible.builtin.debug:
+    msg: |
+      ═══════════════════════════════════════════════════
+       DAV Deployment Health
+      ═══════════════════════════════════════════════════
+
+       Namespace:        {{ '✓' if ns_check.resources | length > 0 else '✗' }} {{ dav_namespace }}
+       OCP Pipelines:    {{ '✓' if operator_check.resources | length > 0 else '✗' }} OpenShift Pipelines operator
+
+       ── Inference ──
+       Primary:          {{ '✓' if primary_inference_check.status | default(0) == 200 else '✗ UNREACHABLE' }} {{ inference_primary_endpoint }} (llama.cpp on vis.roadfeldt.com)
+       Fallback:         {{ '✓' if vllm_check.resources | length > 0 else '✗' }} {{ vllm_check.resources[0].status.readyReplicas | default(0) if vllm_check.resources | length > 0 else 0 }}/1 ready (in-cluster 14B vLLM on 4060 Ti)
+
+       ── Pipeline ──
+       MCP Docs Server:  {{ '✓' if mcp_check.resources | length > 0 else '✗' }} {{ mcp_check.resources[0].status.readyReplicas | default(0) if mcp_check.resources | length > 0 else 0 }}/1 ready
+       Tekton Pipeline:  {{ '✓' if pipeline_check.resources | length > 0 else '✗' }} dav
+       Event Listener:   {{ '✓' if el_check.resources | length > 0 else '✗' }} dav-repo-listener
+       Webhook Route:    {{ '✓' if route_check.resources | length > 0 else '✗' }} {{ route_check.resources[0].spec.host if route_check.resources | length > 0 else 'not yet admitted' }}
+
+       ── Review Console ──
+       Postgres:         {{ '✓' if review_db_check.resources | length > 0 else '✗' }} {{ review_db_check.resources[0].status.readyReplicas | default(0) if review_db_check.resources | length > 0 else 0 }}/1 ready
+       Review API:       {{ '✓' if review_api_check.resources | length > 0 else '✗' }} {{ review_api_check.resources[0].status.readyReplicas | default(0) if review_api_check.resources | length > 0 else 0 }}/1 ready
+       Review UI:        {{ '✓' if review_ui_check.resources | length > 0 else '✗' }} {{ review_ui_check.resources[0].status.readyReplicas | default(0) if review_ui_check.resources | length > 0 else 0 }}/1 ready
+       Review Route:     {{ '✓' if review_route_check.resources | length > 0 else '✗' }} {{ review_route_check.resources[0].spec.host if review_route_check.resources | length > 0 else 'not yet admitted' }}
+
+       ── Review ──
+       Stage 4:          Manual — paste review-package.md into Claude Project
+       Cost:             $0/month (local inference, manual review)
+
+      ═══════════════════════════════════════════════════

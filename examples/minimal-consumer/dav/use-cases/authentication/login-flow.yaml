@@ -1,0 +1,63 @@
+use_case_uuid: tinyurl-uc-001
+uc_type: analytical
+domain: authentication
+description: Login flow produces a valid session or a clear, non-enumerable failure response.
+gate_class: advisory
+
+metadata:
+  author: dav-example
+  created: 2026-04-24
+  tags: [authentication, session, security]
+  references:
+    - "03-authentication.md"
+    - "02-data-model.md"
+
+analytical:
+  scenario: |
+    A registered user submits valid credentials (email + password) to POST /api/auth/login.
+    The system looks up the user by email, checks suspension status, verifies the password
+    hash using bcrypt, updates the last_login_at timestamp on success, and issues a signed
+    session cookie with 7-day validity.
+
+    If credentials are invalid, the system returns 401 without revealing whether the email
+    or the password was wrong (to prevent user enumeration via timing or error-message
+    differences).
+
+    If the account is suspended, the system returns 403 without checking the password.
+
+    Login attempts are rate-limited at 5 per email per 15 minutes; exceeding the limit
+    returns 429 with a retry-after header.
+
+  success_criteria:
+    - free_form: >
+        A valid login produces a session cookie that the user can present to authenticate
+        subsequent API calls for the cookie's 7-day validity window.
+    - free_form: >
+        Invalid credentials do not leak whether the email or the password was the
+        incorrect field — both produce 401 with identical response shape.
+    - free_form: >
+        Suspended accounts cannot log in regardless of password correctness.
+    - bounded_by:
+        resource: login_attempts_per_email_per_15min
+        limit: 5
+    - visible_to:
+        actors: [registered_user, administrator]
+
+  expected_components:
+    - user_lookup_by_email
+    - password_verification
+    - session_issuance
+    - rate_limiter
+    - suspension_check
+  expected_capabilities:
+    - authenticate
+    - issue_session
+    - rate_limit
+  expected_gaps:
+    - "No password reset flow in v1.0"
+    - "No multi-factor authentication"
+
+  focus_areas:
+    - credential_enumeration_prevention
+    - suspension_handling
+    - rate_limiting

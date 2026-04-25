@@ -1,0 +1,105 @@
+# DCM reference consumer profile
+#
+# This is the canonical consumer profile for DCM (Data Center Management).
+# It mirrors what's compiled into engine/src/dav/core/consumer_profile.py
+# as the built-in default, ships as a YAML so DCM's content repo can carry
+# the same vocabulary alongside its specs.
+#
+# When DAV evaluates DCM use cases without an explicit --consumer-profile,
+# the engine uses the built-in DCM reference profile (which equals this file
+# verbatim). When DCM ships its dav/ subdirectory in its own repo, this file
+# moves to dcm/dav/consumer-profile.yaml and DAV loads it via the file path.
+#
+# See specs/05-use-case-schema.md (post-ε.1) for the profile shape.
+
+framework_name: "DCM (Data Center Management)"
+framework_short: "DCM"
+consumer_id: "dcm"
+schema_version: "1.0"
+
+# Architectural-context strings substituted into the system prompt
+abstractions_summary: "Data, Provider, Policy"
+provider_summary: "capabilities that realize intent (six types: service, information, meta, auth, peer_dcm, process)"
+policy_summary: "evaluation engine with two modes (Internal/External), Evaluation Context, multi-pass convergence"
+
+# Controlled vocabularies (drive UC validation, render into prompts,
+# enum-constrain LLM JSON output)
+
+lifecycle_phases:
+  - new_request
+  - modification
+  - decommission
+  - drift_detection
+  - brownfield_ingestion
+  - rehydration_faithful
+  - rehydration_provider_portable
+  - rehydration_historical_exact
+  - rehydration_historical_portable
+  - expiry_enforcement
+
+resource_complexities:
+  - single_no_deps
+  - hard_dependencies
+  - compound_service
+  - conditional_soft_deps
+  - process_resource
+  - cross_dependency_payload
+
+policy_complexities:
+  - system_defaults_only
+  - single_gatekeeper
+  - multi_policy_chain
+  - conflicting_policies
+  - orchestration_flow_static
+  - dynamic_conditional_flow
+  - cross_domain_constraint
+  - human_escalation_required
+  - governance_matrix_enforcement
+  - recovery_policy
+
+provider_landscapes:
+  - single_eligible
+  - multiple_eligible
+  - none_eligible
+  - peer_dcm_required
+  - meta_provider_composed
+  - process_provider
+  - mixed
+
+governance_contexts:
+  - no_governance
+  - standard_governance
+  - audit_heavy
+  - compliance_gated
+  - sovereignty_enforced
+
+failure_modes:
+  - happy_path
+  - provider_failure
+  - policy_violation
+  - peer_dcm_disconnect
+  - data_inconsistency
+  - rollback_required
+  - partial_fulfillment
+  - timeout
+  - resource_exhaustion
+
+profiles:
+  - minimal
+  - dev
+  - standard
+  - prod
+  - fsi
+  - sovereign
+
+provider_types:
+  - service
+  - information
+  - meta
+  - auth
+  - peer_dcm
+  - process
+
+policy_modes:
+  - Internal
+  - External

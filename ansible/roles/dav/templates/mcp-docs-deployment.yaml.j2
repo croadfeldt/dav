@@ -1,0 +1,116 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dav-docs-mcp
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-docs-mcp
+    component: mcp-server
+  annotations:
+    # Auto-rollout when the dav-docs-mcp:latest ImageStreamTag is updated.
+    # OpenShift patches spec.template.spec.containers[name=mcp-server].image
+    # with the resolved SHA, triggering a fresh rollout.
+    image.openshift.io/triggers: |
+      [{"from":{"kind":"ImageStreamTag","name":"dav-docs-mcp:latest","namespace":"{{ dav_namespace }}"},"fieldPath":"spec.template.spec.containers[?(@.name==\"mcp-server\")].image"}]
+    # --- Sourcing metadata (readable by oc describe and by the review-console web UI) ---
+    # These annotations mirror the authoritative state in the dav-source-spec
+    # ConfigMap. Ansible stamps initial values from consumer_spec_repo_* vars;
+    # the review-console API keeps them in sync when the UI switches sources.
+    dav.dev/source-type: "spec"
+    dav.dev/source-repo-url: "{{ consumer_spec_repo_url }}"
+    dav.dev/source-repo-branch: "{{ consumer_spec_repo_branch }}"
+    dav.dev/source-configmap: "dav-source-spec"
+    dav.dev/last-applied-at: "{{ ansible_date_time.iso8601 }}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dav-docs-mcp
+  template:
+    metadata:
+      labels:
+        app: dav-docs-mcp
+        component: mcp-server
+    spec:
+      initContainers:
+        - name: git-clone
+          image: alpine/git:latest
+          env:
+            # REPO_URL and REPO_BRANCH come from the dav-source-spec ConfigMap
+            # rather than being baked in by Jinja. This lets the web UI
+            # retarget the MCP by updating the ConfigMap + rolling this
+            # Deployment, without touching the template. Pods read the
+            # ConfigMap values at start time — the init-container clones
+            # whatever ConfigMap says right now.
+            - name: REPO_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: dav-source-spec
+                  key: repo_url
+            - name: REPO_BRANCH
+              valueFrom:
+                configMapKeyRef:
+                  name: dav-source-spec
+                  key: repo_branch
+          command:
+            - /bin/sh
+            - -c
+            - |
+              git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" /data/repo && \
+              echo "Cloned $(ls /data/repo/architecture/data-model/*.md 2>/dev/null | wc -l) docs from $REPO_URL#$REPO_BRANCH"
+          volumeMounts:
+            - name: docs
+              mountPath: /data
+      containers:
+        - name: mcp-server
+          image: {{ mcp_docs_image }}
+          args:
+            - "--docs-path"
+            - "/data/repo/architecture/data-model"
+            - "--transport"
+            - "sse"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8080"
+          ports:
+            - containerPort: 8080
+              name: http
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          volumeMounts:
+            - name: docs
+              mountPath: /data
+              readOnly: true
+      volumes:
+        - name: docs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dav-docs-mcp
+  namespace: {{ dav_namespace }}
+spec:
+  selector:
+    app: dav-docs-mcp
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http

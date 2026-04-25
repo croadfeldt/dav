@@ -1,0 +1,26 @@
+# DAV Engine container image
+# Built at deploy time from repo root via Ansible role's engine.yaml task.
+# The build context is the engine/ directory; the role copies it to a
+# temporary build-dir on the provisioner and invokes oc start-build against
+# an OpenShift BuildConfig using Docker strategy.
+
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /engine
+
+# Install runtime deps separately for Docker layer caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install the dav package in editable mode (src layout)
+COPY pyproject.toml .
+COPY src/ ./src/
+RUN pip install --no-cache-dir -e .
+
+# dav is importable as a package (and pip install -e also sets the
+# right paths), but we also set PYTHONPATH explicitly for any scripts
+# that expect bare module imports.
+ENV PYTHONPATH=/engine/src

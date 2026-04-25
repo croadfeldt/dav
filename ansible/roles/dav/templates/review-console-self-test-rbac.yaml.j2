@@ -1,0 +1,50 @@
+---
+# Grants review console API the minimum permissions to trigger and observe
+# DCM self-test pipeline runs. Separate Role rather than extending the
+# existing dav-pipeline-role — the API is a different principal with a
+# narrower purpose.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dav-review-runs-trigger
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-self-test
+rules:
+  # Create and read PipelineRuns — the trigger endpoint needs both
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelineruns"]
+    verbs: ["create", "get", "list", "watch"]
+  # Read the Pipeline definition to resolve its params before creating a run
+  - apiGroups: ["tekton.dev"]
+    resources: ["pipelines"]
+    verbs: ["get", "list"]
+  # Read TaskRuns and Pods for status drill-down (no log streaming yet,
+  # but surface the pod name so the UI can link to OCP console's log view)
+  - apiGroups: ["tekton.dev"]
+    resources: ["taskruns"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dav-review-runs-trigger
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-self-test
+subjects:
+  - kind: ServiceAccount
+    # Review console API runs under the default SA in dav-namespace;
+    # we bind the Role to that same SA. If you switch the API to a
+    # dedicated SA later, update this subject.
+    name: dav-review-api
+    namespace: {{ dav_namespace }}
+roleRef:
+  kind: Role
+  name: dav-review-runs-trigger
+  apiGroup: rbac.authorization.k8s.io

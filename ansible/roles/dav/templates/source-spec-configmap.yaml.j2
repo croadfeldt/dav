@@ -1,0 +1,42 @@
+---
+# DCM Spec Sourcing ConfigMap
+# ---
+# Single source of truth for "which DCM architecture spec does the MCP serve?".
+#
+# This ConfigMap is the authoritative state for spec sourcing. Both the
+# Ansible playbook and the review-console web UI read and write it:
+#
+#   Ansible: creates on first deploy, DOES NOT overwrite thereafter.
+#            Subsequent playbook runs see managed-by: "runtime" and skip the
+#            data field. They still ensure the ConfigMap exists and
+#            reconcile the annotations `ansible-managed-initial-*`.
+#
+#   Web UI:  POST /api/sources/spec updates data.repo_url/repo_branch,
+#            stamps `last-applied-by` and `last-applied-at`, then triggers
+#            a fresh MCP rollout so the init-container re-clones.
+#
+# The Deployment's init-container reads repo_url and repo_branch from here
+# via configMapKeyRef env vars — so changing this ConfigMap + rolling the
+# Deployment is sufficient to retarget the MCP. No template changes required.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dav-source-spec
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav
+    component: sourcing
+    dav.dev/source-type: "spec"
+  annotations:
+    # When the ConfigMap is first created by Ansible, managed-by is set to
+    # "ansible". If the web UI mutates it later, managed-by flips to
+    # "runtime" and Ansible skips reconciling data (but still ensures the
+    # object exists — never deletes it).
+    dav.dev/managed-by: "ansible"
+    dav.dev/last-applied-by: "ansible"
+    dav.dev/last-applied-at: "{{ ansible_date_time.iso8601 }}"
+    dav.dev/ansible-managed-initial-url: "{{ consumer_spec_repo_url }}"
+    dav.dev/ansible-managed-initial-branch: "{{ consumer_spec_repo_branch }}"
+data:
+  repo_url: "{{ consumer_spec_repo_url }}"
+  repo_branch: "{{ consumer_spec_repo_branch }}"

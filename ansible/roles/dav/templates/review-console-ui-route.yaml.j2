@@ -1,0 +1,29 @@
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: dav-review-ui
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-ui
+spec:
+  host: {{ review_console_hostname }}
+  to:
+    kind: Service
+    name: dav-review-ui
+    weight: 100
+{% if review_console_enable_oauth %}
+  port:
+    targetPort: https
+  tls:
+    termination: reencrypt
+    insecureEdgeTerminationPolicy: Redirect
+{% else %}
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+{% endif %}
+  wildcardPolicy: None

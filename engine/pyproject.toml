@@ -1,0 +1,28 @@
+# DAV engine package declaration
+#
+# Minimum pyproject.toml to support `pip install -e .` in src layout.
+# Runtime dependencies remain in requirements.txt (authoritative); this
+# file declares only the package structure.
+
+[project]
+name = "dav"
+version = "0.1.0"
+description = "DAV — DCM Architecture Validation framework engine"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "DAV Contributors" },
+]
+license = { text = "Apache-2.0" }
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["dav*"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

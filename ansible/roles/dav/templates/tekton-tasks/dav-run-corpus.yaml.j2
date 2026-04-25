@@ -1,0 +1,182 @@
+---
+# Tekton Task: run DAV stage 2 across a UC corpus.
+#
+# This task wraps `python -m dav.stages.run_corpus`, which iterates the
+# consumer's UC corpus in a single container, writes per-UC analyses,
+# and produces a unified run-summary.yaml.
+#
+# Engine-side iteration: one container, one Python process,
+# loops the corpus internally. Per-UC failure isolation is handled by
+# the runner; the task either succeeds (all UCs ran) or fails (something
+# at the runner level broke; per-UC failures are reported in the run
+# summary, not as task failures, unless --halt-on-error is set).
+#
+# Workspace layout expected:
+#   {{ params.consumer_corpus_subdir }}/   ← consumer corpus (UCs + dav-version.yaml)
+#   {{ params.consumer_spec_subdir }}/     ← consumer spec content (architecture docs)
+#   results/                                ← run outputs go here as <run-id>/
+#
+# Both subdirectories are populated by upstream git-sync tasks before
+# this task runs; see pipeline-stage2.yaml.j2.
+
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: dav-run-corpus
+  namespace: {{ dav_namespace }}
+  labels:
+    app.kubernetes.io/part-of: dav
+spec:
+  description: |
+    Run DAV stage 2 analysis across an entire UC corpus.
+
+  params:
+    - name: corpus-subdir
+      type: string
+      description: |
+        Path to the UC corpus, relative to the workspace root.
+        Default matches the corpus subdirectory created by the
+        upstream consumer-corpus-sync task in pipeline-stage2.
+      default: "corpus/use-cases"
+
+    - name: spec-subdir
+      type: string
+      description: |
+        Path to the consumer's spec content (used as
+        --consumer-content-path so the analyzer can read
+        consumer_version from dav-version.yaml).
+      default: "spec"
+
+    - name: output-subdir
+      type: string
+      description: |
+        Path under the workspace where run results land. The runner
+        creates a <run-id> subdirectory inside this.
+      default: "results"
+
+    - name: mode
+      type: string
+      description: "verification | reproduce | explore"
+      default: "verification"
+
+    - name: sample-count
+      type: string
+      description: |
+        Override the mode's default sample count. Empty string = use
+        mode default (3 / 1 / 10 for verification / reproduce / explore).
+      default: ""
+
+    - name: seed
+      type: string
+      description: |
+        Override the seed (verification: base seed; reproduce: the seed).
+        Empty string = derive from UC uuid.
+      default: ""
+
+    - name: halt-on-error
+      type: string
+      description: "true | false — stop the run on first UC failure"
+      default: "false"
+
+    - name: inference-endpoint
+      type: string
+      description: OpenAI-compatible inference base URL
+      default: "{{ inference_primary_endpoint }}"
+
+    - name: inference-model
+      type: string
+      description: Model name served at the endpoint
+      default: "{{ inference_primary_model }}"
+
+    - name: mcp-url
+      type: string
+      description: dav-docs-mcp base URL
+      default: "http://dav-docs-mcp.{{ dav_namespace }}.svc:8080"
+
+    - name: consumer-profile-path
+      type: string
+      description: |
+        Path to a consumer profile YAML (relative to workspace).
+        Empty = use built-in DCM reference profile.
+      default: ""
+
+    - name: max-tool-calls
+      type: string
+      default: "30"
+
+    - name: max-tokens
+      type: string
+      default: "6144"
+
+    - name: cache-prompt
+      type: string
+      description: "true | false — enable llama.cpp KV cache reuse"
+      default: "false"
+
+    - name: log-level
+      type: string
+      default: "INFO"
+
+  workspaces:
+    - name: source
+      description: |
+        Shared workspace containing the consumer corpus, spec content,
+        and the results directory.
+
+  steps:
+    - name: run-corpus
+      image: "image-registry.openshift-image-registry.svc:5000/{{ dav_namespace }}/dav-engine:latest"
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+      script: |
+        #!/bin/sh
+        set -e
+
+        echo "=== DAV corpus run ==="
+        echo "  Corpus:         $(params.corpus-subdir)"
+        echo "  Spec content:   $(params.spec-subdir)"
+        echo "  Output:         $(params.output-subdir)"
+        echo "  Mode:           $(params.mode)"
+        echo "  Inference:      $(params.inference-endpoint)"
+        echo "  Model:          $(params.inference-model)"
+        echo "  MCP:            $(params.mcp-url)"
+        echo ""
+
+        mkdir -p "$(params.output-subdir)"
+
+        # Build optional args
+        OPTIONAL_ARGS=""
+        if [ -n "$(params.sample-count)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --sample-count $(params.sample-count)"
+        fi
+        if [ -n "$(params.seed)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --seed $(params.seed)"
+        fi
+        if [ "$(params.halt-on-error)" = "true" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --halt-on-error"
+        fi
+        if [ "$(params.cache-prompt)" = "true" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --cache-prompt"
+        fi
+        if [ -n "$(params.consumer-profile-path)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --consumer-profile $(params.consumer-profile-path)"
+        fi
+
+        # Note: --no-enable-thinking is the recommended default for
+        # Qwen3 stage 2 runs (see prompts.py rationale). We hardcode
+        # it on; if a non-Qwen3 endpoint is used, the flag is harmless.
+        python -m dav.stages.run_corpus \
+          --corpus-path "$(params.corpus-subdir)" \
+          --output-dir "$(params.output-subdir)" \
+          --consumer-content-path "$(params.spec-subdir)" \
+          --inference-endpoint "$(params.inference-endpoint)" \
+          --inference-model "$(params.inference-model)" \
+          --mcp-url "$(params.mcp-url)" \
+          --mode "$(params.mode)" \
+          --max-tool-calls "$(params.max-tool-calls)" \
+          --max-tokens "$(params.max-tokens)" \
+          --no-enable-thinking \
+          --log-level "$(params.log-level)" \
+          $OPTIONAL_ARGS

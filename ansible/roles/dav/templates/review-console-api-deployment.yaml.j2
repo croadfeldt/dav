@@ -1,0 +1,119 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dav-review-api
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-api
+  annotations:
+    image.openshift.io/triggers: |-
+      [{"from":{"kind":"ImageStreamTag","name":"dav-review-api:latest"},
+        "fieldPath":"spec.template.spec.containers[?(@.name==\"api\")].image"}]
+    # --- Sourcing metadata (readable by oc describe and by the web UI) ---
+    # Mirrors the authoritative state in dav-source-corpus ConfigMap.
+    dav.dev/source-type: "corpus"
+    dav.dev/source-repo-url: "{{ consumer_corpus_repo_url }}"
+    dav.dev/source-repo-branch: "{{ consumer_corpus_repo_branch }}"
+    dav.dev/source-configmap: "dav-source-corpus"
+    dav.dev/last-applied-at: "{{ ansible_date_time.iso8601 }}"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: dav-review
+      component: review-console-api
+  template:
+    metadata:
+      labels:
+        app: dav-review
+        component: review-console-api
+    spec:
+      serviceAccountName: dav-review-api
+      initContainers:
+        - name: git-clone-corpus
+          image: alpine/git:latest
+          env:
+            # Sourced from dav-source-corpus ConfigMap at pod start.
+            # The web UI updates the ConfigMap + triggers rollout to retarget.
+            - name: REPO_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: dav-source-corpus
+                  key: repo_url
+            - name: REPO_BRANCH
+              valueFrom:
+                configMapKeyRef:
+                  name: dav-source-corpus
+                  key: repo_branch
+          command:
+            - /bin/sh
+            - -c
+            - |
+              git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" /data/repo && \
+              echo "Corpus clone from $REPO_URL#$REPO_BRANCH: $(find /data/repo -type f | wc -l) files"
+          volumeMounts:
+            - name: corpus
+              mountPath: /data
+      containers:
+        - name: api
+          image: "{{ review_console_image_api }}"
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dav-review-db-creds
+                  key: dsn
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: CORPUS_MODE
+              value: "directory"
+            - name: CORPUS_DIR
+              value: "/data/repo"
+            - name: CORPUS_INCLUDE
+              value: "{{ review_console_corpus_include }}"
+            - name: CORPUS_EXCLUDE
+              value: "{{ review_console_corpus_exclude }}"
+            - name: DAV_TRIGGER_ENABLED
+              value: "{{ 'true' if (review_console_runs_trigger_enabled | default(true)) else 'false' }}"
+            - name: DAV_NAMESPACE
+              value: "{{ dav_namespace }}"
+            - name: DAV_PIPELINE_NAME
+              value: "{{ review_console_runs_pipeline_name }}"
+            - name: DAV_DEFAULT_BRANCH
+              value: "{{ consumer_spec_repo_branch }}"
+          volumeMounts:
+            - name: corpus
+              mountPath: /data
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: corpus
+          emptyDir: {}

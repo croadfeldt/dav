@@ -1,0 +1,84 @@
+---
+- name: Copy schema files to provisioner
+  ansible.builtin.copy:
+    src: "schema/"
+    dest: "/tmp/dav-schema/"
+    mode: "0644"
+
+- name: Copy baseline corpus to provisioner
+  ansible.builtin.copy:
+    src: "corpus/"
+    dest: "/tmp/dav-content/"
+    mode: "0644"
+
+- name: Create ConfigMap from test case schema
+  ansible.builtin.shell:
+    cmd: >-
+      oc create configmap dav-test-schema
+      --from-file=/tmp/dav-schema/
+      -n {{ dav_namespace }}
+      --dry-run=client -o yaml | oc apply -f -
+
+- name: Create ConfigMap from baseline corpus
+  ansible.builtin.shell:
+    cmd: >-
+      oc create configmap dav-baseline-corpus
+      --from-file=/tmp/dav-content/baseline/system-policies/
+      -n {{ dav_namespace }}
+      --dry-run=client -o yaml | oc apply -f -
+
+- name: Clean up temp files
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/dav-schema
+    - /tmp/dav-content
+
+- name: Deploy corpus loader job
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: "dav-corpus-loader-{{ lookup('pipe', 'date +%s') }}"
+        namespace: "{{ dav_namespace }}"
+      spec:
+        ttlSecondsAfterFinished: 300
+        template:
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: loader
+                image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    echo "Loading schema and corpus to workspace..."
+                    mkdir -p /workspace/schema /workspace/corpus/baseline/system-policies
+                    cp /schema/* /workspace/schema/
+                    cp /corpus/* /workspace/corpus/baseline/system-policies/
+                    echo "Loaded $(ls /workspace/schema/ | wc -l) schema files"
+                    echo "Loaded $(ls /workspace/corpus/baseline/system-policies/ | wc -l) baseline tests"
+                volumeMounts:
+                  - name: workspace
+                    mountPath: /workspace
+                  - name: schema
+                    mountPath: /schema
+                  - name: corpus
+                    mountPath: /corpus
+            volumes:
+              - name: workspace
+                persistentVolumeClaim:
+                  claimName: "{{ dav_workspace_pvc_name }}"
+              - name: schema
+                configMap:
+                  name: dav-test-schema
+              - name: corpus
+                configMap:
+                  name: dav-baseline-corpus

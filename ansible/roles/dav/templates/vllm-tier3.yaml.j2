@@ -1,0 +1,92 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-tier3
+  namespace: {{ dav_namespace }}
+  labels:
+    app: vllm-tier3
+    tier: inference
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vllm-tier3
+  template:
+    metadata:
+      labels:
+        app: vllm-tier3
+        tier: inference
+    spec:
+      enableServiceLinks: false  # Prevents K8s injecting VLLM_TIER3_* env vars that vLLM misreads
+      nodeSelector:
+        {{ vllm_tier3_gpu_node_label }}: "{{ vllm_tier3_gpu_node_value }}"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: vllm
+          image: {{ vllm_tier3_image }}
+          command: ["vllm", "serve"]
+          args:
+            - "{{ vllm_tier3_model }}"
+            - "--max-model-len"
+            - "{{ vllm_tier3_max_model_len }}"
+            - "--quantization"
+            - "awq_marlin"
+            - "--dtype"
+            - "float16"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - "8000"
+          env:
+            - name: HOME
+              value: /cache
+            - name: HF_HOME
+              value: /cache/.cache/huggingface
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              cpu: "{{ vllm_tier3_cpu_request }}"
+              memory: "{{ vllm_tier3_memory_request }}"
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "{{ vllm_tier3_cpu_limit }}"
+              memory: "{{ vllm_tier3_memory_limit }}"
+              nvidia.com/gpu: 1
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: {{ vllm_tier3_readiness_delay }}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: {{ vllm_tier3_liveness_delay }}
+            periodSeconds: 30
+          volumeMounts:
+            - name: model-cache
+              mountPath: /cache
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: vllm-model-cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-tier3
+  namespace: {{ dav_namespace }}
+spec:
+  selector:
+    app: vllm-tier3
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: http

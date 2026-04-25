@@ -1,0 +1,156 @@
+---
+# Tekton Pipeline: full DAV stage 2 corpus run.
+#
+# The pipeline:
+#
+#   1. Clones the consumer's spec repo (architecture docs)
+#   2. Clones the consumer's corpus repo (use cases + dav-version.yaml)
+#   3. Runs dav-run-corpus across the entire corpus
+#
+# All three steps share one workspace, with the spec and corpus going
+# into separate subdirectories. This keeps the pipeline simple (one
+# workspace, no inter-step PVC juggling) while preserving the two-repo
+# architecture for the consumer side.
+#
+# The pipeline finishes when run-corpus finishes — successfully if all
+# UCs analyzed, failed if --halt-on-error fired on a UC failure or the
+# runner itself crashed. Per-UC failures with continue-on-error are
+# reported in the run summary, not as pipeline failures.
+
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: dav-stage2
+  namespace: {{ dav_namespace }}
+  labels:
+    app.kubernetes.io/part-of: dav
+spec:
+  description: |
+    Run DAV stage 2 across the consumer's full UC corpus.
+
+  params:
+    # Consumer source repos (defaults from group_vars/all/vars.yaml)
+    - name: consumer-spec-repo-url
+      type: string
+      default: "{{ consumer_spec_repo_url }}"
+    - name: consumer-spec-repo-branch
+      type: string
+      default: "{{ consumer_spec_repo_branch }}"
+    - name: consumer-corpus-repo-url
+      type: string
+      default: "{{ consumer_corpus_repo_url }}"
+    - name: consumer-corpus-repo-branch
+      type: string
+      default: "{{ consumer_corpus_repo_branch }}"
+
+    # Where to put the cloned content within the workspace
+    - name: spec-subdir
+      type: string
+      default: "spec"
+    - name: corpus-subdir
+      type: string
+      default: "corpus"
+
+    # Path to the use-case directory inside the corpus repo
+    # (DCM convention: use-cases/ at the corpus repo root)
+    - name: corpus-uc-subpath
+      type: string
+      default: "use-cases"
+
+    # Run-corpus settings
+    - name: mode
+      type: string
+      default: "verification"
+    - name: sample-count
+      type: string
+      default: ""
+    - name: halt-on-error
+      type: string
+      default: "false"
+
+    # Inference + MCP
+    - name: inference-endpoint
+      type: string
+      default: "{{ inference_primary_endpoint }}"
+    - name: inference-model
+      type: string
+      default: "{{ inference_primary_model }}"
+    - name: mcp-url
+      type: string
+      default: "http://dav-docs-mcp.{{ dav_namespace }}.svc:8080"
+
+    # Optional consumer profile override
+    - name: consumer-profile-path
+      type: string
+      default: ""
+
+  workspaces:
+    - name: shared-data
+      description: |
+        Shared workspace. Two upstream sync tasks populate <spec-subdir>
+        and <corpus-subdir>; the run-corpus task reads from both and
+        writes results to results/<run-id>/.
+
+  tasks:
+    # 1. Clone the consumer's spec repo into <spec-subdir>
+    - name: sync-spec
+      taskRef:
+        name: dav-git-sync
+      workspaces:
+        - name: source
+          workspace: shared-data
+      params:
+        - name: repo-url
+          value: $(params.consumer-spec-repo-url)
+        - name: repo-branch
+          value: $(params.consumer-spec-repo-branch)
+        - name: target-subdir
+          value: $(params.spec-subdir)
+
+    # 2. Clone the consumer's corpus repo into <corpus-subdir>
+    #    (runs in parallel with sync-spec since both are read-only clones)
+    - name: sync-corpus
+      taskRef:
+        name: dav-git-sync
+      workspaces:
+        - name: source
+          workspace: shared-data
+      params:
+        - name: repo-url
+          value: $(params.consumer-corpus-repo-url)
+        - name: repo-branch
+          value: $(params.consumer-corpus-repo-branch)
+        - name: target-subdir
+          value: $(params.corpus-subdir)
+
+    # 3. Run DAV stage 2 across the corpus
+    - name: run-corpus
+      runAfter:
+        - sync-spec
+        - sync-corpus
+      taskRef:
+        name: dav-run-corpus
+      workspaces:
+        - name: source
+          workspace: shared-data
+      params:
+        - name: corpus-subdir
+          value: "$(params.corpus-subdir)/$(params.corpus-uc-subpath)"
+        - name: spec-subdir
+          value: $(params.spec-subdir)
+        - name: output-subdir
+          value: "results"
+        - name: mode
+          value: $(params.mode)
+        - name: sample-count
+          value: $(params.sample-count)
+        - name: halt-on-error
+          value: $(params.halt-on-error)
+        - name: inference-endpoint
+          value: $(params.inference-endpoint)
+        - name: inference-model
+          value: $(params.inference-model)
+        - name: mcp-url
+          value: $(params.mcp-url)
+        - name: consumer-profile-path
+          value: $(params.consumer-profile-path)

@@ -1,0 +1,20 @@
+# DCM Review UI — UBI9 nginx, serves static HTML + reverse-proxies /api
+# Runs as arbitrary non-root UID (OpenShift restricted-v2 SCC compliant).
+#
+# The image ships nginx.conf from ubi9/nginx-124 which bakes a
+# `server { listen 8080; }` block and pulls location{} directives from
+# /opt/app-root/etc/nginx.default.d/*.conf. In OpenShift we mount
+# review.conf into that directory via a ConfigMap. For local podman dev,
+# no config is needed — the image's default server block serves
+# /opt/app-root/src/index.html.
+
+FROM registry.access.redhat.com/ubi9/nginx-124:latest
+
+LABEL org.opencontainers.image.title="dav-review-ui" \
+      org.opencontainers.image.description="DCM Corpus Review UI" \
+      io.k8s.display-name="DCM Review UI" \
+      io.openshift.expose-services="8080:http"
+
+COPY index.html /opt/app-root/src/index.html
+
+CMD ["nginx", "-g", "daemon off;"]

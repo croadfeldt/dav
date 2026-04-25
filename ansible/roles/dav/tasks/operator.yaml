@@ -1,0 +1,67 @@
+---
+# Installs the OpenShift Pipelines (Tekton) operator from OperatorHub.
+# Idempotent — safe to run if already installed.
+
+- name: Check if OpenShift Pipelines operator is already installed
+  kubernetes.core.k8s_info:
+    kind: Subscription
+    api_version: operators.coreos.com/v1alpha1
+    namespace: openshift-operators
+    name: openshift-pipelines-operator-rh
+  register: pipelines_sub
+
+- name: Install OpenShift Pipelines operator
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: openshift-pipelines-operator-rh
+        namespace: openshift-operators
+      spec:
+        channel: latest
+        installPlanApproval: Automatic
+        name: openshift-pipelines-operator-rh
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+  when: pipelines_sub.resources | length == 0
+
+- name: Wait for OpenShift Pipelines operator to be ready
+  kubernetes.core.k8s_info:
+    kind: ClusterServiceVersion
+    api_version: operators.coreos.com/v1alpha1
+    namespace: openshift-operators
+    label_selectors:
+      - "operators.coreos.com/openshift-pipelines-operator-rh.openshift-operators="
+  register: pipelines_csv
+  until: >-
+    pipelines_csv.resources | length > 0 and
+    pipelines_csv.resources[0].status.phase | default('') == 'Succeeded'
+  retries: 30
+  delay: 10
+
+- name: Report OpenShift Pipelines status
+  ansible.builtin.debug:
+    msg: >-
+      OpenShift Pipelines {{ pipelines_csv.resources[0].spec.version | default('unknown') }}
+      installed and ready.
+
+- name: Wait for TektonConfig to be ready
+  kubernetes.core.k8s_info:
+    kind: TektonConfig
+    api_version: operator.tekton.dev/v1alpha1
+    name: config
+  register: tekton_config
+  until: >-
+    tekton_config.resources | length > 0 and
+    tekton_config.resources[0].status.conditions | default([])
+    | selectattr('type', 'equalto', 'Ready')
+    | selectattr('status', 'equalto', 'True')
+    | list | length > 0
+  retries: 30
+  delay: 10
+
+- name: Report Tekton readiness
+  ansible.builtin.debug:
+    msg: "TektonConfig is ready. Pipelines, triggers, and chains are available."
