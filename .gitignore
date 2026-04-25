@@ -27,3 +27,6 @@ Thumbs.db
 # Local dev
 .env
 .envrc
+
+# Ansible vault password file
+.vault_pass

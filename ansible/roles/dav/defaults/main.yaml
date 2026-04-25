@@ -8,7 +8,6 @@ dav_model_cache_pvc_size: 40Gi
 vllm_tier3_model: "casperhansen/deepseek-r1-distill-qwen-14b-awq"
 vllm_tier3_image: "vllm/vllm-openai:latest"
 vllm_r9700_endpoint: "http://vllm-r9700.vllm-r9700.svc:8000/v1"
-dav_pipeline_test_count: "500"
 dav_build_mcp_images: false
 
 # --- Review Console ---
