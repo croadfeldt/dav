@@ -94,6 +94,7 @@ spec:
   tasks:
     # 1. Clone the consumer's spec repo into <spec-subdir>
     - name: sync-spec
+      timeout: "10m"
       taskRef:
         name: dav-git-sync
       workspaces:
@@ -110,6 +111,7 @@ spec:
     # 2. Clone the consumer's corpus repo into <corpus-subdir>
     #    (runs in parallel with sync-spec since both are read-only clones)
     - name: sync-corpus
+      timeout: "10m"
       taskRef:
         name: dav-git-sync
       workspaces:
@@ -124,7 +126,12 @@ spec:
           value: $(params.corpus-subdir)
 
     # 3. Run DAV stage 2 across the corpus
+    #    Per-UC wall time at LLM inference is highly variable depending on
+    #    UC complexity, ensemble sample count, model size, and inference
+    #    backend. Allow up to 24h for a full corpus run (~10-30 UCs at
+    #    verification-mode N=3 against 32B+ models).
     - name: run-corpus
+      timeout: "24h"
       runAfter:
         - sync-spec
         - sync-corpus
