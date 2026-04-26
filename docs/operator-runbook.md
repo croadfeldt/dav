@@ -273,7 +273,7 @@ cat /tmp/smoke/analysis.yaml
 
 The agent's per-turn latency grows roughly linearly with conversation context size because prompt caching is disabled (intentional, for determinism). A 50k-token context per turn takes ~5-9 min through split-layer; a 10-turn analysis hits 30-40 min wall.
 
-For a 2-UC BookCatalog smoke test in reproduce mode, expect ~60-80 min total. Plan ahead: the default Tekton PipelineRun timeout is 1h cluster-wide, which is shorter than this. Pass `--timeouts pipeline=24h` on `tkn pipeline start` (already in the command below) to avoid mid-run timeouts.
+For a 2-UC BookCatalog smoke test in reproduce mode, expect ~60-80 min total. Plan ahead: the default Tekton PipelineRun timeout is 1h cluster-wide, which is shorter than this. Pass `--pipeline-timeout 24h` on `tkn pipeline start` (already in the command below) to avoid mid-run timeouts.
 
 If you want a faster smoke-test feedback loop, run a single UC out of the engine pod via `oc run` ad-hoc (option 2.1 above) — that path can complete one UC in similar time but skips Tekton overhead, and you get clearer engine logs for debugging.
 
@@ -291,7 +291,7 @@ tkn pipeline start dav-stage2 \
     --param consumer-corpus-repo-branch=main \
     --param corpus-uc-subpath=examples/exemplar-ucs \
     --param mode=reproduce \
-    --timeouts pipeline=24h \
+    --pipeline-timeout 24h \
     --serviceaccount dav-pipeline-sa \
     --use-param-defaults \
     --showlog
@@ -439,7 +439,7 @@ tkn pipeline start dav-stage2 \
     --param consumer-corpus-repo-branch=main \
     --param mode=verification \
     --param sample-count=3 \
-    --timeouts pipeline=24h \
+    --pipeline-timeout 24h \
     --serviceaccount dav-pipeline-sa \
     --use-param-defaults \
     --showlog
@@ -609,6 +609,6 @@ tkn pipeline start dav-stage2 -n dav \
     --param consumer-corpus-repo-branch=main \
     --param mode=verification \
     --param sample-count=3 \
-    --timeouts pipeline=24h \
+    --pipeline-timeout 24h \
     --serviceaccount dav-pipeline-sa --use-param-defaults --showlog
 ```

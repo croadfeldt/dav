@@ -54,12 +54,20 @@ spec:
         if [ -d "$TARGET_DIR/.git" ]; then
           echo "Repo at $TARGET_DIR exists; fetching updates..."
           cd "$TARGET_DIR"
-          git fetch origin
+          # --force lets us pull in non-fast-forward updates (force-pushes
+          # to upstream branches), updating the local ref even if it
+          # would otherwise reject as non-FF. Without this, a force-push
+          # to origin/<branch> leaves the local checkout permanently stuck.
+          git fetch --force origin
           if [ -n "$(params.commit-sha)" ]; then
             git checkout $(params.commit-sha) || git checkout $(params.repo-branch)
           else
+            # Mirror upstream exactly — drop any divergent local commits
+            # or working-tree state. The corpus PVC is read-only as far
+            # as DAV is concerned, so we never have local commits worth
+            # preserving; the task should always converge to upstream.
             git checkout $(params.repo-branch)
-            git pull origin $(params.repo-branch) || true
+            git reset --hard origin/$(params.repo-branch)
           fi
         else
           if [ -e "$TARGET_DIR" ]; then
