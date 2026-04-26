@@ -47,7 +47,13 @@
 - name: Deploy DAV to OpenShift
   hosts: ocp_provisioner
   gather_facts: true
-  tasks:
+  # pre_tasks runs BEFORE roles. Required because the role's image-build
+  # tasks reference `dav_repo_commit` / `dav_repo_dirty`, which are set
+  # by the provenance-capture tasks below. With these in `tasks:`, the
+  # role would fire first and reference undefined variables. (Discovered
+  # 2026-04-26 when the MCP build failed with "'dav_repo_commit' is
+  # undefined" on the first deployment of the v0.1.8 provenance work.)
+  pre_tasks:
     - name: Verify required site configuration is present
       ansible.builtin.assert:
         that:
