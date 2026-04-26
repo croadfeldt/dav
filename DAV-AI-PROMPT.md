@@ -37,9 +37,24 @@ An early DAV design treated this variance as a problem to eliminate (rule-based 
 
 This led to the three runtime modes. Each makes a different trade-off:
 
-- **verification** (default): N samples (default 3) at low temperature (0.2), ensemble-merged. The merger does a majority vote per field; ties resolve conservatively (more severe verdict wins, confidence caps at medium); seeds are derived from the UC uuid for stable comparison across runs against unchanged corpus. This is the CI/regression default.
-- **reproduce**: N=1 (forced), greedy decoding (temp 0.0), seed from UC uuid (or `--seed` override). Closest to deterministic — same UC produces byte-identical output (modulo timestamp) on rerun. Use for audit exemplars, debug, bisection.
-- **explore**: N samples (default 10) at high temperature (0.7), no merge. Outputs all per-sample analyses plus a `variance.yaml` report. Use for UC authoring (seeing how the model interprets your wording) and adversarial poke-testing.
+- **verification** (default): N samples (default 3) at low temperature (0.2), ensemble-merged, **prompt cache enabled**. The merger does a majority vote per field; ties resolve conservatively (more severe verdict wins, confidence caps at medium); seeds are derived from the UC uuid for stable comparison across runs against unchanged corpus. This is the CI/regression default.
+- **reproduce**: N=1 (forced), greedy decoding (temp 0.0), seed from UC uuid (or `--seed` override), **prompt cache disabled**. Closest to deterministic — same UC produces byte-identical output (modulo timestamp) on rerun. Use for audit exemplars, debug, bisection.
+- **explore**: N samples (default 10) at high temperature (0.7), no merge, **prompt cache enabled**. Outputs all per-sample analyses plus a `variance.yaml` report. Use for UC authoring (seeing how the model interprets your wording) and adversarial poke-testing.
+
+### Prompt caching is mode-driven
+
+llama.cpp's `cache_prompt=true` reuses KV-cache from prior requests when the prefix matches. Agentic workloads — like DAV's stage-2 agent — are dominated by prefix-extension turns, so cache hits are nearly perfect and the speedup is 5-10x compared to cold prefill on every turn. Production measurements: a 12k-token context with `cache_prompt=false` re-prefills the full 12k tokens per turn (33s prefill at ~370 tok/s), even when the LCS similarity to the prior request is 0.997.
+
+The historical concern was non-determinism: reused KV values were computed in a specific FP trajectory during a prior request, so "same prompt twice" can produce different argmax-tie token decisions vs. cold prefill. See llama.cpp discussion #10311.
+
+The current per-mode policy resolves this:
+- **Verification** keeps cache enabled. The N=3 ensemble already absorbs logit-level variance; the speedup is essential at production scale (a full corpus run drops from ~25-30 hours to ~3-6 hours).
+- **Reproduce** keeps cache disabled. Byte-identical reruns are the explicit purpose of this mode; cache-induced variance defeats it.
+- **Explore** keeps cache enabled. The mode's purpose is variance-surfacing; cache-related variance is fine and arguably useful (it's the variance an operator would see in production verification runs).
+
+Override with `--cache-prompt` (force on) or `--no-cache-prompt` (force off) at either CLI. Test coverage in `test_stage2_orchestration.py` and `test_run_corpus.py` pins these defaults.
+
+**Don't undo:** the `cache_prompt=false` original lock was part of the "treat variance as a problem to eliminate" design, which the predictable-correctness framing supersedes. Re-locking it globally would re-introduce 25-30 hour corpus runs without buying any correctness the ensemble doesn't already provide. If you're tempted, look at the production logs first — 33-second prefills on 12k contexts are the cost.
 
 The merger logic in `engine/src/dav/core/ensemble.py` is load-bearing. It must:
 

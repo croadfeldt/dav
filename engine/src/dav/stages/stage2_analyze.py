@@ -86,6 +86,40 @@ _DEFAULT_TEMPERATURE = {
     "explore": 0.7,
 }
 
+# Default cache_prompt setting per mode.
+#
+# llama.cpp's prompt cache (cache_prompt=true) reuses the KV-cache from prior
+# requests when the prefix matches. This is a 5-10x speedup for agentic
+# workloads, where each turn extends the previous request's prompt by a
+# small delta — the entire conversation history above the new tokens is a
+# perfect prefix match. Without caching, the server re-prefills the full
+# context on every turn, which scales linearly with conversation length.
+#
+# The historical concern with cache_prompt was non-determinism: KV values
+# computed during a prior request live in a specific FP trajectory, and
+# reusing them at argmax-tie boundaries can flip token decisions vs. a
+# cold-cache run. See llama.cpp discussion #10311.
+#
+# DAV's framing is "predictable correctness" via N-sample ensemble + vote,
+# not strict determinism. Cache-induced logit-level variance is in
+# distribution for that framing — verification mode merges N samples; the
+# tiny variance the cache might introduce is dwarfed by the variance the
+# ensemble already absorbs.
+#
+# Per-mode defaults:
+#   - reproduce: False. The explicit purpose of this mode is byte-identical
+#     reruns for audit exemplars; cache-related variance defeats that.
+#   - verification: True. Default mode for CI/regression. The 5-10x speedup
+#     is essential at production scale; ensemble already handles variance.
+#   - explore: True. Variance-surfacing mode; cache-related variance is fine.
+#
+# Override with --cache-prompt (force on) or --no-cache-prompt (force off).
+_DEFAULT_CACHE_PROMPT = {
+    "verification": True,
+    "reproduce": False,
+    "explore": True,
+}
+
 def derive_seed_from_uuid(uc_uuid: str) -> int:
     """Derive a stable seed from a UC uuid for reproduce mode.
 
@@ -300,9 +334,16 @@ def _cli():
              "Default: derived from UC uuid for stability.",
     )
     parser.add_argument(
-        "--cache-prompt", action="store_true",
-        help="Enable llama.cpp cross-request KV cache reuse. Faster but breaks "
-             "byte-identical reproducibility. Off by default.",
+        "--cache-prompt",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable llama.cpp cross-request KV cache reuse. "
+             "Default: derive from --mode (verification=True, reproduce=False, "
+             "explore=True). Use --cache-prompt to force on (5-10x speedup at "
+             "the cost of cache-induced logit variance), or --no-cache-prompt "
+             "to force off (cold prefill on every turn; only use this if you "
+             "need verification-mode bit-exactness across reruns and have "
+             "thought hard about why).",
     )
     # consumer profile selection
     parser.add_argument(
@@ -361,10 +402,13 @@ def _cli():
     # Resolve mode-driven sample count and seeds
     sample_count, sample_seeds = _resolve_sample_count_and_seeds(args, use_case)
     temperature = args.temperature if args.temperature is not None else _DEFAULT_TEMPERATURE[args.mode]
+    cache_prompt = args.cache_prompt if args.cache_prompt is not None else _DEFAULT_CACHE_PROMPT[args.mode]
 
     log.info(
-        "stage2 mode=%s sample_count=%d sample_concurrency=%d temperature=%s seeds=%s",
-        args.mode, sample_count, args.sample_concurrency, temperature, sample_seeds,
+        "stage2 mode=%s sample_count=%d sample_concurrency=%d temperature=%s "
+        "cache_prompt=%s seeds=%s",
+        args.mode, sample_count, args.sample_concurrency, temperature,
+        cache_prompt, sample_seeds,
     )
 
     # Build chat_template_kwargs from --enable-thinking / --no-enable-thinking.
@@ -379,7 +423,7 @@ def _cli():
             model=args.inference_model,
             label="primary",
             chat_template_kwargs=tmpl_kwargs,
-            cache_prompt=args.cache_prompt,
+            cache_prompt=cache_prompt,
             deterministic=(args.mode != "explore"),
         )
         fallback = None
@@ -389,7 +433,7 @@ def _cli():
                 model=args.fallback_model or args.inference_model,
                 label="fallback",
                 chat_template_kwargs=tmpl_kwargs,
-                cache_prompt=args.cache_prompt,
+                cache_prompt=cache_prompt,
                 deterministic=(args.mode != "explore"),
             )
         return InferenceClient(primary=primary, fallback=fallback)

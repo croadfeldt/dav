@@ -250,7 +250,7 @@ The MCP server (deployed by the playbook) will serve your spec docs to the analy
 - **The `consumer_version` field on AnalysisMetadata is empty.** Add a `consumer_version: <semver>` line to your consumer's `dav-version.yaml`. The framework looks for that key.
 - **Validation fails with "value not in profile vocab".** Either fix the UC's value or add the value to your consumer profile (then commit the profile change to your consumer repo).
 - **Verification mode N=1 logs a warning.** Intentional. Use `--mode reproduce` for cheaper single-sample runs; verification with N=1 is rarely what you want.
-- **`--cache-prompt` breaks reproducibility.** It's off by default for this reason. Only turn it on for explore mode if you want throughput over byte-identical sampling.
+- **Prompt cache defaults are mode-driven.** `verification` and `explore` default to `cache_prompt=true` (5-10x speedup); `reproduce` defaults to `cache_prompt=false` (byte-identical reruns). Override with `--cache-prompt` or `--no-cache-prompt` if you have a specific reason. Forcing `--no-cache-prompt` on a verification run trades ~5x throughput for byte-stability the ensemble doesn't need; forcing `--cache-prompt` on a reproduce run trades byte-stability for speed and is rarely what you want.
 - **Stage 2 returns a `partially_supported` verdict on what looks like a happy path.** Read the `gaps_identified` section. Often the architecture *does* support the UC but the docs don't articulate it — the verdict is honest about what the spec says, not what the implementation could do.
 
 ## When something goes wrong

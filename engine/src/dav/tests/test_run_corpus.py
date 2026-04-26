@@ -26,7 +26,7 @@ from dav.stages.run_corpus import (
     gather_corpus, derive_run_id, resolve_sample_count_and_seeds,
     run_one_uc, write_run_summary, write_failure_report,
     write_uc_analysis,
-    _DEFAULT_SAMPLE_COUNT,
+    _DEFAULT_SAMPLE_COUNT, _DEFAULT_CACHE_PROMPT,
 )
 
 _failures: list[str] = []
@@ -486,6 +486,27 @@ def test_write_failure_report_handles_slash_in_uuid():
         out_file = Path(td) / "failures" / "uc-with_slash.error.txt"
         assert_true(out_file.exists(), "slash sanitized to underscore")
 
+
+def test_corpus_cache_prompt_defaults_match_stage2():
+    """run_corpus and stage2_analyze must agree on per-mode cache_prompt
+    defaults — they're separate tables (intentional, see run_corpus.py
+    comment) but they must converge on the same values."""
+    from dav.stages.stage2_analyze import _DEFAULT_CACHE_PROMPT as _S2_CACHE
+    assert_eq(_DEFAULT_CACHE_PROMPT, _S2_CACHE,
+              "run_corpus._DEFAULT_CACHE_PROMPT == stage2_analyze._DEFAULT_CACHE_PROMPT")
+
+
+def test_corpus_cache_prompt_locked_values():
+    """Pin per-mode cache_prompt values so a flip is caught here too,
+    independent of the stage2 test."""
+    assert_eq(_DEFAULT_CACHE_PROMPT["verification"], True,
+              "verification cache_prompt = True")
+    assert_eq(_DEFAULT_CACHE_PROMPT["reproduce"], False,
+              "reproduce cache_prompt = False")
+    assert_eq(_DEFAULT_CACHE_PROMPT["explore"], True,
+              "explore cache_prompt = True")
+
+
 # --- Run ---
 
 def main():
@@ -519,6 +540,8 @@ def main():
         test_write_run_summary_empty_results,
         test_write_failure_report,
         test_write_failure_report_handles_slash_in_uuid,
+        test_corpus_cache_prompt_defaults_match_stage2,
+        test_corpus_cache_prompt_locked_values,
     ]
     for t in tests:
         try:

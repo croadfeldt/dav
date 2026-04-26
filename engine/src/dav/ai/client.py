@@ -40,14 +40,25 @@ class EndpointConfig:
     # reasoning blocks, which is almost always right for tool-use loops.
     # Templates without matching kwargs ignore the field.
     cache_prompt: bool = False
-    # Whether to allow llama.cpp's cross-request KV cache reuse. Disabled
-    # by default: prompt caching breaks byte-identical reproducibility
-    # because the reused KV values were computed in a specific FP trajectory
-    # during the prior request. See llama.cpp discussion #10311.
-    # Verification mode keeps False (deterministic across the N samples).
-    # Reproduce mode keeps False (audit exemplar must be byte-stable).
-    # Explore mode may set True if throughput matters more than determinism.
-    # surfaces this as configurable; it was hardcoded False before.
+    # Whether to allow llama.cpp's cross-request KV cache reuse. The
+    # field default here is conservatively False, but per-mode defaults
+    # in dav.stages.stage2_analyze and dav.stages.run_corpus override
+    # this for verification and explore modes (where True is correct).
+    # Reproduce mode keeps False to preserve byte-identical reruns.
+    #
+    # Background: prompt caching reuses KV values from a prior request
+    # in a specific FP trajectory; that trajectory depends on what the
+    # prior request was; so "same prompt twice" can produce different
+    # final logits at argmax-tie boundaries. See llama.cpp discussion
+    # #10311. The cost in correctness is tiny logit-level variance;
+    # the win is 5-10x speedup on agentic workloads where each turn
+    # extends the previous request's prompt by a small delta.
+    #
+    # DAV's framing of "predictable correctness" via N-sample ensemble
+    # absorbs this kind of variance. The locked default for verification
+    # is True since CI/regression at production scale needs the speedup
+    # and the ensemble already handles variance. Reproduce mode keeps
+    # False because byte-identical reruns are its explicit purpose.
     deterministic: bool = True
     # Whether the endpoint is configured for deterministic decoding. Affects
     # default temperature and seed handling at the client.chat() layer.
@@ -212,18 +223,17 @@ class InferenceClient:
             # llama.cpp's cross-request KV cache reuse. When enabled (the
             # llama.cpp default), the server keeps the prior request's KV
             # cache and reuses the longest common prefix against the current
-            # request. This is a performance win but introduces run-to-run
-            # nondeterminism: the reused KV values were computed in a
-            # specific FP trajectory during the prior request; that
-            # trajectory depends on what the prior request was; so "same
-            # prompt twice" at the engine level produces different final
-            # logits at argmax-tie boundaries. See llama.cpp discussion
-            # #10311 for the upstream acknowledgment.
-            # configurable via endpoint.cache_prompt. Default
-            # is False (deterministic). Verification and reproduce modes
-            # keep False; explore mode may set True for throughput.
-            # The field is a no-op on OpenAI/vLLM backends, so it costs
-            # nothing there.
+            # llama.cpp-specific extension: reuse KV-cache from prior
+            # request when the prefix matches. 5-10x speedup on agentic
+            # workloads. Introduces tiny logit-level variance vs cold
+            # prefill at argmax-tie boundaries (see llama.cpp #10311);
+            # DAV's predictable-correctness framing absorbs this via
+            # N-sample ensemble in verification mode. Reproduce mode
+            # forces False since byte-identical reruns are its purpose.
+            # configurable via endpoint.cache_prompt; per-mode defaults
+            # are set at the stage layer (verification=True, reproduce=False,
+            # explore=True). The field is a no-op on OpenAI/vLLM backends,
+            # so it costs nothing there.
             "cache_prompt": endpoint.cache_prompt,
         }
         if tools:

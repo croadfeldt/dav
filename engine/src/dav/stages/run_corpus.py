@@ -87,6 +87,11 @@ _DEFAULT_TEMPERATURE = {
     "reproduce": 0.0,
     "explore": 0.7,
 }
+_DEFAULT_CACHE_PROMPT = {
+    "verification": True,
+    "reproduce": False,
+    "explore": True,
+}
 
 @dataclasses.dataclass
 class CorpusUcResult:
@@ -416,8 +421,13 @@ def _cli():
         help="Override the mode's default seed.",
     )
     parser.add_argument(
-        "--cache-prompt", action="store_true",
-        help="Enable llama.cpp KV-cache reuse (breaks reproducibility).",
+        "--cache-prompt",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable llama.cpp KV-cache reuse. Default: derived from "
+             "--mode (verification=True, reproduce=False, explore=True). "
+             "Use --no-cache-prompt to force off if you need reproduce-mode "
+             "bit-exactness in a verification run.",
     )
     parser.add_argument(
         "--max-tool-calls", type=int, default=30,
@@ -476,6 +486,18 @@ def _cli():
         temperature = _DEFAULT_TEMPERATURE[args.mode]
     else:
         temperature = args.temperature
+    if args.cache_prompt is None:
+        cache_prompt = _DEFAULT_CACHE_PROMPT[args.mode]
+    else:
+        cache_prompt = args.cache_prompt
+
+    log.info(
+        "corpus mode=%s temperature=%s cache_prompt=%s sample_count=%s "
+        "sample_concurrency=%d",
+        args.mode, temperature, cache_prompt,
+        args.sample_count or _DEFAULT_SAMPLE_COUNT[args.mode],
+        args.sample_concurrency,
+    )
 
     config = AgentConfig(
         max_tool_calls=args.max_tool_calls,
@@ -491,7 +513,7 @@ def _cli():
         url=args.inference_endpoint,
         model=args.inference_model,
         chat_template_kwargs=chat_template_kwargs,
-        cache_prompt=args.cache_prompt,
+        cache_prompt=cache_prompt,
     )
     def _make_inference():
         return InferenceClient(primary=primary)

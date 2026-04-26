@@ -23,7 +23,7 @@ export DAV_CORPUS_DIR="$HOME/git/dcm-self-test-corpus"  # local checkout of corp
 
 Subsequent commands in this runbook reference these variables. Copy-paste verbatim works.
 
-**Estimated wall time end-to-end:** ~30 min deploy + ~15 min smoke test + ~10 min webhook setup + 3-6 hours real run = **half-day total**, most of which is the real run running unattended.
+**Estimated wall time end-to-end (verification mode, cache on):** ~30 min deploy + ~15 min smoke test + ~10 min webhook setup + ~1-3 hours real run for a moderate corpus = **half-day total**, most of which is the real run running unattended. Wall time scales with corpus size, UC complexity, and inference backend; calibrate against your own first run before committing to schedule.
 
 ---
 
@@ -267,13 +267,19 @@ python -m dav.stages.stage2_analyze \
 cat /tmp/smoke/analysis.yaml
 ```
 
-**Expected wall time (calibrated against dual-R9700 split-layer Q8_0 32B):**
-- Reproduce mode (N=1): ~30-40 min per UC for moderate-complexity UCs
-- Verification mode (N=3): ~90-120 min per UC
+**Expected wall time (calibrated against dual-R9700 split-layer Q8_0 32B with prompt caching enabled):**
+- Reproduce mode (N=1, cache off): ~30-40 min per UC for moderate-complexity UCs (cold prefill on every turn)
+- Verification mode (N=3, cache on): ~5-10 min per UC for moderate-complexity UCs
 
-The agent's per-turn latency grows roughly linearly with conversation context size because prompt caching is disabled (intentional, for determinism). A 50k-token context per turn takes ~5-9 min through split-layer; a 10-turn analysis hits 30-40 min wall.
+The agent's per-turn latency depends heavily on whether the LLM server's prompt cache is enabled. With cache enabled (verification/explore default), each turn extends the previous request's prompt by a small delta — the KV cache is reused, prefill cost is paid once per UC. With cache disabled (reproduce default), the server re-prefills the full conversation history on every turn, scaling linearly with context: a 50k-token context takes ~5-9 min just to prefill on split-layer 32B.
 
-For a 2-UC BookCatalog smoke test in reproduce mode, expect ~60-80 min total. Plan ahead: the default Tekton PipelineRun timeout is 1h cluster-wide, which is shorter than this. Pass `--pipeline-timeout 24h` on `tkn pipeline start` (already in the command below) to avoid mid-run timeouts.
+This is why **reproduce mode is intentionally slow**: byte-identical reruns require cold prefill. Use it for audit exemplars and bisection, not for routine corpus runs. Use verification for everything else.
+
+For a 2-UC BookCatalog smoke test:
+- **Verification mode (default, cache on):** ~10-20 min total. Comfortably within the default Tekton PipelineRun 1h timeout.
+- **Reproduce mode (cache off):** ~60-80 min total. The default 1h timeout is too short; pass `--pipeline-timeout 24h` on `tkn pipeline start` to avoid mid-run timeouts.
+
+The runbook examples below pass `--pipeline-timeout 24h` unconditionally so the same command works for either mode.
 
 If you want a faster smoke-test feedback loop, run a single UC out of the engine pod via `oc run` ad-hoc (option 2.1 above) — that path can complete one UC in similar time but skips Tekton overhead, and you get clearer engine logs for debugging.
 

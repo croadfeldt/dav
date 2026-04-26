@@ -26,7 +26,7 @@ from dav.core.use_case_schema import (
 )
 from dav.stages.stage2_analyze import (
     derive_seed_from_uuid, run_samples, _resolve_sample_count_and_seeds,
-    _DEFAULT_SAMPLE_COUNT, _DEFAULT_TEMPERATURE,
+    _DEFAULT_SAMPLE_COUNT, _DEFAULT_TEMPERATURE, _DEFAULT_CACHE_PROMPT,
 )
 from dav.ai.agent import AgentConfig
 import argparse
@@ -350,6 +350,60 @@ def test_run_samples_inference_is_shared():
 
 # --- Run ---
 
+def test_cache_prompt_defaults_table_values():
+    """The per-mode cache_prompt defaults are an architectural decision —
+    test pins them so a casual flip is caught."""
+    assert_eq(_DEFAULT_CACHE_PROMPT["verification"], True,
+              "verification default cache_prompt = True (5-10x speedup, ensemble absorbs variance)")
+    assert_eq(_DEFAULT_CACHE_PROMPT["reproduce"], False,
+              "reproduce default cache_prompt = False (byte-identical reruns required)")
+    assert_eq(_DEFAULT_CACHE_PROMPT["explore"], True,
+              "explore default cache_prompt = True (variance-surfacing mode)")
+
+
+def test_cache_prompt_defaults_cover_all_modes():
+    """Every entry in _DEFAULT_SAMPLE_COUNT must have a corresponding entry in
+    _DEFAULT_CACHE_PROMPT, so adding a mode forces the question."""
+    assert_eq(set(_DEFAULT_CACHE_PROMPT.keys()), set(_DEFAULT_SAMPLE_COUNT.keys()),
+              "cache_prompt defaults exist for every mode")
+    assert_eq(set(_DEFAULT_CACHE_PROMPT.keys()), set(_DEFAULT_TEMPERATURE.keys()),
+              "cache_prompt defaults align with temperature defaults")
+
+
+def test_cache_prompt_resolution_uses_mode_default_when_unset():
+    """When --cache-prompt is not passed (None on args), resolution must
+    fall through to the per-mode default."""
+    args_unset = argparse.Namespace(mode="verification", cache_prompt=None)
+    resolved = (args_unset.cache_prompt
+                if args_unset.cache_prompt is not None
+                else _DEFAULT_CACHE_PROMPT[args_unset.mode])
+    assert_eq(resolved, True, "verification + unset → True")
+
+    args_unset_repro = argparse.Namespace(mode="reproduce", cache_prompt=None)
+    resolved_repro = (args_unset_repro.cache_prompt
+                      if args_unset_repro.cache_prompt is not None
+                      else _DEFAULT_CACHE_PROMPT[args_unset_repro.mode])
+    assert_eq(resolved_repro, False, "reproduce + unset → False")
+
+
+def test_cache_prompt_resolution_explicit_overrides_mode_default():
+    """When --cache-prompt or --no-cache-prompt is passed, the explicit value
+    wins regardless of mode."""
+    # --no-cache-prompt on a verification run (rare, but legal)
+    args_force_off = argparse.Namespace(mode="verification", cache_prompt=False)
+    resolved_off = (args_force_off.cache_prompt
+                    if args_force_off.cache_prompt is not None
+                    else _DEFAULT_CACHE_PROMPT[args_force_off.mode])
+    assert_eq(resolved_off, False, "verification + --no-cache-prompt → False")
+
+    # --cache-prompt on a reproduce run (unusual; user must opt in)
+    args_force_on = argparse.Namespace(mode="reproduce", cache_prompt=True)
+    resolved_on = (args_force_on.cache_prompt
+                   if args_force_on.cache_prompt is not None
+                   else _DEFAULT_CACHE_PROMPT[args_force_on.mode])
+    assert_eq(resolved_on, True, "reproduce + --cache-prompt → True")
+
+
 def main():
     tests = [
         test_seed_is_deterministic_per_uuid,
@@ -370,6 +424,10 @@ def main():
         test_run_samples_validates_seeds_length,
         test_run_samples_each_sample_gets_fresh_mcp,
         test_run_samples_inference_is_shared,
+        test_cache_prompt_defaults_table_values,
+        test_cache_prompt_defaults_cover_all_modes,
+        test_cache_prompt_resolution_uses_mode_default_when_unset,
+        test_cache_prompt_resolution_explicit_overrides_mode_default,
     ]
     for t in tests:
         try:
