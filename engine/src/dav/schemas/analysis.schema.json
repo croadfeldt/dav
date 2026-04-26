@@ -1,0 +1,278 @@
+{
+  "type": "object",
+  "required": [
+    "components_required",
+    "data_model_touched",
+    "capabilities_invoked",
+    "provider_types_involved",
+    "policy_modes_required",
+    "gaps_identified",
+    "summary"
+  ],
+  "properties": {
+    "components_required": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "role",
+          "rationale",
+          "spec_refs",
+          "confidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "spec_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          }
+        }
+      }
+    },
+    "data_model_touched": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "entity",
+          "fields_accessed",
+          "operations",
+          "rationale",
+          "spec_refs",
+          "confidence"
+        ],
+        "properties": {
+          "entity": {
+            "type": "string"
+          },
+          "fields_accessed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "read",
+                "write",
+                "mutate"
+              ]
+            }
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "spec_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          }
+        }
+      }
+    },
+    "capabilities_invoked": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "usage",
+          "rationale",
+          "spec_refs",
+          "confidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "usage": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "spec_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          }
+        }
+      }
+    },
+    "provider_types_involved": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "role",
+          "confidence"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "service",
+              "information",
+              "meta",
+              "auth",
+              "peer_dcm",
+              "process"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          }
+        }
+      }
+    },
+    "policy_modes_required": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "mode",
+          "rationale",
+          "spec_refs"
+        ],
+        "properties": {
+          "mode": {
+            "enum": [
+              "Internal",
+              "External"
+            ]
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "spec_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "gaps_identified": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "severity",
+          "description",
+          "rationale",
+          "spec_refs_consulted",
+          "spec_refs_missing",
+          "recommendation",
+          "confidence"
+        ],
+        "properties": {
+          "severity": {
+            "enum": [
+              "critical",
+              "major",
+              "minor",
+              "advisory"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "rationale": {
+            "type": "string"
+          },
+          "spec_refs_consulted": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "spec_refs_missing": {
+            "type": "string"
+          },
+          "recommendation": {
+            "type": "string"
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "verdict",
+        "overall_confidence",
+        "notes"
+      ],
+      "properties": {
+        "verdict": {
+          "enum": [
+            "supported",
+            "partially_supported",
+            "not_supported"
+          ]
+        },
+        "overall_confidence": {
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
