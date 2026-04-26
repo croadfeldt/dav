@@ -130,9 +130,15 @@ def test_dcm_reference_is_valid():
 
 def test_dcm_reference_has_expected_provider_types():
     p = get_dcm_reference_profile()
+    # Current DCM spec defines 5 provider types. Compound services are a
+    # Data concept (compound resource type specifications) orchestrated by
+    # the Control Plane (Request Processor / Orchestrator), not a provider
+    # type. Earlier corpus + earlier reference profile listed 6 types
+    # including 'meta'; that was retired in DCM commit ecc11e9 (2026-04).
+    # See spec/architecture/ai/DCM-AI-PROMPT.md "meta_provider removed".
     assert_eq(set(p.provider_types),
-              {"service", "information", "meta", "auth", "peer_dcm", "process"},
-              "DCM provider_types match historical hardcoded values")
+              {"service", "information", "auth", "peer_dcm", "process"},
+              "DCM provider_types match current spec (5 types, no meta)")
 
 def test_dcm_reference_has_expected_profiles():
     p = get_dcm_reference_profile()

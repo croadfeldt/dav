@@ -157,7 +157,7 @@ _DCM_REFERENCE_PROFILE = ConsumerProfile(
     ],
     provider_landscapes=[
         "single_eligible", "multiple_eligible", "none_eligible",
-        "peer_dcm_required", "meta_provider_composed", "process_provider",
+        "peer_dcm_required", "process_provider",
         "mixed",
     ],
     governance_contexts=[
@@ -170,10 +170,10 @@ _DCM_REFERENCE_PROFILE = ConsumerProfile(
         "partial_fulfillment", "timeout", "resource_exhaustion",
     ],
     profiles=["minimal", "dev", "standard", "prod", "fsi", "sovereign"],
-    provider_types=["service", "information", "meta", "auth", "peer_dcm", "process"],
+    provider_types=["service", "information", "auth", "peer_dcm", "process"],
     policy_modes=["Internal", "External"],
     abstractions_summary="Data, Provider, Policy",
-    provider_summary="capabilities that realize intent (six types: service, information, meta, auth, peer_dcm, process)",
+    provider_summary="capabilities that fulfill intent (five types: service, information, auth, peer_dcm, process; compound-service composition is a Data concept orchestrated by the Control Plane, not a provider type)",
     policy_summary="evaluation engine with two modes (Internal/External), Evaluation Context, multi-pass convergence",
 )
 
