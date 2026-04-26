@@ -10,8 +10,13 @@
 
 FROM registry.access.redhat.com/ubi9/nginx-124:latest
 
+# Source provenance — populated by Ansible at build time via --build-arg.
+ARG DAV_REPO_COMMIT=unknown
+ARG DAV_REPO_DIRTY=unknown
 LABEL org.opencontainers.image.title="dav-review-ui" \
       org.opencontainers.image.description="DCM Corpus Review UI" \
+      org.opencontainers.image.revision="${DAV_REPO_COMMIT}" \
+      io.dav.repo.dirty="${DAV_REPO_DIRTY}" \
       io.k8s.display-name="DCM Review UI" \
       io.openshift.expose-services="8080:http"
 

@@ -1,4 +1,10 @@
 ---
+- name: Ensure clean MCP build context
+  ansible.builtin.file:
+    path: /tmp/dav-mcp-build
+    state: absent
+  when: dav_build_mcp_images | bool
+
 - name: Copy MCP server source to build context
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../mcp/"
@@ -66,6 +72,8 @@
     cmd: >-
       oc start-build dav-docs-mcp
       --from-dir=/tmp/dav-mcp-build/dav-docs-mcp
+      --build-arg=DAV_REPO_COMMIT={{ dav_repo_commit }}
+      --build-arg=DAV_REPO_DIRTY={{ dav_repo_dirty }}
       -n {{ dav_namespace }}
       --wait
   register: build_result

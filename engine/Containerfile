@@ -6,6 +6,17 @@
 
 FROM python:3.11-slim
 
+# Source provenance — populated by Ansible role at build time via --build-arg.
+# Lets operators verify "running image == expected source" without having to
+# grep marker code. Inspect via:
+#   skopeo inspect docker://.../dav-engine:latest \
+#     | jq -r '.Labels."org.opencontainers.image.revision"'
+ARG DAV_REPO_COMMIT=unknown
+ARG DAV_REPO_DIRTY=unknown
+LABEL org.opencontainers.image.revision="${DAV_REPO_COMMIT}" \
+      org.opencontainers.image.title="dav-engine" \
+      io.dav.repo.dirty="${DAV_REPO_DIRTY}"
+
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 

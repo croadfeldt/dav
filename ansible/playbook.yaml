@@ -99,5 +99,46 @@
         msg: "Deploying as {{ oc_whoami.stdout }} to cluster (running from {{ inventory_hostname }})"
       tags: always
 
+    # --- Capture source provenance for image labeling ---
+    # Each container image we build gets stamped with the git commit hash and
+    # working-tree dirty flag from the playbook checkout. Lets operators verify
+    # which source actually shipped via OCI labels:
+    #   skopeo inspect docker://.../dav-engine:latest \
+    #     | jq -r '.Labels."org.opencontainers.image.revision"'
+    # (or scripts/verify-image-provenance.sh which does this for all 4 images).
+    #
+    # Motivated by 2026-04-26 incident: a build appeared to succeed but shipped
+    # stale code. Without a commit-hash label there was no way to verify
+    # "running image == expected source" except grepping for marker code.
+
+    - name: Capture playbook source commit
+      ansible.builtin.command: git rev-parse HEAD
+      args:
+        chdir: "{{ playbook_dir }}/.."
+      register: dav_repo_commit_result
+      changed_when: false
+      tags: always
+
+    - name: Detect uncommitted changes in playbook source
+      ansible.builtin.command: git status --porcelain
+      args:
+        chdir: "{{ playbook_dir }}/.."
+      register: dav_repo_status_result
+      changed_when: false
+      tags: always
+
+    - name: Set provenance facts
+      ansible.builtin.set_fact:
+        dav_repo_commit: "{{ dav_repo_commit_result.stdout }}"
+        dav_repo_dirty: "{{ 'true' if dav_repo_status_result.stdout | trim | length > 0 else 'false' }}"
+      tags: always
+
+    - name: Report provenance
+      ansible.builtin.debug:
+        msg: >-
+          Source: commit {{ dav_repo_commit[:12] }}{{ '-dirty' if dav_repo_dirty == 'true' else '' }}
+          (will be embedded as OCI label on built images)
+      tags: always
+
   roles:
     - role: dav

@@ -28,6 +28,12 @@
 
 # --- API image build (BuildConfig + binary build) ---
 
+- name: Ensure clean review console build context
+  ansible.builtin.file:
+    path: /tmp/dav-review-build
+    state: absent
+  when: review_console_build_images | bool
+
 - name: Copy review console source to provisioner
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../review-console/"
@@ -95,6 +101,8 @@
     cmd: >-
       oc start-build dav-review-api
       --from-dir=/tmp/dav-review-build/api
+      --build-arg=DAV_REPO_COMMIT={{ dav_repo_commit }}
+      --build-arg=DAV_REPO_DIRTY={{ dav_repo_dirty }}
       -n {{ dav_namespace }}
       --wait
   register: review_api_build
@@ -167,6 +175,8 @@
     cmd: >-
       oc start-build dav-review-ui
       --from-dir=/tmp/dav-review-build/ui
+      --build-arg=DAV_REPO_COMMIT={{ dav_repo_commit }}
+      --build-arg=DAV_REPO_DIRTY={{ dav_repo_dirty }}
       -n {{ dav_namespace }}
       --wait
   register: review_ui_build

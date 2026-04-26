@@ -3,6 +3,17 @@
 
 # --- Engine Image Build ---
 
+# Wipe before copy. ansible.builtin.copy is checksum-based and overwrites
+# changed files, but it does NOT remove files that exist in the target and
+# no longer exist in the source. If a previous playbook run was interrupted
+# before its post-build cleanup task fired, /tmp/dav-engine-build can
+# contain stale files that get baked into the image. Defensive wipe ensures
+# the build context exactly matches the working tree.
+- name: Ensure clean engine build context
+  ansible.builtin.file:
+    path: /tmp/dav-engine-build
+    state: absent
+
 - name: Copy engine source to provisioner
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../engine/"
@@ -55,6 +66,8 @@
     cmd: >-
       oc start-build dav-engine
       --from-dir=/tmp/dav-engine-build
+      --build-arg=DAV_REPO_COMMIT={{ dav_repo_commit }}
+      --build-arg=DAV_REPO_DIRTY={{ dav_repo_dirty }}
       -n {{ dav_namespace }}
       --wait
   register: engine_build_result
