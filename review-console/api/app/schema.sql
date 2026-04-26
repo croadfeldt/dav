@@ -4,6 +4,14 @@
 
 BEGIN;
 
+-- Serialize schema application across concurrent startups.
+-- Postgres' CREATE TABLE IF NOT EXISTS is not race-safe at the catalog
+-- level (pg_type unique-constraint violation), so two API replicas or a
+-- crash-restart sequence applying schema concurrently can collide. The
+-- advisory lock is held until COMMIT/ROLLBACK; any second caller waits
+-- for the first to finish, then re-runs the (now-idempotent) schema.
+SELECT pg_advisory_xact_lock(7402983);
+
 CREATE TABLE IF NOT EXISTS files (
   path            TEXT PRIMARY KEY,
   content         TEXT NOT NULL,
