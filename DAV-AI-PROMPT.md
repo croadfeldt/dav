@@ -191,6 +191,29 @@ Two reusable tasks back the pipeline:
 
 **Don't undo:** the parallel-clone + single-task-run shape is intentional. Splitting analysis into per-UC TaskRuns reintroduces the matrix problems above.
 
+### Deployment topology — engine and inference separated
+
+DAV's deployment splits into two independently-deployable concerns:
+
+- **Engine** — the orchestration layer. The DAV Python package, MCP server, review console, Tekton pipeline (or quadlet equivalent on podman). Reads/writes from a shared workspace, talks to an inference endpoint over HTTP.
+- **Inference** — the compute layer. llama.cpp, vLLM, hosted OpenAI API, anything that exposes an OpenAI-compatible `/v1` endpoint.
+
+These are intentionally decoupled. Operators choose deploy targets per layer:
+
+- Engine on OpenShift, inference on bare-metal podman+GPU host (current deploy)
+- Engine on OpenShift, inference on a hosted API (cloud-based)
+- Engine on podman, inference on the same host (single-machine demo)
+- Engine on podman, inference on a remote vLLM (split deployment)
+
+**Today's state:** the Ansible role conflates the two — it deploys engine resources AND a `vllm-tier3` fallback inference deployment. This is the "everything in one cluster" path.
+
+**Future direction (locked, not yet implemented):**
+
+- **OpenShift target:** an Operator with two CRDs — `DavEngine` and `DavInference`. Each can be applied independently. ADR-003 candidate captures this.
+- **Podman target:** Ansible-managed quadlets, two role sets — `dav-engine-quadlets` and `dav-inference-quadlets`.
+
+**Don't undo:** if you're working on the deploy layer, preserve the engine/inference split. The engine consumes inference as a URL; the engine deploy and the inference deploy are not coupled. Reintroducing coupling reverses an explicit architectural decision.
+
 ### Built-in DCM reference profile
 
 The framework ships a DCM profile in code (`get_dcm_reference_profile()`) so DAV is usable with no external configuration. This is a deliberate exception to "no consumer-specific knowledge in the framework" — the DCM profile is the canonical worked example, kept current alongside the framework, and provides a fallback so smoke tests and exemplar UCs work without setup.
@@ -302,7 +325,7 @@ The Ansible variable namespace prefixes everything with `dav_` (operator-control
 
 ## 8. Testing philosophy
 
-200+ tests across 8 suites. The suites cover:
+166 tests across 7 suites. The suites cover:
 
 - `test_schema_v1` — UseCase/Analysis schema invariants, validation, round-trip
 - `test_consumer_profile` — profile loading (file/MCP/fallback), validation against profiles
@@ -310,7 +333,6 @@ The Ansible variable namespace prefixes everything with `dav_` (operator-control
 - `test_explore` — variance report builder
 - `test_stage2_orchestration` — single-UC CLI orchestration (mocked inference + MCP)
 - `test_version` — engine_version_string, graceful degradation
-- `test_migrate_uc_to_v1` — migration tool (vocab decisions, profile splits, inference)
 - `test_run_corpus` — corpus runner (gathering, run-id derivation, failure isolation)
 
 Tests use unittest-style assertions but a custom no-fixture runner (`if __name__ == "__main__"` blocks). Each test file is runnable standalone via `python -m dav.tests.<name>`. There's no pytest dependency.
@@ -336,8 +358,6 @@ These are decisions that aren't great but are intentional:
 - **MCP server doesn't implement `get_consumer_profile`.** ε.1 wired the engine for it; the server-side handler is still pending. The fallback to the built-in DCM profile keeps things working in the meantime.
 
 - **Engine version metadata uses `git describe` and degrades gracefully.** When DAV runs in a container without `.git`, version strings are `<unknown>`. Acceptable; consumers don't rely on engine_version for correctness.
-
-- **The corpus migration tool's inferences are imperfect.** Best-effort intent extraction, success_criteria heuristics. The tool emits TODO markers in the migration report so operators can review and edit. Acceptable trade-off for the forward-only translation.
 
 - **Per-UC analyzer state is a singleton.** The MCP client and inference client are constructed once per UC and reused across samples. Concurrent samples within a UC run serially by default (`--sample-concurrency 1`); the concurrency knob exists but hasn't been stress-tested.
 

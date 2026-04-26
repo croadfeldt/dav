@@ -17,11 +17,11 @@ engine/
         ├── ai/         LLM client, agent, MCP tools, prompts
         ├── core/       Schemas, profiles, ensemble merger, version
         ├── evaluator/  Analysis comparison (compare.py)
-        ├── scripts/    CLI helpers (compare, migrate)
+        ├── scripts/    CLI helpers (analysis comparison, smoke test)
         ├── stages/     Pipeline stage entry points
         │   ├── stage2_analyze.py    Single-UC analysis
         │   └── run_corpus.py        Whole-corpus iteration
-        └── tests/      Test suite (200+ tests)
+        └── tests/      Test suite (166 tests across 7 suites)
 ```
 
 ## Install
@@ -73,7 +73,6 @@ python -m dav.tests.test_ensemble
 python -m dav.tests.test_explore
 python -m dav.tests.test_stage2_orchestration
 python -m dav.tests.test_version
-python -m dav.tests.test_migrate_uc_to_v1
 python -m dav.tests.test_run_corpus
 ```
 

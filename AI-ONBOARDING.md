@@ -14,7 +14,7 @@ DAV is not a test runner for code. It's a test runner for *specifications* — t
 dav/
 ├── adr/                          # architecture decision records
 │   ├── 001-dav-consumer-agnostic-framework.md
-│   └── 002-dav-as-dcm-capability.md
+│   └── 002-dcm-integration-model.md
 ├── ansible/                      # OpenShift deployment role
 │   ├── inventory/
 │   ├── playbook.yaml
@@ -40,7 +40,7 @@ dav/
 │       │   └── run_corpus.py     # corpus iteration CLI
 │       ├── scripts/
 │       │   └── compare_analyses.py     # CLI wrapping evaluator.compare
-│       └── tests/                # 200+ tests, all green
+│       └── tests/                # 166 tests across 7 suites, all green
 ├── examples/
 │   ├── dcm-reference-profile.yaml      # DCM's consumer profile
 │   ├── exemplar-ucs/                   # sample v1.0 use cases
@@ -198,17 +198,20 @@ The Ansible role at `ansible/roles/dav/` deploys a Tekton pipeline (`dav-stage2`
 
 1. Clones the consumer's spec repo into `<workspace>/spec/`
 2. Clones the consumer's corpus repo into `<workspace>/corpus/`
-3. Runs `dav-run-corpus` against `<workspace>/corpus/use-cases/`
+3. Runs `dav-run-corpus` against `<workspace>/corpus/<corpus-uc-subpath>/`
 
 Trigger via webhook (push or PR), or manually:
 
 ```bash
 tkn pipeline start dav-stage2 \
-    --workspace name=shared-data,claimName=dav-shared \
-    --param mode=verification
+    -n dav \
+    --workspace name=shared-data,claimName=dav-workspace \
+    --param mode=verification \
+    --serviceaccount dav-pipeline-sa \
+    --use-param-defaults
 ```
 
-Override defaults: `--param consumer-spec-repo-url=...`, `--param mode=reproduce`, etc.
+Override defaults: `--param consumer-spec-repo-url=...`, `--param mode=reproduce`, `--param corpus-uc-subpath=use-cases`, etc. See [`docs/operator-runbook.md`](docs/operator-runbook.md) for the full deploy + smoke + real-run workflow.
 
 ### Comparing two analyses
 
@@ -236,8 +239,8 @@ Read the two exemplars under `examples/exemplar-ucs/` first. Then:
 1. Author a `consumer-profile.yaml` (see `examples/minimal-consumer/consumer-profile.yaml` for shape).
 2. Author a corpus of v1.0 UCs in your conventions; validate them with `UseCase.validate(profile)`.
 3. Set up two git repos: spec (your architecture docs) and corpus (UCs + `dav-version.yaml`).
-4. Update `ansible/inventory/group_vars/all/vars.yaml` to point `consumer_spec_repo_url` and `consumer_corpus_repo_url` at your repos.
-5. Run the Ansible playbook against your OpenShift cluster.
+4. Copy `ansible/inventory/group_vars/all/vars.local.yaml.example` to `vars.local.yaml` and fill in `consumer_spec_repo_url` and `consumer_corpus_repo_url` (plus the other required site-specific values — inference endpoint, cluster apps domain).
+5. Run the Ansible playbook against your OpenShift cluster (see `docs/operator-runbook.md`).
 
 The MCP server (deployed by the playbook) will serve your spec docs to the analyzer; the pipeline will iterate your corpus.
 
@@ -254,7 +257,7 @@ The MCP server (deployed by the playbook) will serve your spec docs to the analy
 - Check the run summary first (`run-summary.yaml`). It records per-UC status with error messages for failures.
 - Failed UCs have a `failures/<uc-uuid>.error.txt` with the full traceback or error string.
 - For analyzer-level issues (timeouts, MCP unreachable), check the engine container logs: `oc logs pod/dav-engine-...`
-- For schema validation issues, run the migration tool's validation step against your corpus to surface profile mismatches.
+- For schema validation issues, validate your corpus locally: load each UC with `UseCase.from_dict()` and call `.validate(profile)` against your consumer profile. Profile vocab mismatches surface as plain strings.
 - For "the LLM is making things up" issues, run `--mode reproduce` once to capture a clean exemplar, then `--mode explore` against the same UC to see how much variance exists. High variance suggests the spec content is ambiguous; low variance with wrong content suggests the spec content is misleading.
 
 ## Where to look first when extending DAV

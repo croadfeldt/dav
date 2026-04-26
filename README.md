@@ -39,7 +39,7 @@ If you're an LLM picking up the project: read [`AI-ONBOARDING.md`](AI-ONBOARDING
 
 If you're a developer integrating DAV into your own project as a consumer: read [`specs/08-consumer-integration.md`](specs/08-consumer-integration.md). You'll need a consumer profile YAML (see [`examples/dcm-reference-profile.yaml`](examples/dcm-reference-profile.yaml) for shape), a spec repo (your architecture docs), and a corpus repo (your use cases plus a `dav-version.yaml` manifest).
 
-If you're deploying DAV: the Ansible role at [`ansible/roles/dav/`](ansible/roles/dav/) targets OpenShift 4.18+. Edit `ansible/inventory/group_vars/all/vars.yaml` to point at your cluster and consumer repos, then run `ansible-playbook playbook.yaml`.
+If you're deploying DAV: the Ansible role at [`ansible/roles/dav/`](ansible/roles/dav/) targets OpenShift 4.18+. Copy [`ansible/inventory/group_vars/all/vars.local.yaml.example`](ansible/inventory/group_vars/all/vars.local.yaml.example) to `vars.local.yaml`, fill in your site-specific values (inference endpoint, cluster apps domain, consumer repo URLs), then run `ansible-playbook ansible/playbook.yaml`. See [`docs/operator-runbook.md`](docs/operator-runbook.md) for the full deploy → smoke test → real run workflow.
 
 If you want to run a single use case locally:
 
