@@ -1,9 +1,9 @@
 ---
 - name: Copy MCP server source to build context
   ansible.builtin.copy:
-    src: "mcp-servers/"
+    src: "{{ playbook_dir }}/../mcp/"
     dest: "/tmp/dav-mcp-build/"
-    mode: "0644"
+    mode: preserve
   when: dav_build_mcp_images | bool
 
 - name: Check if BuildConfig exists
