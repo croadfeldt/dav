@@ -75,6 +75,9 @@ spec:
     - name: inference-model
       type: string
       default: "{{ inference_primary_model }}"
+    - name: inference-topology
+      type: string
+      default: "{{ inference_topology | default('') }}"
     - name: mcp-url
       type: string
       default: "http://dav-docs-mcp.{{ dav_namespace }}.svc:8080"
@@ -200,6 +203,8 @@ spec:
           value: $(params.inference-endpoint)
         - name: inference-model
           value: $(params.inference-model)
+        - name: inference-topology
+          value: $(params.inference-topology)
         - name: mcp-url
           value: $(params.mcp-url)
         - name: consumer-profile-path

@@ -88,6 +88,15 @@ spec:
       description: Model name served at the endpoint
       default: "{{ inference_primary_model }}"
 
+    - name: inference-topology
+      type: string
+      description: |
+        Operator-supplied label describing the inference topology
+        (e.g. 'dual-r9700-tp2-q8' or 'single-l4-fp16'). Stamped onto
+        AnalysisMetadata.inference_topology for run provenance.
+        Empty string is acceptable.
+      default: "{{ inference_topology | default('') }}"
+
     - name: mcp-url
       type: string
       description: dav-docs-mcp base URL
@@ -173,6 +182,7 @@ spec:
           --consumer-content-path "$(params.spec-subdir)" \
           --inference-endpoint "$(params.inference-endpoint)" \
           --inference-model "$(params.inference-model)" \
+          --inference-topology "$(params.inference-topology)" \
           --mcp-url "$(params.mcp-url)" \
           --mode "$(params.mode)" \
           --max-tool-calls "$(params.max-tool-calls)" \

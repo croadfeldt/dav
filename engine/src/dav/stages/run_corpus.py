@@ -180,6 +180,49 @@ def write_uc_analysis(path: Path, analysis: Analysis) -> None:
             sort_keys=False, default_flow_style=False, allow_unicode=True,
         )
 
+def _stamp_run_level_metadata(
+    analysis: Analysis,
+    *,
+    run_id: str,
+    mode: str,
+    endpoint_url: str,
+    inference_topology: str,
+    stage: str = "stage2",
+    parent_run_id: str = "",
+) -> Analysis:
+    """Populate AnalysisMetadata fields the agent can't know.
+
+    The Stage2Agent populates fields it has direct access to (model,
+    timestamp, tool_call_count, total_tokens, stage2_run_id, wall_time,
+    sample_seeds, engine_version/commit, consumer_version). Several other
+    AnalysisMetadata fields are run-level context the runner knows but
+    the agent does not:
+
+      run_id              — the corpus run identifier (timestamp-suffix)
+      mode                — verification | reproduce | explore
+      endpoint_url        — the OpenAI /v1 URL the runner is dispatching to
+      inference_topology  — operator-supplied topology label (optional)
+      stage               — fixed 'stage2' for now; placeholder for when
+                            multi-stage runs land
+      parent_run_id       — empty for direct CLI invocations; will be set
+                            for triggered runs (e.g. when a webhook-driven
+                            run links back to its trigger)
+
+    These get stamped onto the (already-merged) Analysis's metadata in
+    place and the same Analysis is returned for chaining. Mutating the
+    metadata directly is correct here — it's a fresh dataclass that has
+    no aliasing back to per-sample analyses (merge_analyses uses
+    dataclasses.replace which deep-copies).
+    """
+    meta = analysis.analysis_metadata
+    meta.run_id = run_id
+    meta.mode = mode
+    meta.endpoint_url = endpoint_url
+    meta.inference_topology = inference_topology
+    meta.stage = stage
+    meta.parent_run_id = parent_run_id
+    return analysis
+
 def write_uc_explore_output(
     output_dir: Path,
     samples: list[Analysis],
@@ -211,6 +254,9 @@ def run_one_uc(
     mode: str,
     consumer_profile,
     consumer_content_path: Optional[Path],
+    run_id: str = "",
+    endpoint_url: str = "",
+    inference_topology: str = "",
 ) -> CorpusUcResult:
     """Run stage 2 on a single UC; write outputs into run_dir.
 
@@ -280,6 +326,16 @@ def run_one_uc(
     # Write output (mode-dependent)
     if mode == "explore":
         uc_explore_dir = run_dir / "analyses" / use_case.uuid
+        # Stamp run-level metadata onto each per-sample analysis so explore
+        # outputs carry the same provenance as verification/reproduce outputs.
+        for sample in samples:
+            _stamp_run_level_metadata(
+                sample,
+                run_id=run_id,
+                mode=mode,
+                endpoint_url=endpoint_url,
+                inference_topology=inference_topology,
+            )
         write_uc_explore_output(uc_explore_dir, samples, sample_seeds)
         return CorpusUcResult(
             uc_uuid=use_case.uuid, uc_handle=use_case.handle, uc_path=uc_path,
@@ -294,6 +350,13 @@ def run_one_uc(
     else:
         merged = samples[0]
 
+    _stamp_run_level_metadata(
+        merged,
+        run_id=run_id,
+        mode=mode,
+        endpoint_url=endpoint_url,
+        inference_topology=inference_topology,
+    )
     out_path = run_dir / "analyses" / f"{use_case.uuid}.yaml"
     write_uc_analysis(out_path, merged)
     return CorpusUcResult(
@@ -389,6 +452,13 @@ def _cli():
     parser.add_argument(
         "--inference-model", type=str, required=True,
         help="Model name to send to the endpoint.",
+    )
+    parser.add_argument(
+        "--inference-topology", type=str, default="",
+        help="Operator-supplied label describing the inference topology "
+             "(e.g. 'dual-r9700-tp2-q8' or 'single-l4-fp16'). Stamped onto "
+             "AnalysisMetadata.inference_topology for run provenance. "
+             "Optional; defaults to empty string.",
     )
     parser.add_argument(
         "--mcp-url", type=str, required=True,
@@ -536,6 +606,9 @@ def _cli():
             mode=args.mode,
             consumer_profile=consumer_profile,
             consumer_content_path=args.consumer_content_path,
+            run_id=run_id,
+            endpoint_url=args.inference_endpoint,
+            inference_topology=args.inference_topology,
         )
         results.append(result)
         if not result.success:

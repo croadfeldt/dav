@@ -403,6 +403,156 @@ def test_run_one_uc_verification_n1_skips_merge():
         assert_eq(result.success, True, "trivial verification")
         assert_eq(mmerge.call_count, 0, "merger NOT called for N=1")
 
+# --- run-level metadata stamping ---
+# Per spec 07 §4 the AnalysisMetadata fields run_id, mode, endpoint_url,
+# inference_topology, stage, parent_run_id are run-level context the runner
+# knows but the agent does not. The runner stamps them onto the merged
+# Analysis just before write_uc_analysis. These tests verify that path.
+
+def test_run_one_uc_stamps_run_level_metadata_reproduce():
+    """run_one_uc stamps run-level metadata fields onto reproduce-mode output."""
+    p = get_dcm_reference_profile()
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        uc_path = td_path / "uc.yaml"
+        with uc_path.open("w") as f:
+            yaml.safe_dump(_valid_v1_uc_dict(), f)
+        run_dir = td_path / "run"
+        run_dir.mkdir()
+
+        with mock.patch("dav.stages.run_corpus.run_samples",
+                        return_value=[_stub_analysis()]):
+            result = run_one_uc(
+                uc_path=uc_path, run_dir=run_dir,
+                inference_factory=lambda: None, mcp_factory=lambda: None,
+                config=AgentConfig(sample_count=1, seed=42),
+                mode="reproduce",
+                consumer_profile=p, consumer_content_path=None,
+                run_id="2026-04-26T20-00-00Z-test1",
+                endpoint_url="http://infer.example:8000/v1",
+                inference_topology="dual-r9700-tp2-q8",
+            )
+        assert_eq(result.success, True, "happy path")
+        with result.output_path.open() as f:
+            written = yaml.safe_load(f)
+        meta = written["analysis_metadata"]
+        assert_eq(meta["run_id"], "2026-04-26T20-00-00Z-test1", "run_id stamped")
+        assert_eq(meta["mode"], "reproduce", "mode stamped")
+        assert_eq(meta["endpoint_url"], "http://infer.example:8000/v1",
+                  "endpoint_url stamped")
+        assert_eq(meta["inference_topology"], "dual-r9700-tp2-q8",
+                  "inference_topology stamped")
+        assert_eq(meta["stage"], "stage2", "stage defaults to 'stage2'")
+        assert_eq(meta["parent_run_id"], "",
+                  "parent_run_id empty for direct CLI runs")
+
+def test_run_one_uc_stamps_run_level_metadata_verification():
+    """Verification (post-merge) keeps run-level stamping intact."""
+    p = get_dcm_reference_profile()
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        uc_path = td_path / "uc.yaml"
+        with uc_path.open("w") as f:
+            yaml.safe_dump(_valid_v1_uc_dict(), f)
+        run_dir = td_path / "run"
+        run_dir.mkdir()
+
+        with mock.patch("dav.stages.run_corpus.run_samples",
+                        return_value=[_stub_analysis() for _ in range(3)]):
+            result = run_one_uc(
+                uc_path=uc_path, run_dir=run_dir,
+                inference_factory=lambda: None, mcp_factory=lambda: None,
+                config=AgentConfig(sample_count=3, seed=42),
+                mode="verification",
+                consumer_profile=p, consumer_content_path=None,
+                run_id="run-verif-1",
+                endpoint_url="http://endpoint/v1",
+                inference_topology="single-l4-fp16",
+            )
+        assert_eq(result.success, True, "verification merges and writes")
+        with result.output_path.open() as f:
+            written = yaml.safe_load(f)
+        meta = written["analysis_metadata"]
+        # verification mode is also enforced by merger; either path should yield same answer
+        assert_eq(meta["mode"], "verification", "verification mode stamped")
+        assert_eq(meta["run_id"], "run-verif-1", "run_id stamped on merged output")
+        assert_eq(meta["endpoint_url"], "http://endpoint/v1",
+                  "endpoint_url stamped on merged output")
+        assert_eq(meta["inference_topology"], "single-l4-fp16",
+                  "inference_topology stamped on merged output")
+
+def test_run_one_uc_stamps_run_level_metadata_explore():
+    """Explore mode stamps run-level metadata onto each per-sample output."""
+    p = get_dcm_reference_profile()
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        uc_path = td_path / "uc.yaml"
+        with uc_path.open("w") as f:
+            yaml.safe_dump(_valid_v1_uc_dict(), f)
+        run_dir = td_path / "run"
+        run_dir.mkdir()
+
+        with mock.patch("dav.stages.run_corpus.run_samples",
+                        return_value=[_stub_analysis() for _ in range(3)]):
+            result = run_one_uc(
+                uc_path=uc_path, run_dir=run_dir,
+                inference_factory=lambda: None, mcp_factory=lambda: None,
+                config=AgentConfig(sample_count=3, seed=42),
+                mode="explore",
+                consumer_profile=p, consumer_content_path=None,
+                run_id="run-explore-1",
+                endpoint_url="http://endpoint/v1",
+                inference_topology="dual-r9700-tp2-q8",
+            )
+        assert_eq(result.success, True, "explore writes per-sample dir")
+        # Each sample-NN.yaml should carry the stamped fields
+        sample_files = sorted(result.output_dir.glob("sample-*.yaml"))
+        assert_eq(len(sample_files), 3, "three per-sample files")
+        for sf in sample_files:
+            with sf.open() as f:
+                written = yaml.safe_load(f)
+            meta = written["analysis_metadata"]
+            assert_eq(meta["run_id"], "run-explore-1",
+                      f"run_id stamped on {sf.name}")
+            assert_eq(meta["mode"], "explore", f"mode=explore on {sf.name}")
+            assert_eq(meta["endpoint_url"], "http://endpoint/v1",
+                      f"endpoint_url stamped on {sf.name}")
+            assert_eq(meta["inference_topology"], "dual-r9700-tp2-q8",
+                      f"inference_topology stamped on {sf.name}")
+
+def test_run_one_uc_stamping_defaults_when_unset():
+    """When run-level metadata params are unset (test/legacy callers), the
+    fields should be empty strings, not raise."""
+    p = get_dcm_reference_profile()
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        uc_path = td_path / "uc.yaml"
+        with uc_path.open("w") as f:
+            yaml.safe_dump(_valid_v1_uc_dict(), f)
+        run_dir = td_path / "run"
+        run_dir.mkdir()
+
+        with mock.patch("dav.stages.run_corpus.run_samples",
+                        return_value=[_stub_analysis()]):
+            # No run_id / endpoint_url / inference_topology kwargs.
+            result = run_one_uc(
+                uc_path=uc_path, run_dir=run_dir,
+                inference_factory=lambda: None, mcp_factory=lambda: None,
+                config=AgentConfig(sample_count=1, seed=42),
+                mode="reproduce",
+                consumer_profile=p, consumer_content_path=None,
+            )
+        assert_eq(result.success, True, "default-args call still succeeds")
+        with result.output_path.open() as f:
+            written = yaml.safe_load(f)
+        meta = written["analysis_metadata"]
+        assert_eq(meta["run_id"], "", "run_id empty when unset")
+        assert_eq(meta["endpoint_url"], "", "endpoint_url empty when unset")
+        assert_eq(meta["inference_topology"], "",
+                  "inference_topology empty when unset")
+        # mode is always stamped from the mode arg, never empty
+        assert_eq(meta["mode"], "reproduce", "mode stamped even with default kwargs")
+
 # --- write_run_summary tests ---
 
 def test_write_run_summary_structure():
@@ -536,6 +686,10 @@ def main():
         test_run_one_uc_explore_writes_directory,
         test_run_one_uc_verification_with_multiple_samples_merges,
         test_run_one_uc_verification_n1_skips_merge,
+        test_run_one_uc_stamps_run_level_metadata_reproduce,
+        test_run_one_uc_stamps_run_level_metadata_verification,
+        test_run_one_uc_stamps_run_level_metadata_explore,
+        test_run_one_uc_stamping_defaults_when_unset,
         test_write_run_summary_structure,
         test_write_run_summary_empty_results,
         test_write_failure_report,
