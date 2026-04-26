@@ -1,9 +1,7 @@
 """
-DCM self-test corpus loader.
+Consumer corpus loader.
 
-Loads use cases from the corpus git repo (currently
-`croadfeldt/dav-content-corpus`, migrates to `dcm-project/...`
-once validated). Corpus layout:
+Loads use cases from the configured consumer corpus git repo. Corpus layout:
 
     corpus_root/
     ├── schema/

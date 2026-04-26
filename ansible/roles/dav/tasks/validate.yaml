@@ -89,11 +89,11 @@
     name: dav-review-ui
   register: review_route_check
 
-# --- Primary inference endpoint health (external llama.cpp) ---
-# The primary endpoint runs outside the cluster on vis.roadfeldt.com.
-# We don't own its lifecycle here, but a reachability check in the
-# validate summary is useful so the operator sees at-a-glance whether
-# the pipeline has a healthy inference target.
+# --- Primary inference endpoint health ---
+# The primary endpoint runs outside the cluster (URL configured in
+# vars.local.yaml). We don't own its lifecycle here, but a reachability
+# check in the validate summary is useful so the operator sees at-a-glance
+# whether the pipeline has a healthy inference target.
 # See docs/local-inference.md.
 
 - name: Probe primary inference endpoint (reachability only)
@@ -116,8 +116,8 @@
        OCP Pipelines:    {{ '✓' if operator_check.resources | length > 0 else '✗' }} OpenShift Pipelines operator
 
        ── Inference ──
-       Primary:          {{ '✓' if primary_inference_check.status | default(0) == 200 else '✗ UNREACHABLE' }} {{ inference_primary_endpoint }} (llama.cpp on vis.roadfeldt.com)
-       Fallback:         {{ '✓' if vllm_check.resources | length > 0 else '✗' }} {{ vllm_check.resources[0].status.readyReplicas | default(0) if vllm_check.resources | length > 0 else 0 }}/1 ready (in-cluster 14B vLLM on 4060 Ti)
+       Primary:          {{ '✓' if primary_inference_check.status | default(0) == 200 else '✗ UNREACHABLE' }} {{ inference_primary_endpoint }} ({{ inference_primary_backend }} {{ inference_primary_model_params }})
+       Fallback:         {{ '✓' if vllm_check.resources | length > 0 else '✗' }} {{ vllm_check.resources[0].status.readyReplicas | default(0) if vllm_check.resources | length > 0 else 0 }}/1 ready (in-cluster vLLM)
 
        ── Pipeline ──
        MCP Docs Server:  {{ '✓' if mcp_check.resources | length > 0 else '✗' }} {{ mcp_check.resources[0].status.readyReplicas | default(0) if mcp_check.resources | length > 0 else 0 }}/1 ready

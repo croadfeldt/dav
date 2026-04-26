@@ -28,5 +28,6 @@ Thumbs.db
 .env
 .envrc
 
-# Ansible vault password file
+# Ansible
 .vault_pass
+ansible/inventory/group_vars/all/vars.local.yaml

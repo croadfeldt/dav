@@ -1,18 +1,14 @@
 ---
-# Inference Quality Test — external llama.cpp health + coherence probe.
+# Inference Quality Test — external inference endpoint health + coherence probe.
 #
-# As of v0.7.0, local inference lives outside the OCP cluster on a
-# dedicated Fedora 43 host (vis.roadfeldt.com) running rootless
-# Podman with systemd quadlet lifecycle. The host serves Qwen2.5-32B
-# in GGUF Q4_K_M format across dual AMD R9700 GPUs via llama.cpp
-# tensor parallelism.
+# Local inference lives outside the OCP cluster on a dedicated host
+# running rootless Podman with systemd quadlet lifecycle. The host
+# serves a tool-calling-capable LLM via an OpenAI-compatible /v1
+# endpoint (e.g. llama.cpp with --jinja, or vLLM).
 #
-# See docs/R9700_DEBUGGING_HANDOFF.md for the full context on why
-# inference moved off OCP (vLLM gfx1201 Qwen special-token bug) and
-# how the external host is configured.
+# See docs/local-inference.md for endpoint setup guidance.
 #
-# This task replaces the previous in-cluster vllm-test deployment.
-# It does NOT deploy anything to the cluster; it verifies the external
+# This task does NOT deploy anything to the cluster; it verifies the external
 # endpoint is healthy and produces coherent output before the pipeline
 # relies on it.
 #

@@ -602,7 +602,7 @@ This schema does not define:
 use_case_uuid: uc-seed-008a
 analysis_metadata:
   model: qwen
-  endpoint_url: "http://vis.roadfeldt.com:8000/v1"
+  endpoint_url: "http://inference.example.local:8000/v1"
   timestamp: "2026-04-24T04:50:26.807853+00:00"
   engine_version: "v1.0.0"
   engine_commit: "b7f36ada63b1c9..."

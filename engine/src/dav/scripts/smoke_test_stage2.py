@@ -90,7 +90,7 @@ def main():
 
     inference_url = os.environ.get(
         "INFERENCE_URL",
-        "http://vis.roadfeldt.com:8000/v1",
+        "http://inference.example.local:8000/v1",
     )
     inference_model = os.environ.get(
         "INFERENCE_MODEL",

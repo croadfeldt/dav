@@ -29,7 +29,7 @@ Topics this spec will cover when authored:
   - `dav-engine` — stages and agents
   - `dav-mcp` — MCP server
   - `dav-review-api` — Review Console backend
-  - Image registry: `quay.io/croadfeldt/dav-*` or `ghcr.io/croadfeldt/dav-*`
+  - Image registry: `quay.io/<your-org>/dav-*` or `ghcr.io/<your-org>/dav-*`
   - Tagging strategy
 - Observability: what logs each pod emits, metrics exposed, recommended log aggregation
 - Sovereignty: how to deploy fully on-premise including LLM; what data paths exist

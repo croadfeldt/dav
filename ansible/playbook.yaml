@@ -1,42 +1,92 @@
 ---
-# DAV System — Full Deployment Playbook
+# DAV — Full Deployment Playbook
 #
-# Deploys/updates the complete self-testing system:
-#   - OpenShift namespace, RBAC, PVCs, secrets
-#   - vLLM Tier 3 inference on GPU node
-#   - MCP servers (docs, tests, git)
-#   - Tekton pipeline, triggers, event listener, route
+# Deploys/updates the complete DAV system on OpenShift:
+#   - Namespace, RBAC, PVCs, secrets
+#   - vLLM tier-3 fallback inference (GPU node-bound; opt-in)
+#   - MCP server (docs)
+#   - Tekton pipeline, triggers, event listener, webhook route
 #   - Review Console (UI + API + Postgres)
-#   - Inference Quality Test rig (opt-in, --tags inference-test)
+#   - Inference quality test rig (opt-in via --tags inference-test)
+#
+# Site configuration:
+#   Before running, copy:
+#     ansible/inventory/group_vars/all/vars.local.yaml.example
+#     -> ansible/inventory/group_vars/all/vars.local.yaml
+#   and edit with your site-specific values (inference endpoint URL,
+#   cluster apps domain, consumer repo URLs).
+#
+#   vars.local.yaml is gitignored and auto-loaded by Ansible from the
+#   group_vars/all/ directory.
 #
 # Usage:
-#   # Full deployment
-#   ansible-playbook playbook.yaml
+#   # Full deployment (after vars.local.yaml is in place)
+#   ansible-playbook ansible/playbook.yaml
 #
 #   # Deploy only specific components
-#   ansible-playbook playbook.yaml --tags review-console
-#   ansible-playbook playbook.yaml --tags vllm
-#   ansible-playbook playbook.yaml --tags tekton
-#   ansible-playbook playbook.yaml --tags mcp
-#   ansible-playbook playbook.yaml --tags inference-test    # explicit opt-in
+#   ansible-playbook ansible/playbook.yaml --tags review-console
+#   ansible-playbook ansible/playbook.yaml --tags vllm
+#   ansible-playbook ansible/playbook.yaml --tags tekton
+#   ansible-playbook ansible/playbook.yaml --tags mcp
+#   ansible-playbook ansible/playbook.yaml --tags inference-test    # explicit opt-in
 #
 #   # First-time setup (includes secret creation)
-#   ansible-playbook playbook.yaml --tags all,secrets
+#   ansible-playbook ansible/playbook.yaml --tags all,secrets
 #
-# This playbook runs from localhost. It requires:
+# Requirements:
 #   - oc/kubectl on the local PATH
 #   - valid kubeconfig with an active login to the target cluster
 #     (check: `oc whoami`)
-#   - vault.yaml decryptable (ansible-vault password or --ask-vault-pass)
+#   - vault.yaml decryptable (.vault_pass at repo root, or --ask-vault-pass)
+#   - vars.local.yaml at ansible/inventory/group_vars/all/vars.local.yaml
 #
 # Secrets:
 #   Encrypted with ansible-vault in inventory/group_vars/all/vault.yaml
-#   ansible-vault edit inventory/group_vars/all/vault.yaml
+#   ansible-vault edit ansible/inventory/group_vars/all/vault.yaml
 
-- name: Deploy DCM self-test system to OpenShift
+- name: Deploy DAV to OpenShift
   hosts: ocp_provisioner
   gather_facts: true
   tasks:
+    - name: Verify required site configuration is present
+      ansible.builtin.assert:
+        that:
+          - inference_primary_endpoint is defined
+          - inference_primary_endpoint | length > 0
+          - inference_fallback_endpoint is defined
+          - inference_fallback_endpoint | length > 0
+          - consumer_spec_repo_url is defined
+          - consumer_spec_repo_url | length > 0
+          - consumer_corpus_repo_url is defined
+          - consumer_corpus_repo_url | length > 0
+          - dav_webhook_hostname is defined
+          - dav_webhook_hostname | length > 0
+          - review_console_hostname is defined
+          - review_console_hostname | length > 0
+        fail_msg: |
+
+          ─────────────────────────────────────────────────
+           Missing site-specific configuration
+          ─────────────────────────────────────────────────
+
+          One or more required vars are not set. These come from
+          ansible/inventory/group_vars/all/vars.local.yaml.
+
+          To set up:
+            cp ansible/inventory/group_vars/all/vars.local.yaml.example \
+               ansible/inventory/group_vars/all/vars.local.yaml
+          Edit vars.local.yaml with your site values, then re-run.
+
+          Required vars:
+            - inference_primary_endpoint
+            - inference_fallback_endpoint
+            - consumer_spec_repo_url
+            - consumer_corpus_repo_url
+            - dav_webhook_hostname
+            - review_console_hostname
+        success_msg: "Site configuration validated."
+      tags: always
+
     - name: Verify active OpenShift login
       ansible.builtin.command: oc whoami
       register: oc_whoami

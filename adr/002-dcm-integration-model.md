@@ -88,7 +88,7 @@ provider:
       url_config: dcm-configmap-ref/dav-inference-endpoint
       model_config: dcm-configmap-ref/dav-inference-model
     consumer_content:
-      repo_url: "https://github.com/croadfeldt/dcm"
+      repo_url: "https://github.com/<dcm-org>/dcm"
       content_path: "dav/"
       branch_ref: dcm-configmap-ref/dav-consumer-branch
   lifecycle:
