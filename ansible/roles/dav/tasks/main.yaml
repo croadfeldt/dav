@@ -18,7 +18,7 @@
   ansible.builtin.import_tasks: secrets.yaml
   tags:
     - secrets
-    - never  # Only runs when explicitly tagged: --tags secrets
+    - infrastructure
 
 - name: Deploy sourcing ConfigMaps (spec + corpus)
   ansible.builtin.import_tasks: sources.yaml
