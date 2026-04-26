@@ -30,9 +30,9 @@
 
 - name: Copy review console source to provisioner
   ansible.builtin.copy:
-    src: "review-console/"
+    src: "{{ playbook_dir }}/../review-console/"
     dest: "/tmp/dav-review-build/"
-    mode: "0644"
+    mode: preserve
   when: review_console_build_images | bool
 
 - name: Check if review console API ImageStream exists
