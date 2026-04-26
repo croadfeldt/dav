@@ -62,6 +62,13 @@ spec:
             git pull origin $(params.repo-branch) || true
           fi
         else
+          if [ -e "$TARGET_DIR" ]; then
+            # Stale state from a prior aborted run: directory or file
+            # exists at the target path but isn't a valid git checkout.
+            # Clear it so the fresh clone has an empty destination.
+            echo "Stale state at $TARGET_DIR (no .git/); removing before fresh clone..."
+            rm -rf "$TARGET_DIR"
+          fi
           echo "Cloning $(params.repo-url) into $TARGET_DIR..."
           git clone --branch $(params.repo-branch) $(params.repo-url) "$TARGET_DIR"
           cd "$TARGET_DIR"
