@@ -176,20 +176,25 @@ Engine-side iteration is simpler: one container, one Python process, native Pyth
 
 ### Tekton pipeline shape
 
-The `dav-stage2` pipeline does three things:
+The `dav-stage2` pipeline does four things:
 
-1. Clone consumer's spec repo into `<workspace>/spec/`
-2. Clone consumer's corpus repo into `<workspace>/corpus/`
-3. Run `dav-run-corpus` against `<workspace>/corpus/use-cases/`
+1. Wipe stale `<workspace>/spec/` and `<workspace>/corpus/` from the shared PVC (`cleanup-workspace`)
+2. Clone consumer's spec repo into `<workspace>/spec/` (`sync-spec`)
+3. Clone consumer's corpus repo into `<workspace>/corpus/` (`sync-corpus`)
+4. Run `dav-run-corpus` against `<workspace>/corpus/<corpus-uc-subpath>/`
 
-Both clones happen in parallel (no inter-step dependency). The shared workspace + subdirectory layout keeps the pipeline simple — one PVC, no inter-task data shuffling, native filesystem paths.
+Cleanup runs first; sync-spec and sync-corpus run in parallel after cleanup; run-corpus runs after both syncs complete. The shared workspace + subdirectory layout keeps the pipeline simple — one PVC, no inter-task data shuffling, native filesystem paths.
+
+The cleanup task wipes only `spec/` and `corpus/`, not `results/`. Result retention is intentionally a separate concern: operators may need to retrieve previous-run analyses before they're externally archived. Cleaning workspace state at pipeline start guarantees fresh-clone semantics even when the upstream branch has been force-pushed or the prior run aborted mid-clone.
 
 Two reusable tasks back the pipeline:
 
-- `dav-git-sync.yaml.j2` — parameterized clone with a `target-subdir` param so the same task handles both spec and corpus
+- `dav-git-sync.yaml.j2` — parameterized clone with a `target-subdir` param so the same task handles both spec and corpus. The task itself is also resilient to stale state (clears non-git directories) and force-pushes (uses `git fetch --force` + `git reset --hard`); the pipeline-level cleanup is a defense-in-depth layer rather than the only safety net.
 - `dav-run-corpus.yaml.j2` — wraps `python -m dav.stages.run_corpus` with the right args plumbed in
 
-**Don't undo:** the parallel-clone + single-task-run shape is intentional. Splitting analysis into per-UC TaskRuns reintroduces the matrix problems above.
+The `cleanup-workspace` step is a Pipeline-inline `taskSpec` (no separate Task resource) since it's a single shell command with no reusability need.
+
+**Don't undo:** the parallel-clone + single-task-run shape is intentional. Splitting analysis into per-UC TaskRuns reintroduces the matrix problems above. The cleanup step is also intentional — without it, every PipelineRun has to recover from accumulated workspace state, which is fragile.
 
 ### Deployment topology — engine and inference separated
 

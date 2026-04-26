@@ -196,9 +196,10 @@ Output goes to `<output-dir>/<run-id>/` containing `analyses/<uc-uuid>.yaml` per
 
 The Ansible role at `ansible/roles/dav/` deploys a Tekton pipeline (`dav-stage2`) that:
 
-1. Clones the consumer's spec repo into `<workspace>/spec/`
-2. Clones the consumer's corpus repo into `<workspace>/corpus/`
-3. Runs `dav-run-corpus` against `<workspace>/corpus/<corpus-uc-subpath>/`
+1. Cleans stale `spec/` and `corpus/` from the shared workspace (`cleanup-workspace`)
+2. Clones the consumer's spec repo into `<workspace>/spec/` (`sync-spec`)
+3. Clones the consumer's corpus repo into `<workspace>/corpus/` (`sync-corpus`, runs in parallel with sync-spec)
+4. Runs `dav-run-corpus` against `<workspace>/corpus/<corpus-uc-subpath>/`
 
 Trigger via webhook (push or PR), or manually:
 

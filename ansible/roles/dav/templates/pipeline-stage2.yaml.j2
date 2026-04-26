@@ -92,9 +92,50 @@ spec:
         writes results to results/<run-id>/.
 
   tasks:
-    # 1. Clone the consumer's spec repo into <spec-subdir>
+    # 1. Clean stale workspace state before sync.
+    #    The dav-workspace PVC persists across PipelineRuns, so prior-run
+    #    spec/ and corpus/ directories accumulate on disk. The git-sync
+    #    task can recover from stale state (commit 221b30c) and from
+    #    force-pushed upstream (commit abd46ea), but both add latency
+    #    and cognitive load. Wiping spec/ and corpus/ at pipeline start
+    #    forces a clean fresh-clone every run.
+    #
+    #    NOT wiped: results/ — operators need previous runs' analyses
+    #    until they're externally archived. Result retention is a
+    #    separate concern from workspace cleanup.
+    - name: cleanup-workspace
+      timeout: "5m"
+      taskSpec:
+        workspaces:
+          - name: source
+        steps:
+          - name: wipe-sync-targets
+            image: registry.access.redhat.com/ubi9/ubi-minimal
+            script: |
+              #!/bin/sh
+              set -e
+              cd "$(workspaces.source.path)"
+              echo "Workspace contents before cleanup:"
+              ls -la . || true
+              echo ""
+              for d in spec corpus; do
+                if [ -e "$d" ]; then
+                  echo "Removing existing $d/"
+                  rm -rf "$d"
+                fi
+              done
+              echo ""
+              echo "Workspace contents after cleanup:"
+              ls -la .
+      workspaces:
+        - name: source
+          workspace: shared-data
+
+    # 2. Clone the consumer's spec repo into <spec-subdir>
     - name: sync-spec
       timeout: "10m"
+      runAfter:
+        - cleanup-workspace
       taskRef:
         name: dav-git-sync
       workspaces:
@@ -108,10 +149,12 @@ spec:
         - name: target-subdir
           value: $(params.spec-subdir)
 
-    # 2. Clone the consumer's corpus repo into <corpus-subdir>
+    # 3. Clone the consumer's corpus repo into <corpus-subdir>
     #    (runs in parallel with sync-spec since both are read-only clones)
     - name: sync-corpus
       timeout: "10m"
+      runAfter:
+        - cleanup-workspace
       taskRef:
         name: dav-git-sync
       workspaces:
@@ -125,7 +168,7 @@ spec:
         - name: target-subdir
           value: $(params.corpus-subdir)
 
-    # 3. Run DAV stage 2 across the corpus
+    # 4. Run DAV stage 2 across the corpus
     #    Per-UC wall time at LLM inference is highly variable depending on
     #    UC complexity, ensemble sample count, model size, and inference
     #    backend. Allow up to 24h for a full corpus run (~10-30 UCs at

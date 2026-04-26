@@ -299,7 +299,7 @@ tkn pipeline start dav-stage2 \
 
 (Note the corpus parameters point at the DAV repo itself for the smoke test, since the BookCatalog exemplars live there. After smoke test, switch to the real DCM corpus.)
 
-**Expected:** PipelineRun goes through `sync-spec` → `sync-corpus` → `run-corpus` and completes in ~10-15 min. Two analyses written to the workspace under `/runs/<run-id>/analyses/`. Both should have non-error verdicts.
+**Expected:** PipelineRun goes through `cleanup-workspace` → `sync-spec` ∥ `sync-corpus` → `run-corpus`. The cleanup task wipes any prior `spec/` and `corpus/` directories from the shared PVC; the sync tasks fresh-clone in parallel; then run-corpus iterates the UCs. Two analyses written to the workspace under `/results/<run-id>/analyses/`. Both should have non-error verdicts.
 
 To inspect after:
 
