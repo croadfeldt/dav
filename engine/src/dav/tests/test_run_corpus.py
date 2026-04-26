@@ -657,6 +657,93 @@ def test_corpus_cache_prompt_locked_values():
               "explore cache_prompt = True")
 
 
+# --- Sampler-param defaults (diagnosed bug 2026-04-26) ---
+# The llama.cpp server vis.roadfeldt.com:8000 ships --top-k 1 as a CLI
+# default, making it greedy regardless of per-request temperature/seed
+# unless top_k is explicitly overridden. Per-request fields override
+# CLI defaults per-field. The fix: variance-wanting modes must set
+# top_k/top_p/min_p in the body explicitly. These tests pin the values.
+
+def test_corpus_sampler_defaults_match_stage2():
+    """run_corpus and stage2_analyze must agree on per-mode sampler defaults."""
+    from dav.stages.run_corpus import _DEFAULT_SAMPLER_PARAMS as _C_SAMP
+    from dav.stages.stage2_analyze import _DEFAULT_SAMPLER_PARAMS as _S2_SAMP
+    assert_eq(_C_SAMP, _S2_SAMP,
+              "run_corpus._DEFAULT_SAMPLER_PARAMS == stage2_analyze._DEFAULT_SAMPLER_PARAMS")
+
+
+def test_corpus_sampler_locked_values():
+    """Pin per-mode sampler values. Verification + explore use balanced
+    sampler (top_k=40, top_p=0.95, min_p=0.05) — values that produce
+    seed-driven variance on a llama.cpp endpoint with --top-k 1 default.
+    Reproduce uses explicit top_k=1 (greedy) for portability across
+    inference stacks."""
+    from dav.stages.run_corpus import _DEFAULT_SAMPLER_PARAMS as _SAMP
+    assert_eq(_SAMP["verification"]["top_k"], 40,
+              "verification top_k = 40 (allow seed-driven variance)")
+    assert_eq(_SAMP["verification"]["top_p"], 0.95,
+              "verification top_p = 0.95")
+    assert_eq(_SAMP["verification"]["min_p"], 0.05,
+              "verification min_p = 0.05")
+    assert_eq(_SAMP["explore"]["top_k"], 40,
+              "explore top_k = 40")
+    assert_eq(_SAMP["explore"]["top_p"], 0.95,
+              "explore top_p = 0.95")
+    assert_eq(_SAMP["explore"]["min_p"], 0.05,
+              "explore min_p = 0.05")
+    assert_eq(_SAMP["reproduce"]["top_k"], 1,
+              "reproduce top_k = 1 (explicit greedy)")
+    assert_eq(_SAMP["reproduce"]["top_p"], None,
+              "reproduce top_p unset (omitted from body)")
+    assert_eq(_SAMP["reproduce"]["min_p"], None,
+              "reproduce min_p unset (omitted from body)")
+
+
+def test_build_body_includes_sampler_params_when_set():
+    """The diagnosed bug: when top_k/top_p/min_p are unset on EndpointConfig,
+    the request body omits them and the server's CLI default applies. When
+    set, they go into the body and override CLI defaults per-field."""
+    from dav.ai.client import EndpointConfig, InferenceClient, ChatMessage
+    client = InferenceClient(primary=EndpointConfig(url="http://x", model="m"))
+    messages = [ChatMessage(role="user", content="hi")]
+
+    # Case 1: all sampler params unset → body omits them
+    endpoint_unset = EndpointConfig(url="http://x", model="m")
+    body = client._build_body(
+        endpoint_unset, messages, tools=None, temperature=0.2,
+        max_tokens=100, guided_json_schema=None, seed=42,
+    )
+    assert_true("top_k" not in body, "top_k absent when unset on endpoint")
+    assert_true("top_p" not in body, "top_p absent when unset on endpoint")
+    assert_true("min_p" not in body, "min_p absent when unset on endpoint")
+
+    # Case 2: all set → body includes them with the configured values
+    endpoint_set = EndpointConfig(
+        url="http://x", model="m",
+        top_k=40, top_p=0.95, min_p=0.05,
+    )
+    body = client._build_body(
+        endpoint_set, messages, tools=None, temperature=0.2,
+        max_tokens=100, guided_json_schema=None, seed=42,
+    )
+    assert_eq(body.get("top_k"), 40, "top_k=40 in body")
+    assert_eq(body.get("top_p"), 0.95, "top_p=0.95 in body")
+    assert_eq(body.get("min_p"), 0.05, "min_p=0.05 in body")
+
+    # Case 3: reproduce-style (top_k=1, others None) → only top_k in body
+    endpoint_repro = EndpointConfig(
+        url="http://x", model="m",
+        top_k=1, top_p=None, min_p=None,
+    )
+    body = client._build_body(
+        endpoint_repro, messages, tools=None, temperature=0.0,
+        max_tokens=100, guided_json_schema=None, seed=42,
+    )
+    assert_eq(body.get("top_k"), 1, "reproduce top_k=1 in body (explicit greedy)")
+    assert_true("top_p" not in body, "reproduce body has no top_p")
+    assert_true("min_p" not in body, "reproduce body has no min_p")
+
+
 # --- Run ---
 
 def main():
@@ -696,6 +783,9 @@ def main():
         test_write_failure_report_handles_slash_in_uuid,
         test_corpus_cache_prompt_defaults_match_stage2,
         test_corpus_cache_prompt_locked_values,
+        test_corpus_sampler_defaults_match_stage2,
+        test_corpus_sampler_locked_values,
+        test_build_body_includes_sampler_params_when_set,
     ]
     for t in tests:
         try:

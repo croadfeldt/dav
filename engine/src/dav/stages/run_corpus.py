@@ -92,6 +92,20 @@ _DEFAULT_CACHE_PROMPT = {
     "reproduce": False,
     "explore": True,
 }
+_DEFAULT_SAMPLER_PARAMS = {
+    # Diagnosed 2026-04-26: the inference server (vis.roadfeldt.com:8000)
+    # ships --top-k 1 as a CLI default, making it greedy regardless of
+    # per-request temperature or seed unless top_k is explicitly overridden.
+    # Per-request fields override CLI defaults per-field; unsent fields keep
+    # CLI values. So variance-wanting modes MUST set top_k/top_p/min_p in the
+    # body. These are llama.cpp's standard "balanced" sampler values.
+    "verification": {"top_k": 40, "top_p": 0.95, "min_p": 0.05},
+    "explore":      {"top_k": 40, "top_p": 0.95, "min_p": 0.05},
+    # Reproduce mode wants strict greedy. Explicit top_k=1 is more portable
+    # than relying on a server-side default; works regardless of which
+    # llama.cpp / vLLM / Ollama instance we're talking to.
+    "reproduce":    {"top_k": 1, "top_p": None, "min_p": None},
+}
 
 @dataclasses.dataclass
 class CorpusUcResult:
@@ -510,6 +524,23 @@ def _cli():
         help="Override the mode's default temperature.",
     )
     parser.add_argument(
+        "--top-k", type=int, default=None,
+        help="Override the mode's default top-k. Defaults: verification=40, "
+             "explore=40, reproduce=1 (greedy). Pass 0 to disable top-k "
+             "filtering. See client.py EndpointConfig docstring for the "
+             "diagnosis that motivated explicit per-mode sampler params.",
+    )
+    parser.add_argument(
+        "--top-p", type=float, default=None,
+        help="Override the mode's default top-p (nucleus sampling). "
+             "Defaults: verification=0.95, explore=0.95, reproduce=unset.",
+    )
+    parser.add_argument(
+        "--min-p", type=float, default=None,
+        help="Override the mode's default min-p. Defaults: verification=0.05, "
+             "explore=0.05, reproduce=unset.",
+    )
+    parser.add_argument(
         "--no-enable-thinking", action="store_true",
         help="Disable Qwen3 thinking-mode (recommended for stage 2).",
     )
@@ -561,12 +592,20 @@ def _cli():
     else:
         cache_prompt = args.cache_prompt
 
+    # Resolve sampler params: CLI override > mode default. CLI overrides
+    # are absolute (None means "no override; use mode default"); to send
+    # nothing for a field, set the mode default to None.
+    sampler_defaults = _DEFAULT_SAMPLER_PARAMS[args.mode]
+    top_k = args.top_k if args.top_k is not None else sampler_defaults["top_k"]
+    top_p = args.top_p if args.top_p is not None else sampler_defaults["top_p"]
+    min_p = args.min_p if args.min_p is not None else sampler_defaults["min_p"]
+
     log.info(
         "corpus mode=%s temperature=%s cache_prompt=%s sample_count=%s "
-        "sample_concurrency=%d",
+        "sample_concurrency=%d top_k=%s top_p=%s min_p=%s",
         args.mode, temperature, cache_prompt,
         args.sample_count or _DEFAULT_SAMPLE_COUNT[args.mode],
-        args.sample_concurrency,
+        args.sample_concurrency, top_k, top_p, min_p,
     )
 
     config = AgentConfig(
@@ -584,6 +623,9 @@ def _cli():
         model=args.inference_model,
         chat_template_kwargs=chat_template_kwargs,
         cache_prompt=cache_prompt,
+        top_k=top_k,
+        top_p=top_p,
+        min_p=min_p,
     )
     def _make_inference():
         return InferenceClient(primary=primary)

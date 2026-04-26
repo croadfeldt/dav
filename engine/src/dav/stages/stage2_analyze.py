@@ -119,6 +119,14 @@ _DEFAULT_CACHE_PROMPT = {
     "reproduce": False,
     "explore": True,
 }
+_DEFAULT_SAMPLER_PARAMS = {
+    # See run_corpus.py for the full diagnosis context. The llama.cpp
+    # server defaults (--top-k 1) override per-request unsent fields.
+    # Variance-wanting modes must explicitly set top_k/top_p/min_p.
+    "verification": {"top_k": 40, "top_p": 0.95, "min_p": 0.05},
+    "explore":      {"top_k": 40, "top_p": 0.95, "min_p": 0.05},
+    "reproduce":    {"top_k": 1, "top_p": None, "min_p": None},
+}
 
 def derive_seed_from_uuid(uc_uuid: str) -> int:
     """Derive a stable seed from a UC uuid for reproduce mode.
@@ -294,6 +302,16 @@ def _cli():
     parser.add_argument("--temperature", type=float, default=None,
                         help="Override mode default. Defaults: verification=0.2, "
                              "reproduce=0.0, explore=0.7.")
+    parser.add_argument("--top-k", type=int, default=None,
+                        help="Override mode-default top-k. Defaults: "
+                             "verification=40, explore=40, reproduce=1 (greedy). "
+                             "Pass 0 to disable top-k filtering.")
+    parser.add_argument("--top-p", type=float, default=None,
+                        help="Override mode-default top-p. Defaults: "
+                             "verification=0.95, explore=0.95, reproduce=unset.")
+    parser.add_argument("--min-p", type=float, default=None,
+                        help="Override mode-default min-p. Defaults: "
+                             "verification=0.05, explore=0.05, reproduce=unset.")
     parser.add_argument("--max-tokens", type=int, default=6144)
     parser.add_argument("--no-guided-json", action="store_true",
                         help="Disable vLLM guided_json decoding (for endpoints that don't support it)")
@@ -404,11 +422,21 @@ def _cli():
     temperature = args.temperature if args.temperature is not None else _DEFAULT_TEMPERATURE[args.mode]
     cache_prompt = args.cache_prompt if args.cache_prompt is not None else _DEFAULT_CACHE_PROMPT[args.mode]
 
+    # Resolve sampler params: CLI override > mode default. Diagnosed
+    # 2026-04-26 — see run_corpus.py / client.py for full context. Modes
+    # that want sampler-driven variance must send top_k/top_p/min_p
+    # explicitly because llama.cpp server CLI defaults override unsent
+    # fields.
+    sampler_defaults = _DEFAULT_SAMPLER_PARAMS[args.mode]
+    top_k = args.top_k if args.top_k is not None else sampler_defaults["top_k"]
+    top_p = args.top_p if args.top_p is not None else sampler_defaults["top_p"]
+    min_p = args.min_p if args.min_p is not None else sampler_defaults["min_p"]
+
     log.info(
         "stage2 mode=%s sample_count=%d sample_concurrency=%d temperature=%s "
-        "cache_prompt=%s seeds=%s",
+        "cache_prompt=%s seeds=%s top_k=%s top_p=%s min_p=%s",
         args.mode, sample_count, args.sample_concurrency, temperature,
-        cache_prompt, sample_seeds,
+        cache_prompt, sample_seeds, top_k, top_p, min_p,
     )
 
     # Build chat_template_kwargs from --enable-thinking / --no-enable-thinking.
@@ -425,6 +453,9 @@ def _cli():
             chat_template_kwargs=tmpl_kwargs,
             cache_prompt=cache_prompt,
             deterministic=(args.mode != "explore"),
+            top_k=top_k,
+            top_p=top_p,
+            min_p=min_p,
         )
         fallback = None
         if args.fallback_endpoint:
@@ -435,6 +466,9 @@ def _cli():
                 chat_template_kwargs=tmpl_kwargs,
                 cache_prompt=cache_prompt,
                 deterministic=(args.mode != "explore"),
+                top_k=top_k,
+                top_p=top_p,
+                min_p=min_p,
             )
         return InferenceClient(primary=primary, fallback=fallback)
 

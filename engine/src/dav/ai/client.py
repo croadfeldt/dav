@@ -64,6 +64,30 @@ class EndpointConfig:
     # default temperature and seed handling at the client.chat() layer.
     # When False, callers may pass higher temperatures and skip the seed.
 
+    top_k: int | None = None
+    top_p: float | None = None
+    min_p: float | None = None
+    # Sampler params. When None, the field is omitted from the request body
+    # and the server's CLI default applies. When set, the per-request value
+    # overrides whatever the server has defaulted.
+    #
+    # Why this matters: the llama.cpp server at vis.roadfeldt.com:8000 was
+    # launched with --top-k 1, which makes the sampler strictly greedy
+    # regardless of temperature or seed. Per-request overrides only apply
+    # to the fields you send; unsent fields keep the CLI default. So a body
+    # of {temperature: 0.2, seed: <varying>} produces identical output across
+    # seeds because top_k=1 (the CLI default) overrides any sampling that
+    # temperature/seed would otherwise drive.
+    #
+    # The fix is per-request explicit sampler params in modes that want
+    # variance:
+    #   verification, explore: top_k=40, top_p=0.95, min_p=0.05 (or similar)
+    #   reproduce:             top_k=1 (explicit greedy, portable to other
+    #                          servers that don't ship --top-k 1 as default)
+    #
+    # Per-mode defaults are populated in dav.stages.run_corpus and
+    # dav.stages.stage2_analyze; this dataclass just stores them.
+
 @dataclass
 class ChatMessage:
     role: str                                  # system | user | assistant | tool
@@ -244,6 +268,18 @@ class InferenceClient:
             body["extra_body"] = {"guided_json": guided_json_schema}
         if seed is not None:
             body["seed"] = seed
+        # Per-request sampler params. Diagnosed bug 2026-04-26: relying on
+        # server CLI defaults for top_k/top_p/min_p produced silent greedy
+        # decoding (CLI --top-k 1) regardless of temperature or seed. Explicit
+        # per-mode values fix it. None means "let server default apply" — only
+        # use that path when the server is known to default sensibly OR when
+        # the caller is explicit about wanting greedy.
+        if endpoint.top_k is not None:
+            body["top_k"] = endpoint.top_k
+        if endpoint.top_p is not None:
+            body["top_p"] = endpoint.top_p
+        if endpoint.min_p is not None:
+            body["min_p"] = endpoint.min_p
         if endpoint.chat_template_kwargs:
             body["chat_template_kwargs"] = endpoint.chat_template_kwargs
         return body
