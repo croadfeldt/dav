@@ -12,9 +12,9 @@
 # summary, not as task failures, unless --halt-on-error is set).
 #
 # Workspace layout expected:
-#   {{ params.consumer_corpus_subdir }}/   ← consumer corpus (UCs + dav-version.yaml)
-#   {{ params.consumer_spec_subdir }}/     ← consumer spec content (architecture docs)
-#   results/                                ← run outputs go here as <run-id>/
+#   $(params.corpus-subdir)/   ← consumer corpus (UCs + dav-version.yaml)
+#   $(params.spec-subdir)/     ← consumer spec content (architecture docs)
+#   $(params.output-subdir)/   ← run outputs go here as <run-id>/
 #
 # Both subdirectories are populated by upstream git-sync tasks before
 # this task runs; see pipeline-stage2.yaml.j2.
