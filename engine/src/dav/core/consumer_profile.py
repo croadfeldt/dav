@@ -145,7 +145,7 @@ _DCM_REFERENCE_PROFILE = ConsumerProfile(
         "expiry_enforcement",
     ],
     resource_complexities=[
-        "single_no_deps", "hard_dependencies", "compound_service",
+        "single_no_deps", "hard_dependencies", "composite_service",
         "conditional_soft_deps", "process_resource", "cross_dependency_payload",
     ],
     policy_complexities=[
