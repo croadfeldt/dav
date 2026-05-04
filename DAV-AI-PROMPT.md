@@ -225,7 +225,7 @@ These are intentionally decoupled. Operators choose deploy targets per layer:
 - Engine on podman, inference on the same host (single-machine demo)
 - Engine on podman, inference on a remote vLLM (split deployment)
 
-**Today's state:** the Ansible role conflates the two — it deploys engine resources AND a `vllm-tier3` fallback inference deployment. This is the "everything in one cluster" path.
+**Today's state:** the Ansible role can deploy both layers but no longer conflates them by default. The engine layer (engine pod, MCP server, Tekton, review console, Postgres) deploys unconditionally; the in-cluster vLLM fallback is **opt-in** via `--tags vllm` and not deployed otherwise. Operators who run on hosted inference or have a separate inference deployment skip the bundled vLLM entirely. This is a partial step toward the future direction below — the role still hosts both sets of templates, but the deploy paths are now independent.
 
 **Future direction (locked, not yet implemented):**
 

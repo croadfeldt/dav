@@ -43,18 +43,23 @@ cp ansible/inventory/group_vars/all/vars.local.yaml.example \
 $EDITOR ansible/inventory/group_vars/all/vars.local.yaml
 ```
 
-Required values (all 6 must be filled in or the playbook will fail-fast at the first task):
+Required values (all 5 must be filled in or the playbook will fail-fast at the first task):
 
 | Variable | Example | Notes |
 |----------|---------|-------|
 | `inference_primary_endpoint` | `http://your-host.local:8000/v1` | LAN-reachable from cluster pods |
-| `inference_fallback_endpoint` | `http://vllm-tier3.{{ dav_namespace }}.svc:8000/v1` | In-cluster service DNS; the namespace template is fine as-is |
 | `consumer_spec_repo_url` | `https://github.com/your-org/your-spec-repo.git` | Architecture spec repo (DCM for first run) |
 | `consumer_corpus_repo_url` | `https://github.com/your-org/your-corpus-repo.git` | Use case corpus repo |
 | `dav_webhook_hostname` | `dav-webhook.apps.<cluster>.<basedomain>` | Tekton EventListener route hostname |
 | `review_console_hostname` | `dav-review.apps.<cluster>.<basedomain>` | Review console UI route hostname |
 
-**Verification gate:** `git status` should NOT show `vars.local.yaml` as new/modified (it's gitignored). All 6 vars filled in with real values.
+Optional:
+
+| Variable | Example | Notes |
+|----------|---------|-------|
+| `inference_fallback_endpoint` | `http://your-fallback.example/v1` | Engine retries here when primary errors. Leave unset to disable failover. The bundled in-cluster vLLM is opt-in via `--tags vllm`; see §1c. |
+
+**Verification gate:** `git status` should NOT show `vars.local.yaml` as new/modified (it's gitignored). All 5 required vars filled in with real values; the fallback endpoint is optional.
 
 ### 0.1 — Re-encrypt the vault
 
@@ -178,12 +183,13 @@ Type vault password when prompted. The playbook runs through:
 1. OpenShift Pipelines operator check (no-op if already installed)
 2. Namespace, RBAC, PVCs (`dav-workspace`, `dav-model-cache`)
 3. Source ConfigMaps for spec + corpus repos
-4. vLLM tier-3 fallback (NVIDIA 4060 Ti on a worker node — only deploys if the GPU node label matches; harmless if it doesn't)
-5. MCP server build + deploy (`dav-docs-mcp`)
-6. Engine image build + Tekton task install
-7. Tekton pipeline + triggers + event listener + webhook route
-8. Review console (UI + API + Postgres)
-9. Validation tasks
+4. MCP server build + deploy (`dav-docs-mcp`)
+5. Engine image build + Tekton task install
+6. Tekton pipeline + triggers + event listener + webhook route
+7. Review console (UI + API + Postgres)
+8. Validation tasks
+
+(In-cluster vLLM fallback is opt-in via `--tags vllm`; see §1c.)
 
 **Estimated time:** 15-30 minutes. Most of it is image builds (engine, MCP, review console UI/API). If image builds succeed quickly and pods come up, total can be under 15 min.
 
@@ -202,13 +208,44 @@ oc get secret github-webhook-secret -n dav
 oc get secrets -n dav | grep -E "review-console|oauth"
 ```
 
+### 1c — Optional: deploy in-cluster vLLM fallback
+
+DAV's engine supports an optional fallback inference endpoint that the
+client retries against when the primary errors. The Ansible role ships
+a `vllm-tier3` deployment template (NVIDIA GPU node-bound) that you can
+deploy as a fallback if you want failover for transient primary outages.
+
+This is **opt-in** — the default deployment does not run vLLM in-cluster.
+To deploy:
+
+```bash
+# 1. Set the fallback endpoint in vars.local.yaml:
+#    inference_fallback_endpoint: "http://vllm-tier3.{{ dav_namespace }}.svc:8000/v1"
+#
+# 2. Deploy the in-cluster vLLM:
+ansible-playbook ansible/playbook.yaml --tags vllm
+```
+
+The deployment uses a `nodeSelector` of `nvidia.com/gpu.present: "true"`,
+so the pod stays Pending on clusters without a GPU node — harmless but
+also non-functional. Verify the GPU node label exists before deploying:
+
+```bash
+oc get nodes -l nvidia.com/gpu.present=true
+```
+
+If you don't need failover (primary is reliable, or you're OK with
+transient primary failures failing UCs), leave `inference_fallback_endpoint`
+unset and skip this section. Continue-on-error at the corpus level
+(default) means individual UC failures don't block the rest of the run.
+
 ### 1b — Verify the deploy
 
 ```bash
 # All pods up?
 oc get pods -n dav
 # Expect: dav-docs-mcp, dav-review-api, dav-review-db, dav-review-ui all Running.
-# vllm-tier3 Running only if the GPU node label matched.
+# vllm-tier3 only appears if you deployed it explicitly via --tags vllm.
 
 # Pipeline registered?
 oc get pipeline.tekton.dev dav-stage2 -n dav

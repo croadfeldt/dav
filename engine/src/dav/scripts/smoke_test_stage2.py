@@ -11,8 +11,8 @@ Usage (from inside the cluster):
     python scripts/smoke_test_stage2.py
 
 Or override endpoints via env vars:
-    INFERENCE_URL=http://vllm-tier3.dav.svc:8000/v1 \\
-    INFERENCE_MODEL=casperhansen/deepseek-r1-distill-qwen-14b-awq \\
+    INFERENCE_URL=http://your-inference.example/v1 \\
+    INFERENCE_MODEL=your-model-name \\
     MCP_URL=http://dav-docs-mcp.dav.svc:8080 \\
     python scripts/smoke_test_stage2.py
 

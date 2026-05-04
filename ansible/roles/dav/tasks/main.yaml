@@ -26,11 +26,12 @@
     - sources
     - infrastructure
 
-- name: Deploy vLLM Tier 3 inference
+- name: Deploy in-cluster vLLM fallback inference (opt-in)
   ansible.builtin.import_tasks: vllm.yaml
   tags:
     - vllm
     - inference
+    - never   # explicit opt-in: --tags vllm
 
 - name: Build and deploy MCP servers
   ansible.builtin.import_tasks: mcp_servers.yaml

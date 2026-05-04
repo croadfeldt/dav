@@ -97,9 +97,14 @@
     timeout: 10
   register: fallback_check
   failed_when: false
+  when: inference_fallback_endpoint is defined and inference_fallback_endpoint | length > 0
 
 - name: Report fallback endpoint state
   ansible.builtin.debug:
     msg: >
+      {% if inference_fallback_endpoint is defined and inference_fallback_endpoint | length > 0 %}
       Fallback endpoint at {{ inference_fallback_endpoint }}:
       {{ 'reachable' if fallback_check.status == 200 else 'UNREACHABLE — pipeline has no automatic failover path if primary degrades' }}
+      {% else %}
+      No fallback endpoint configured. Primary is the sole inference path; transient primary failures will fail the affected UCs.
+      {% endif %}

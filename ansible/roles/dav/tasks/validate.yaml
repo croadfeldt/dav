@@ -117,7 +117,7 @@
 
        ── Inference ──
        Primary:          {{ '✓' if primary_inference_check.status | default(0) == 200 else '✗ UNREACHABLE' }} {{ inference_primary_endpoint }} ({{ inference_primary_backend }} {{ inference_primary_model_params }})
-       Fallback:         {{ '✓' if vllm_check.resources | length > 0 else '✗' }} {{ vllm_check.resources[0].status.readyReplicas | default(0) if vllm_check.resources | length > 0 else 0 }}/1 ready (in-cluster vLLM)
+       Fallback:         {{ '✓ ' + (vllm_check.resources[0].status.readyReplicas | default(0) | string) + '/1 ready (in-cluster vLLM)' if vllm_check.resources | length > 0 else ('— configured: ' + inference_fallback_endpoint if inference_fallback_endpoint is defined and inference_fallback_endpoint | length > 0 else '— not deployed (opt-in via --tags vllm)') }}
 
        ── Pipeline ──
        MCP Docs Server:  {{ '✓' if mcp_check.resources | length > 0 else '✗' }} {{ mcp_check.resources[0].status.readyReplicas | default(0) if mcp_check.resources | length > 0 else 0 }}/1 ready

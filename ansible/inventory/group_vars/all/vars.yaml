@@ -36,8 +36,11 @@ inference_primary_model_params: "32B"
 inference_primary_model_topology: "dual-GPU split-layer"
 inference_primary_context_length: 32768
 
-# --- Inference Tier 2 (fallback, in-cluster vLLM) ---
-# inference_fallback_endpoint is site-specific; supplied via vars.local.yaml.
+# --- Inference Tier 2 (in-cluster vLLM fallback) — OPT-IN ---
+# These vars only take effect when the playbook is invoked with
+# --tags vllm. By default, the in-cluster vLLM is NOT deployed.
+# inference_fallback_endpoint is site-specific and optional; supply
+# via vars.local.yaml only if you need failover.
 vllm_tier3_model: "casperhansen/deepseek-r1-distill-qwen-14b-awq"
 vllm_tier3_max_model_len: 16384
 vllm_tier3_image: "vllm/vllm-openai:latest"
