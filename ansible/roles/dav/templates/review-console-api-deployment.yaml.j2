@@ -36,6 +36,16 @@ spec:
         component: review-console-api
     spec:
       serviceAccountName: dav-review-api
+      affinity:
+        podAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: dav-review
+                    component: review-console-db
+                topologyKey: kubernetes.io/hostname
       initContainers:
         - name: git-clone-corpus
           image: alpine/git:latest
