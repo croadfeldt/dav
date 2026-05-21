@@ -1,7 +1,7 @@
 # DAV Framework Roadmap
 
-**Status:** Living document, last updated 2026-04-27
-**Current state:** Phase 4 baseline complete (run `2026-04-27T02-05-41Z-3b49872`); 3 architectural gaps surfaced and handed to the DCM session for response. Framework verified working end-to-end.
+**Status:** Living document, last updated 2026-05-21
+**Current state:** Phase 4 baseline complete (run `2026-04-27T02-05-41Z-3b49872`); Review Console v1 shipped (ops frontend, Runs/Results/Use Cases/Config tabs). Framework verified working end-to-end.
 
 This roadmap captures the agreed sequence for evolving DAV beyond its current "produces baseline reports" state into "actively gates spec changes and proposes UCs the architect didn't think of." Each item is its own focused session; the order matters because earlier items provide foundation for later ones.
 
@@ -162,13 +162,44 @@ Highest leverage, highest false-positive rate, hardest to evaluate. This is the 
 
 Build only after C1 has been working reliably for a while.
 
-### Review Console UI
+### ~~Review Console UI~~ — **SHIPPED (v1, 2026-05-21)**
 
-Surface the runs, verdicts, gaps, and dissent trajectories in the existing Review Console webapp. The data is already produced; this is API surfacing + frontend rendering.
+The review console was redesigned from a corpus file-review tool into a full DAV operations frontend. Built ahead of the original sequencing (before Mode B) because the corpus was producing enough routine runs to justify a UI now.
 
-Per-section scoping in earlier session: probably 90 min backend + 90 min frontend for usable v1.
+**What shipped:**
+- **Runs tab** — lists PipelineRuns, triggers new runs with full param control (mode, sample count, corpus subpath, repo overrides, inference overrides, halt-on-error)
+- **Results tab** — browses `/workspace/results/` from the shared PVC; per-UC verdict/findings/gaps/recommendations; handles all three output modes (verification, reproduce, explore)
+- **Use Cases tab** — full CRUD for managed UCs (Postgres-backed) + read-only view of corpus UCs from git; clone-to-managed for corpus UCs
+- **Config tab** — spec/corpus repo switching
 
-Build after Mode B is producing routine runs that warrant a UI to keep up.
+**Deferred from v1 (see items below):**
+- Hard-linking PipelineRun names to result directory IDs
+- Git push-back for managed use cases
+- Multi-project / multi-consumer support from a single console instance
+
+### Console v2 — run/result hard-linking
+
+PipelineRun names (e.g. `dav-console-123456`) and result directory IDs (e.g. `2026-05-21T10-30-00Z-abc1234`) are currently correlated only by timestamp. Hard-linking would require:
+- Adding a `--run-label` or `--run-id` param to the Tekton pipeline task
+- Having `run_corpus.py` write that label into `run-summary.yaml`
+- The console's Runs tab reading the label from completed PipelineRuns and linking out to the Results tab
+
+Low urgency while run volume is small and timestamps suffice for manual correlation.
+
+### Console v2 — managed UC git push-back
+
+Managed UCs are currently stored only in Postgres. They should optionally be commitable back to the consumer's corpus repo as a PR. Design work needed:
+- OAuth token scoping (the user's OCP identity needs to be mappable to a git credential)
+- Target repo + branch selection in the UI
+- PR authoring (title, body, commit message from the UC metadata)
+
+Complexity is mostly in the auth bridging. The actual git operations are straightforward.
+
+### Console v2 — multi-project support
+
+The console is currently single-consumer. Switching consumers requires redeploying with new `consumer_spec_repo_url` / `consumer_corpus_repo_url` vars. Multi-project support would let a user switch between configured consumers from the Config tab without a redeploy.
+
+Scope: a `dav-console-projects` ConfigMap listing named consumer profiles; the Config tab lets the user pick one; the API reloads corpus content and repo targets accordingly.
 
 ### Stage 3 dissent triage automation
 
@@ -204,10 +235,11 @@ A few things worth being explicit about so they don't drift into expectation:
 Whenever you next pick up DAV work:
 
 - This roadmap is the source of truth for sequence
-- Start with **Session A (Negative UCs)** unless explicitly redirected
+- **Review Console v1 is operational.** The new ops frontend (Runs/Results/Use Cases/Config) was shipped 2026-05-21 and deployed via Ansible. The workspace PVC is mounted read-only by the API pod.
+- Start with **Session A (Negative UCs)** unless explicitly redirected to console work
 - The Phase 4 baseline report (`dav-phase-4-baseline-report.md`) is the reference for current corpus verdict shape
 - The DCM session is in flight on the three gaps from Phase 4 — when those land, they'll produce PRs that benefit from Mode B existing, which is incentive for sequencing C/D before C1
-- Tags to be aware of: DCM `dav-baseline-v0.1.12` (after you push it), DAV `v0.1.12` (already pushed)
+- Tags to be aware of: DAV `v0.1.12` (already pushed)
 
 ---
 

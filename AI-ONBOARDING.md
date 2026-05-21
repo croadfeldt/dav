@@ -201,7 +201,9 @@ The Ansible role at `ansible/roles/dav/` deploys a Tekton pipeline (`dav-stage2`
 3. Clones the consumer's corpus repo into `<workspace>/corpus/` (`sync-corpus`, runs in parallel with sync-spec)
 4. Runs `dav-run-corpus` against `<workspace>/corpus/<corpus-uc-subpath>/`
 
-Trigger via webhook (push or PR), or manually:
+**Preferred: trigger via the Review Console UI.** The console's Runs tab provides a form for all pipeline parameters and shows run status. Navigate to the console URL (configured by Ansible under the `dav` route) and click **New Run**.
+
+Trigger manually via `tkn` as an alternative:
 
 ```bash
 tkn pipeline start dav-stage2 \
@@ -213,6 +215,8 @@ tkn pipeline start dav-stage2 \
 ```
 
 Override defaults: `--param consumer-spec-repo-url=...`, `--param mode=reproduce`, `--param corpus-uc-subpath=use-cases`, etc. See [`docs/operator-runbook.md`](docs/operator-runbook.md) for the full deploy + smoke + real-run workflow.
+
+Results land in `<workspace>/results/<run-id>/` on the shared PVC and are browsable from the console's **Results** tab without any manual file inspection.
 
 ### Comparing two analyses
 
