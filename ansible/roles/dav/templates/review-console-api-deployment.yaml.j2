@@ -91,9 +91,14 @@ spec:
               value: "{{ review_console_runs_pipeline_name }}"
             - name: DAV_DEFAULT_BRANCH
               value: "{{ consumer_spec_repo_branch }}"
+            - name: DAV_WORKSPACE_PATH
+              value: "/workspace"
           volumeMounts:
             - name: corpus
               mountPath: /data
+              readOnly: true
+            - name: workspace
+              mountPath: /workspace
               readOnly: true
           readinessProbe:
             httpGet:
@@ -117,3 +122,7 @@ spec:
       volumes:
         - name: corpus
           emptyDir: {}
+        - name: workspace
+          persistentVolumeClaim:
+            claimName: "{{ dav_workspace_pvc_name }}"
+            readOnly: true

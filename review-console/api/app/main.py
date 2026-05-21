@@ -1,11 +1,8 @@
-"""DCM Review Console API.
+"""DAV Console API.
 
-Thin FastAPI over Postgres. Auth is expected to be terminated upstream
-(oauth-proxy sidecar), which injects X-Forwarded-User / X-Forwarded-Email.
-
-Corpus seed modes (env: CORPUS_MODE):
-  directory (default)  walk CORPUS_DIR, include/exclude filters applied
-  file                 read CORPUS_PATH as a JSON array [{path, content}]
+Thin FastAPI over Postgres + Kubernetes + workspace PVC.
+Auth is terminated upstream (oauth-proxy sidecar) which injects
+X-Forwarded-User / X-Forwarded-Email headers.
 """
 from __future__ import annotations
 
@@ -18,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import asyncpg
+import yaml as _yaml
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -25,6 +23,7 @@ from pydantic import BaseModel, Field
 from .corpus_loader import walk_corpus, parse_patterns
 from . import validations
 from . import sources
+from . import results as _results
 
 log = logging.getLogger("dav-review-api")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -40,6 +39,7 @@ ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
 STATUSES = {"unreviewed", "in-review", "needs-work", "approved", "stale"}
+VALID_MODES = {"verification", "reproduce", "explore"}
 
 pool: Optional[asyncpg.Pool] = None
 
@@ -104,7 +104,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DCM Review API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.2.0", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -141,22 +141,34 @@ class ReviewIn(BaseModel):
 
 class HandoffRequest(BaseModel):
     file_paths: list[str]
-    title: str = "DCM Corpus Review — Handoff"
+    title: str = "DAV Corpus Review — Handoff"
     action: str = (
-        "Please review the following files against the current DCM V1 "
-        "architecture. Identify gaps, stale references, inconsistencies with "
-        "the Data / Provider / Policy abstractions, and recommend concrete "
-        "updates or deprecations."
+        "Please review the following files against the current DAV architecture. "
+        "Identify gaps, stale references, and recommend concrete updates."
     )
     include_content: bool = True
     include_notes: bool = True
 
 
-class SelfTestRunIn(BaseModel):
+class RunTriggerIn(BaseModel):
+    mode: str = "verification"
+    sample_count: Optional[int] = None
+    corpus_subpath: Optional[str] = None
+    corpus_repo_url: Optional[str] = None
+    corpus_repo_branch: Optional[str] = None
+    spec_repo_url: Optional[str] = None
+    spec_repo_branch: Optional[str] = None
+    inference_endpoint: Optional[str] = None
+    inference_model: Optional[str] = None
+    halt_on_error: bool = False
+    # Legacy params kept for backward compat with self-test UI
     branch: Optional[str] = None
     commit_sha: Optional[str] = None
-    inference_endpoint: Optional[str] = None
-    test_count: Optional[str] = None
+
+
+class ManagedUCIn(BaseModel):
+    yaml_content: str
+    tags: list[str] = []
 
 
 class SourceApplyIn(BaseModel):
@@ -192,7 +204,290 @@ async def me(request: Request):
         return {"reviewer": None, "authenticated": False}
 
 
-# ------------------------- Corpus -------------------------
+# ========================= RUNS =========================
+
+
+@app.get("/api/runs")
+async def list_runs(limit: int = Query(50, ge=1, le=200)):
+    """List recent PipelineRuns."""
+    if not validations.ENABLED:
+        return {"runs": [], "enabled": False}
+    try:
+        runs = validations.list_recent(limit=limit)
+        return {"runs": runs, "enabled": True}
+    except Exception as e:
+        log.exception("list runs failed")
+        raise HTTPException(500, f"list failed: {e}")
+
+
+@app.post("/api/runs")
+async def trigger_run(payload: RunTriggerIn, request: Request):
+    """Trigger a new DAV pipeline run."""
+    if not validations.ENABLED:
+        raise HTTPException(403, "pipeline trigger disabled")
+    if payload.mode not in VALID_MODES:
+        raise HTTPException(400, f"invalid mode; must be one of {sorted(VALID_MODES)}")
+    reviewer = get_user(request)
+    try:
+        result = validations.trigger_run(
+            triggered_by=reviewer,
+            branch=payload.branch,
+            commit_sha=payload.commit_sha,
+            inference_endpoint=payload.inference_endpoint,
+            inference_model=payload.inference_model,
+            mode=payload.mode,
+            sample_count=payload.sample_count,
+            corpus_subpath=payload.corpus_subpath,
+            corpus_repo_url=payload.corpus_repo_url,
+            corpus_repo_branch=payload.corpus_repo_branch,
+            spec_repo_url=payload.spec_repo_url,
+            spec_repo_branch=payload.spec_repo_branch,
+            halt_on_error=payload.halt_on_error,
+        )
+        return {"ok": True, "run": result}
+    except Exception as e:
+        log.exception("run trigger failed")
+        raise HTTPException(500, f"trigger failed: {e}")
+
+
+@app.get("/api/runs/status")
+async def runs_status():
+    """Capability check — is the pipeline trigger wired up?"""
+    return {
+        "enabled": validations.ENABLED,
+        "available": validations.is_available(),
+        "pipeline_name": validations.PIPELINE_NAME,
+        "namespace": validations.NAMESPACE,
+        "default_branch": validations.DEFAULT_BRANCH,
+    }
+
+
+# ========================= RESULTS =========================
+
+
+@app.get("/api/results")
+async def list_results():
+    """List all run result directories found on the workspace PVC."""
+    if not _results.is_available():
+        return {"results": [], "available": False,
+                "workspace_path": _results.WORKSPACE_PATH}
+    try:
+        runs = _results.list_runs()
+        return {"results": runs, "available": True,
+                "workspace_path": _results.WORKSPACE_PATH}
+    except Exception as e:
+        log.exception("list results failed")
+        raise HTTPException(500, f"list failed: {e}")
+
+
+@app.get("/api/results/{run_id}")
+async def get_result(run_id: str):
+    """Return the run-summary.yaml content for a specific run."""
+    if not _results.is_available():
+        raise HTTPException(503, "workspace PVC not mounted")
+    summary = _results.get_run_summary(run_id)
+    if summary is None:
+        raise HTTPException(404, f"run {run_id!r} not found")
+    return summary
+
+
+@app.get("/api/results/{run_id}/uc/{uc_uuid:path}")
+async def get_result_uc(run_id: str, uc_uuid: str):
+    """Return the analysis output for a specific UC within a run."""
+    if not _results.is_available():
+        raise HTTPException(503, "workspace PVC not mounted")
+    analysis = _results.get_analysis(run_id, uc_uuid)
+    if analysis is None:
+        raise HTTPException(404, f"analysis for {uc_uuid!r} not found in run {run_id!r}")
+    return analysis
+
+
+# ========================= USE CASES =========================
+
+
+def _parse_uc_yaml(yaml_content: str) -> dict:
+    """Parse UC YAML and extract key fields. Raises ValueError on bad content."""
+    try:
+        data = _yaml.safe_load(yaml_content)
+    except Exception as e:
+        raise ValueError(f"invalid YAML: {e}")
+    if not isinstance(data, dict):
+        raise ValueError("UC YAML must be a mapping")
+    return data
+
+
+@app.get("/api/use-cases")
+async def list_use_cases(
+    source: Optional[str] = Query(None, description="'managed', 'corpus', or None for both"),
+):
+    """List use cases — from the managed DB, the corpus files, or both."""
+    managed = []
+    corpus_ucs = []
+
+    if source in (None, "managed"):
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT uuid, title, tags, created_by, created_at, updated_by, updated_at "
+                "FROM managed_use_cases ORDER BY updated_at DESC"
+            )
+        managed = [
+            {
+                **dict(r),
+                "source": "managed",
+                "created_at": r["created_at"].isoformat(),
+                "updated_at": r["updated_at"].isoformat(),
+            }
+            for r in rows
+        ]
+
+    if source in (None, "corpus"):
+        # Corpus UC files — already seeded into the files table; filter to .yaml files
+        # that look like UCs (have a uuid field when parsed as YAML).
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT path, content, size_bytes, folder FROM files "
+                "WHERE path LIKE '%.yaml' OR path LIKE '%.yml' ORDER BY path"
+            )
+        for r in rows:
+            try:
+                data = _yaml.safe_load(r["content"])
+                if not isinstance(data, dict) or "uuid" not in data:
+                    continue
+                corpus_ucs.append({
+                    "uuid":    data.get("uuid"),
+                    "title":   data.get("scenario", {}).get("description", "")[:80]
+                               if isinstance(data.get("scenario"), dict) else "",
+                    "handle":  data.get("handle"),
+                    "tags":    data.get("tags", []),
+                    "path":    r["path"],
+                    "source":  "corpus",
+                })
+            except Exception:
+                continue
+
+    return {"use_cases": managed + corpus_ucs}
+
+
+@app.get("/api/use-cases/{uuid:path}")
+async def get_use_case(uuid: str):
+    """Return a single use case by uuid — managed DB first, then corpus files."""
+    # Check managed DB
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM managed_use_cases WHERE uuid = $1", uuid
+        )
+    if row:
+        d = dict(row)
+        d["source"] = "managed"
+        d["created_at"] = d["created_at"].isoformat()
+        d["updated_at"] = d["updated_at"].isoformat()
+        return d
+
+    # Fall back to corpus files
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT path, content FROM files WHERE path LIKE '%.yaml' OR path LIKE '%.yml'"
+        )
+    for r in rows:
+        try:
+            data = _yaml.safe_load(r["content"])
+            if isinstance(data, dict) and data.get("uuid") == uuid:
+                return {"uuid": uuid, "yaml_content": r["content"],
+                        "path": r["path"], "source": "corpus", "parsed": data}
+        except Exception:
+            continue
+
+    raise HTTPException(404, f"use case {uuid!r} not found")
+
+
+@app.post("/api/use-cases")
+async def create_use_case(payload: ManagedUCIn, request: Request):
+    """Create a managed use case. UUID is taken from the YAML content."""
+    user = get_user(request)
+    try:
+        data = _parse_uc_yaml(payload.yaml_content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    uc_uuid = data.get("uuid")
+    if not uc_uuid or not isinstance(uc_uuid, str):
+        raise HTTPException(400, "UC YAML must have a non-empty 'uuid' field")
+
+    title = ""
+    if isinstance(data.get("scenario"), dict):
+        title = (data["scenario"].get("description") or "")[:120]
+    if not title:
+        title = data.get("handle", uc_uuid)
+
+    tags = payload.tags or data.get("tags", [])
+
+    async with pool.acquire() as conn:
+        existing = await conn.fetchval(
+            "SELECT 1 FROM managed_use_cases WHERE uuid = $1", uc_uuid
+        )
+        if existing:
+            raise HTTPException(409, f"use case {uc_uuid!r} already exists; use PUT to update")
+        await conn.execute(
+            """
+            INSERT INTO managed_use_cases
+              (uuid, title, yaml_content, created_by, updated_by, tags)
+            VALUES ($1, $2, $3, $4, $4, $5)
+            """,
+            uc_uuid, title, payload.yaml_content, user, tags,
+        )
+    return {"ok": True, "uuid": uc_uuid, "title": title}
+
+
+@app.put("/api/use-cases/{uuid:path}")
+async def update_use_case(uuid: str, payload: ManagedUCIn, request: Request):
+    """Update an existing managed use case."""
+    user = get_user(request)
+    try:
+        data = _parse_uc_yaml(payload.yaml_content)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    yaml_uuid = data.get("uuid")
+    if yaml_uuid and yaml_uuid != uuid:
+        raise HTTPException(400, f"UUID in YAML ({yaml_uuid!r}) does not match URL ({uuid!r})")
+
+    title = ""
+    if isinstance(data.get("scenario"), dict):
+        title = (data["scenario"].get("description") or "")[:120]
+    if not title:
+        title = data.get("handle", uuid)
+
+    tags = payload.tags or data.get("tags", [])
+
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE managed_use_cases
+            SET yaml_content=$2, title=$3, updated_by=$4, updated_at=now(), tags=$5
+            WHERE uuid=$1
+            """,
+            uuid, payload.yaml_content, title, user, tags,
+        )
+    if result == "UPDATE 0":
+        raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
+    return {"ok": True, "uuid": uuid, "title": title}
+
+
+@app.delete("/api/use-cases/{uuid:path}")
+async def delete_use_case(uuid: str, request: Request):
+    """Delete a managed use case."""
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM managed_use_cases WHERE uuid = $1", uuid
+        )
+    if result == "DELETE 0":
+        raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
+    log.info("Use case %s deleted by %s", uuid, user)
+    return {"ok": True, "uuid": uuid}
+
+
+# ========================= CORPUS FILES (legacy) =========================
 
 
 @app.get("/api/corpus")
@@ -258,7 +553,7 @@ async def get_file(file_path: str):
         }
 
 
-# ------------------------- Reviews -------------------------
+# ========================= REVIEWS (legacy) =========================
 
 
 @app.post("/api/reviews")
@@ -307,7 +602,7 @@ async def clear_review(file_path: str, request: Request):
     return {"ok": True}
 
 
-# ------------------------- History -------------------------
+# ========================= HISTORY (legacy) =========================
 
 
 @app.get("/api/history")
@@ -353,7 +648,7 @@ async def history(
     }
 
 
-# ------------------------- Dashboard -------------------------
+# ========================= DASHBOARD (legacy) =========================
 
 
 @app.get("/api/dashboard")
@@ -393,20 +688,13 @@ async def dashboard():
         recent = await conn.fetch(
             """
             SELECT file_path, reviewer, action, status, created_at
-            FROM review_events
-            ORDER BY created_at DESC
-            LIMIT 10
+            FROM review_events ORDER BY created_at DESC LIMIT 10
             """
         )
         reviewers = await conn.fetch(
             """
-            SELECT reviewer,
-                   COUNT(*) AS events,
-                   MAX(created_at) AS last_active
-            FROM review_events
-            GROUP BY reviewer
-            ORDER BY last_active DESC
-            LIMIT 20
+            SELECT reviewer, COUNT(*) AS events, MAX(created_at) AS last_active
+            FROM review_events GROUP BY reviewer ORDER BY last_active DESC LIMIT 20
             """
         )
     return {
@@ -422,151 +710,14 @@ async def dashboard():
     }
 
 
-# ------------------------- Handoff -------------------------
-
-
-@app.post("/api/handoff")
-async def build_handoff(req: HandoffRequest):
-    if not req.file_paths:
-        raise HTTPException(400, "file_paths is empty")
-    async with pool.acquire() as conn:
-        files = await conn.fetch(
-            """
-            SELECT f.*, fcs.status, fcs.reviewer, fcs.reviewed_at
-            FROM files f
-            LEFT JOIN file_current_status fcs ON fcs.file_path = f.path
-            WHERE f.path = ANY($1::text[])
-            ORDER BY f.path
-            """,
-            req.file_paths,
-        )
-        notes_rows = await conn.fetch(
-            """
-            SELECT file_path, reviewer, status, notes, reviewed_at
-            FROM review_current
-            WHERE file_path = ANY($1::text[])
-            ORDER BY file_path, reviewed_at DESC
-            """,
-            req.file_paths,
-        )
-    notes_by_path: dict[str, list] = {}
-    for r in notes_rows:
-        notes_by_path.setdefault(r["file_path"], []).append(dict(r))
-
-    from datetime import datetime
-    lines = [f"# {req.title}", ""]
-    lines.append(f"**Generated:** {datetime.utcnow().isoformat()}Z  ")
-    lines.append(f"**Files:** {len(files)}  ")
-    lines.append("")
-    lines.append("## Context")
-    lines.append("")
-    lines.append(
-        "This handoff originates from the DCM Review Console. The files below "
-        "have been reviewed against the DCM (Data Center Management) "
-        "architecture — a Red Hat FlightPath framework for sovereign private "
-        "cloud management, built on the **Data**, **Provider**, and **Policy** "
-        "abstractions connected by a policy-driven event loop."
-    )
-    lines.append("")
-    lines.append("## Requested action")
-    lines.append("")
-    lines.append(req.action)
-    lines.append("")
-    lines.append("## Files under review")
-    lines.append("")
-    for f in files:
-        lines.append("---")
-        lines.append("")
-        lines.append(f"### `{f['path']}`")
-        lines.append("")
-        status = f["status"] or "unreviewed"
-        line = f"**Status:** {status}"
-        if f["reviewer"]:
-            line += f" · {f['reviewer']}"
-        if f["reviewed_at"]:
-            line += f" · {f['reviewed_at'].isoformat()}"
-        lines.append(line)
-        lines.append("")
-        if req.include_notes:
-            file_notes = notes_by_path.get(f["path"], [])
-            for n in file_notes:
-                if n["notes"]:
-                    lines.append(f"**Notes from {n['reviewer']} ({n['status']}):**")
-                    lines.append("")
-                    for nl in n["notes"].split("\n"):
-                        lines.append(f"> {nl}")
-                    lines.append("")
-        if req.include_content:
-            lines.append("**Content:**")
-            lines.append("")
-            lines.append("```")
-            lines.append(f["content"])
-            lines.append("```")
-            lines.append("")
-    lines.append("---")
-    lines.append("")
-    lines.append(f"*End of handoff. {len(files)} file(s) packaged.*")
-    markdown = "\n".join(lines)
-    return {"markdown": markdown, "length": len(markdown), "files": len(files)}
-
-
-# ------------------------- Self-Test Trigger -------------------------
-
-
-@app.get("/api/self-test/status")
-async def runs_status():
-    """Is the self-test trigger feature available? Used by UI to hide tab."""
-    return {
-        "enabled": validations.ENABLED,
-        "available": validations.is_available(),
-        "pipeline_name": validations.PIPELINE_NAME,
-        "namespace": validations.NAMESPACE,
-        "default_branch": validations.DEFAULT_BRANCH,
-    }
-
-
-@app.post("/api/self-test/run")
-async def self_test_run(payload: SelfTestRunIn, request: Request):
-    if not validations.ENABLED:
-        raise HTTPException(403, "self-test trigger disabled")
-    reviewer = get_user(request)
-    try:
-        result = validations.trigger_run(
-            triggered_by=reviewer,
-            branch=payload.branch,
-            commit_sha=payload.commit_sha,
-            inference_endpoint=payload.inference_endpoint,
-            test_count=payload.test_count,
-        )
-        return {"ok": True, "pipelinerun": result}
-    except Exception as e:
-        log.exception("self-test trigger failed")
-        raise HTTPException(500, f"trigger failed: {e}")
-
-
-@app.get("/api/self-test/runs")
-async def self_test_runs(limit: int = Query(20, ge=1, le=100)):
-    if not validations.ENABLED:
-        return {"runs": [], "enabled": False}
-    try:
-        runs = validations.list_recent(limit=limit)
-        return {"runs": runs, "enabled": True}
-    except Exception as e:
-        log.exception("list self-test runs failed")
-        raise HTTPException(500, f"list failed: {e}")
-
-
-# ------------------------- Sourcing -------------------------
+# ========================= SOURCING =========================
 
 
 @app.get("/api/sources")
 async def sources_state():
-    """Return current state of both spec and corpus sourcing."""
     try:
         if not sources.is_available():
-            raise HTTPException(
-                503, "sources not available (ConfigMap or RBAC missing)"
-            )
+            raise HTTPException(503, "sources not available (ConfigMap or RBAC missing)")
         return {"sources": sources.get_all_sources_state()}
     except HTTPException:
         raise
@@ -577,7 +728,6 @@ async def sources_state():
 
 @app.get("/api/sources/branches")
 async def sources_branches(repo_url: str = Query(..., min_length=1)):
-    """List branches for a GitHub repo. 5-minute in-memory cache."""
     try:
         branches = sources.list_branches(repo_url)
         return {"repo_url": repo_url, "branches": branches}
@@ -590,12 +740,6 @@ async def sources_branches(repo_url: str = Query(..., min_length=1)):
 
 @app.post("/api/sources/{kind}")
 async def sources_apply(kind: str, payload: SourceApplyIn, request: Request):
-    """Apply a new repo+branch to spec or corpus sourcing.
-
-    Patches the ConfigMap, mirrors annotations to the Deployment, and
-    triggers a rolling restart. Returns the resulting state including
-    rollout progress.
-    """
     if kind not in sources.SOURCES:
         raise HTTPException(400, f"unknown source kind: {kind}")
     reviewer = get_user(request)
@@ -616,7 +760,6 @@ async def sources_apply(kind: str, payload: SourceApplyIn, request: Request):
 
 @app.get("/api/sources/{kind}")
 async def sources_kind_state(kind: str):
-    """Return current state for a single source kind (poll-friendly)."""
     if kind not in sources.SOURCES:
         raise HTTPException(400, f"unknown source kind: {kind}")
     try:
@@ -624,3 +767,47 @@ async def sources_kind_state(kind: str):
     except Exception as e:
         log.exception("source kind state read failed")
         raise HTTPException(500, f"read failed: {e}")
+
+
+# ========================= LEGACY SELF-TEST (kept for backward compat) =========================
+
+
+@app.get("/api/self-test/status")
+async def self_test_status():
+    return {
+        "enabled": validations.ENABLED,
+        "available": validations.is_available(),
+        "pipeline_name": validations.PIPELINE_NAME,
+        "namespace": validations.NAMESPACE,
+        "default_branch": validations.DEFAULT_BRANCH,
+    }
+
+
+@app.post("/api/self-test/run")
+async def self_test_run(payload: RunTriggerIn, request: Request):
+    if not validations.ENABLED:
+        raise HTTPException(403, "trigger disabled")
+    reviewer = get_user(request)
+    try:
+        result = validations.trigger_run(
+            triggered_by=reviewer,
+            branch=payload.branch,
+            commit_sha=payload.commit_sha,
+            inference_endpoint=payload.inference_endpoint,
+        )
+        return {"ok": True, "pipelinerun": result}
+    except Exception as e:
+        log.exception("self-test trigger failed")
+        raise HTTPException(500, f"trigger failed: {e}")
+
+
+@app.get("/api/self-test/runs")
+async def self_test_runs(limit: int = Query(20, ge=1, le=100)):
+    if not validations.ENABLED:
+        return {"runs": [], "enabled": False}
+    try:
+        runs = validations.list_recent(limit=limit)
+        return {"runs": runs, "enabled": True}
+    except Exception as e:
+        log.exception("list self-test runs failed")
+        raise HTTPException(500, f"list failed: {e}")

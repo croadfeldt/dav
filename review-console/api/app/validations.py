@@ -70,8 +70,18 @@ def _mk_pipelinerun(
     inference_endpoint: Optional[str],
     test_count: Optional[str],
     triggered_by: str,
+    # Extended params for full run management
+    mode: Optional[str] = None,
+    sample_count: Optional[int] = None,
+    corpus_subpath: Optional[str] = None,
+    corpus_repo_url: Optional[str] = None,
+    corpus_repo_branch: Optional[str] = None,
+    spec_repo_url: Optional[str] = None,
+    spec_repo_branch: Optional[str] = None,
+    inference_model: Optional[str] = None,
+    halt_on_error: bool = False,
 ) -> dict:
-    """Build a PipelineRun object targeting the DCM self-test Pipeline."""
+    """Build a PipelineRun object targeting the DAV Pipeline."""
     suffix = str(int(time.time()))[-6:]
     name = f"{PIPELINE_NAME}-console-{suffix}"
 
@@ -82,6 +92,24 @@ def _mk_pipelinerun(
         params.append({"name": "inference-endpoint", "value": inference_endpoint})
     if test_count:
         params.append({"name": "test-count", "value": test_count})
+    if mode:
+        params.append({"name": "mode", "value": mode})
+    if sample_count is not None:
+        params.append({"name": "sample-count", "value": str(sample_count)})
+    if corpus_subpath:
+        params.append({"name": "corpus-uc-subpath", "value": corpus_subpath})
+    if corpus_repo_url:
+        params.append({"name": "consumer-corpus-repo-url", "value": corpus_repo_url})
+    if corpus_repo_branch:
+        params.append({"name": "consumer-corpus-repo-branch", "value": corpus_repo_branch})
+    if spec_repo_url:
+        params.append({"name": "consumer-spec-repo-url", "value": spec_repo_url})
+    if spec_repo_branch:
+        params.append({"name": "consumer-spec-repo-branch", "value": spec_repo_branch})
+    if inference_model:
+        params.append({"name": "inference-model", "value": inference_model})
+    if halt_on_error:
+        params.append({"name": "halt-on-error", "value": "true"})
 
     return {
         "apiVersion": f"{_TEKTON_GROUP}/{_TEKTON_VERSION}",
@@ -113,10 +141,19 @@ def trigger_run(
     commit_sha: Optional[str] = None,
     inference_endpoint: Optional[str] = None,
     test_count: Optional[str] = None,
+    mode: Optional[str] = None,
+    sample_count: Optional[int] = None,
+    corpus_subpath: Optional[str] = None,
+    corpus_repo_url: Optional[str] = None,
+    corpus_repo_branch: Optional[str] = None,
+    spec_repo_url: Optional[str] = None,
+    spec_repo_branch: Optional[str] = None,
+    inference_model: Optional[str] = None,
+    halt_on_error: bool = False,
 ) -> dict:
     """Create a PipelineRun. Returns the created object's status summary."""
     if not ENABLED:
-        raise RuntimeError("self-test trigger disabled")
+        raise RuntimeError("pipeline trigger disabled")
 
     body = _mk_pipelinerun(
         branch=branch or DEFAULT_BRANCH,
@@ -124,6 +161,15 @@ def trigger_run(
         inference_endpoint=inference_endpoint,
         test_count=test_count,
         triggered_by=triggered_by,
+        mode=mode,
+        sample_count=sample_count,
+        corpus_subpath=corpus_subpath,
+        corpus_repo_url=corpus_repo_url,
+        corpus_repo_branch=corpus_repo_branch,
+        spec_repo_url=spec_repo_url,
+        spec_repo_branch=spec_repo_branch,
+        inference_model=inference_model,
+        halt_on_error=halt_on_error,
     )
 
     try:
@@ -147,6 +193,7 @@ def trigger_run(
         "triggered_by": triggered_by,
         "branch": branch or DEFAULT_BRANCH,
         "commit_sha": commit_sha,
+        "mode": mode or "verification",
     }
 
 

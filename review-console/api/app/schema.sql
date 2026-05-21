@@ -82,4 +82,20 @@ SELECT DISTINCT ON (file_path)
 FROM review_current
 ORDER BY file_path, reviewed_at DESC;
 
+-- Managed use cases — UC YAML files authored/edited via the console UI.
+-- These are separate from the git-synced corpus; runs can target either or both.
+CREATE TABLE IF NOT EXISTS managed_use_cases (
+  uuid          TEXT PRIMARY KEY,
+  title         TEXT NOT NULL DEFAULT '',
+  yaml_content  TEXT NOT NULL,
+  created_by    TEXT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by    TEXT NOT NULL,
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  tags          TEXT[] NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_managed_uc_updated
+  ON managed_use_cases(updated_at DESC);
+
 COMMIT;

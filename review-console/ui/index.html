@@ -3,596 +3,674 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>DCM Corpus Review Console</title>
+<title>DAV Console</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,400&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0d0c0a;
-    --bg-raised: #16140f;
-    --bg-panel: #1c1915;
-    --bg-input: #100e0a;
-    --border: #2a2620;
-    --border-bright: #3d372c;
-    --text: #e8e1d1;
-    --text-dim: #8a8373;
-    --text-faint: #55503f;
-    --accent: #d99a3a;
-    --accent-soft: #b8802c;
-    --accent-bg: rgba(217, 154, 58, 0.08);
-    --drift: #d9653a;
-    --status-unreviewed: #55503f;
-    --status-in-review: #4a90c9;
-    --status-needs-work: #d9653a;
-    --status-approved: #7ba84f;
-    --status-stale: #8a5a8a;
+    --bg:             #0d0c0a;
+    --bg-raised:      #16140f;
+    --bg-panel:       #1c1915;
+    --bg-input:       #100e0a;
+    --border:         #2a2620;
+    --border-bright:  #3d372c;
+    --text:           #e8e1d1;
+    --text-dim:       #8a8373;
+    --text-faint:     #55503f;
+    --accent:         #d99a3a;
+    --accent-soft:    #b8802c;
+    --accent-bg:      rgba(217,154,58,0.08);
+    --red:            #d9653a;
+    --green:          #7ba84f;
+    --blue:           #4a90c9;
+    --purple:         #8a5a8a;
     --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
     --serif: 'Newsreader', 'Iowan Old Style', Georgia, serif;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; }
   body {
-    background: var(--bg); color: var(--text);
-    font-family: var(--mono); font-size: 13px; line-height: 1.5;
-    overflow: hidden;
+    background:var(--bg); color:var(--text);
+    font-family:var(--mono); font-size:13px; line-height:1.5;
+    overflow:hidden;
     background-image:
       radial-gradient(circle at 15% 20%, rgba(217,154,58,0.04), transparent 45%),
       radial-gradient(circle at 85% 80%, rgba(74,144,201,0.03), transparent 50%);
   }
-  button { font-family: inherit; font-size: inherit; cursor: pointer; border: none; background: none; color: inherit; }
-  input, textarea, select { font-family: inherit; font-size: inherit; color: inherit; background: var(--bg-input); border: 1px solid var(--border); padding: 6px 8px; border-radius: 2px; outline: none; }
-  input:focus, textarea:focus, select:focus { border-color: var(--accent-soft); }
-  textarea { resize: vertical; line-height: 1.5; }
+  button  { font-family:inherit; font-size:inherit; cursor:pointer; border:none; background:none; color:inherit; }
+  input, textarea, select { font-family:inherit; font-size:inherit; color:inherit; background:var(--bg-input); border:1px solid var(--border); padding:6px 8px; border-radius:2px; outline:none; }
+  input:focus,textarea:focus,select:focus { border-color:var(--accent-soft); }
+  textarea { resize:vertical; line-height:1.5; }
+  a { color:var(--accent); text-decoration:none; }
 
-  header { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; background: var(--bg-raised); border-bottom: 1px solid var(--border); height: 52px; }
-  .brand { display: flex; align-items: baseline; gap: 12px; }
-  .brand-mark { font-family: var(--serif); font-size: 20px; font-weight: 400; letter-spacing: 0.01em; color: var(--text); }
-  .brand-mark em { color: var(--accent); font-style: italic; font-weight: 300; }
-  .brand-sub { font-size: 10px; text-transform: uppercase; letter-spacing: 0.18em; color: var(--text-faint); }
-  .header-right { display: flex; gap: 22px; align-items: center; font-size: 11px; }
-  .hs-item { color: var(--text-dim); }
-  .hs-item b { color: var(--text); font-weight: 500; }
-  .reviewer-chip { padding: 4px 10px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 2px; font-size: 11px; color: var(--text); }
-  .reviewer-chip.anon { color: var(--text-faint); }
-  .reviewer-chip::before { content: '◉'; color: var(--accent); margin-right: 6px; font-size: 9px; }
+  /* ---- Layout shell ---- */
+  header { display:flex; align-items:center; justify-content:space-between; padding:10px 20px; background:var(--bg-raised); border-bottom:1px solid var(--border); height:52px; flex-shrink:0; }
+  .brand { display:flex; align-items:baseline; gap:12px; }
+  .brand-mark { font-family:var(--serif); font-size:20px; font-weight:400; letter-spacing:0.01em; }
+  .brand-mark em { color:var(--accent); font-style:italic; font-weight:300; }
+  .brand-sub { font-size:10px; text-transform:uppercase; letter-spacing:0.18em; color:var(--text-faint); }
+  .header-right { display:flex; gap:16px; align-items:center; font-size:11px; color:var(--text-dim); }
+  .reviewer-chip { padding:4px 10px; background:var(--bg-input); border:1px solid var(--border); border-radius:2px; font-size:11px; }
+  .reviewer-chip.anon { color:var(--text-faint); }
+  .reviewer-chip::before { content:'◉'; color:var(--accent); margin-right:6px; font-size:9px; }
 
-  nav.tabs { display: flex; background: var(--bg-raised); border-bottom: 1px solid var(--border); padding: 0 20px; }
-  nav.tabs button { padding: 10px 18px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-dim); border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; }
-  nav.tabs button:hover { color: var(--text); }
-  nav.tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
-  nav.tabs button .badge { margin-left: 6px; font-size: 9px; background: var(--border); color: var(--text-dim); padding: 1px 5px; border-radius: 2px; letter-spacing: 0.05em; }
+  nav.tabs { display:flex; background:var(--bg-raised); border-bottom:1px solid var(--border); padding:0 20px; flex-shrink:0; }
+  nav.tabs button { padding:10px 18px; font-size:11px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-dim); border-bottom:2px solid transparent; transition:color .15s,border-color .15s; }
+  nav.tabs button:hover { color:var(--text); }
+  nav.tabs button.active { color:var(--accent); border-bottom-color:var(--accent); }
+  nav.tabs button .badge { margin-left:6px; font-size:9px; background:var(--border); color:var(--text-dim); padding:1px 5px; border-radius:2px; }
 
-  main { height: calc(100vh - 52px - 40px); overflow: hidden; }
-  .view { height: 100%; display: none; }
-  .view.active { display: flex; }
+  .shell { display:flex; flex-direction:column; height:100vh; }
+  main { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+  .view { flex:1; display:none; overflow:hidden; }
+  .view.active { display:flex; }
 
-  .corpus-layout { display: flex; width: 100%; height: 100%; }
-  .tree-panel { width: 340px; min-width: 280px; max-width: 440px; border-right: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg-raised); }
-  .tree-toolbar { padding: 10px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; align-items: center; }
-  .tree-toolbar input { flex: 1; font-size: 11px; }
-  .tree-toolbar select { font-size: 11px; }
-  .tree { flex: 1; overflow-y: auto; padding: 8px 0; }
-  .tree-folder { padding: 4px 12px 2px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-faint); margin-top: 8px; }
-  .tree-folder:first-of-type { margin-top: 0; }
-  .tree-item { display: flex; align-items: center; gap: 8px; padding: 5px 12px 5px 20px; font-size: 12px; color: var(--text-dim); border-left: 2px solid transparent; cursor: pointer; transition: background .1s, color .1s, border-color .1s; }
-  .tree-item:hover { background: var(--accent-bg); color: var(--text); }
-  .tree-item.active { background: var(--accent-bg); color: var(--text); border-left-color: var(--accent); }
-  .tree-item .filename { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .tree-item .st-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--status-unreviewed); flex-shrink: 0; }
-  .tree-item .drift-mark { color: var(--drift); font-size: 10px; }
-  .tree-item .review-count { font-size: 9px; color: var(--text-faint); }
+  footer { height:36px; background:var(--bg-raised); border-top:1px solid var(--border); padding:0 20px; display:flex; align-items:center; justify-content:space-between; font-size:10px; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.14em; flex-shrink:0; }
+  .api-dot { width:6px; height:6px; border-radius:50%; background:var(--text-faint); display:inline-block; margin-right:6px; }
+  .api-ok .api-dot { background:var(--green); }
+  .api-err .api-dot { background:var(--red); }
 
-  .content-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-  .content-header { padding: 12px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 16px; background: var(--bg-raised); }
-  .path-display { font-size: 12px; color: var(--text-dim); }
-  .path-display .filename { color: var(--text); font-weight: 500; }
-  .review-controls { display: flex; align-items: center; gap: 8px; }
-  .status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; border-radius: 2px; background: var(--border); color: var(--text-dim); }
-  .status-pill .st-dot { width: 7px; height: 7px; border-radius: 50%; }
-  .drift-pill { background: rgba(217, 101, 58, 0.15); border: 1px solid var(--drift); color: var(--drift); padding: 3px 8px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; border-radius: 2px; }
+  /* ---- Two-panel layout ---- */
+  .split { display:flex; width:100%; height:100%; overflow:hidden; }
+  .split-left  { display:flex; flex-direction:column; border-right:1px solid var(--border); background:var(--bg-raised); overflow:hidden; }
+  .split-right { flex:1; display:flex; flex-direction:column; overflow:hidden; }
 
-  .content-body { flex: 1; display: grid; grid-template-rows: 1fr auto; overflow: hidden; }
-  .file-content { overflow-y: auto; padding: 16px 20px; background: var(--bg); }
-  .file-content pre { font-family: var(--mono); font-size: 12.5px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; color: var(--text); }
-  .team-reviews { padding: 10px 20px; background: var(--bg-panel); border-top: 1px solid var(--border); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; max-height: 100px; overflow-y: auto; }
-  .team-reviews-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-faint); margin-right: 4px; }
-  .team-review-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 2px; font-size: 11px; }
-  .team-review-chip .st-dot { width: 7px; height: 7px; border-radius: 50%; }
-  .team-review-chip.drifted { border-color: var(--drift); }
-  .team-review-chip .reviewer { color: var(--text); }
-  .team-review-chip .status-label { color: var(--text-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+  /* ---- Panel chrome ---- */
+  .panel-header { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:8px; flex-shrink:0; }
+  .panel-title  { font-family:var(--serif); font-size:16px; font-weight:400; }
+  .panel-title em { color:var(--accent); font-style:italic; }
+  .panel-toolbar { padding:8px 12px; border-bottom:1px solid var(--border); display:flex; gap:6px; align-items:center; flex-shrink:0; }
+  .panel-toolbar input, .panel-toolbar select { flex:1; font-size:11px; }
+  .scrollable { flex:1; overflow-y:auto; }
 
-  .review-panel { border-top: 1px solid var(--border); background: var(--bg-panel); padding: 14px 20px; display: flex; flex-direction: column; gap: 10px; }
-  .review-panel-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-faint); display: flex; justify-content: space-between; align-items: center; }
-  .review-panel textarea { width: 100%; min-height: 70px; max-height: 200px; font-size: 12px; }
-  .review-actions { display: flex; gap: 8px; align-items: center; }
-  .btn { padding: 6px 12px; font-size: 11px; border: 1px solid var(--border-bright); background: var(--bg-input); color: var(--text); border-radius: 2px; text-transform: uppercase; letter-spacing: 0.1em; transition: background .1s, border-color .1s; }
-  .btn:hover:not(:disabled) { background: var(--bg-raised); border-color: var(--accent-soft); }
-  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .btn.primary { background: var(--accent); border-color: var(--accent); color: #1a1305; font-weight: 500; }
-  .btn.primary:hover:not(:disabled) { background: #e9a94c; border-color: #e9a94c; }
-  .btn.ghost { border-color: transparent; background: transparent; color: var(--text-dim); }
-  .btn.ghost:hover:not(:disabled) { color: var(--text); background: var(--bg-raised); }
-  .saved-hint { color: var(--accent); font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; opacity: 0; transition: opacity .2s; }
-  .saved-hint.show { opacity: 1; }
+  /* ---- Buttons ---- */
+  .btn { padding:5px 12px; font-size:11px; border:1px solid var(--border-bright); background:var(--bg-input); color:var(--text); border-radius:2px; text-transform:uppercase; letter-spacing:0.1em; transition:background .1s,border-color .1s; }
+  .btn:hover:not(:disabled) { background:var(--bg-raised); border-color:var(--accent-soft); }
+  .btn:disabled { opacity:0.4; cursor:not-allowed; }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:#1a1305; font-weight:500; }
+  .btn.primary:hover:not(:disabled) { background:#e9a94c; border-color:#e9a94c; }
+  .btn.ghost { border-color:transparent; background:transparent; color:var(--text-dim); }
+  .btn.ghost:hover:not(:disabled) { color:var(--text); background:var(--bg-raised); }
+  .btn.danger { border-color:var(--red); color:var(--red); }
+  .btn.danger:hover:not(:disabled) { background:rgba(217,101,58,0.15); }
+  .btn-icon { padding:4px 8px; font-size:12px; }
 
-  .dash-layout { width: 100%; padding: 28px 32px; overflow-y: auto; }
-  .dash-title { font-family: var(--serif); font-size: 28px; font-weight: 300; letter-spacing: -0.01em; margin-bottom: 4px; }
-  .dash-title em { color: var(--accent); font-style: italic; }
-  .dash-sub { font-size: 11px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--text-faint); margin-bottom: 32px; }
-  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 32px; }
-  .stat-card { background: var(--bg-raised); border: 1px solid var(--border); border-left: 3px solid var(--accent); padding: 16px 18px; border-radius: 2px; }
-  .stat-card.status-approved { border-left-color: var(--status-approved); }
-  .stat-card.status-in-review { border-left-color: var(--status-in-review); }
-  .stat-card.status-needs-work { border-left-color: var(--status-needs-work); }
-  .stat-card.status-stale { border-left-color: var(--status-stale); }
-  .stat-card.status-unreviewed { border-left-color: var(--status-unreviewed); }
-  .stat-card.drift { border-left-color: var(--drift); }
-  .stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-dim); margin-bottom: 8px; }
-  .stat-value { font-family: var(--serif); font-size: 32px; font-weight: 300; color: var(--text); line-height: 1; }
-  .stat-value .pct { font-size: 14px; color: var(--text-dim); margin-left: 8px; }
+  /* ---- List items ---- */
+  .list-item { display:flex; align-items:center; gap:8px; padding:8px 14px; font-size:12px; color:var(--text-dim); cursor:pointer; border-left:2px solid transparent; transition:background .1s,color .1s,border-color .1s; }
+  .list-item:hover { background:var(--accent-bg); color:var(--text); }
+  .list-item.active { background:var(--accent-bg); color:var(--text); border-left-color:var(--accent); }
+  .list-item .li-main { flex:1; min-width:0; }
+  .list-item .li-title { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; color:var(--text); }
+  .list-item .li-sub { font-size:10px; color:var(--text-faint); margin-top:1px; }
+  .list-group-label { padding:6px 14px 2px; font-size:9px; text-transform:uppercase; letter-spacing:0.16em; color:var(--text-faint); margin-top:6px; }
 
-  .section-title { font-family: var(--serif); font-size: 18px; font-weight: 400; margin-bottom: 14px; display: flex; align-items: center; gap: 12px; }
-  .section-title::before { content: ''; width: 24px; height: 1px; background: var(--accent); }
-  .progress-bar { height: 6px; background: var(--border); border-radius: 1px; overflow: hidden; display: flex; }
-  .progress-bar > div { height: 100%; transition: width .3s; }
+  /* ---- Phase / verdict pills ---- */
+  .phase { display:inline-flex; align-items:center; gap:5px; font-size:10px; text-transform:uppercase; letter-spacing:0.1em; padding:2px 7px; border-radius:2px; white-space:nowrap; }
+  .phase .dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
+  .phase-running   { color:var(--blue);   background:rgba(74,144,201,0.12); }
+  .phase-running .dot  { background:var(--blue); }
+  .phase-pending   { color:var(--text-dim); background:var(--border); }
+  .phase-pending .dot  { background:var(--text-dim); }
+  .phase-succeeded { color:var(--green);  background:rgba(123,168,79,0.12); }
+  .phase-succeeded .dot { background:var(--green); }
+  .phase-failed    { color:var(--red);    background:rgba(217,101,58,0.12); }
+  .phase-failed .dot   { background:var(--red); }
+  .phase-cancelled { color:var(--text-dim); background:var(--border); }
+  .phase-cancelled .dot { background:var(--text-dim); }
+  .phase-timedout  { color:#c8a04a;      background:rgba(200,160,74,0.12); }
+  .phase-timedout .dot  { background:#c8a04a; }
+  .phase-unknown   { color:var(--text-faint); background:var(--border); }
+  .phase-unknown .dot   { background:var(--text-faint); }
 
-  .domain-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 32px; }
-  .domain-row { background: var(--bg-raised); border: 1px solid var(--border); padding: 12px 16px; border-radius: 2px; display: grid; grid-template-columns: 220px 1fr 120px; align-items: center; gap: 16px; }
-  .domain-name { font-size: 12px; color: var(--text); }
-  .domain-count { font-size: 11px; color: var(--text-dim); text-align: right; font-variant-numeric: tabular-nums; }
+  .verdict-supported  { color:var(--green); }
+  .verdict-partial    { color:var(--accent); }
+  .verdict-unsupported{ color:var(--red); }
+  .verdict-error      { color:var(--red); opacity:0.6; }
 
-  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); margin-bottom: 18px; }
-  .legend span { display: flex; align-items: center; gap: 5px; }
-  .legend .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  /* ---- Detail pane ---- */
+  .detail-pane { flex:1; overflow-y:auto; padding:24px 28px; }
+  .detail-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-faint); font-family:var(--serif); font-style:italic; font-size:15px; }
+  .detail-title { font-family:var(--serif); font-size:22px; font-weight:400; margin-bottom:4px; }
+  .detail-title em { color:var(--accent); font-style:italic; }
+  .detail-sub   { font-size:10px; text-transform:uppercase; letter-spacing:0.16em; color:var(--text-faint); margin-bottom:20px; }
+  .detail-section { margin-bottom:24px; }
+  .detail-section-title { font-size:11px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:10px; display:flex; align-items:center; gap:10px; }
+  .detail-section-title::before { content:''; display:inline-block; width:18px; height:1px; background:var(--accent); }
 
-  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
-  .panel-card { background: var(--bg-raised); border: 1px solid var(--border); border-radius: 2px; overflow: hidden; }
-  .activity-row, .reviewer-row { padding: 10px 16px; display: grid; gap: 14px; font-size: 11px; border-bottom: 1px solid var(--border); align-items: center; }
-  .activity-row { grid-template-columns: 130px 90px 1fr; }
-  .reviewer-row { grid-template-columns: 1fr auto auto; }
-  .activity-row:last-child, .reviewer-row:last-child { border-bottom: none; }
-  .activity-row .ts, .reviewer-row .ts { color: var(--text-faint); }
-  .activity-row .action { color: var(--accent); text-transform: uppercase; letter-spacing: 0.1em; font-size: 10px; }
-  .activity-row .details { color: var(--text-dim); }
-  .activity-row .details b { color: var(--text); font-weight: 400; }
-  .reviewer-row .name { color: var(--text); }
-  .reviewer-row .count { color: var(--text-dim); font-size: 10px; }
-  .empty-state { padding: 28px; text-align: center; color: var(--text-faint); font-family: var(--serif); font-style: italic; font-size: 14px; }
+  .kv-grid { display:grid; grid-template-columns:140px 1fr; gap:5px 14px; font-size:12px; }
+  .kv-grid .kv-label { color:var(--text-dim); }
+  .kv-grid .kv-val   { color:var(--text); word-break:break-all; }
 
-  .history-layout { width: 100%; padding: 28px 32px; overflow-y: auto; }
-  .history-table { width: 100%; background: var(--bg-raised); border: 1px solid var(--border); border-collapse: collapse; font-size: 12px; }
-  .history-table th { text-align: left; padding: 10px 14px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-faint); border-bottom: 1px solid var(--border); background: var(--bg-panel); }
-  .history-table td { padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text-dim); vertical-align: top; }
-  .history-table td b { color: var(--text); font-weight: 500; }
-  .history-table tr:last-child td { border-bottom: none; }
-  .history-table td.ts { color: var(--text-faint); white-space: nowrap; }
-  .history-table td.notes { color: var(--text); max-width: 400px; word-break: break-word; font-style: italic; font-family: var(--serif); }
+  .stat-row { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:20px; }
+  .stat-box { background:var(--bg-raised); border:1px solid var(--border); border-left:3px solid var(--accent); padding:12px 16px; border-radius:2px; min-width:100px; }
+  .stat-box.green { border-left-color:var(--green); }
+  .stat-box.red   { border-left-color:var(--red); }
+  .stat-box.blue  { border-left-color:var(--blue); }
+  .stat-box .sv { font-family:var(--serif); font-size:28px; font-weight:300; line-height:1; }
+  .stat-box .sl { font-size:9px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-dim); margin-top:4px; }
 
-  .handoff-layout { width: 100%; display: grid; grid-template-columns: 360px 1fr; height: 100%; overflow: hidden; }
-  .handoff-left { border-right: 1px solid var(--border); background: var(--bg-raised); display: flex; flex-direction: column; overflow: hidden; }
-  .handoff-left-header { padding: 16px 18px; border-bottom: 1px solid var(--border); }
-  .handoff-left-header h3 { font-family: var(--serif); font-size: 18px; font-weight: 400; margin-bottom: 4px; }
-  .handoff-left-header p { font-size: 11px; color: var(--text-dim); }
-  .handoff-toolbar { padding: 10px 18px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; font-size: 11px; }
-  .handoff-toolbar input { flex: 1; font-size: 11px; }
-  .selectable-list { flex: 1; overflow-y: auto; padding: 4px 0; }
-  .sel-folder { padding: 6px 18px 4px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-faint); margin-top: 8px; }
-  .sel-item { display: flex; align-items: center; gap: 10px; padding: 5px 18px 5px 24px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
-  .sel-item:hover { background: var(--accent-bg); color: var(--text); }
-  .sel-item input[type=checkbox] { appearance: none; -webkit-appearance: none; width: 12px; height: 12px; border: 1px solid var(--border-bright); border-radius: 2px; background: var(--bg-input); cursor: pointer; position: relative; flex-shrink: 0; }
-  .sel-item input[type=checkbox]:checked { background: var(--accent); border-color: var(--accent); }
-  .sel-item input[type=checkbox]:checked::after { content: '✓'; position: absolute; top: -3px; left: 1px; font-size: 11px; color: #1a1305; font-weight: 700; }
-  .sel-item .st-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-  .sel-item .filename { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* ---- UC list in results ---- */
+  .uc-row { display:flex; align-items:center; gap:8px; padding:7px 14px; font-size:12px; color:var(--text-dim); cursor:pointer; border-left:2px solid transparent; }
+  .uc-row:hover { background:var(--accent-bg); }
+  .uc-row.active { background:var(--accent-bg); border-left-color:var(--accent); }
+  .uc-row .uc-handle { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .uc-row .uc-time   { font-size:10px; color:var(--text-faint); flex-shrink:0; }
 
-  .handoff-right { display: flex; flex-direction: column; overflow: hidden; }
-  .handoff-config { padding: 18px 24px; border-bottom: 1px solid var(--border); background: var(--bg-panel); display: flex; flex-direction: column; gap: 12px; }
-  .handoff-field { display: flex; flex-direction: column; gap: 5px; }
-  .handoff-field label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-faint); }
-  .handoff-field input, .handoff-field textarea { font-size: 12px; }
-  .handoff-field textarea { min-height: 60px; }
-  .handoff-preview-wrapper { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-  .handoff-preview-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; background: var(--bg-raised); border-bottom: 1px solid var(--border); }
-  .handoff-preview-header .count { font-size: 11px; color: var(--text-dim); }
-  .handoff-preview-header .count b { color: var(--accent); font-weight: 500; }
-  .handoff-actions { display: flex; gap: 8px; }
-  .handoff-preview { flex: 1; overflow: auto; padding: 18px 24px; background: var(--bg); }
-  .handoff-preview pre { font-family: var(--mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; color: var(--text); }
+  /* ---- Analysis rendering ---- */
+  .analysis-block { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; margin-bottom:12px; overflow:hidden; }
+  .analysis-block-header { padding:8px 14px; display:flex; align-items:center; justify-content:space-between; font-size:11px; border-bottom:1px solid var(--border); }
+  .analysis-block-body   { padding:12px 14px; font-size:12px; color:var(--text-dim); line-height:1.6; }
+  .finding-row  { padding:8px 14px; border-bottom:1px solid var(--border); display:grid; grid-template-columns:60px 1fr auto; gap:8px; align-items:start; }
+  .finding-row:last-child { border-bottom:none; }
+  .finding-id   { font-size:10px; color:var(--text-faint); }
+  .finding-text { font-size:12px; }
+  .sev-label    { font-size:9px; text-transform:uppercase; letter-spacing:0.1em; padding:2px 6px; border-radius:2px; white-space:nowrap; }
+  .sev-advisory { color:#8a8; background:rgba(128,180,128,0.12); }
+  .sev-minor    { color:var(--text-dim); background:var(--border); }
+  .sev-moderate { color:var(--accent); background:var(--accent-bg); }
+  .sev-major    { color:#e8a060; background:rgba(232,160,96,0.12); }
+  .sev-critical { color:var(--red); background:rgba(217,101,58,0.12); }
 
-  footer { height: 40px; background: var(--bg-raised); border-top: 1px solid var(--border); padding: 0 20px; display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.14em; }
-  footer .right { display: flex; gap: 18px; align-items: center; }
-  footer .api-status { display: flex; align-items: center; gap: 6px; }
-  footer .api-status .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
-  footer .api-status.ok .dot { background: var(--status-approved); }
-  footer .api-status.error .dot { background: var(--drift); }
+  /* ---- YAML editor ---- */
+  .yaml-editor { width:100%; min-height:320px; font-family:var(--mono); font-size:12px; line-height:1.6; background:var(--bg-input); border:1px solid var(--border); color:var(--text); padding:10px 12px; border-radius:2px; resize:vertical; }
+  .yaml-editor:focus { border-color:var(--accent-soft); }
 
-  .toast { position: fixed; bottom: 56px; right: 24px; background: var(--bg-panel); border: 1px solid var(--accent); border-left: 3px solid var(--accent); padding: 10px 16px; font-size: 12px; color: var(--text); border-radius: 2px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); opacity: 0; transform: translateY(8px); transition: opacity .2s, transform .2s; pointer-events: none; z-index: 100; }
-  .toast.show { opacity: 1; transform: translateY(0); }
-  .toast.error { border-color: var(--drift); border-left-color: var(--drift); }
+  /* ---- Modal ---- */
+  .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:200; display:none; align-items:center; justify-content:center; }
+  .modal-overlay.open { display:flex; }
+  .modal { background:var(--bg-panel); border:1px solid var(--border-bright); border-radius:2px; width:600px; max-width:94vw; max-height:90vh; display:flex; flex-direction:column; overflow:hidden; }
+  .modal-header { padding:16px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
+  .modal-title  { font-family:var(--serif); font-size:17px; font-weight:400; }
+  .modal-body   { padding:20px; overflow-y:auto; display:flex; flex-direction:column; gap:14px; }
+  .modal-footer { padding:14px 20px; border-top:1px solid var(--border); display:flex; gap:8px; justify-content:flex-end; }
+  .form-field   { display:flex; flex-direction:column; gap:5px; }
+  .form-field label { font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-dim); }
+  .form-field input, .form-field select, .form-field textarea { font-size:12px; }
+  .form-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .form-hint  { font-size:10px; color:var(--text-faint); margin-top:2px; }
+  .section-sep { border:none; border-top:1px solid var(--border); margin:4px 0; }
 
-  ::-webkit-scrollbar { width: 10px; height: 10px; }
-  ::-webkit-scrollbar-track { background: var(--bg); }
-  ::-webkit-scrollbar-thumb { background: var(--border); border: 2px solid var(--bg); border-radius: 10px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--border-bright); }
+  /* ---- Config / Sources ---- */
+  .config-layout { width:100%; padding:24px 28px; overflow-y:auto; }
+  .config-grid   { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:28px; }
+  .panel-card    { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; overflow:hidden; }
+  .panel-card-header { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px; }
+  .panel-card-header .pc-title { font-size:13px; color:var(--text); }
+  .panel-card-header .pc-sub   { font-size:10px; color:var(--text-faint); }
+  .panel-card-body { padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
+
+  /* ---- Toast ---- */
+  .toast { position:fixed; bottom:50px; right:20px; background:var(--bg-panel); border:1px solid var(--accent); border-left:3px solid var(--accent); padding:10px 16px; font-size:12px; border-radius:2px; box-shadow:0 8px 24px rgba(0,0,0,0.5); opacity:0; transform:translateY(6px); transition:opacity .2s,transform .2s; pointer-events:none; z-index:300; max-width:380px; }
+  .toast.show { opacity:1; transform:translateY(0); }
+  .toast.error { border-color:var(--red); border-left-color:var(--red); }
+
+  /* ---- Empty states ---- */
+  .empty { padding:32px; text-align:center; color:var(--text-faint); font-family:var(--serif); font-style:italic; }
+
+  /* ---- Scrollbar ---- */
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-track { background:var(--bg); }
+  ::-webkit-scrollbar-thumb { background:var(--border); border:2px solid var(--bg); border-radius:8px; }
+  ::-webkit-scrollbar-thumb:hover { background:var(--border-bright); }
+
+  /* ---- Inline source badge ---- */
+  .src-badge { font-size:9px; text-transform:uppercase; letter-spacing:0.08em; padding:1px 5px; border-radius:2px; flex-shrink:0; }
+  .src-managed { background:var(--accent-bg); color:var(--accent); border:1px solid var(--accent-soft); }
+  .src-corpus  { background:var(--border);    color:var(--text-dim); }
+
+  /* ---- Runs view specific ---- */
+  .runs-table { width:100%; border-collapse:collapse; font-size:12px; }
+  .runs-table th { text-align:left; padding:8px 14px; font-size:9px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); border-bottom:1px solid var(--border); background:var(--bg-panel); white-space:nowrap; }
+  .runs-table td { padding:9px 14px; border-bottom:1px solid var(--border); color:var(--text-dim); vertical-align:middle; }
+  .runs-table td b { color:var(--text); font-weight:500; }
+  .runs-table tr:last-child td { border-bottom:none; }
+  .runs-table tr:hover td { background:var(--accent-bg); cursor:pointer; }
+  .runs-table tr.active td { background:var(--accent-bg); }
+
+  /* ---- Tags ---- */
+  .tag { display:inline-block; font-size:9px; text-transform:uppercase; letter-spacing:0.08em; padding:1px 6px; border-radius:2px; background:var(--border); color:var(--text-dim); margin-right:4px; }
 </style>
 </head>
 <body>
 
+<div class="shell">
+
 <header>
   <div class="brand">
-    <div class="brand-mark">DCM <em>Corpus</em> Review</div>
-    <div class="brand-sub">Operator Console · team-backed</div>
+    <div class="brand-mark">DAV <em>Console</em></div>
+    <div class="brand-sub">Architecture Validation · Operations</div>
   </div>
   <div class="header-right">
-    <div class="header-stats" id="headerStats"></div>
-    <div class="reviewer-chip" id="reviewerChip">—</div>
+    <span id="triggerStatus" style="color:var(--text-faint)"></span>
+    <div class="reviewer-chip anon" id="reviewerChip">—</div>
   </div>
 </header>
 
 <nav class="tabs" id="tabs">
-  <button data-view="corpus" class="active">Corpus</button>
-  <button data-view="dashboard">Dashboard</button>
-  <button data-view="history">History <span class="badge" id="histBadge">0</span></button>
-  <button data-view="handoff">Handoff <span class="badge" id="handoffBadge">0</span></button>
-  <button data-view="selftest" id="selfTestTabBtn" style="display:none">Self-Test</button>
-  <button data-view="sources" id="sourcesTabBtn">Sources</button>
+  <button data-view="runs" class="active">Runs <span class="badge" id="badgeRuns">…</span></button>
+  <button data-view="results">Results <span class="badge" id="badgeResults">…</span></button>
+  <button data-view="usecases">Use Cases <span class="badge" id="badgeUC">…</span></button>
+  <button data-view="config">Config</button>
 </nav>
 
 <main>
 
-  <section class="view active" id="view-corpus">
-    <div class="corpus-layout">
-      <aside class="tree-panel">
-        <div class="tree-toolbar">
-          <input id="treeFilter" placeholder="filter files…" />
-          <select id="treeStatusFilter">
-            <option value="">all statuses</option>
-            <option value="unreviewed">unreviewed</option>
-            <option value="in-review">in-review</option>
-            <option value="needs-work">needs-work</option>
-            <option value="approved">approved</option>
-            <option value="stale">stale</option>
-            <option value="__drift__">drift only</option>
-          </select>
-        </div>
-        <div class="tree" id="tree"><div class="empty-state">loading…</div></div>
-      </aside>
-      <div class="content-panel">
-        <div class="content-header">
-          <div class="path-display" id="pathDisplay"><span class="filename">— select a file —</span></div>
-          <div class="review-controls">
-            <span class="status-pill" id="currentStatus"><span class="st-dot"></span> —</span>
-            <span class="drift-pill" id="driftPill" style="display:none">⚠ drift</span>
-          </div>
-        </div>
-        <div class="content-body">
-          <div class="file-content" id="fileContent">
-            <pre style="color: var(--text-faint); font-family: var(--serif); font-style: italic; font-size: 15px;">Select a file from the tree to begin review.</pre>
-          </div>
-          <div id="teamReviews" class="team-reviews" style="display:none"></div>
-          <div class="review-panel">
-            <div class="review-panel-label">
-              <span>Your review notes</span>
-              <span class="saved-hint" id="savedHint">saved</span>
-            </div>
-            <textarea id="reviewNotes" placeholder="notes, observations, gaps, follow-ups…" disabled></textarea>
-            <div class="review-actions">
-              <select id="statusSelect" disabled>
-                <option value="unreviewed">unreviewed</option>
-                <option value="in-review">in-review</option>
-                <option value="needs-work">needs-work</option>
-                <option value="approved">approved</option>
-                <option value="stale">stale</option>
-              </select>
-              <button class="btn primary" id="saveReview" disabled>Save review</button>
-              <button class="btn ghost" id="addToHandoff" disabled>+ handoff</button>
-              <button class="btn ghost" id="clearReview" disabled>clear my review</button>
-            </div>
-          </div>
-        </div>
-      </div>
+<!-- ==================== RUNS ==================== -->
+<section class="view active" id="view-runs">
+  <div style="display:flex; flex-direction:column; width:100%; height:100%; overflow:hidden;">
+    <div style="padding:14px 20px; border-bottom:1px solid var(--border); display:flex; gap:10px; align-items:center; flex-shrink:0;">
+      <button class="btn primary" id="newRunBtn">+ New Run</button>
+      <button class="btn ghost" id="refreshRunsBtn">Refresh</button>
+      <span id="runsNote" style="font-size:11px; color:var(--text-faint); margin-left:4px;"></span>
     </div>
-  </section>
-
-  <section class="view" id="view-dashboard">
-    <div class="dash-layout">
-      <div class="dash-title">Coverage <em>overview</em></div>
-      <div class="dash-sub">team-wide status across the DCM corpus</div>
-      <div class="stat-grid" id="statGrid"></div>
-      <div class="section-title">By domain</div>
-      <div class="legend">
-        <span><span class="dot" style="background:var(--status-approved)"></span> approved</span>
-        <span><span class="dot" style="background:var(--status-in-review)"></span> in-review</span>
-        <span><span class="dot" style="background:var(--status-needs-work)"></span> needs-work</span>
-        <span><span class="dot" style="background:var(--status-stale)"></span> stale</span>
-        <span><span class="dot" style="background:var(--status-unreviewed)"></span> unreviewed</span>
-      </div>
-      <div class="domain-list" id="domainList"></div>
-      <div class="two-col">
-        <div>
-          <div class="section-title">Recent activity</div>
-          <div class="panel-card" id="recentActivity"></div>
-        </div>
-        <div>
-          <div class="section-title">Active reviewers</div>
-          <div class="panel-card" id="reviewerList"></div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section class="view" id="view-history">
-    <div class="history-layout">
-      <div class="dash-title">Audit <em>history</em></div>
-      <div class="dash-sub">append-only log of all review events</div>
-      <div style="margin-bottom: 16px; display: flex; gap: 8px;">
-        <button class="btn" id="exportHistory">Export (JSON)</button>
-        <button class="btn ghost" id="refreshHistory">Refresh</button>
-        <span id="historyTotal" style="color:var(--text-dim); font-size:11px; align-self:center;"></span>
-      </div>
-      <table class="history-table" id="historyTable">
-        <thead>
-          <tr><th style="width:140px">timestamp</th><th style="width:120px">reviewer</th><th style="width:90px">action</th><th style="width:240px">file</th><th style="width:100px">status</th><th>notes</th></tr>
-        </thead>
-        <tbody id="historyBody"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="view" id="view-handoff">
-    <div class="handoff-layout">
-      <aside class="handoff-left">
-        <div class="handoff-left-header">
-          <h3>Build handoff</h3>
-          <p>Select files to package into a prompt for the DCM architecture session.</p>
-        </div>
-        <div class="handoff-toolbar">
-          <input id="handoffFilter" placeholder="filter…" />
-          <button class="btn ghost" id="selectAll">all</button>
-          <button class="btn ghost" id="selectNone">none</button>
-        </div>
-        <div class="selectable-list" id="selectableList"></div>
-      </aside>
-      <div class="handoff-right">
-        <div class="handoff-config">
-          <div class="handoff-field">
-            <label>Handoff title</label>
-            <input id="hoTitle" value="DCM Corpus Review — Handoff" />
-          </div>
-          <div class="handoff-field">
-            <label>Requested action</label>
-            <textarea id="hoAction">Please review the following files against the current DCM V1 architecture. Identify gaps, stale references, inconsistencies with the Data / Provider / Policy abstractions, and recommend concrete updates or deprecations.</textarea>
-          </div>
-          <div class="handoff-field">
-            <label style="display:flex;gap:14px;align-items:center;">
-              <span>Include file contents</span>
-              <input type="checkbox" id="hoIncludeContent" checked style="width:auto;height:auto;accent-color:var(--accent);" />
-              <span style="color:var(--text-faint);">· include review notes</span>
-              <input type="checkbox" id="hoIncludeNotes" checked style="width:auto;height:auto;accent-color:var(--accent);" />
-            </label>
-          </div>
-        </div>
-        <div class="handoff-preview-wrapper">
-          <div class="handoff-preview-header">
-            <div class="count"><b id="hoCount">0</b> file(s) selected · <b id="hoChars">0</b> chars</div>
-            <div class="handoff-actions">
-              <button class="btn" id="previewPrompt">Preview</button>
-              <button class="btn" id="copyPrompt">Copy to clipboard</button>
-              <button class="btn primary" id="downloadPrompt">Download .md</button>
-            </div>
-          </div>
-          <div class="handoff-preview">
-            <pre id="handoffPreview">— select files on the left, then click Preview to generate the handoff prompt —</pre>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section class="view" id="view-selftest">
-    <div class="dash-layout" style="max-width:1200px">
-      <div class="dash-title">Self-<em>test</em></div>
-      <div class="dash-sub">trigger DCM self-test pipeline runs · view recent history</div>
-
-      <div class="section-title">Trigger a run</div>
-      <div class="panel-card" style="padding:18px; margin-bottom:32px">
-        <div style="display:grid; grid-template-columns:160px 1fr; gap:12px 16px; align-items:center; font-size:12px;">
-          <label style="color:var(--text-dim)">Branch</label>
-          <input id="stBranch" placeholder="testing" style="max-width:320px" />
-
-          <label style="color:var(--text-dim)">Commit SHA</label>
-          <input id="stCommitSha" placeholder="(optional — defaults to HEAD of branch)" style="max-width:420px" />
-
-          <label style="color:var(--text-dim)">Inference endpoint</label>
-          <select id="stInferenceEndpoint" style="max-width:500px">
-            <option value="">(default — pipeline's configured primary)</option>
-            <option value="http://vllm-32b.vllm-test.svc:8000/v1">vllm-32b (single-card test rig)</option>
-            <option value="http://vllm-72b.vllm-test.svc:8000/v1">vllm-72b (dual-card test rig)</option>
-          </select>
-
-          <label style="color:var(--text-dim)">Test count</label>
-          <input id="stTestCount" placeholder="(optional — default 500)" style="max-width:180px" />
-        </div>
-        <div style="margin-top:16px; display:flex; gap:8px; align-items:center">
-          <button class="btn primary" id="stTriggerBtn">Trigger run</button>
-          <button class="btn ghost" id="stRefreshBtn">Refresh history</button>
-          <span id="stStatusText" style="color:var(--text-faint); font-size:11px; margin-left:12px"></span>
-        </div>
-      </div>
-
-      <div class="section-title">Recent runs</div>
-      <table class="history-table" id="stRunsTable">
+    <div style="flex:1; overflow-y:auto; padding:0;">
+      <table class="runs-table" id="runsTable">
         <thead>
           <tr>
-            <th style="width:220px">name</th>
-            <th style="width:110px">phase</th>
-            <th style="width:140px">triggered by</th>
-            <th style="width:140px">started</th>
-            <th style="width:110px">source</th>
-            <th>params</th>
+            <th style="width:200px">Run name</th>
+            <th style="width:100px">Phase</th>
+            <th style="width:100px">Mode</th>
+            <th style="width:130px">Triggered by</th>
+            <th style="width:140px">Started</th>
+            <th style="width:80px">Duration</th>
+            <th>Params</th>
           </tr>
         </thead>
-        <tbody id="stRunsBody">
-          <tr><td colspan="6" class="empty-state" style="border:none">loading…</td></tr>
+        <tbody id="runsBody">
+          <tr><td colspan="7" class="empty">loading…</td></tr>
         </tbody>
       </table>
     </div>
-  </section>
+  </div>
+</section>
 
-  <section class="view" id="view-sources">
-    <div class="dash-layout" style="max-width:1400px">
-      <div class="dash-title">Data <em>sources</em></div>
-      <div class="dash-sub">switch the DCM spec and corpus repos/branches the running system clones · changes trigger a pod rollout</div>
-
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:16px;">
-
-        <!-- Spec panel -->
-        <div class="panel-card" id="sourcesSpecPanel" style="padding:18px">
-          <div class="section-title" style="margin-top:0">Spec <span style="color:var(--text-faint);font-weight:400">· DCM architecture served by MCP</span></div>
-
-          <div style="display:grid; grid-template-columns:140px 1fr; gap:8px 12px; align-items:baseline; font-size:12px; margin-bottom:18px">
-            <div style="color:var(--text-dim)">current repo</div>
-            <div id="srcSpecRepo" style="color:var(--text); word-break:break-all">—</div>
-            <div style="color:var(--text-dim)">current branch</div>
-            <div id="srcSpecBranch" style="color:var(--text); font-weight:500">—</div>
-            <div style="color:var(--text-dim)">managed by</div>
-            <div id="srcSpecMgr" style="color:var(--text-faint)">—</div>
-            <div style="color:var(--text-dim)">last applied</div>
-            <div id="srcSpecWhen" style="color:var(--text-faint)">—</div>
-            <div style="color:var(--text-dim)">applied by</div>
-            <div id="srcSpecWho" style="color:var(--text-faint)">—</div>
-            <div style="color:var(--text-dim)">rollout</div>
-            <div id="srcSpecStatus" style="color:var(--text-faint)">—</div>
-          </div>
-
-          <div style="border-top:1px solid var(--border); padding-top:16px">
-            <div style="display:grid; grid-template-columns:140px 1fr; gap:10px 12px; align-items:center; font-size:12px;">
-              <label style="color:var(--text-dim)">new repo URL</label>
-              <input id="srcSpecRepoInput" placeholder="https://github.com/owner/repo.git" />
-
-              <label style="color:var(--text-dim)">new branch</label>
-              <div style="display:flex; gap:6px">
-                <select id="srcSpecBranchSelect" style="flex:1">
-                  <option value="">(loading branches…)</option>
-                </select>
-                <input id="srcSpecBranchInput" placeholder="or type a ref" style="flex:1" />
-                <button class="btn ghost" id="srcSpecRefreshBranches" title="reload branches from GitHub" style="padding:4px 8px">↻</button>
-              </div>
-            </div>
-
-            <div style="margin-top:16px; display:flex; gap:8px; align-items:center">
-              <button class="btn primary" id="srcSpecApplyBtn">Apply &amp; redeploy</button>
-              <span id="srcSpecMsg" style="color:var(--text-faint); font-size:11px; margin-left:8px"></span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Corpus panel -->
-        <div class="panel-card" id="sourcesCorpusPanel" style="padding:18px">
-          <div class="section-title" style="margin-top:0">Corpus <span style="color:var(--text-faint);font-weight:400">· use cases + baselines</span></div>
-
-          <div style="display:grid; grid-template-columns:140px 1fr; gap:8px 12px; align-items:baseline; font-size:12px; margin-bottom:18px">
-            <div style="color:var(--text-dim)">current repo</div>
-            <div id="srcCorpusRepo" style="color:var(--text); word-break:break-all">—</div>
-            <div style="color:var(--text-dim)">current branch</div>
-            <div id="srcCorpusBranch" style="color:var(--text); font-weight:500">—</div>
-            <div style="color:var(--text-dim)">managed by</div>
-            <div id="srcCorpusMgr" style="color:var(--text-faint)">—</div>
-            <div style="color:var(--text-dim)">last applied</div>
-            <div id="srcCorpusWhen" style="color:var(--text-faint)">—</div>
-            <div style="color:var(--text-dim)">applied by</div>
-            <div id="srcCorpusWho" style="color:var(--text-faint)">—</div>
-            <div style="color:var(--text-dim)">rollout</div>
-            <div id="srcCorpusStatus" style="color:var(--text-faint)">—</div>
-          </div>
-
-          <div style="border-top:1px solid var(--border); padding-top:16px">
-            <div style="display:grid; grid-template-columns:140px 1fr; gap:10px 12px; align-items:center; font-size:12px;">
-              <label style="color:var(--text-dim)">new repo URL</label>
-              <input id="srcCorpusRepoInput" placeholder="https://github.com/owner/repo.git" />
-
-              <label style="color:var(--text-dim)">new branch</label>
-              <div style="display:flex; gap:6px">
-                <select id="srcCorpusBranchSelect" style="flex:1">
-                  <option value="">(loading branches…)</option>
-                </select>
-                <input id="srcCorpusBranchInput" placeholder="or type a ref" style="flex:1" />
-                <button class="btn ghost" id="srcCorpusRefreshBranches" title="reload branches from GitHub" style="padding:4px 8px">↻</button>
-              </div>
-            </div>
-
-            <div style="margin-top:16px; display:flex; gap:8px; align-items:center">
-              <button class="btn primary" id="srcCorpusApplyBtn">Apply &amp; redeploy</button>
-              <span id="srcCorpusMsg" style="color:var(--text-faint); font-size:11px; margin-left:8px"></span>
-            </div>
-          </div>
-        </div>
-
+<!-- ==================== RESULTS ==================== -->
+<section class="view" id="view-results">
+  <div class="split">
+    <div class="split-left" style="width:320px; min-width:240px;">
+      <div class="panel-header">
+        <div class="panel-title">Run <em>results</em></div>
+        <button class="btn ghost btn-icon" id="refreshResultsBtn" title="Refresh">↻</button>
       </div>
-
-      <div style="margin-top:24px; color:var(--text-faint); font-size:11px; line-height:1.6">
-        Switching the <b>spec</b> retargets the MCP that Stage 2 calls — affects every in-flight or subsequent analysis.
-        Switching the <b>corpus</b> changes which use cases + baselines the review console reads.
-        Both are independent. Changes take ~60s to complete (pod rollout).
-        The branch dropdown queries GitHub and caches for 5 minutes per repo.
+      <div class="panel-toolbar">
+        <input id="resultFilter" placeholder="filter runs…" />
+      </div>
+      <div class="scrollable" id="resultList">
+        <div class="empty">loading…</div>
       </div>
     </div>
-  </section>
+    <div class="split-right">
+      <div class="split" id="resultDetail">
+        <!-- UC list sub-panel -->
+        <div class="split-left" style="width:300px; min-width:220px;" id="ucListPanel" style="display:none;">
+          <div class="panel-header">
+            <span style="font-size:11px; color:var(--text-dim);">Use Cases</span>
+          </div>
+          <div class="panel-toolbar">
+            <select id="ucVerdictFilter">
+              <option value="">all verdicts</option>
+              <option value="supported">supported</option>
+              <option value="partially_supported">partial</option>
+              <option value="not_supported">not supported</option>
+              <option value="failed">failed</option>
+            </select>
+          </div>
+          <div class="scrollable" id="ucResultList">
+            <div class="empty">select a run</div>
+          </div>
+        </div>
+        <!-- Analysis detail -->
+        <div class="split-right" id="analysisPanel">
+          <div class="detail-pane" id="analysisDetail">
+            <div class="detail-empty">Select a run, then a use case to view its analysis.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== USE CASES ==================== -->
+<section class="view" id="view-usecases">
+  <div class="split">
+    <div class="split-left" style="width:320px; min-width:240px;">
+      <div class="panel-header">
+        <div class="panel-title">Use <em>cases</em></div>
+        <button class="btn primary" style="font-size:10px; padding:4px 10px;" id="newUCBtn">+ New</button>
+      </div>
+      <div class="panel-toolbar">
+        <input id="ucFilter" placeholder="filter…" />
+        <select id="ucSourceFilter" style="flex:none; width:90px;">
+          <option value="">all</option>
+          <option value="managed">managed</option>
+          <option value="corpus">corpus</option>
+        </select>
+      </div>
+      <div class="scrollable" id="ucList">
+        <div class="empty">loading…</div>
+      </div>
+    </div>
+    <div class="split-right">
+      <div id="ucDetail" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+        <div class="detail-pane">
+          <div class="detail-empty">Select a use case or create a new one.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== CONFIG ==================== -->
+<section class="view" id="view-config">
+  <div class="config-layout">
+    <div class="detail-title">Console <em>configuration</em></div>
+    <div class="detail-sub">Spec &amp; corpus repositories · Inference endpoint</div>
+
+    <div class="config-grid">
+
+      <!-- Spec source -->
+      <div class="panel-card" id="configSpecPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Spec repository</div>
+            <div class="pc-sub">DCM architecture — served by MCP</div>
+          </div>
+        </div>
+        <div class="panel-card-body">
+          <div class="kv-grid">
+            <div class="kv-label">current repo</div><div class="kv-val" id="srcSpecRepo">—</div>
+            <div class="kv-label">current branch</div><div class="kv-val" id="srcSpecBranch" style="color:var(--accent)">—</div>
+            <div class="kv-label">last applied</div><div class="kv-val" id="srcSpecWhen">—</div>
+            <div class="kv-label">applied by</div><div class="kv-val" id="srcSpecWho">—</div>
+            <div class="kv-label">rollout</div><div class="kv-val" id="srcSpecStatus">—</div>
+          </div>
+          <hr class="section-sep" style="margin:8px 0;">
+          <div class="form-field">
+            <label>New repo URL</label>
+            <input id="srcSpecRepoInput" placeholder="https://github.com/owner/repo.git" />
+          </div>
+          <div class="form-field">
+            <label>Branch</label>
+            <div style="display:flex; gap:6px;">
+              <select id="srcSpecBranchSelect" style="flex:1"><option value="">(loading…)</option></select>
+              <input id="srcSpecBranchInput" placeholder="or type ref" style="flex:1;" />
+              <button class="btn ghost btn-icon" id="srcSpecRefreshBranches" title="reload">↻</button>
+            </div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
+            <button class="btn primary" id="srcSpecApplyBtn">Apply &amp; redeploy</button>
+            <span id="srcSpecMsg" style="font-size:11px; color:var(--text-faint);"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Corpus source -->
+      <div class="panel-card" id="configCorpusPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Corpus repository</div>
+            <div class="pc-sub">Use cases + baselines</div>
+          </div>
+        </div>
+        <div class="panel-card-body">
+          <div class="kv-grid">
+            <div class="kv-label">current repo</div><div class="kv-val" id="srcCorpusRepo">—</div>
+            <div class="kv-label">current branch</div><div class="kv-val" id="srcCorpusBranch" style="color:var(--accent)">—</div>
+            <div class="kv-label">last applied</div><div class="kv-val" id="srcCorpusWhen">—</div>
+            <div class="kv-label">applied by</div><div class="kv-val" id="srcCorpusWho">—</div>
+            <div class="kv-label">rollout</div><div class="kv-val" id="srcCorpusStatus">—</div>
+          </div>
+          <hr class="section-sep" style="margin:8px 0;">
+          <div class="form-field">
+            <label>New repo URL</label>
+            <input id="srcCorpusRepoInput" placeholder="https://github.com/owner/repo.git" />
+          </div>
+          <div class="form-field">
+            <label>Branch</label>
+            <div style="display:flex; gap:6px;">
+              <select id="srcCorpusBranchSelect" style="flex:1"><option value="">(loading…)</option></select>
+              <input id="srcCorpusBranchInput" placeholder="or type ref" style="flex:1;" />
+              <button class="btn ghost btn-icon" id="srcCorpusRefreshBranches" title="reload">↻</button>
+            </div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
+            <button class="btn primary" id="srcCorpusApplyBtn">Apply &amp; redeploy</button>
+            <span id="srcCorpusMsg" style="font-size:11px; color:var(--text-faint);"></span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <div style="font-size:11px; color:var(--text-faint); line-height:1.7;">
+      Switching the <b>spec</b> retargets the MCP that Stage 2 calls — affects every in-flight or subsequent analysis.
+      Switching the <b>corpus</b> changes which use cases the review console loads.
+      Changes take ~60s to complete (pod rollout).
+    </div>
+  </div>
+</section>
 
 </main>
 
 <footer>
-  <div class="left">DCM Corpus Review · team-backed · Postgres-backed</div>
-  <div class="right">
-    <button id="refreshCorpus">Refresh corpus</button>
-    <div class="api-status" id="apiStatus"><span class="dot"></span><span id="apiStatusText">connecting…</span></div>
+  <span>DAV Console · v0.2</span>
+  <div id="apiStatusEl" style="display:flex; align-items:center;">
+    <span class="api-dot"></span>
+    <span id="apiStatusText">connecting…</span>
   </div>
 </footer>
+
+</div><!-- /shell -->
+
+<!-- ==================== NEW RUN MODAL ==================== -->
+<div class="modal-overlay" id="newRunModal">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">New run</div>
+      <button class="btn ghost btn-icon" id="closeNewRun">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-row">
+        <div class="form-field">
+          <label>Mode</label>
+          <select id="nrMode">
+            <option value="verification">verification (default — ensemble, conservative)</option>
+            <option value="reproduce">reproduce (single sample, deterministic)</option>
+            <option value="explore">explore (high-variance, authoring)</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label>Sample count override</label>
+          <input id="nrSampleCount" type="number" min="1" max="20" placeholder="(mode default)" />
+          <div class="form-hint">verification default: 3 · explore default: 10</div>
+        </div>
+      </div>
+
+      <hr class="section-sep">
+      <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Corpus</div>
+      <div class="form-field">
+        <label>UC subpath (partial run)</label>
+        <input id="nrCorpusSubpath" placeholder="use-cases/  or  use-cases/auth  (blank = full corpus)" />
+        <div class="form-hint">Relative path within workspace corpus directory. Leave blank for full corpus.</div>
+      </div>
+      <div class="form-row">
+        <div class="form-field">
+          <label>Corpus repo URL override</label>
+          <input id="nrCorpusRepo" placeholder="(use configured corpus repo)" />
+        </div>
+        <div class="form-field">
+          <label>Corpus branch override</label>
+          <input id="nrCorpusBranch" placeholder="(use configured branch)" />
+        </div>
+      </div>
+
+      <hr class="section-sep">
+      <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Spec</div>
+      <div class="form-row">
+        <div class="form-field">
+          <label>Spec repo URL override</label>
+          <input id="nrSpecRepo" placeholder="(use configured spec repo)" />
+        </div>
+        <div class="form-field">
+          <label>Spec branch override</label>
+          <input id="nrSpecBranch" placeholder="(use configured branch)" />
+        </div>
+      </div>
+
+      <hr class="section-sep">
+      <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Inference</div>
+      <div class="form-row">
+        <div class="form-field">
+          <label>Endpoint override</label>
+          <input id="nrEndpoint" placeholder="(use configured endpoint)" />
+        </div>
+        <div class="form-field">
+          <label>Model override</label>
+          <input id="nrModel" placeholder="(use configured model)" />
+        </div>
+      </div>
+
+      <hr class="section-sep">
+      <div class="form-field">
+        <label style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="nrHaltOnError" style="width:auto; height:auto; accent-color:var(--accent);" />
+          Halt on first UC failure
+        </label>
+        <div class="form-hint">Default: continue processing remaining UCs when one fails.</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <span id="nrStatus" style="flex:1; font-size:11px; color:var(--text-faint);"></span>
+      <button class="btn ghost" id="cancelNewRun">Cancel</button>
+      <button class="btn primary" id="submitNewRun">Trigger run</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== UC EDITOR MODAL ==================== -->
+<div class="modal-overlay" id="ucModal">
+  <div class="modal" style="width:760px;">
+    <div class="modal-header">
+      <div class="modal-title" id="ucModalTitle">New use case</div>
+      <button class="btn ghost btn-icon" id="closeUCModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-field">
+        <label>YAML content</label>
+        <textarea class="yaml-editor" id="ucYamlEditor" rows="22" spellcheck="false"></textarea>
+      </div>
+      <div class="form-field">
+        <label>Tags (comma-separated)</label>
+        <input id="ucTagsInput" placeholder="e.g. happy-path, auth, regression" />
+      </div>
+    </div>
+    <div class="modal-footer">
+      <span id="ucModalStatus" style="flex:1; font-size:11px; color:var(--text-faint);"></span>
+      <button class="btn ghost" id="cancelUCModal">Cancel</button>
+      <button class="btn primary" id="saveUCModal">Save</button>
+    </div>
+  </div>
+</div>
 
 <div class="toast" id="toast"></div>
 
 <script>
-const API = ''; // same-origin via nginx proxy
-const STATUSES = ['unreviewed','in-review','needs-work','approved','stale'];
-const STATUS_LABELS = { 'unreviewed': 'unreviewed', 'in-review': 'in-review', 'needs-work': 'needs-work', 'approved': 'approved', 'stale': 'stale' };
+'use strict';
 
-let corpus = [];          // [{path, folder, status, latest_reviewer, ...}]
-let currentPath = null;
-let currentFile = null;   // {content, reviews, ...} cached
-let me = { reviewer: null, authenticated: false };
-let handoffSelection = new Set();
-let cachedHandoff = null;
+const API = '';  // same-origin via nginx proxy
 
-/* ======================= API client ======================= */
+// ===================== API helpers =====================
 async function api(path, opts = {}) {
   const res = await fetch(API + path, {
     headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
     ...opts,
   });
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`${res.status} ${res.statusText}: ${text}`);
+    const txt = await res.text();
+    throw new Error(`${res.status}: ${txt}`);
   }
   return res.json();
 }
 
-/* ======================= Init ======================= */
+// ===================== Toast =====================
+function toast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.toggle('error', !!isError);
+  t.classList.add('show');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+// ===================== Utilities =====================
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function fmtTs(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  return d.toLocaleDateString([], {month:'short', day:'numeric'})
+       + ' ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+}
+
+function fmtDuration(startTs, endTs) {
+  if (!startTs) return '—';
+  const s = (endTs ? new Date(endTs) : new Date()) - new Date(startTs);
+  const sec = Math.floor(s / 1000);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const r = sec % 60;
+  return r ? `${m}m ${r}s` : `${m}m`;
+}
+
+function phaseHtml(phase) {
+  const cls = 'phase-' + (phase || 'unknown').toLowerCase().replace(/\s+/g, '-');
+  return `<span class="phase ${cls}"><span class="dot"></span>${esc(phase || 'unknown')}</span>`;
+}
+
+function verdictClass(v) {
+  if (!v) return 'verdict-error';
+  if (v === 'supported') return 'verdict-supported';
+  if (v.includes('partial')) return 'verdict-partial';
+  if (v.includes('not_supported') || v === 'not_supported') return 'verdict-unsupported';
+  return 'verdict-error';
+}
+
+function sevClass(label) {
+  return 'sev-' + (label || 'minor').toLowerCase();
+}
+
+// ===================== State =====================
+let me = { reviewer: null, authenticated: false };
+let allRuns = [];
+let allResults = [];
+let allUCs = [];
+
+let activeRunResultId = null;
+let activeRunSummary = null;
+let activeUCResult = null;
+
+let activeUCId = null;
+let editingUCId = null;  // null = new UC
+
+// ===================== Init =====================
 async function init() {
   try {
-    await Promise.all([loadMe(), loadCorpus(), initSelfTest(), renderSources()]);
+    await Promise.all([loadMe(), loadRunStatus()]);
     setApiStatus(true);
   } catch (e) {
     console.error(e);
     setApiStatus(false, e.message);
   }
+  // Load data for current tab
+  switchView('runs');
 }
 
 async function loadMe() {
-  try {
-    me = await api('/api/me');
-  } catch (e) { me = { reviewer: null, authenticated: false }; }
+  try { me = await api('/api/me'); } catch { me = { reviewer: null, authenticated: false }; }
   const chip = document.getElementById('reviewerChip');
   if (me.authenticated && me.reviewer) {
     chip.textContent = me.reviewer;
@@ -603,513 +681,774 @@ async function loadMe() {
   }
 }
 
-async function loadCorpus() {
-  corpus = await api('/api/corpus');
-  renderTree();
-  renderHeaderStats();
-  renderHandoffList();
+async function loadRunStatus() {
+  try {
+    const s = await api('/api/runs/status');
+    const el = document.getElementById('triggerStatus');
+    el.textContent = s.enabled && s.available
+      ? `pipeline: ${s.pipeline_name}`
+      : s.enabled ? 'pipeline: unavailable' : 'trigger disabled';
+  } catch { /* non-fatal */ }
 }
 
 function setApiStatus(ok, msg) {
-  const el = document.getElementById('apiStatus');
-  const text = document.getElementById('apiStatusText');
-  el.classList.toggle('ok', !!ok);
-  el.classList.toggle('error', !ok);
-  text.textContent = ok ? 'api ok' : ('api error: ' + (msg || 'offline'));
+  const el = document.getElementById('apiStatusEl');
+  const txt = document.getElementById('apiStatusText');
+  el.classList.toggle('api-ok', !!ok);
+  el.classList.toggle('api-err', !ok);
+  txt.textContent = ok ? 'api ok' : ('error: ' + (msg || 'offline'));
 }
 
-/* ======================= Tree ======================= */
-function groupByFolder(files) {
-  const groups = {};
-  files.forEach(f => {
-    const folder = f.folder || '/';
-    if (!groups[folder]) groups[folder] = [];
-    groups[folder].push(f);
-  });
-  const order = ['/', 'taxonomy', 'scope', 'architecture', 'architecture/api',
-                 'architecture/components/data_model',
-                 'architecture/roles-responsibilities',
-                 'architecture/sequence-diagrams'];
-  const sorted = {};
-  order.forEach(k => { if (groups[k]) sorted[k] = groups[k]; });
-  Object.keys(groups).forEach(k => { if (!sorted[k]) sorted[k] = groups[k]; });
-  return sorted;
+// ===================== Tab routing =====================
+function switchView(name) {
+  document.querySelectorAll('nav.tabs button').forEach(b =>
+    b.classList.toggle('active', b.dataset.view === name));
+  document.querySelectorAll('.view').forEach(v =>
+    v.classList.toggle('active', v.id === 'view-' + name));
+  if (name === 'runs')     loadRuns();
+  if (name === 'results')  loadResults();
+  if (name === 'usecases') loadUCs();
+  if (name === 'config')   loadConfig();
 }
-function displayFolder(f) { return f === '/' ? 'root' : f; }
-function displayFilename(p) { return p.split('/').pop(); }
 
-function renderTree() {
-  const tree = document.getElementById('tree');
-  const filterText = document.getElementById('treeFilter').value.toLowerCase();
-  const filterStatus = document.getElementById('treeStatusFilter').value;
-  const filtered = corpus.filter(f => {
-    if (filterText && !f.path.toLowerCase().includes(filterText)) return false;
-    if (filterStatus === '__drift__') return !!f.has_drift;
-    if (filterStatus) {
-      const s = f.status || 'unreviewed';
-      return s === filterStatus;
+// ===================== RUNS =====================
+async function loadRuns() {
+  const body = document.getElementById('runsBody');
+  body.innerHTML = '<tr><td colspan="7" class="empty">loading…</td></tr>';
+  try {
+    const resp = await api('/api/runs?limit=100');
+    allRuns = resp.runs || [];
+    document.getElementById('badgeRuns').textContent = allRuns.length;
+    renderRunsTable();
+    if (!resp.enabled) {
+      document.getElementById('runsNote').textContent = 'Pipeline trigger not available in this environment.';
     }
-    return true;
-  });
-  const groups = groupByFolder(filtered);
-  tree.innerHTML = '';
-  if (filtered.length === 0) {
-    tree.innerHTML = '<div class="empty-state">no files match</div>';
-    return;
-  }
-  Object.entries(groups).forEach(([folder, files]) => {
-    const folderEl = document.createElement('div');
-    folderEl.className = 'tree-folder';
-    folderEl.textContent = displayFolder(folder);
-    tree.appendChild(folderEl);
-    files.forEach(f => {
-      const status = f.status || 'unreviewed';
-      const item = document.createElement('div');
-      item.className = 'tree-item' + (currentPath === f.path ? ' active' : '');
-      item.innerHTML = `
-        <span class="st-dot" style="background: var(--status-${status})"></span>
-        <span class="filename" title="${f.path}">${displayFilename(f.path)}</span>
-        ${f.review_count > 1 ? `<span class="review-count">${f.review_count}×</span>` : ''}
-        ${f.has_drift ? '<span class="drift-mark" title="drift: content changed since last review">⚠</span>' : ''}
-      `;
-      item.addEventListener('click', () => selectFile(f.path));
-      tree.appendChild(item);
-    });
-  });
-}
-
-/* ======================= File selection ======================= */
-async function selectFile(path) {
-  currentPath = path;
-  document.getElementById('pathDisplay').innerHTML =
-    `<span style="color:var(--text-faint)">${path.split('/').slice(0,-1).join('/') || 'root'}</span> / <span class="filename">${displayFilename(path)}</span>`;
-  const content = document.getElementById('fileContent');
-  content.innerHTML = '<pre style="color:var(--text-faint);font-style:italic;">loading…</pre>';
-  renderTree();
-  try {
-    currentFile = await api('/api/corpus/' + encodeURI(path));
-    renderFileContent();
   } catch (e) {
-    content.innerHTML = '<pre style="color:var(--drift);">error: ' + escapeHtml(e.message) + '</pre>';
+    body.innerHTML = `<tr><td colspan="7" class="empty" style="color:var(--red)">${esc(e.message)}</td></tr>`;
   }
 }
 
-function renderFileContent() {
-  const f = currentFile;
-  const content = document.getElementById('fileContent');
-  content.innerHTML = '<pre></pre>';
-  content.querySelector('pre').textContent = f.content;
-
-  const myReview = (f.reviews || []).find(r => r.reviewer === me.reviewer);
-  const myStatus = myReview ? myReview.status : 'unreviewed';
-  const myDrifted = myReview ? myReview.is_drifted : false;
-
-  const pill = document.getElementById('currentStatus');
-  pill.innerHTML = `<span class="st-dot" style="background: var(--status-${myStatus})"></span> ${STATUS_LABELS[myStatus]}`;
-  document.getElementById('driftPill').style.display = myDrifted ? 'inline-block' : 'none';
-
-  document.getElementById('reviewNotes').value = myReview ? (myReview.notes || '') : '';
-  document.getElementById('statusSelect').value = myStatus;
-
-  const canWrite = me.authenticated;
-  ['reviewNotes','statusSelect','saveReview','addToHandoff','clearReview'].forEach(id => {
-    document.getElementById(id).disabled = !canWrite && id !== 'addToHandoff';
-  });
-  document.getElementById('addToHandoff').disabled = false;
-
-  renderTeamReviews(f.reviews || []);
-}
-
-function renderTeamReviews(reviews) {
-  const el = document.getElementById('teamReviews');
-  if (reviews.length === 0) { el.style.display = 'none'; return; }
-  el.style.display = 'flex';
-  el.innerHTML = '<span class="team-reviews-label">Team reviews:</span>';
-  reviews.forEach(r => {
-    const chip = document.createElement('span');
-    chip.className = 'team-review-chip' + (r.is_drifted ? ' drifted' : '');
-    chip.title = r.notes ? `"${r.notes}"` : '';
-    chip.innerHTML = `
-      <span class="st-dot" style="background:var(--status-${r.status})"></span>
-      <span class="reviewer">${escapeHtml(r.reviewer)}</span>
-      <span class="status-label">${r.status}${r.is_drifted ? ' · drifted' : ''}</span>
-    `;
-    el.appendChild(chip);
-  });
-}
-
-/* ======================= Save / clear ======================= */
-async function saveCurrentReview() {
-  if (!currentPath || !me.authenticated) return;
-  const notes = document.getElementById('reviewNotes').value;
-  const status = document.getElementById('statusSelect').value;
-  try {
-    await api('/api/reviews', {
-      method: 'POST',
-      body: JSON.stringify({ file_path: currentPath, status, notes })
-    });
-    const hint = document.getElementById('savedHint');
-    hint.classList.add('show');
-    setTimeout(() => hint.classList.remove('show'), 1200);
-    toast(`Saved · ${displayFilename(currentPath)}`);
-    await loadCorpus();
-    currentFile = await api('/api/corpus/' + encodeURI(currentPath));
-    renderFileContent();
-  } catch (e) {
-    toast('Save failed: ' + e.message, true);
-  }
-}
-
-async function clearCurrentReview() {
-  if (!currentPath || !me.authenticated) return;
-  if (!confirm(`Clear your review for ${displayFilename(currentPath)}?`)) return;
-  try {
-    await api('/api/reviews/' + encodeURI(currentPath), { method: 'DELETE' });
-    toast('Cleared');
-    await loadCorpus();
-    currentFile = await api('/api/corpus/' + encodeURI(currentPath));
-    renderFileContent();
-  } catch (e) {
-    toast('Clear failed: ' + e.message, true);
-  }
-}
-
-/* ======================= Header stats ======================= */
-function renderHeaderStats() {
-  const total = corpus.length;
-  let reviewed = 0, approved = 0, needsWork = 0, drifted = 0;
-  corpus.forEach(f => {
-    if (f.status) reviewed++;
-    if (f.status === 'approved') approved++;
-    if (f.status === 'needs-work') needsWork++;
-    if (f.has_drift) drifted++;
-  });
-  document.getElementById('headerStats').innerHTML = `
-    <span class="hs-item"><b>${reviewed}</b>/${total} reviewed</span>
-    <span class="hs-item"><b style="color:var(--status-approved)">${approved}</b> approved</span>
-    <span class="hs-item"><b style="color:var(--status-needs-work)">${needsWork}</b> needs-work</span>
-    ${drifted > 0 ? `<span class="hs-item"><b style="color:var(--drift)">${drifted}</b> drifted</span>` : ''}
-  `;
-}
-
-/* ======================= Dashboard ======================= */
-async function renderDashboard() {
-  let d;
-  try { d = await api('/api/dashboard'); }
-  catch (e) { toast('Dashboard load failed', true); return; }
-
-  const s = d.summary || {};
-  const total = s.total || 0;
-  const reviewed = total - (s.unreviewed || 0);
-  const pct = total > 0 ? Math.round((reviewed / total) * 100) : 0;
-
-  document.getElementById('statGrid').innerHTML = `
-    <div class="stat-card"><div class="stat-label">Total files</div><div class="stat-value">${total}</div></div>
-    <div class="stat-card"><div class="stat-label">Reviewed</div><div class="stat-value">${reviewed}<span class="pct">${pct}%</span></div></div>
-    <div class="stat-card status-approved"><div class="stat-label">Approved</div><div class="stat-value">${s.approved || 0}</div></div>
-    <div class="stat-card status-in-review"><div class="stat-label">In review</div><div class="stat-value">${s.in_review || 0}</div></div>
-    <div class="stat-card status-needs-work"><div class="stat-label">Needs work</div><div class="stat-value">${s.needs_work || 0}</div></div>
-    <div class="stat-card status-stale"><div class="stat-label">Stale</div><div class="stat-value">${s.stale || 0}</div></div>
-    <div class="stat-card status-unreviewed"><div class="stat-label">Unreviewed</div><div class="stat-value">${s.unreviewed || 0}</div></div>
-    <div class="stat-card drift"><div class="stat-label">Drifted</div><div class="stat-value">${s.drifted_reviews || 0}</div></div>
-  `;
-
-  const domainList = document.getElementById('domainList');
-  domainList.innerHTML = '';
-  (d.by_folder || []).forEach(row => {
-    const segs = [
-      ['approved', row.approved],
-      ['in-review', row.in_review],
-      ['needs-work', row.needs_work],
-      ['stale', row.stale],
-      ['unreviewed', row.unreviewed]
-    ].map(([s, n]) => n > 0 ? `<div style="width:${(n/row.total)*100}%;background:var(--status-${s})"></div>` : '').join('');
-    const doneCount = row.total - row.unreviewed;
-    const el = document.createElement('div');
-    el.className = 'domain-row';
-    el.innerHTML = `
-      <div class="domain-name">${displayFolder(row.folder)}</div>
-      <div class="progress-bar">${segs}</div>
-      <div class="domain-count">${doneCount} / ${row.total}</div>`;
-    domainList.appendChild(el);
-  });
-
-  const ra = document.getElementById('recentActivity');
-  if (!d.recent || d.recent.length === 0) {
-    ra.innerHTML = '<div class="empty-state">no activity yet</div>';
-  } else {
-    ra.innerHTML = '';
-    d.recent.forEach(h => {
-      const row = document.createElement('div');
-      row.className = 'activity-row';
-      row.innerHTML = `
-        <div class="ts">${formatTs(h.created_at)}</div>
-        <div class="action">${h.action}</div>
-        <div class="details"><b>${escapeHtml(h.reviewer)}</b> → ${escapeHtml(displayFilename(h.file_path))}${h.status ? ' (' + h.status + ')' : ''}</div>`;
-      ra.appendChild(row);
-    });
-  }
-
-  const rl = document.getElementById('reviewerList');
-  if (!d.reviewers || d.reviewers.length === 0) {
-    rl.innerHTML = '<div class="empty-state">no reviewers yet</div>';
-  } else {
-    rl.innerHTML = '';
-    d.reviewers.forEach(r => {
-      const row = document.createElement('div');
-      row.className = 'reviewer-row';
-      row.innerHTML = `
-        <div class="name">${escapeHtml(r.reviewer)}</div>
-        <div class="count">${r.events} events</div>
-        <div class="ts">${formatTs(r.last_active)}</div>`;
-      rl.appendChild(row);
-    });
-  }
-}
-
-/* ======================= History ======================= */
-async function renderHistory() {
-  let h;
-  try { h = await api('/api/history?limit=500'); }
-  catch (e) { toast('History load failed', true); return; }
-  document.getElementById('historyTotal').textContent = `${h.total} event(s)`;
-  document.getElementById('histBadge').textContent = h.total;
-  const body = document.getElementById('historyBody');
-  if (h.events.length === 0) {
-    body.innerHTML = '<tr><td colspan="6" class="empty-state" style="border:none">no history yet</td></tr>';
+function renderRunsTable() {
+  const body = document.getElementById('runsBody');
+  if (!allRuns.length) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">No runs found. Trigger one with + New Run.</td></tr>';
     return;
   }
   body.innerHTML = '';
-  h.events.forEach(e => {
+  allRuns.forEach(r => {
     const tr = document.createElement('tr');
+    const params = r.params || {};
+    const paramParts = Object.entries(params)
+      .filter(([k]) => !['git-branch','commit-sha'].includes(k))
+      .map(([k, v]) => `${k}=${v}`).join(' · ');
     tr.innerHTML = `
-      <td class="ts">${formatTs(e.created_at)}</td>
-      <td><b>${escapeHtml(e.reviewer)}</b></td>
-      <td><span style="color:var(--accent); text-transform:uppercase; font-size:10px; letter-spacing:0.1em;">${e.action}</span></td>
-      <td><b>${escapeHtml(e.file_path)}</b></td>
-      <td>${e.status ? `<span class="status-pill"><span class="st-dot" style="background:var(--status-${e.status})"></span> ${e.status}</span>` : '—'}</td>
-      <td class="notes">${e.notes ? escapeHtml(e.notes) : '—'}</td>`;
+      <td><b>${esc(r.name || '?')}</b></td>
+      <td>${phaseHtml(r.phase)}</td>
+      <td style="color:var(--text-dim); font-size:11px;">${esc(params.mode || 'verification')}</td>
+      <td style="font-size:11px;">${esc(r.triggered_by || r.trigger_source || '—')}</td>
+      <td style="font-size:11px; color:var(--text-faint);">${fmtTs(r.started_at || r.created_at)}</td>
+      <td style="font-size:11px; color:var(--text-faint);">${fmtDuration(r.started_at || r.created_at, r.completed_at)}</td>
+      <td style="font-size:10px; color:var(--text-faint);">${esc(paramParts) || '—'}</td>
+    `;
+    tr.style.cursor = 'pointer';
+    tr.addEventListener('click', () => {
+      document.querySelectorAll('#runsTable tr.active').forEach(t => t.classList.remove('active'));
+      tr.classList.add('active');
+    });
     body.appendChild(tr);
   });
 }
 
-/* ======================= Handoff ======================= */
-function renderHandoffList() {
-  const list = document.getElementById('selectableList');
-  const filter = (document.getElementById('handoffFilter').value || '').toLowerCase();
-  const filtered = corpus.filter(f => !filter || f.path.toLowerCase().includes(filter));
-  const groups = groupByFolder(filtered);
-  list.innerHTML = '';
-  Object.entries(groups).forEach(([folder, files]) => {
-    const fe = document.createElement('div');
-    fe.className = 'sel-folder';
-    fe.textContent = displayFolder(folder);
-    list.appendChild(fe);
-    files.forEach(f => {
-      const status = f.status || 'unreviewed';
-      const checked = handoffSelection.has(f.path);
-      const item = document.createElement('label');
-      item.className = 'sel-item';
-      item.innerHTML = `
-        <input type="checkbox" ${checked ? 'checked' : ''} />
-        <span class="st-dot" style="background: var(--status-${status})"></span>
-        <span class="filename" title="${f.path}">${displayFilename(f.path)}</span>`;
-      item.querySelector('input').addEventListener('change', e => {
-        if (e.target.checked) handoffSelection.add(f.path);
-        else handoffSelection.delete(f.path);
-        document.getElementById('handoffBadge').textContent = handoffSelection.size;
-        cachedHandoff = null;
-      });
-      list.appendChild(item);
-    });
-  });
+// ===================== NEW RUN MODAL =====================
+function openNewRun() {
+  document.getElementById('newRunModal').classList.add('open');
+  document.getElementById('nrStatus').textContent = '';
+  document.getElementById('submitNewRun').disabled = false;
 }
+function closeNewRun() { document.getElementById('newRunModal').classList.remove('open'); }
 
-async function generateHandoff() {
-  if (handoffSelection.size === 0) return null;
-  const body = {
-    file_paths: [...handoffSelection],
-    title: document.getElementById('hoTitle').value || 'DCM Corpus Review — Handoff',
-    action: document.getElementById('hoAction').value || '',
-    include_content: document.getElementById('hoIncludeContent').checked,
-    include_notes: document.getElementById('hoIncludeNotes').checked,
-  };
-  const resp = await api('/api/handoff', { method: 'POST', body: JSON.stringify(body) });
-  cachedHandoff = resp;
-  document.getElementById('hoCount').textContent = handoffSelection.size;
-  document.getElementById('hoChars').textContent = resp.length.toLocaleString();
-  document.getElementById('handoffPreview').textContent = resp.markdown;
-  return resp;
-}
-
-/* ======================= Utilities ======================= */
-function formatTs(ts) {
-  if (!ts) return '—';
-  const d = new Date(ts);
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-function escapeHtml(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
-function toast(msg, isError) {
-  const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.classList.toggle('error', !!isError);
-  t.classList.add('show');
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => t.classList.remove('show'), 2200);
-}
-function download(filename, content, mime='text/markdown') {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-async function copyToClipboard(text) {
-  try { await navigator.clipboard.writeText(text); return true; }
-  catch (e) {
-    const ta = document.createElement('textarea');
-    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
-    document.body.appendChild(ta); ta.select();
-    const ok = document.execCommand('copy');
-    document.body.removeChild(ta);
-    return ok;
-  }
-}
-
-/* ======================= Tabs ======================= */
-function switchView(name) {
-  document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
-  document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
-  if (name === 'dashboard') renderDashboard();
-  if (name === 'history') renderHistory();
-  if (name === 'handoff') renderHandoffList();
-  if (name === 'selftest') renderSelfTestRuns();
-  if (name === 'sources') renderSources();
-}
-
-/* ======================= Self-Test ======================= */
-let selfTestStatus = null;
-
-async function initSelfTest() {
-  try {
-    selfTestStatus = await api('/api/self-test/status');
-    const btn = document.getElementById('selfTestTabBtn');
-    if (selfTestStatus.enabled && selfTestStatus.available) {
-      btn.style.display = '';
-      // Populate default branch
-      document.getElementById('stBranch').placeholder = selfTestStatus.default_branch || 'testing';
-    } else {
-      btn.style.display = 'none';
-    }
-  } catch (e) {
-    console.warn('self-test status unavailable:', e);
-  }
-}
-
-async function renderSelfTestRuns() {
-  const body = document.getElementById('stRunsBody');
-  try {
-    const resp = await api('/api/self-test/runs?limit=25');
-    if (!resp.runs || resp.runs.length === 0) {
-      body.innerHTML = '<tr><td colspan="6" class="empty-state" style="border:none">no runs yet</td></tr>';
-      return;
-    }
-    body.innerHTML = '';
-    resp.runs.forEach(r => {
-      const phaseColor = {
-        'Succeeded': 'var(--status-approved)',
-        'Failed': 'var(--drift)',
-        'Cancelled': 'var(--status-stale)',
-        'TimedOut': 'var(--drift)',
-        'Running': 'var(--status-in-review)',
-        'Pending': 'var(--status-in-review)',
-        'Started': 'var(--status-in-review)',
-      }[r.phase] || 'var(--text-dim)';
-
-      const paramSummary = Object.entries(r.params || {})
-        .map(([k,v]) => `${k}=${v}`).join(' · ');
-
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td><b>${escapeHtml(r.name)}</b></td>
-        <td><span style="color:${phaseColor}; font-size:10px; text-transform:uppercase; letter-spacing:0.1em">${r.phase}</span></td>
-        <td>${escapeHtml(r.triggered_by || '—')}</td>
-        <td class="ts">${formatTs(r.started_at || r.created_at)}</td>
-        <td style="font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.1em">${r.trigger_source}</td>
-        <td style="font-size:11px; color:var(--text-dim)">${escapeHtml(paramSummary) || '—'}</td>
-      `;
-      body.appendChild(tr);
-    });
-  } catch (e) {
-    body.innerHTML = `<tr><td colspan="6" class="empty-state" style="border:none; color:var(--drift)">load failed: ${escapeHtml(e.message)}</td></tr>`;
-  }
-}
-
-async function triggerSelfTestRun() {
-  const statusEl = document.getElementById('stStatusText');
-  const btn = document.getElementById('stTriggerBtn');
+async function submitNewRun() {
+  const btn = document.getElementById('submitNewRun');
+  const status = document.getElementById('nrStatus');
   btn.disabled = true;
-  statusEl.textContent = 'submitting…';
+  status.textContent = 'submitting…';
+
+  const sc = document.getElementById('nrSampleCount').value.trim();
   const payload = {
-    branch: document.getElementById('stBranch').value.trim() || null,
-    commit_sha: document.getElementById('stCommitSha').value.trim() || null,
-    inference_endpoint: document.getElementById('stInferenceEndpoint').value || null,
-    test_count: document.getElementById('stTestCount').value.trim() || null,
+    mode:               document.getElementById('nrMode').value,
+    sample_count:       sc ? parseInt(sc) : null,
+    corpus_subpath:     document.getElementById('nrCorpusSubpath').value.trim() || null,
+    corpus_repo_url:    document.getElementById('nrCorpusRepo').value.trim() || null,
+    corpus_repo_branch: document.getElementById('nrCorpusBranch').value.trim() || null,
+    spec_repo_url:      document.getElementById('nrSpecRepo').value.trim() || null,
+    spec_repo_branch:   document.getElementById('nrSpecBranch').value.trim() || null,
+    inference_endpoint: document.getElementById('nrEndpoint').value.trim() || null,
+    inference_model:    document.getElementById('nrModel').value.trim() || null,
+    halt_on_error:      document.getElementById('nrHaltOnError').checked,
   };
+
   try {
-    const resp = await api('/api/self-test/run', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-    const name = resp.pipelinerun?.name || '?';
-    statusEl.innerHTML = `<span style="color:var(--status-approved)">triggered: ${escapeHtml(name)}</span>`;
-    toast(`Triggered ${name}`);
-    setTimeout(renderSelfTestRuns, 500);
+    const resp = await api('/api/runs', { method: 'POST', body: JSON.stringify(payload) });
+    const name = resp.run?.name || '?';
+    status.innerHTML = `<span style="color:var(--green)">triggered: ${esc(name)}</span>`;
+    toast(`Run triggered: ${name}`);
+    setTimeout(() => { closeNewRun(); loadRuns(); }, 800);
   } catch (e) {
-    statusEl.innerHTML = `<span style="color:var(--drift)">${escapeHtml(e.message)}</span>`;
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
     toast('Trigger failed: ' + e.message, true);
-  } finally {
     btn.disabled = false;
   }
 }
 
-/* ======================= Sources ======================= */
-// Tracks current sources state + polling intervals.
-// Keyed by 'spec' | 'corpus'.
-const sourcesState = { spec: null, corpus: null };
-const sourcesPollers = { spec: null, corpus: null };
+// ===================== RESULTS =====================
+async function loadResults() {
+  document.getElementById('resultList').innerHTML = '<div class="empty">loading…</div>';
+  try {
+    const resp = await api('/api/results');
+    allResults = resp.results || [];
+    document.getElementById('badgeResults').textContent = allResults.length;
+    renderResultList();
+    if (!resp.available) {
+      document.getElementById('resultList').innerHTML =
+        `<div class="empty">Workspace PVC not mounted.<br><small style="color:var(--text-faint)">${esc(resp.workspace_path || '')}</small></div>`;
+    }
+  } catch (e) {
+    document.getElementById('resultList').innerHTML =
+      `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+  }
+}
 
-// Map of UI element ids per kind — keeps render/apply code uniform.
+function renderResultList() {
+  const el = document.getElementById('resultList');
+  const filter = (document.getElementById('resultFilter').value || '').toLowerCase();
+  const filtered = allResults.filter(r =>
+    !filter || (r.run_id||'').toLowerCase().includes(filter));
+  if (!filtered.length) {
+    el.innerHTML = '<div class="empty">No results found.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  filtered.forEach(r => {
+    const item = document.createElement('div');
+    item.className = 'list-item' + (activeRunResultId === r.run_id ? ' active' : '');
+    const pct = r.total_ucs > 0 ? Math.round((r.successful / r.total_ucs) * 100) : 0;
+    const statusColor = r.failed > 0 ? 'var(--red)' : 'var(--green)';
+    item.innerHTML = `
+      <div class="li-main">
+        <div class="li-title">${esc(r.run_id)}</div>
+        <div class="li-sub">
+          <span style="color:var(--text-dim)">${esc(r.mode || '?')}</span>
+          · <span style="color:${statusColor}">${r.successful}/${r.total_ucs} passed</span>
+          · ${esc(fmtTs(r.started_at))}
+        </div>
+      </div>
+    `;
+    item.addEventListener('click', () => selectRunResult(r.run_id));
+    el.appendChild(item);
+  });
+}
+
+async function selectRunResult(runId) {
+  activeRunResultId = runId;
+  activeUCResult = null;
+  renderResultList();
+  document.getElementById('ucResultList').innerHTML = '<div class="empty">loading…</div>';
+  document.getElementById('ucListPanel').style.display = '';
+  document.getElementById('analysisDetail').innerHTML = '<div class="detail-empty">Select a use case.</div>';
+
+  try {
+    const summary = await api(`/api/results/${encodeURIComponent(runId)}`);
+    activeRunSummary = summary;
+    renderRunSummaryHeader(summary);
+    renderUCResultList(summary);
+  } catch (e) {
+    document.getElementById('ucResultList').innerHTML =
+      `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+  }
+}
+
+function renderRunSummaryHeader(s) {
+  const detail = document.getElementById('analysisDetail');
+  const pct = s.total_ucs > 0 ? Math.round((s.successful / s.total_ucs) * 100) : 0;
+  detail.innerHTML = `
+    <div class="detail-title">Run <em>summary</em></div>
+    <div class="detail-sub">${esc(s.run_id)} · ${esc(s.mode)}</div>
+    <div class="stat-row">
+      <div class="stat-box"><div class="sv">${s.total_ucs}</div><div class="sl">Total UCs</div></div>
+      <div class="stat-box green"><div class="sv">${s.successful}</div><div class="sl">Succeeded</div></div>
+      <div class="stat-box red"><div class="sv">${s.failed}</div><div class="sl">Failed</div></div>
+      <div class="stat-box blue"><div class="sv">${s.total_samples}</div><div class="sl">Samples</div></div>
+      <div class="stat-box"><div class="sv">${pct}%</div><div class="sl">Pass rate</div></div>
+    </div>
+    <div class="kv-grid">
+      <div class="kv-label">Started</div><div class="kv-val">${esc(fmtTs(s.started_at))}</div>
+      <div class="kv-label">Finished</div><div class="kv-val">${esc(fmtTs(s.finished_at))}</div>
+      <div class="kv-label">Wall time</div><div class="kv-val">${s.runner_total_seconds ? s.runner_total_seconds + 's' : '—'}</div>
+    </div>
+    <div style="margin-top:20px; color:var(--text-faint); font-family:var(--serif); font-style:italic; font-size:13px;">
+      ← Select a use case from the panel to view its analysis.
+    </div>
+  `;
+}
+
+function renderUCResultList(summary) {
+  const el = document.getElementById('ucResultList');
+  const vFilter = document.getElementById('ucVerdictFilter').value;
+  const ucs = (summary.ucs || []);
+  const filtered = vFilter
+    ? ucs.filter(u => {
+        if (vFilter === 'failed') return u.status === 'failed';
+        return u.verdict === vFilter;
+      })
+    : ucs;
+
+  if (!filtered.length) {
+    el.innerHTML = '<div class="empty">No use cases match.</div>';
+    return;
+  }
+  el.innerHTML = '';
+  filtered.forEach(u => {
+    const item = document.createElement('div');
+    item.className = 'uc-row' + (activeUCResult === u.uc_uuid ? ' active' : '');
+    const vClass = u.status === 'failed' ? 'verdict-error'
+                   : verdictClass(u.verdict);
+    const vLabel = u.status === 'failed' ? 'failed'
+                   : (u.verdict || '?').replace('_', ' ').replace('partially supported', 'partial').replace('not supported', 'not supp.');
+    item.innerHTML = `
+      <span class="${vClass}" style="font-size:9px; text-transform:uppercase; letter-spacing:0.08em; flex-shrink:0; width:52px;">${esc(vLabel)}</span>
+      <span class="uc-handle">${esc(u.uc_handle || u.uc_uuid)}</span>
+      <span class="uc-time">${u.wall_time_seconds ? u.wall_time_seconds + 's' : ''}</span>
+    `;
+    item.addEventListener('click', () => selectUCResult(u.uc_uuid));
+    el.appendChild(item);
+  });
+}
+
+async function selectUCResult(ucUuid) {
+  activeUCResult = ucUuid;
+  renderUCResultList(activeRunSummary);
+  document.getElementById('analysisDetail').innerHTML =
+    '<div class="detail-empty" style="padding-top:60px;">loading…</div>';
+  try {
+    const data = await api(`/api/results/${encodeURIComponent(activeRunResultId)}/uc/${encodeURIComponent(ucUuid)}`);
+    renderAnalysis(data, ucUuid);
+  } catch (e) {
+    document.getElementById('analysisDetail').innerHTML =
+      `<div class="detail-pane"><div style="color:var(--red);">${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderAnalysis(data, ucUuid) {
+  const el = document.getElementById('analysisDetail');
+  if (data._source === 'failure') {
+    el.innerHTML = `<div class="detail-pane">
+      <div class="detail-title" style="color:var(--red)">UC <em>failed</em></div>
+      <div class="detail-sub">${esc(ucUuid)}</div>
+      <div class="analysis-block">
+        <div class="analysis-block-header">Error</div>
+        <div class="analysis-block-body"><pre style="white-space:pre-wrap; word-break:break-word">${esc(data.error)}</pre></div>
+      </div>
+    </div>`;
+    return;
+  }
+
+  if (data._source === 'explore') {
+    renderExploreAnalysis(data, ucUuid);
+    return;
+  }
+
+  // Single analysis (verification / reproduce)
+  const verdict = data.verdict || '?';
+  const vClass = verdictClass(verdict);
+  const gaps = data.gaps || [];
+  const findings = data.findings || [];
+  const recs = data.recommendations || [];
+  const meta = data.analysis_metadata || {};
+  const sa = data.sample_annotations;
+
+  let html = `<div class="detail-pane">
+    <div class="detail-title">Analysis <em>result</em></div>
+    <div class="detail-sub">${esc(ucUuid)}</div>
+
+    <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+      <span style="font-size:22px; font-family:var(--serif); font-weight:300;" class="${vClass}">${esc(verdict.replace(/_/g,' '))}</span>
+      ${sa ? `<span style="font-size:11px; color:var(--text-dim);">agreement: ${Math.round((sa.agreement||0)*100)}% (${sa.sample_count||'?'} samples)</span>` : ''}
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">Overall assessment</div>
+      <div style="font-size:13px; font-family:var(--serif); line-height:1.7; color:var(--text);">
+        ${esc(data.overall_assessment || '—')}
+      </div>
+    </div>
+  `;
+
+  if (findings.length) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Findings (${findings.length})</div>
+      <div class="analysis-block">`;
+    findings.forEach(f => {
+      const sev = typeof f.severity === 'object' ? f.severity.label : f.severity;
+      const fvClass = verdictClass(f.verdict);
+      html += `<div class="finding-row">
+        <div>
+          <div class="finding-id">${esc(f.finding_id || '')}</div>
+          <span class="sev-label ${sevClass(sev)}">${esc(sev||'?')}</span>
+        </div>
+        <div>
+          <div class="finding-text" style="font-weight:500; margin-bottom:3px;">${esc(f.title || '')}</div>
+          <div style="font-size:11px; color:var(--text-dim); line-height:1.5;">${esc(f.text || '')}</div>
+        </div>
+        <span class="${fvClass}" style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em;">${esc((f.verdict||'').replace(/_/g,' '))}</span>
+      </div>`;
+    });
+    html += `</div></div>`;
+  }
+
+  if (gaps.length) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Gaps (${gaps.length})</div>
+      <div class="analysis-block">`;
+    gaps.forEach(g => {
+      const sev = typeof g.severity === 'object' ? g.severity.label : g.severity;
+      html += `<div class="finding-row">
+        <div>
+          <div class="finding-id">${esc(g.gap_id || '')}</div>
+          <span class="sev-label ${sevClass(sev)}">${esc(sev||'?')}</span>
+        </div>
+        <div>
+          <div class="finding-text" style="font-weight:500; margin-bottom:3px;">${esc(g.title || '')}</div>
+          <div style="font-size:11px; color:var(--text-dim); line-height:1.5;">${esc(g.description || '')}</div>
+        </div>
+        <div></div>
+      </div>`;
+    });
+    html += `</div></div>`;
+  }
+
+  if (recs.length) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Recommendations (${recs.length})</div>
+      <div class="analysis-block">`;
+    recs.forEach(r => {
+      const pri = typeof r.priority === 'object' ? r.priority.label : r.priority;
+      html += `<div class="finding-row">
+        <div>
+          <div class="finding-id">${esc(r.rec_id || '')}</div>
+          ${pri ? `<span class="sev-label ${sevClass(pri)}">${esc(pri)}</span>` : ''}
+        </div>
+        <div>
+          <div class="finding-text" style="font-weight:500; margin-bottom:3px;">${esc(r.title || '')}</div>
+          <div style="font-size:11px; color:var(--text-dim); line-height:1.5;">${esc(r.text || '')}</div>
+        </div>
+        <div></div>
+      </div>`;
+    });
+    html += `</div></div>`;
+  }
+
+  if (meta.mode || meta.endpoint_url) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Metadata</div>
+      <div class="kv-grid">
+        ${meta.mode ? `<div class="kv-label">mode</div><div class="kv-val">${esc(meta.mode)}</div>` : ''}
+        ${meta.sample_count ? `<div class="kv-label">samples</div><div class="kv-val">${meta.sample_count}</div>` : ''}
+        ${meta.endpoint_url ? `<div class="kv-label">endpoint</div><div class="kv-val">${esc(meta.endpoint_url)}</div>` : ''}
+        ${meta.inference_topology ? `<div class="kv-label">topology</div><div class="kv-val">${esc(meta.inference_topology)}</div>` : ''}
+        ${meta.analyzed_at ? `<div class="kv-label">analyzed</div><div class="kv-val">${esc(fmtTs(meta.analyzed_at))}</div>` : ''}
+        ${meta.engine_version ? `<div class="kv-label">engine</div><div class="kv-val">${esc(meta.engine_version)}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function renderExploreAnalysis(data, ucUuid) {
+  const el = document.getElementById('analysisDetail');
+  const samples = data.samples || [];
+  const variance = data.variance;
+  let html = `<div class="detail-pane">
+    <div class="detail-title">Explore <em>mode</em></div>
+    <div class="detail-sub">${esc(ucUuid)} · ${samples.length} samples</div>
+  `;
+  if (variance) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Variance report</div>
+      <div class="analysis-block"><div class="analysis-block-body">
+        <pre style="white-space:pre-wrap; word-break:break-word; font-size:11px;">${esc(JSON.stringify(variance, null, 2))}</pre>
+      </div></div>
+    </div>`;
+  }
+  samples.forEach((s, i) => {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Sample ${i}</div>
+      <div class="analysis-block">
+        <div class="analysis-block-header">
+          <span class="${verdictClass(s.verdict)}">${esc((s.verdict||'?').replace(/_/g,' '))}</span>
+        </div>
+        <div class="analysis-block-body">${esc(s.overall_assessment || '—')}</div>
+      </div>
+    </div>`;
+  });
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+// ===================== USE CASES =====================
+async function loadUCs(source) {
+  document.getElementById('ucList').innerHTML = '<div class="empty">loading…</div>';
+  const src = source || document.getElementById('ucSourceFilter').value;
+  try {
+    const q = src ? `?source=${src}` : '';
+    const resp = await api('/api/use-cases' + q);
+    allUCs = resp.use_cases || [];
+    document.getElementById('badgeUC').textContent = allUCs.length;
+    renderUCList();
+  } catch (e) {
+    document.getElementById('ucList').innerHTML =
+      `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+  }
+}
+
+function renderUCList() {
+  const el = document.getElementById('ucList');
+  const filter = (document.getElementById('ucFilter').value || '').toLowerCase();
+  const filtered = allUCs.filter(u =>
+    !filter ||
+    (u.uuid||'').toLowerCase().includes(filter) ||
+    (u.title||'').toLowerCase().includes(filter) ||
+    (u.handle||'').toLowerCase().includes(filter) ||
+    (u.tags||[]).some(t => t.toLowerCase().includes(filter))
+  );
+
+  if (!filtered.length) {
+    el.innerHTML = '<div class="empty">No use cases match.</div>';
+    return;
+  }
+
+  el.innerHTML = '';
+  const managedList = filtered.filter(u => u.source === 'managed');
+  const corpusList  = filtered.filter(u => u.source === 'corpus');
+
+  const renderGroup = (items, label) => {
+    if (!items.length) return;
+    const gl = document.createElement('div');
+    gl.className = 'list-group-label';
+    gl.textContent = label;
+    el.appendChild(gl);
+    items.forEach(u => {
+      const item = document.createElement('div');
+      item.className = 'list-item' + (activeUCId === u.uuid ? ' active' : '');
+      const tags = (u.tags || []).slice(0, 3).map(t => `<span class="tag">${esc(t)}</span>`).join('');
+      item.innerHTML = `
+        <div class="li-main">
+          <div class="li-title">${esc(u.uuid || u.handle || '?')}</div>
+          <div class="li-sub">${esc(u.title || u.handle || '')}</div>
+          ${tags ? `<div style="margin-top:3px;">${tags}</div>` : ''}
+        </div>
+        <span class="src-badge src-${u.source}">${u.source}</span>
+      `;
+      item.addEventListener('click', () => selectUC(u.uuid));
+      el.appendChild(item);
+    });
+  };
+
+  renderGroup(managedList, 'Managed');
+  renderGroup(corpusList, 'Corpus');
+}
+
+async function selectUC(uuid) {
+  activeUCId = uuid;
+  renderUCList();
+  renderUCDetail(null, 'loading…');
+  try {
+    const data = await api(`/api/use-cases/${encodeURIComponent(uuid)}`);
+    renderUCDetail(data);
+  } catch (e) {
+    renderUCDetail(null, e.message, true);
+  }
+}
+
+function renderUCDetail(data, loadingMsg, isErr) {
+  const el = document.getElementById('ucDetail');
+  if (!data) {
+    el.innerHTML = `<div class="detail-pane"><div class="${isErr ? '' : 'detail-empty'}" style="${isErr ? 'color:var(--red);padding-top:40px;' : ''}">${esc(loadingMsg || '')}</div></div>`;
+    return;
+  }
+
+  const isManaged = data.source === 'managed';
+  const parsed = data.parsed || {};
+  const scenario = parsed.scenario || (data.yaml_content ? tryParseYaml(data.yaml_content)?.scenario : null) || {};
+  const tags = data.tags || parsed.tags || [];
+  const uuid = data.uuid;
+
+  let html = `<div class="detail-pane">
+    <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:4px;">
+      <div>
+        <div class="detail-title">Use <em>case</em></div>
+        <div class="detail-sub">${esc(uuid)}</div>
+      </div>
+      <div style="display:flex; gap:6px; flex-shrink:0; margin-top:4px;">
+        ${isManaged
+          ? `<button class="btn ghost" onclick="editUC('${esc(uuid)}')">Edit</button>
+             <button class="btn danger" onclick="deleteUC('${esc(uuid)}')">Delete</button>`
+          : `<button class="btn ghost" onclick="cloneUC('${esc(uuid)}')">Clone to managed</button>`}
+      </div>
+    </div>
+    <div style="margin-bottom:14px;">${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>
+  `;
+
+  if (scenario.description) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Scenario</div>
+      <div style="font-size:13px; font-family:var(--serif); line-height:1.7; color:var(--text);">${esc(scenario.description)}</div>
+    </div>`;
+  }
+
+  const dims = scenario.dimensions || {};
+  if (Object.keys(dims).length) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Dimensions</div>
+      <div class="kv-grid">`;
+    Object.entries(dims).forEach(([k, v]) => {
+      html += `<div class="kv-label">${esc(k.replace(/_/g,' '))}</div><div class="kv-val">${esc(v)}</div>`;
+    });
+    html += `</div></div>`;
+  }
+
+  const criteria = scenario.success_criteria || [];
+  if (criteria.length) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Success criteria</div>
+      <ul style="list-style:none; padding:0;">`;
+    criteria.forEach(c => {
+      html += `<li style="font-size:12px; color:var(--text-dim); padding:3px 0; padding-left:14px; position:relative;">
+        <span style="position:absolute; left:0; color:var(--accent);">·</span>${esc(c)}
+      </li>`;
+    });
+    html += `</ul></div>`;
+  }
+
+  const di = scenario.expected_domain_interactions || [];
+  if (di.length) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Domain interactions</div>
+      <div class="analysis-block">`;
+    di.forEach(d => {
+      html += `<div class="finding-row">
+        <div style="font-size:10px; color:var(--accent);">${esc(d.domain || '')}</div>
+        <div style="font-size:12px; color:var(--text-dim);">${esc(d.interaction || '')}</div>
+        <div></div>
+      </div>`;
+    });
+    html += `</div></div>`;
+  }
+
+  // Actor info
+  if (scenario.actor) {
+    const a = scenario.actor;
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Actor</div>
+      <div class="kv-grid">
+        ${a.persona ? `<div class="kv-label">persona</div><div class="kv-val">${esc(a.persona)}</div>` : ''}
+        ${a.profile ? `<div class="kv-label">profile</div><div class="kv-val">${esc(a.profile)}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  const genBy = parsed.generated_by || {};
+  if (data.created_by || genBy.source) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Provenance</div>
+      <div class="kv-grid">
+        ${data.created_by ? `<div class="kv-label">created by</div><div class="kv-val">${esc(data.created_by)}</div>` : ''}
+        ${data.created_at ? `<div class="kv-label">created</div><div class="kv-val">${esc(fmtTs(data.created_at))}</div>` : ''}
+        ${data.updated_by && data.updated_by !== data.created_by ? `<div class="kv-label">updated by</div><div class="kv-val">${esc(data.updated_by)}</div>` : ''}
+        ${data.updated_at ? `<div class="kv-label">updated</div><div class="kv-val">${esc(fmtTs(data.updated_at))}</div>` : ''}
+        ${genBy.source ? `<div class="kv-label">gen source</div><div class="kv-val">${esc(genBy.source)}</div>` : ''}
+        ${genBy.mode   ? `<div class="kv-label">gen mode</div><div class="kv-val">${esc(genBy.mode)}</div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  if (data.yaml_content) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title" style="cursor:pointer;" onclick="toggleRaw(this)">
+        Raw YAML <span style="color:var(--text-faint); font-size:9px;">(click to toggle)</span>
+      </div>
+      <div class="raw-yaml-block" style="display:none;">
+        <div class="analysis-block">
+          <div class="analysis-block-body">
+            <pre style="white-space:pre-wrap; word-break:break-word; font-size:11px;">${esc(data.yaml_content)}</pre>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+function toggleRaw(titleEl) {
+  const block = titleEl.nextElementSibling;
+  if (block) block.style.display = block.style.display === 'none' ? '' : 'none';
+}
+
+function tryParseYaml(content) {
+  // Minimal client-side YAML parser attempt — just for display purposes.
+  // Full parsing happens server-side; here we just extract top-level keys.
+  try {
+    // We don't ship js-yaml, so we use a heuristic: look for 'scenario:' block
+    // and return enough structure for the detail renderer.
+    return null;
+  } catch { return null; }
+}
+
+// ===================== UC CRUD =====================
+function openUCModal(uuid, yamlContent, tags) {
+  editingUCId = uuid || null;
+  document.getElementById('ucModalTitle').textContent = uuid ? 'Edit use case' : 'New use case';
+  document.getElementById('ucYamlEditor').value = yamlContent || UC_TEMPLATE;
+  document.getElementById('ucTagsInput').value = (tags || []).join(', ');
+  document.getElementById('ucModalStatus').textContent = '';
+  document.getElementById('saveUCModal').disabled = false;
+  document.getElementById('ucModal').classList.add('open');
+}
+
+async function editUC(uuid) {
+  try {
+    const data = await api(`/api/use-cases/${encodeURIComponent(uuid)}`);
+    openUCModal(uuid, data.yaml_content, data.tags);
+  } catch (e) {
+    toast('Load failed: ' + e.message, true);
+  }
+}
+
+async function cloneUC(uuid) {
+  try {
+    const data = await api(`/api/use-cases/${encodeURIComponent(uuid)}`);
+    openUCModal(null, data.yaml_content, data.tags);
+  } catch (e) {
+    toast('Load failed: ' + e.message, true);
+  }
+}
+
+async function deleteUC(uuid) {
+  if (!confirm(`Delete use case "${uuid}"? This cannot be undone.`)) return;
+  try {
+    await api(`/api/use-cases/${encodeURIComponent(uuid)}`, { method: 'DELETE' });
+    toast(`Deleted ${uuid}`);
+    activeUCId = null;
+    document.getElementById('ucDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">Use case deleted.</div></div>';
+    loadUCs();
+  } catch (e) {
+    toast('Delete failed: ' + e.message, true);
+  }
+}
+
+async function saveUC() {
+  const btn = document.getElementById('saveUCModal');
+  const status = document.getElementById('ucModalStatus');
+  btn.disabled = true;
+  status.textContent = 'saving…';
+
+  const yamlContent = document.getElementById('ucYamlEditor').value;
+  const tagsRaw = document.getElementById('ucTagsInput').value;
+  const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
+  const payload = { yaml_content: yamlContent, tags };
+
+  try {
+    let resp;
+    if (editingUCId) {
+      resp = await api(`/api/use-cases/${encodeURIComponent(editingUCId)}`,
+        { method: 'PUT', body: JSON.stringify(payload) });
+    } else {
+      resp = await api('/api/use-cases', { method: 'POST', body: JSON.stringify(payload) });
+    }
+    toast(`Saved ${resp.uuid}`);
+    closeUCModal();
+    activeUCId = resp.uuid;
+    await loadUCs();
+    selectUC(resp.uuid);
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    btn.disabled = false;
+  }
+}
+
+function closeUCModal() {
+  document.getElementById('ucModal').classList.remove('open');
+  editingUCId = null;
+}
+
+const UC_TEMPLATE = `# DAV Use Case — v1.0
+uuid: uc-<your-uuid-here>
+handle: <category>/<descriptor>
+
+scenario:
+  description: |
+    Describe the scenario in 2-3 sentences.
+
+  actor:
+    persona: <persona>
+    profile: standard
+
+  intent: |
+    What the actor is trying to accomplish.
+
+  success_criteria:
+    - First observable success condition
+    - Second observable success condition
+
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: hard_dependencies
+    policy_complexity: single_gatekeeper
+    provider_landscape: multiple_eligible
+    governance_context: standard_governance
+    failure_mode: happy_path
+
+  profile: standard
+
+  expected_domain_interactions:
+    - domain: <domain-name>
+      interaction: Description of how this domain is involved
+
+generated_by:
+  mode: authoring
+  source: human-authored
+
+tags:
+  - <tag>
+`;
+
+// ===================== CONFIG / SOURCES =====================
+const sourcesPollers = { spec: null, corpus: null };
+const sourcesState  = { spec: null, corpus: null };
+
 const SOURCE_UI = {
   spec: {
-    panel: 'sourcesSpecPanel',
-    repo: 'srcSpecRepo', branch: 'srcSpecBranch', mgr: 'srcSpecMgr',
+    repo: 'srcSpecRepo', branch: 'srcSpecBranch',
     when: 'srcSpecWhen', who: 'srcSpecWho', status: 'srcSpecStatus',
     repoInput: 'srcSpecRepoInput',
-    branchSelect: 'srcSpecBranchSelect',
-    branchInput: 'srcSpecBranchInput',
+    branchSelect: 'srcSpecBranchSelect', branchInput: 'srcSpecBranchInput',
     refreshBranchesBtn: 'srcSpecRefreshBranches',
-    applyBtn: 'srcSpecApplyBtn',
-    msg: 'srcSpecMsg',
+    applyBtn: 'srcSpecApplyBtn', msg: 'srcSpecMsg',
   },
   corpus: {
-    panel: 'sourcesCorpusPanel',
-    repo: 'srcCorpusRepo', branch: 'srcCorpusBranch', mgr: 'srcCorpusMgr',
+    repo: 'srcCorpusRepo', branch: 'srcCorpusBranch',
     when: 'srcCorpusWhen', who: 'srcCorpusWho', status: 'srcCorpusStatus',
     repoInput: 'srcCorpusRepoInput',
-    branchSelect: 'srcCorpusBranchSelect',
-    branchInput: 'srcCorpusBranchInput',
+    branchSelect: 'srcCorpusBranchSelect', branchInput: 'srcCorpusBranchInput',
     refreshBranchesBtn: 'srcCorpusRefreshBranches',
-    applyBtn: 'srcCorpusApplyBtn',
-    msg: 'srcCorpusMsg',
+    applyBtn: 'srcCorpusApplyBtn', msg: 'srcCorpusMsg',
   },
 };
 
-async function renderSources() {
+async function loadConfig() {
   try {
     const resp = await api('/api/sources');
     const data = resp.sources || {};
@@ -1119,9 +1458,8 @@ async function renderSources() {
     }
   } catch (e) {
     for (const kind of ['spec', 'corpus']) {
-      const ui = SOURCE_UI[kind];
-      document.getElementById(ui.msg).innerHTML =
-        `<span style="color:var(--drift)">${escapeHtml(e.message)}</span>`;
+      document.getElementById(SOURCE_UI[kind].msg).innerHTML =
+        `<span style="color:var(--red)">${esc(e.message)}</span>`;
     }
   }
 }
@@ -1131,56 +1469,36 @@ function renderSourcePanel(kind) {
   const s = sourcesState[kind];
   if (!s) return;
 
-  document.getElementById(ui.repo).textContent = s.repo_url || '—';
+  document.getElementById(ui.repo).textContent   = s.repo_url || '—';
   document.getElementById(ui.branch).textContent = s.repo_branch || '—';
-  document.getElementById(ui.mgr).textContent = s.managed_by || '—';
-  document.getElementById(ui.when).textContent = formatTs(s.last_applied_at);
-  document.getElementById(ui.who).textContent = s.last_applied_by || '—';
+  document.getElementById(ui.when).textContent   = fmtTs(s.last_applied_at);
+  document.getElementById(ui.who).textContent    = s.last_applied_by || '—';
 
-  // Rollout status
   const statusEl = document.getElementById(ui.status);
   if (s.rollout) {
     const r = s.rollout;
-    if (r.rolled_out) {
-      statusEl.innerHTML =
-        `<span style="color:var(--status-approved)">rolled out</span> ` +
-        `<span style="color:var(--text-faint)">` +
-        `· ${r.replicas_ready}/${r.replicas_desired} ready</span>`;
-    } else {
-      statusEl.innerHTML =
-        `<span style="color:var(--status-in-review)">applying</span> ` +
-        `<span style="color:var(--text-faint)">· gen ${r.observed_generation}/${r.generation} ` +
-        `· ${r.replicas_ready}/${r.replicas_desired} ready</span>`;
-    }
+    statusEl.innerHTML = r.rolled_out
+      ? `<span style="color:var(--green)">rolled out</span> · ${r.replicas_ready}/${r.replicas_desired} ready`
+      : `<span style="color:var(--blue)">applying</span> · ${r.replicas_ready}/${r.replicas_desired} ready`;
   } else {
     statusEl.textContent = '(deployment not found)';
   }
 
-  // Drift warning: Deployment annotations differ from ConfigMap
   if (s.deployment_annotations) {
     const da = s.deployment_annotations;
-    const drift =
-      (da.source_repo_url && da.source_repo_url !== s.repo_url) ||
-      (da.source_repo_branch && da.source_repo_branch !== s.repo_branch);
-    if (drift) {
-      statusEl.innerHTML +=
-        ` <span style="color:var(--drift)" title="Deployment annotations lag ConfigMap — pod may not yet reflect new values">⚠ drift</span>`;
-    }
+    const drift = (da.source_repo_url && da.source_repo_url !== s.repo_url)
+               || (da.source_repo_branch && da.source_repo_branch !== s.repo_branch);
+    if (drift) statusEl.innerHTML +=
+      ' <span style="color:var(--red)" title="Deployment annotations lag ConfigMap">⚠ drift</span>';
   }
 
-  // Seed the input fields with current values if empty (first render only)
   const repoInput = document.getElementById(ui.repoInput);
   if (!repoInput.value && !repoInput.dataset.userEdited) {
     repoInput.value = s.repo_url || '';
-    // Kick off branch loading for the current repo
     loadBranches(kind, s.repo_url).then(() => {
-      // Pre-select current branch if it's in the list
       const sel = document.getElementById(ui.branchSelect);
       for (const opt of sel.options) {
-        if (opt.value === s.repo_branch) {
-          sel.value = s.repo_branch;
-          break;
-        }
+        if (opt.value === s.repo_branch) { sel.value = s.repo_branch; break; }
       }
     });
   }
@@ -1188,216 +1506,137 @@ function renderSourcePanel(kind) {
 
 async function loadBranches(kind, repoUrl) {
   const ui = SOURCE_UI[kind];
-  const select = document.getElementById(ui.branchSelect);
-  if (!repoUrl) {
-    select.innerHTML = '<option value="">(enter a repo URL first)</option>';
-    return;
-  }
-  select.innerHTML = '<option value="">(loading branches…)</option>';
+  const sel = document.getElementById(ui.branchSelect);
+  if (!repoUrl) { sel.innerHTML = '<option value="">(enter a repo URL first)</option>'; return; }
+  sel.innerHTML = '<option value="">(loading…)</option>';
   try {
-    const resp = await api('/api/sources/branches?repo_url=' +
-                           encodeURIComponent(repoUrl));
+    const resp = await api('/api/sources/branches?repo_url=' + encodeURIComponent(repoUrl));
     const branches = resp.branches || [];
-    if (branches.length === 0) {
-      select.innerHTML = '<option value="">(no branches found — use free-text)</option>';
-      return;
-    }
-    select.innerHTML = '<option value="">(select a branch)</option>';
-    for (const b of branches) {
+    if (!branches.length) { sel.innerHTML = '<option value="">(no branches — use free-text)</option>'; return; }
+    sel.innerHTML = '<option value="">(select a branch)</option>';
+    branches.forEach(b => {
       const opt = document.createElement('option');
       opt.value = b; opt.textContent = b;
-      select.appendChild(opt);
-    }
-  } catch (e) {
-    select.innerHTML = '<option value="">(GitHub API failed — use free-text)</option>';
+      sel.appendChild(opt);
+    });
+  } catch {
+    sel.innerHTML = '<option value="">(GitHub API failed — use free-text)</option>';
   }
 }
 
 async function applySource(kind) {
   const ui = SOURCE_UI[kind];
   const repoUrl = document.getElementById(ui.repoInput).value.trim();
-  const branchFromSelect = document.getElementById(ui.branchSelect).value;
-  const branchFromInput = document.getElementById(ui.branchInput).value.trim();
-  const branch = branchFromInput || branchFromSelect;
+  const branch  = document.getElementById(ui.branchInput).value.trim()
+               || document.getElementById(ui.branchSelect).value;
   const msg = document.getElementById(ui.msg);
   const btn = document.getElementById(ui.applyBtn);
 
-  if (!repoUrl) {
-    msg.innerHTML = '<span style="color:var(--drift)">repo URL required</span>';
-    return;
-  }
-  if (!branch) {
-    msg.innerHTML = '<span style="color:var(--drift)">branch required (select or type)</span>';
-    return;
-  }
+  if (!repoUrl) { msg.innerHTML = '<span style="color:var(--red)">repo URL required</span>'; return; }
+  if (!branch)  { msg.innerHTML = '<span style="color:var(--red)">branch required</span>'; return; }
 
-  // Confirm via toast + disabled state — deliberate, one-step
   const current = sourcesState[kind];
-  const same = current &&
-               current.repo_url === repoUrl &&
-               current.repo_branch === branch;
-  if (same) {
-    msg.innerHTML = '<span style="color:var(--text-faint)">same as current — nothing to do</span>';
-    return;
+  if (current && current.repo_url === repoUrl && current.repo_branch === branch) {
+    msg.innerHTML = '<span style="color:var(--text-faint)">same as current — nothing to do</span>'; return;
   }
 
   btn.disabled = true;
-  msg.innerHTML = '<span style="color:var(--status-in-review)">applying…</span>';
-
+  msg.innerHTML = '<span style="color:var(--blue)">applying…</span>';
   try {
-    const resp = await api('/api/sources/' + kind, {
-      method: 'POST',
-      body: JSON.stringify({ repo_url: repoUrl, repo_branch: branch }),
+    const resp = await api(`/api/sources/${kind}`, {
+      method: 'POST', body: JSON.stringify({ repo_url: repoUrl, repo_branch: branch }),
     });
     sourcesState[kind] = resp.state;
     renderSourcePanel(kind);
-    msg.innerHTML = '<span style="color:var(--status-approved)">applied · rolling out</span>';
-    toast(`${kind}: applied ${repoUrl}#${branch} — rolling out`);
+    msg.innerHTML = '<span style="color:var(--green)">applied · rolling out</span>';
+    toast(`${kind}: applied ${repoUrl}#${branch}`);
     startSourcePoll(kind);
-    // Clear the "user edited" marker so future renders reseed
     document.getElementById(ui.repoInput).dataset.userEdited = '';
     document.getElementById(ui.branchInput).value = '';
   } catch (e) {
-    msg.innerHTML =
-      `<span style="color:var(--drift)">${escapeHtml(e.message)}</span>`;
-    toast('apply failed: ' + e.message, true);
+    msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    toast('Apply failed: ' + e.message, true);
   } finally {
     btn.disabled = false;
   }
 }
 
 function startSourcePoll(kind) {
-  // Stop any existing poller for this kind
-  if (sourcesPollers[kind]) {
-    clearInterval(sourcesPollers[kind]);
-  }
+  if (sourcesPollers[kind]) clearInterval(sourcesPollers[kind]);
   sourcesPollers[kind] = setInterval(async () => {
     try {
       const resp = await api('/api/sources/' + kind);
       sourcesState[kind] = resp.state;
       renderSourcePanel(kind);
-      if (resp.state.rollout && resp.state.rollout.rolled_out) {
+      if (resp.state.rollout?.rolled_out) {
         clearInterval(sourcesPollers[kind]);
         sourcesPollers[kind] = null;
-        const ui = SOURCE_UI[kind];
-        document.getElementById(ui.msg).innerHTML =
-          '<span style="color:var(--status-approved)">rolled out</span>';
+        document.getElementById(SOURCE_UI[kind].msg).innerHTML =
+          '<span style="color:var(--green)">rolled out</span>';
         toast(`${kind}: rollout complete`);
       }
-    } catch (e) {
-      // transient errors — keep polling but surface briefly
-      console.warn('poll error', e);
-    }
+    } catch { /* keep polling */ }
   }, 3000);
-
-  // Safety net: stop polling after 5 minutes regardless
   setTimeout(() => {
-    if (sourcesPollers[kind]) {
-      clearInterval(sourcesPollers[kind]);
-      sourcesPollers[kind] = null;
-    }
+    if (sourcesPollers[kind]) { clearInterval(sourcesPollers[kind]); sourcesPollers[kind] = null; }
   }, 5 * 60 * 1000);
 }
 
 function wireSourcesPanel(kind) {
   const ui = SOURCE_UI[kind];
-  const repoInput = document.getElementById(ui.repoInput);
-  const branchSelect = document.getElementById(ui.branchSelect);
-  const branchInput = document.getElementById(ui.branchInput);
-
-  // Reload branches when repo URL changes (debounced-ish via blur)
-  repoInput.addEventListener('change', () => {
-    repoInput.dataset.userEdited = '1';
-    loadBranches(kind, repoInput.value.trim());
+  document.getElementById(ui.repoInput).addEventListener('change', () => {
+    document.getElementById(ui.repoInput).dataset.userEdited = '1';
+    loadBranches(kind, document.getElementById(ui.repoInput).value.trim());
   });
-
-  // Selecting a branch from dropdown clears the free-text field
-  branchSelect.addEventListener('change', () => {
-    if (branchSelect.value) branchInput.value = '';
+  document.getElementById(ui.branchSelect).addEventListener('change', () => {
+    if (document.getElementById(ui.branchSelect).value)
+      document.getElementById(ui.branchInput).value = '';
   });
-
-  // Typing in the free-text branch clears the dropdown selection
-  branchInput.addEventListener('input', () => {
-    if (branchInput.value) branchSelect.value = '';
+  document.getElementById(ui.branchInput).addEventListener('input', () => {
+    if (document.getElementById(ui.branchInput).value)
+      document.getElementById(ui.branchSelect).value = '';
   });
-
   document.getElementById(ui.refreshBranchesBtn).addEventListener('click', () => {
-    loadBranches(kind, repoInput.value.trim());
+    loadBranches(kind, document.getElementById(ui.repoInput).value.trim());
   });
-
-  document.getElementById(ui.applyBtn).addEventListener('click', () => {
-    applySource(kind);
-  });
+  document.getElementById(ui.applyBtn).addEventListener('click', () => applySource(kind));
 }
 
-/* ======================= Wire up ======================= */
-document.querySelectorAll('nav.tabs button').forEach(b => b.addEventListener('click', () => switchView(b.dataset.view)));
-document.getElementById('treeFilter').addEventListener('input', renderTree);
-document.getElementById('treeStatusFilter').addEventListener('change', renderTree);
-document.getElementById('saveReview').addEventListener('click', saveCurrentReview);
-document.getElementById('clearReview').addEventListener('click', clearCurrentReview);
-document.getElementById('addToHandoff').addEventListener('click', () => {
-  if (!currentPath) return;
-  handoffSelection.add(currentPath);
-  document.getElementById('handoffBadge').textContent = handoffSelection.size;
-  cachedHandoff = null;
-  toast(`+ ${displayFilename(currentPath)} → handoff`);
-});
-document.getElementById('refreshCorpus').addEventListener('click', async () => {
-  try { await loadCorpus(); toast('Corpus refreshed'); } catch (e) { toast('Refresh failed', true); }
+// ===================== Wire-up =====================
+document.querySelectorAll('nav.tabs button').forEach(b =>
+  b.addEventListener('click', () => switchView(b.dataset.view)));
+
+document.getElementById('newRunBtn').addEventListener('click', openNewRun);
+document.getElementById('closeNewRun').addEventListener('click', closeNewRun);
+document.getElementById('cancelNewRun').addEventListener('click', closeNewRun);
+document.getElementById('submitNewRun').addEventListener('click', submitNewRun);
+document.getElementById('refreshRunsBtn').addEventListener('click', loadRuns);
+
+document.getElementById('refreshResultsBtn').addEventListener('click', loadResults);
+document.getElementById('resultFilter').addEventListener('input', renderResultList);
+document.getElementById('ucVerdictFilter').addEventListener('change', () => {
+  if (activeRunSummary) renderUCResultList(activeRunSummary);
 });
 
-document.getElementById('handoffFilter').addEventListener('input', renderHandoffList);
-document.getElementById('selectAll').addEventListener('click', () => {
-  const filter = (document.getElementById('handoffFilter').value || '').toLowerCase();
-  corpus.filter(f => !filter || f.path.toLowerCase().includes(filter)).forEach(f => handoffSelection.add(f.path));
-  renderHandoffList();
-  document.getElementById('handoffBadge').textContent = handoffSelection.size;
-  cachedHandoff = null;
-});
-document.getElementById('selectNone').addEventListener('click', () => {
-  handoffSelection.clear();
-  renderHandoffList();
-  document.getElementById('handoffBadge').textContent = 0;
-  cachedHandoff = null;
-});
-document.getElementById('previewPrompt').addEventListener('click', async () => {
-  try { await generateHandoff(); } catch (e) { toast('Preview failed: ' + e.message, true); }
-});
-document.getElementById('copyPrompt').addEventListener('click', async () => {
-  try {
-    if (!cachedHandoff) await generateHandoff();
-    if (!cachedHandoff) { toast('select files first'); return; }
-    const ok = await copyToClipboard(cachedHandoff.markdown);
-    toast(ok ? `copied ${cachedHandoff.length.toLocaleString()} chars` : 'copy failed', !ok);
-  } catch (e) { toast('Copy failed: ' + e.message, true); }
-});
-document.getElementById('downloadPrompt').addEventListener('click', async () => {
-  try {
-    if (!cachedHandoff) await generateHandoff();
-    if (!cachedHandoff) { toast('select files first'); return; }
-    const fn = `dcm-handoff-${new Date().toISOString().slice(0,10)}-${handoffSelection.size}files.md`;
-    download(fn, cachedHandoff.markdown);
-    toast(`downloaded ${fn}`);
-  } catch (e) { toast('Download failed: ' + e.message, true); }
-});
-document.getElementById('exportHistory').addEventListener('click', async () => {
-  try {
-    const h = await api('/api/history?limit=1000');
-    download(`dcm-history-${new Date().toISOString().slice(0,10)}.json`,
-             JSON.stringify(h, null, 2), 'application/json');
-  } catch (e) { toast('Export failed: ' + e.message, true); }
-});
-document.getElementById('refreshHistory').addEventListener('click', renderHistory);
+document.getElementById('newUCBtn').addEventListener('click', () => openUCModal());
+document.getElementById('closeUCModal').addEventListener('click', closeUCModal);
+document.getElementById('cancelUCModal').addEventListener('click', closeUCModal);
+document.getElementById('saveUCModal').addEventListener('click', saveUC);
+document.getElementById('ucFilter').addEventListener('input', renderUCList);
+document.getElementById('ucSourceFilter').addEventListener('change', () => loadUCs());
 
-document.getElementById('stTriggerBtn').addEventListener('click', triggerSelfTestRun);
-document.getElementById('stRefreshBtn').addEventListener('click', renderSelfTestRuns);
+// Close modals on overlay click
+['newRunModal', 'ucModal'].forEach(id => {
+  document.getElementById(id).addEventListener('click', e => {
+    if (e.target === document.getElementById(id))
+      document.getElementById(id).classList.remove('open');
+  });
+});
 
 wireSourcesPanel('spec');
 wireSourcesPanel('corpus');
 
 init();
 </script>
-
 </body>
 </html>

@@ -5,8 +5,6 @@ dav_service_account: dav-pipeline-sa
 dav_workspace_pvc_size: 20Gi
 dav_workspace_pvc_name: dav-workspace
 dav_model_cache_pvc_size: 40Gi
-vllm_tier3_model: "casperhansen/deepseek-r1-distill-qwen-14b-awq"
-vllm_tier3_image: "vllm/vllm-openai:latest"
 dav_build_mcp_images: false
 
 # --- Review Console ---
