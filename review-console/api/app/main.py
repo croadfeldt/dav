@@ -185,7 +185,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DAV Console API", version="0.8.1", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.8.2", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -719,6 +719,32 @@ async def get_run_detail(name: str):
                     detail["progress"] = progress
             except Exception as e:
                 log.info("progress lookup failed for %s: %s", name, e)
+
+    # Live session aggregates (energy/power/tokens) for in-flight runs.
+    # On terminal phase the persisted run_sessions.* values are authoritative;
+    # while running, compute on-the-fly with range_aggregates(started, now).
+    if session and detail.get("phase") not in TERMINAL_PHASES:
+        started = detail.get("started_at") or detail.get("created_at")
+        if started and metrics.is_available():
+            try:
+                from datetime import datetime as _dt2, timezone as _tz2
+                now_iso = _dt2.now(_tz2.utc).isoformat()
+                live = await metrics.range_aggregates(started, now_iso)
+                if live.get("available"):
+                    session["live_wall_time_seconds"]   = live.get("window_seconds")
+                    session["live_gpu_energy_joules"]   = live.get("gpu_energy_joules")
+                    session["live_gpu_avg_power_watts"] = live.get("gpu_avg_power_watts")
+                    session["live_gpu_peak_power_watts"]= live.get("gpu_peak_power_watts")
+                    # Tokens from increase() — independent of the trigger-time
+                    # baseline persisted in run_sessions, so this and the
+                    # baseline-delta tile may diverge slightly. The baseline
+                    # method is more reliable for "session totals since I hit
+                    # Trigger"; increase() is what an observability dashboard
+                    # would report for the same window. We surface both.
+                    session["live_total_prompt_tokens"] = live.get("total_prompt_tokens")
+                    session["live_total_gen_tokens"]    = live.get("total_gen_tokens")
+            except Exception as e:
+                log.info("live aggregate computation failed for %s: %s", name, e)
 
     # Live session token deltas: persisted baseline (captured at trigger time)
     # minus current Prometheus counter. Survives browser reload — replaces

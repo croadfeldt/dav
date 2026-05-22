@@ -747,7 +747,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.8.1</span>
+  <span>DAV Console · v0.8.2</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -1647,8 +1647,19 @@ function renderRunDrawerDetail(d) {
       if (s.total_gen_tokens !== null && s.total_gen_tokens !== undefined) {
         html += `<div class="kv-label">tokens</div><div class="kv-val">${(s.total_gen_tokens||0).toLocaleString()} gen · ${(s.total_prompt_tokens||0).toLocaleString()} prompt</div>`;
       }
+    } else if (s.live_gpu_energy_joules !== null && s.live_gpu_energy_joules !== undefined) {
+      // In-flight run with live aggregates from Prometheus range queries.
+      // Values update on every poll until the run terminates; final stats
+      // then replace these via the lazy finalizer.
+      const liveBadge = '<span style="color:var(--blue);font-size:9px;text-transform:uppercase;letter-spacing:0.1em;margin-left:6px;animation:pulse 1.6s infinite;">● live</span>';
+      html += `<div class="kv-label">wall time</div><div class="kv-val">${(s.live_wall_time_seconds||0).toFixed(0)}s ${liveBadge}</div>`;
+      html += `<div class="kv-label">GPU energy</div><div class="kv-val">${esc(_fmtEnergy(s.live_gpu_energy_joules))} ` +
+              `<span style="color:var(--text-faint);font-size:10px">(avg ${(s.live_gpu_avg_power_watts||0).toFixed(0)} W · peak ${(s.live_gpu_peak_power_watts||0).toFixed(0)} W) ${liveBadge}</span></div>`;
+      if (s.live_total_gen_tokens !== null && s.live_total_gen_tokens !== undefined) {
+        html += `<div class="kv-label">tokens</div><div class="kv-val">${(s.live_total_gen_tokens||0).toLocaleString()} gen · ${(s.live_total_prompt_tokens||0).toLocaleString()} prompt ${liveBadge}</div>`;
+      }
     } else if (['Running','Pending','Started'].includes(d.phase)) {
-      html += `<div class="kv-label">stats</div><div class="kv-val" style="color:var(--text-faint)">computed on run completion</div>`;
+      html += `<div class="kv-label">stats</div><div class="kv-val" style="color:var(--text-faint)">computing live values…</div>`;
     }
     document.getElementById('rdSession').innerHTML = html;
   } else {
