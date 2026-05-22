@@ -73,6 +73,48 @@ def list_runs() -> list[dict]:
     return runs
 
 
+def find_progress_near(started_at_iso: str, tolerance_seconds: int = 120) -> Optional[dict]:
+    """Find the in-flight run-progress.yaml whose started_at is closest to the
+    supplied PipelineRun start time. Returns the parsed dict (with the run_dir
+    name included), or None if no recent progress file matches.
+
+    The workspace run_id (`2026-05-22T15-15-56Z-<hash>`) is timestamp-prefixed
+    so a sorted descending walk lands on the newest run first; we then check
+    the start time inside run-progress.yaml is within `tolerance_seconds` of
+    the supplied PipelineRun start time. This is the lightweight correlation
+    between the PipelineRun and the workspace run-dir.
+    """
+    from datetime import datetime
+    try:
+        target = datetime.fromisoformat(started_at_iso.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    root = _results_root()
+    if not root.exists():
+        return None
+    for run_dir in sorted(root.iterdir(), key=lambda p: p.name, reverse=True):
+        if not run_dir.is_dir():
+            continue
+        prog_path = run_dir / "run-progress.yaml"
+        if not prog_path.exists():
+            continue
+        p = _safe_load(prog_path)
+        if not p:
+            continue
+        try:
+            st = datetime.fromisoformat(str(p.get("started_at", "")).replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if abs((st - target).total_seconds()) <= tolerance_seconds:
+            p["_run_dir"] = run_dir.name
+            return p
+        # Once we're past the target by more than tolerance, the next (older)
+        # ones can only be further away — short-circuit.
+        if st < target and (target - st).total_seconds() > tolerance_seconds:
+            break
+    return None
+
+
 def get_run_summary(run_id: str) -> Optional[dict]:
     """Return the full run-summary.yaml dict for a given run_id."""
     path = _results_root() / run_id / "run-summary.yaml"

@@ -141,11 +141,20 @@ CREATE TABLE IF NOT EXISTS run_sessions (
   gpu_avg_gfx_activity  DOUBLE PRECISION,
   total_prompt_tokens   BIGINT,
   total_gen_tokens      BIGINT,
+  -- Counter snapshots captured at trigger time so the run-detail drawer can
+  -- compute live session deltas (current counter - baseline) without
+  -- resetting on page reload. These are the absolute vllm:*_tokens_total
+  -- values observed when the PipelineRun was created.
+  baseline_gen_tokens   DOUBLE PRECISION,
+  baseline_prompt_tokens DOUBLE PRECISION,
   uc_total              INTEGER,
   uc_succeeded          INTEGER,
   uc_failed             INTEGER,
   finalized_at          TIMESTAMPTZ        -- when stats were computed
 );
+-- Add baseline columns to existing tables that predate them.
+ALTER TABLE run_sessions ADD COLUMN IF NOT EXISTS baseline_gen_tokens DOUBLE PRECISION;
+ALTER TABLE run_sessions ADD COLUMN IF NOT EXISTS baseline_prompt_tokens DOUBLE PRECISION;
 CREATE INDEX IF NOT EXISTS idx_run_sessions_created   ON run_sessions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_run_sessions_category  ON run_sessions(category);
 CREATE INDEX IF NOT EXISTS idx_run_sessions_phase     ON run_sessions(phase);

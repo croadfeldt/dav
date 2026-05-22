@@ -637,8 +637,39 @@ def _cli():
     runner_started = time.monotonic()
     results: list[CorpusUcResult] = []
     halted = False
+    progress_path = run_dir / "run-progress.yaml"
+
+    def _write_progress(current_index: int, current_uc_path: str | None,
+                        phase: str = "running") -> None:
+        """Write/overwrite a small progress file the console can poll while the
+        run is in flight. Cheap (~200 bytes), invariant: always reflects the
+        last completed UC + the next one being processed. Errors are swallowed
+        — progress reporting must never disrupt the run itself."""
+        try:
+            succ = sum(1 for r in results if r.success)
+            failed_n = sum(1 for r in results if not r.success)
+            payload = {
+                "run_id": run_id,
+                "phase": phase,                  # running | completed | halted
+                "total_ucs": len(corpus_files),
+                "current_index": current_index,  # 1-based; index of UC being worked
+                "current_uc_path": current_uc_path,
+                "completed": len(results),
+                "succeeded": succ,
+                "failed": failed_n,
+                "started_at": runner_started_at,
+                "elapsed_seconds": round(time.monotonic() - runner_started, 2),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            with progress_path.open("w") as f:
+                yaml.safe_dump(payload, f, sort_keys=False, default_flow_style=False)
+        except Exception as e:
+            log.warning("progress write failed: %s", e)
+
+    _write_progress(current_index=0, current_uc_path=None, phase="running")
     for i, uc_path in enumerate(corpus_files, 1):
         log.info("[%d/%d] %s", i, len(corpus_files), uc_path)
+        _write_progress(current_index=i, current_uc_path=str(uc_path), phase="running")
         result = run_one_uc(
             uc_path=uc_path,
             run_dir=run_dir,
@@ -669,6 +700,11 @@ def _cli():
                 result.uc_uuid, result.wall_time_seconds, result.sample_count,
             )
     runner_total = time.monotonic() - runner_started
+    _write_progress(
+        current_index=len(results),
+        current_uc_path=None,
+        phase="halted" if halted else "completed",
+    )
 
     summary_path = write_run_summary(
         run_dir=run_dir, run_id=run_id, mode=args.mode,

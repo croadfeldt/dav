@@ -132,7 +132,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DAV Console API", version="0.7.0", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.7.1", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -408,19 +408,34 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
         log.exception("run trigger failed")
         raise HTTPException(500, f"trigger failed: {e}")
 
-    # Persist the run-session row (name + category + audit trail). Failures
-    # here don't roll back the PipelineRun — the run still works, just won't
-    # show the user metadata in the drawer.
+    # Snapshot the vLLM token counters NOW so the run-detail drawer can
+    # compute live "session" deltas that persist across page reloads.
+    # Best-effort; if Prometheus is briefly unavailable, baseline stays NULL
+    # and the drawer falls back to client-side delta computation.
+    baseline_gen = baseline_prompt = None
+    try:
+        snap = await metrics.snapshot()
+        if snap.get("available"):
+            v = snap.get("vllm") or {}
+            baseline_gen    = v.get("gen_tokens_total")
+            baseline_prompt = v.get("prompt_tokens_total")
+    except Exception as e:
+        log.info("trigger: token-baseline snapshot failed (%s); session totals will start at zero", e)
+
+    # Persist the run-session row (name + category + audit trail + baseline).
+    # Failures here don't roll back the PipelineRun.
     try:
         async with pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO run_sessions
                    (run_name, name, description, category, tags, mode,
-                    created_by, started_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, now())""",
+                    created_by, started_at,
+                    baseline_gen_tokens, baseline_prompt_tokens)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9)""",
                 result["name"], payload.name, payload.description,
                 payload.category or "ad-hoc", payload.tags or [],
                 payload.mode, reviewer,
+                baseline_gen, baseline_prompt,
             )
     except Exception as e:
         log.warning("run_sessions insert failed for %s: %s", result.get("name"), e)
@@ -551,8 +566,9 @@ async def _maybe_finalize_session(detail: dict) -> Optional[dict]:
 @app.get("/api/runs/{name}")
 async def get_run_detail(name: str):
     """Return Tekton PipelineRun spec + per-TaskRun status + session metadata
-    for the run-detail UI. Lazy-finalizes power/token stats on the first view
-    after the run reaches a terminal phase."""
+    + per-UC progress (in-flight) + live session token deltas for the
+    run-detail UI. Lazy-finalizes power/token stats on the first view after
+    the run reaches a terminal phase."""
     if not validations.ENABLED:
         raise HTTPException(403, "pipeline trigger disabled")
     try:
@@ -565,6 +581,39 @@ async def get_run_detail(name: str):
     session = await _maybe_finalize_session(detail)
     if session is not None:
         detail["session"] = session
+
+    # Per-UC progress: find the matching workspace run-dir's run-progress.yaml
+    # by timestamp correlation. Only useful while the run is in flight.
+    if detail.get("phase") not in TERMINAL_PHASES:
+        started = detail.get("started_at") or detail.get("created_at")
+        if started and _results.is_available():
+            try:
+                progress = _results.find_progress_near(started)
+                if progress:
+                    detail["progress"] = progress
+            except Exception as e:
+                log.info("progress lookup failed for %s: %s", name, e)
+
+    # Live session token deltas: persisted baseline (captured at trigger time)
+    # minus current Prometheus counter. Survives browser reload — replaces
+    # the client-side baseline approach.
+    if session and session.get("baseline_gen_tokens") is not None:
+        try:
+            snap = await metrics.snapshot()
+            if snap.get("available"):
+                v = snap.get("vllm") or {}
+                cur_gen    = v.get("gen_tokens_total")
+                cur_prompt = v.get("prompt_tokens_total")
+                bg = session.get("baseline_gen_tokens")
+                bp = session.get("baseline_prompt_tokens")
+                # Treat counter regress (vLLM restart) as a new baseline:
+                # session counters start fresh, totals never go negative.
+                gen_delta    = (cur_gen - bg)    if (cur_gen is not None and bg is not None and cur_gen >= bg) else None
+                prompt_delta = (cur_prompt - bp) if (cur_prompt is not None and bp is not None and cur_prompt >= bp) else None
+                detail["live_session_gen_tokens"]    = int(gen_delta)    if gen_delta is not None else None
+                detail["live_session_prompt_tokens"] = int(prompt_delta) if prompt_delta is not None else None
+        except Exception as e:
+            log.info("live token delta failed for %s: %s", name, e)
     return detail
 
 

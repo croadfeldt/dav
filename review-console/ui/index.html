@@ -182,6 +182,18 @@
   .vllm-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
   .vllm-cell { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:10px 12px; }
   .vllm-cell-label { font-size:9px; text-transform:uppercase; letter-spacing:0.1em; color:var(--text-faint); }
+  .uc-progress-counter { display:flex; align-items:baseline; gap:10px; margin-bottom:8px; }
+  .uc-progress-counter .big { font-family:var(--mono); font-size:22px; color:var(--text); }
+  .uc-progress-counter .sub { font-size:11px; color:var(--text-faint); }
+  .uc-progress-counter .succ { color:var(--green); }
+  .uc-progress-counter .fail { color:var(--red); }
+  .uc-progress-bar { height:6px; background:var(--bg-input); border-radius:3px; overflow:hidden; margin-bottom:8px; display:flex; }
+  .uc-progress-bar > span { display:block; height:100%; transition:width .4s ease; }
+  .uc-progress-bar .seg-success { background:var(--green); }
+  .uc-progress-bar .seg-failed  { background:var(--red); }
+  .uc-progress-bar .seg-active  { background:var(--blue); animation:pulse 1.6s infinite; }
+  .uc-progress-current { font-size:11px; color:var(--text-dim); }
+  .uc-progress-current b { color:var(--accent); font-family:var(--mono); }
   .vllm-cell-value { font-size:18px; font-family:var(--mono); color:var(--text); margin-top:2px; transition:background-color .8s ease; padding:0 2px; border-radius:2px; }
   .vllm-cell-unit  { font-size:11px; color:var(--text-faint); margin-left:4px; }
   /* Value-change flash — applied by JS when a metric value changes between polls */
@@ -676,7 +688,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.7</span>
+  <span>DAV Console · v0.7.1</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -696,6 +708,10 @@
     <div class="run-section" id="rdSessionSection" style="display:none;">
       <div class="run-section-title">Session</div>
       <div id="rdSession" class="kv-grid" style="font-size:11px"></div>
+    </div>
+    <div class="run-section" id="rdProgressSection" style="display:none;">
+      <div class="run-section-title">UC progress (live)</div>
+      <div id="rdProgress"></div>
     </div>
     <div class="run-section">
       <div class="run-section-title">Pipeline tasks</div>
@@ -1275,6 +1291,13 @@ async function refreshRunDrawer() {
       if (_rdPollTimer) { clearInterval(_rdPollTimer); _rdPollTimer = null; }
     }
   }
+  // Inject server-computed live session deltas (persisted across reloads)
+  // into the snapshot before rendering, so the vLLM tiles render them.
+  if (snap && !snap._err && detail && !detail._err) {
+    snap.vllm = snap.vllm || {};
+    if (detail.live_session_gen_tokens !== undefined)    snap.vllm._live_session_gen    = detail.live_session_gen_tokens;
+    if (detail.live_session_prompt_tokens !== undefined) snap.vllm._live_session_prompt = detail.live_session_prompt_tokens;
+  }
   renderRunDrawerMetrics(snap);
 }
 
@@ -1302,6 +1325,39 @@ function renderRunDrawerDetail(d) {
     `${phaseHtml(d.phase)} · started ${esc(fmtTs(d.started_at||d.created_at))} · ${esc(fmtDuration(d.started_at||d.created_at, d.completed_at))}`
     + (s && s.category ? ` · <span class="src-badge" style="background:var(--accent-bg);color:var(--accent);text-transform:none;letter-spacing:0">${esc(s.category)}</span>` : '')
     + (d.status_reason ? ` · <span style="color:var(--text-dim)">${esc(d.status_reason)}</span>` : '');
+
+  // Per-UC progress (in-flight only). Server computes from
+  // <run_dir>/run-progress.yaml the engine writes after each UC.
+  const progEl = document.getElementById('rdProgressSection');
+  if (d.progress && d.progress.total_ucs) {
+    progEl.style.display = '';
+    const p = d.progress;
+    const total = p.total_ucs || 0;
+    const succ = p.succeeded || 0;
+    const fail = p.failed || 0;
+    const completed = p.completed || 0;
+    const active = (p.phase === 'running' && p.current_index > completed) ? 1 : 0;
+    const succPct = total ? (succ/total*100) : 0;
+    const failPct = total ? (fail/total*100) : 0;
+    const actPct  = total ? (active/total*100) : 0;
+    const ucName = p.current_uc_path ? p.current_uc_path.split('/').slice(-1)[0].replace(/\.yaml$/,'') : null;
+    document.getElementById('rdProgress').innerHTML = `
+      <div class="uc-progress-counter">
+        <span class="big">${completed} <span style="color:var(--text-faint);font-size:13px">/ ${total}</span></span>
+        <span class="sub"><span class="succ">${succ} ok</span> · <span class="fail">${fail} failed</span> · ${Math.round(succPct + failPct)}% done</span>
+      </div>
+      <div class="uc-progress-bar" title="${succ} succeeded / ${fail} failed / ${active ? '1 active' : '0 active'} of ${total}">
+        <span class="seg-success" style="width:${succPct}%"></span>
+        <span class="seg-failed"  style="width:${failPct}%"></span>
+        <span class="seg-active"  style="width:${actPct}%"></span>
+      </div>
+      ${ucName && p.phase === 'running'
+        ? `<div class="uc-progress-current">running <b>${esc(ucName)}</b> · UC ${p.current_index} of ${total} · ${Math.round(p.elapsed_seconds||0)}s elapsed</div>`
+        : `<div class="uc-progress-current" style="color:var(--text-faint)">${esc(p.phase || 'unknown')} · ${Math.round(p.elapsed_seconds||0)}s elapsed</div>`}
+    `;
+  } else {
+    progEl.style.display = 'none';
+  }
 
   // Session block — only render if we have a session row
   const sectEl = document.getElementById('rdSessionSection');
@@ -1465,17 +1521,30 @@ function renderRunDrawerMetrics(snap) {
   // ── vLLM aggregates ─────────────────────────────────────────
   const v = (snap && snap.vllm) || {};
 
-  // Compute session-relative token totals (delta from drawer-open baseline).
-  // If the underlying counter regresses (vLLM process restart), reset baseline.
-  const _sessTokens = (current, baselineKey) => {
-    if (current === null || current === undefined) return null;
-    const b = _rdTokenBaseline[baselineKey];
-    if (b === null) { _rdTokenBaseline[baselineKey] = current; return 0; }
-    if (current < b) { _rdTokenBaseline[baselineKey] = current; return 0; }  // counter reset
-    return current - b;
-  };
-  const sessGenTokens    = _sessTokens(v.gen_tokens_total,    'gen');
-  const sessPromptTokens = _sessTokens(v.prompt_tokens_total, 'prompt');
+  // Session token deltas: prefer server-supplied values (persisted baseline
+  // captured in run_sessions at trigger time — survives page reload). Fall
+  // back to client-side baseline when the server didn't include them
+  // (e.g. legacy run with no run_sessions row).
+  const sessGenTokens = (v._live_session_gen !== undefined && v._live_session_gen !== null)
+    ? v._live_session_gen
+    : (function(){
+        const b = _rdTokenBaseline.gen;
+        const c = v.gen_tokens_total;
+        if (c === null || c === undefined) return null;
+        if (b === null) { _rdTokenBaseline.gen = c; return 0; }
+        if (c < b)      { _rdTokenBaseline.gen = c; return 0; }
+        return c - b;
+      })();
+  const sessPromptTokens = (v._live_session_prompt !== undefined && v._live_session_prompt !== null)
+    ? v._live_session_prompt
+    : (function(){
+        const b = _rdTokenBaseline.prompt;
+        const c = v.prompt_tokens_total;
+        if (c === null || c === undefined) return null;
+        if (b === null) { _rdTokenBaseline.prompt = c; return 0; }
+        if (c < b)      { _rdTokenBaseline.prompt = c; return 0; }
+        return c - b;
+      })();
   v.session_gen_tokens    = sessGenTokens;
   v.session_prompt_tokens = sessPromptTokens;
 
