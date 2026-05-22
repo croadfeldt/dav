@@ -56,3 +56,22 @@ dav_webhook_hostname: "dav-webhook.apps.your-cluster.example.com"
 # Hostname for the review console UI (OAuth-gated).
 # Example for OpenShift: dav-review.apps.<cluster>.<basedomain>
 review_console_hostname: "dav-review.apps.your-cluster.example.com"
+
+# --- Workspace PVC storage ---
+# The shared workspace PVC must be ReadWriteMany — the Tekton pipeline pods
+# (which can land on any worker node) AND the review-console API pod both
+# mount it. With RWO, runs scheduled to a node other than the API's node
+# fail with Multi-Attach errors.
+#
+# Leave dav_workspace_pvc_storage_class empty (default) to use the cluster's
+# default storage class — only do this when the cluster default supports RWX
+# (it usually does NOT — common defaults like Ceph RBD, AWS EBS, GCP PD, and
+# Azure Disk are RWO-only).
+#
+# Override with whatever RWX class your cluster has:
+#   OpenShift Data Foundation / Rook-Ceph: "ocs-storagecluster-cephfs"
+#   AWS EFS:                                "efs-sc"
+#   Azure Files:                            "azurefile-csi" or "azurefile-premium"
+#   GCP Filestore:                          "filestore" / "standard-rwx"
+#   NFS CSI:                                "nfs-csi" (or whatever your operator names it)
+# dav_workspace_pvc_storage_class: ""

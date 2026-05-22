@@ -101,7 +101,9 @@
 - name: Create workspace PVC
   kubernetes.core.k8s:
     state: present
-    definition:
+    # Multiline string so the storageClassName conditional renders properly
+    # via Jinja2 before YAML parsing. Dict literals can't do conditionals.
+    definition: |
       apiVersion: v1
       kind: PersistentVolumeClaim
       metadata:
@@ -109,10 +111,13 @@
         namespace: "{{ dav_namespace }}"
       spec:
         accessModes:
-          - ReadWriteOnce
+          - "{{ dav_workspace_pvc_access_mode }}"
         resources:
           requests:
             storage: "{{ dav_workspace_pvc_size }}"
+      {% if dav_workspace_pvc_storage_class %}
+        storageClassName: "{{ dav_workspace_pvc_storage_class }}"
+      {% endif %}
 
 - name: Create vLLM model cache PVC
   kubernetes.core.k8s:

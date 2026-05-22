@@ -58,8 +58,18 @@ Optional:
 | Variable | Example | Notes |
 |----------|---------|-------|
 | `inference_fallback_endpoint` | `http://your-fallback.example/v1` | Engine retries here when primary errors. Leave unset to disable failover. The bundled in-cluster vLLM is opt-in via `--tags vllm`; see §1c. |
+| `dav_workspace_pvc_storage_class` | `ocs-storagecluster-cephfs` | RWX storage class for the workspace PVC. Required if your cluster default is RWO (most are: Ceph RBD, AWS EBS, GCP PD, Azure Disk). See `vars.local.yaml.example` for class names by provider. |
 
-**Verification gate:** `git status` should NOT show `vars.local.yaml` as new/modified (it's gitignored). All 5 required vars filled in with real values; the fallback endpoint is optional.
+**Prerequisite — RWX storage class:** the workspace PVC must support `ReadWriteMany`. Both the Tekton pipeline pods (any worker node) and the review-console API pod (read-only mount) attach it simultaneously. With RWO storage, `cleanup-workspace` fails with Multi-Attach after a 5-minute timeout when the two pods land on different nodes. List your cluster's RWX-capable classes with:
+
+```bash
+oc get sc -o custom-columns=NAME:.metadata.name,PROVISIONER:.provisioner,DEFAULT:'.metadata.annotations.storageclass\.kubernetes\.io/is-default-class'
+# Confirm RWX support; usual candidates: *-cephfs, *-efs, *-azurefile, *-filestore, *-nfs
+```
+
+If the cluster default supports RWX, leave `dav_workspace_pvc_storage_class` unset. Otherwise override it explicitly.
+
+**Verification gate:** `git status` should NOT show `vars.local.yaml` as new/modified (it's gitignored). All 5 required vars filled in with real values; the fallback endpoint is optional. RWX storage class is mandatory if cluster default is RWO.
 
 ### 0.1 — Re-encrypt the vault
 

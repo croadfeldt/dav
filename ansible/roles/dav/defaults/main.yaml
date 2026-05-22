@@ -4,6 +4,18 @@ dav_namespace: dav
 dav_service_account: dav-pipeline-sa
 dav_workspace_pvc_size: 20Gi
 dav_workspace_pvc_name: dav-workspace
+# The workspace PVC must be RWX so Tekton pipeline pods (which can land
+# on any worker node) and the review-console API (which mounts read-only
+# for the Results tab) can coexist. With RWO, runs scheduled to a node
+# other than the API's node fail with Multi-Attach errors after a 5-min
+# timeout on the cleanup-workspace task.
+# Storage class is intentionally empty by default — the cluster's default
+# is used unless overridden. The cluster default MUST support
+# ReadWriteMany; override `dav_workspace_pvc_storage_class` in
+# vars.local.yaml to point at an RWX class (CephFS, NFS CSI, AWS EFS,
+# GCP Filestore, Azure Files, etc.) if the cluster default is RWO.
+dav_workspace_pvc_access_mode: ReadWriteMany
+dav_workspace_pvc_storage_class: ""
 dav_model_cache_pvc_size: 40Gi
 dav_build_mcp_images: false
 
