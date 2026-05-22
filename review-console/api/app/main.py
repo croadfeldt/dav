@@ -119,7 +119,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DAV Console API", version="0.5.1", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.5.2", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -1429,6 +1429,20 @@ async def sources_branches(repo_url: str = Query(..., min_length=1)):
     except Exception as e:
         log.exception("branch listing failed")
         raise HTTPException(500, f"listing failed: {e}")
+
+
+@app.get("/api/sources/inference/models")
+async def list_inference_models_endpoint(endpoint: str = Query(..., min_length=1, max_length=512)):
+    """List the model IDs published by an OpenAI-compatible inference endpoint.
+
+    Pure read — does NOT persist anything. Used by the Config UI to populate
+    the model dropdown after the user enters an endpoint.
+    """
+    try:
+        return await sources.list_inference_models(endpoint)
+    except Exception as e:
+        log.exception("inference list-models failed")
+        raise HTTPException(500, f"list models failed: {e}")
 
 
 @app.post("/api/sources/inference/validate")

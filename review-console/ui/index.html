@@ -597,7 +597,12 @@
           <div class="form-field"><label>New endpoint</label>
             <input id="srcInfEndpointInput" placeholder="http://your-inference-host:8000/v1" /></div>
           <div class="form-field"><label>New model</label>
-            <input id="srcInfModelInput" placeholder="e.g. qwen3-32b" /></div>
+            <div style="display:flex; gap:6px;">
+              <select id="srcInfModelSelect" style="flex:1"><option value="">(enter endpoint, then ↻ to load)</option></select>
+              <input id="srcInfModelInput" placeholder="or type model name" style="flex:1;" />
+              <button class="btn ghost btn-icon" id="srcInfRefreshModels" title="reload model list from endpoint">↻</button>
+            </div>
+          </div>
           <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
             <button class="btn ghost" id="srcInfTestBtn">Test</button>
             <button class="btn primary" id="srcInfApplyBtn">Apply</button>
@@ -619,7 +624,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.5.1</span>
+  <span>DAV Console · v0.5.2</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -2135,8 +2140,48 @@ function renderInferencePanel() {
   document.getElementById('srcInfWho').textContent      = s.last_applied_by || '—';
   const eIn = document.getElementById('srcInfEndpointInput');
   const mIn = document.getElementById('srcInfModelInput');
-  if (!eIn.value && !eIn.dataset.userEdited) eIn.value = s.endpoint || '';
-  if (!mIn.value && !mIn.dataset.userEdited) mIn.value = s.model    || '';
+  if (!eIn.value && !eIn.dataset.userEdited) {
+    eIn.value = s.endpoint || '';
+    if (s.endpoint) loadInferenceModels(s.endpoint, s.model);
+  }
+  if (!mIn.value && !mIn.dataset.userEdited) mIn.value = '';
+}
+
+// Pull the model value the user means: free-text takes precedence (override),
+// otherwise the selected option.
+function _resolveInferenceModel() {
+  const t = document.getElementById('srcInfModelInput').value.trim();
+  if (t) return t;
+  return document.getElementById('srcInfModelSelect').value.trim();
+}
+
+async function loadInferenceModels(endpointArg, preselect) {
+  const endpoint = (endpointArg ?? document.getElementById('srcInfEndpointInput').value).trim();
+  const sel = document.getElementById('srcInfModelSelect');
+  if (!endpoint) { sel.innerHTML = '<option value="">(enter endpoint, then ↻ to load)</option>'; return; }
+  sel.innerHTML = '<option value="">(loading…)</option>';
+  try {
+    const resp = await api('/api/sources/inference/models?endpoint=' + encodeURIComponent(endpoint));
+    if (!resp.reachable || !(resp.models||[]).length) {
+      sel.innerHTML = `<option value="">(${resp.reachable ? 'no models listed' : 'endpoint unreachable'} — use free-text)</option>`;
+      return;
+    }
+    sel.innerHTML = '<option value="">(select a model)</option>';
+    resp.models.forEach(m => {
+      const o = document.createElement('option');
+      o.value = m; o.textContent = m;
+      sel.appendChild(o);
+    });
+    // If a preselect was supplied and is in the list, pick it
+    const target = preselect || sourcesState.inference?.model;
+    if (target) {
+      for (const opt of sel.options) {
+        if (opt.value === target) { sel.value = target; break; }
+      }
+    }
+  } catch (e) {
+    sel.innerHTML = '<option value="">(list-models failed — use free-text)</option>';
+  }
 }
 
 function renderInferenceValidation(v) {
@@ -2157,21 +2202,37 @@ function renderInferenceValidation(v) {
   }
 }
 
+// Last validation result, cached across Test → Apply so Apply doesn't re-probe
+// if the user already ran Test on the same endpoint+model. Cleared on edits.
+let _lastValidation = null;   // {endpoint, model, result}
+
+async function _runValidation(endpoint, model) {
+  // Use cached result if it matches current inputs, else hit the API
+  if (_lastValidation && _lastValidation.endpoint === endpoint && _lastValidation.model === model) {
+    return _lastValidation.result;
+  }
+  const v = await api('/api/sources/inference/validate', {method:'POST', body:JSON.stringify({endpoint, model})});
+  _lastValidation = {endpoint, model, result: v};
+  return v;
+}
+
 async function testInference() {
   const endpoint = document.getElementById('srcInfEndpointInput').value.trim();
-  const model    = document.getElementById('srcInfModelInput').value.trim();
+  const model    = _resolveInferenceModel();
   const msg = document.getElementById('srcInfMsg'), btn = document.getElementById('srcInfTestBtn');
   if (!endpoint) { msg.innerHTML = '<span style="color:var(--red)">endpoint required</span>'; return null; }
-  if (!model)    { msg.innerHTML = '<span style="color:var(--red)">model required</span>';    return null; }
+  if (!model)    { msg.innerHTML = '<span style="color:var(--red)">model required (select or type)</span>'; return null; }
   btn.disabled = true; msg.innerHTML = '<span style="color:var(--blue)">testing…</span>';
   try {
-    const v = await api('/api/sources/inference/validate', {method:'POST', body:JSON.stringify({endpoint, model})});
+    // Force a fresh probe on explicit Test click — clear cache first
+    _lastValidation = null;
+    const v = await _runValidation(endpoint, model);
     renderInferenceValidation(v);
     msg.innerHTML = v.reachable && v.model_found
-      ? '<span style="color:var(--green)">validated</span>'
+      ? '<span style="color:var(--green)">✓ validated (endpoint reachable, model found)</span>'
       : v.reachable
-        ? '<span style="color:var(--accent)">reachable, model mismatch</span>'
-        : '<span style="color:var(--red)">unreachable</span>';
+        ? '<span style="color:var(--accent)">⚠ reachable, but model not in /models list</span>'
+        : '<span style="color:var(--red)">✗ unreachable: ' + esc(v.error || '') + '</span>';
     return v;
   } catch (e) {
     msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
@@ -2182,32 +2243,48 @@ async function testInference() {
 let _infApplyArmed = false;
 async function applyInference() {
   const endpoint = document.getElementById('srcInfEndpointInput').value.trim();
-  const model    = document.getElementById('srcInfModelInput').value.trim();
+  const model    = _resolveInferenceModel();
   const msg = document.getElementById('srcInfMsg'), btn = document.getElementById('srcInfApplyBtn');
   if (!endpoint) { msg.innerHTML = '<span style="color:var(--red)">endpoint required</span>'; return; }
-  if (!model)    { msg.innerHTML = '<span style="color:var(--red)">model required</span>';    return; }
+  if (!model)    { msg.innerHTML = '<span style="color:var(--red)">model required (select or type)</span>'; return; }
   const cur = sourcesState.inference;
   if (cur && cur.endpoint === endpoint && cur.model === model) {
     msg.innerHTML = '<span style="color:var(--text-faint)">same as current — nothing to do</span>'; return;
   }
-  // Validate first unless the user has already armed the "apply anyway" override
+  // Apply always validates first. If a recent Test already validated this
+  // exact endpoint+model, reuse the cached result instead of re-probing.
+  // If validation fails, arm the override; a second Apply click saves anyway.
+  const wasOverride = _infApplyArmed;
   if (!_infApplyArmed) {
-    const v = await testInference();
-    if (!v) return;  // network error already shown
+    let v;
+    try { v = await _runValidation(endpoint, model); }
+    catch (e) { msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; return; }
+    renderInferenceValidation(v);
     if (!v.reachable || !v.model_found) {
       btn.textContent = 'Apply anyway'; btn.classList.add('danger');
       _infApplyArmed = true;
-      msg.innerHTML = '<span style="color:var(--accent)">click Apply again to save despite validation warning</span>';
+      const why = !v.reachable
+        ? 'endpoint did not respond'
+        : `model "${esc(model)}" is not in the server's /models list`;
+      msg.innerHTML = `<span style="color:var(--accent)">⚠ ${why}. Click <b>Apply anyway</b> to save despite the warning.</span>`;
       return;
     }
   }
   _infApplyArmed = false; btn.textContent = 'Apply'; btn.classList.remove('danger');
-  btn.disabled = true; msg.innerHTML = '<span style="color:var(--blue)">applying…</span>';
+  btn.disabled = true;
+  msg.innerHTML = wasOverride
+    ? '<span style="color:var(--blue)">applying (override)…</span>'
+    : '<span style="color:var(--blue)">applying…</span>';
   try {
     const resp = await api('/api/sources/inference', {method:'POST', body:JSON.stringify({endpoint, model})});
     sourcesState.inference = resp.state; renderInferencePanel();
-    msg.innerHTML = '<span style="color:var(--green)">applied · effective on next run</span>';
-    toast(`inference: ${endpoint} · ${model}`);
+    if (wasOverride) {
+      msg.innerHTML = '<span style="color:var(--accent)">applied with override · validation warning was ignored · effective on next run</span>';
+      toast(`inference: ${endpoint} · ${model} (override applied)`);
+    } else {
+      msg.innerHTML = '<span style="color:var(--green)">✓ validated and applied · effective on next run</span>';
+      toast(`inference: ${endpoint} · ${model}`);
+    }
     document.getElementById('srcInfEndpointInput').dataset.userEdited = '';
     document.getElementById('srcInfModelInput').dataset.userEdited = '';
   } catch (e) {
@@ -2217,16 +2294,36 @@ async function applyInference() {
 }
 
 function wireInferencePanel() {
-  // Editing the inputs resets the "armed" override and clears any prior validation render
-  const onEdit = e => {
-    e.target.dataset.userEdited = '1';
+  const endpointEl = document.getElementById('srcInfEndpointInput');
+  const modelInput = document.getElementById('srcInfModelInput');
+  const modelSelect = document.getElementById('srcInfModelSelect');
+
+  // Editing any input resets the "armed" override, clears the cached
+  // validation result, and hides any prior validation chip.
+  const resetOverride = () => {
     _infApplyArmed = false;
+    _lastValidation = null;
     const b = document.getElementById('srcInfApplyBtn');
     b.textContent = 'Apply'; b.classList.remove('danger');
     document.getElementById('srcInfValidation').style.display = 'none';
   };
-  document.getElementById('srcInfEndpointInput').addEventListener('input', onEdit);
-  document.getElementById('srcInfModelInput').addEventListener('input',    onEdit);
+  endpointEl.addEventListener('input', e => { e.target.dataset.userEdited = '1'; resetOverride(); });
+  modelInput.addEventListener('input',  e => { e.target.dataset.userEdited = '1'; resetOverride(); });
+
+  // Endpoint change (blur after edit) auto-reloads the model list
+  endpointEl.addEventListener('change', () => loadInferenceModels(endpointEl.value.trim()));
+
+  // Mutual exclusion: select <-> free-text input (matches branch picker UX)
+  modelSelect.addEventListener('change', () => {
+    if (modelSelect.value) { modelInput.value = ''; }
+    resetOverride();
+  });
+  modelInput.addEventListener('input', () => {
+    if (modelInput.value) { modelSelect.value = ''; }
+  });
+
+  document.getElementById('srcInfRefreshModels').addEventListener('click',
+    () => loadInferenceModels(endpointEl.value.trim()));
   document.getElementById('srcInfTestBtn').addEventListener('click', testInference);
   document.getElementById('srcInfApplyBtn').addEventListener('click', applyInference);
 }

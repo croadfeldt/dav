@@ -309,26 +309,26 @@ def list_branches(repo_url: str) -> list[str]:
     return branches
 
 
-async def validate_inference(endpoint: str, model: str) -> dict:
-    """Probe an OpenAI-compatible /models endpoint for reachability and model presence.
+async def list_inference_models(endpoint: str) -> dict:
+    """Probe an OpenAI-compatible /models endpoint and return the model list.
 
     Returns a structured result so the UI can render specific feedback:
       reachable: bool         — true when /models returned 2xx
       status_code: int | None — HTTP status, if any
       models: list[str]       — model IDs listed by the server
-      model_found: bool       — supplied model name is in `models`
+      url: str | None         — the URL probed
       error: str | None       — single-line error description, if any
       latency_ms: int | None  — round-trip latency to /models
     """
     base = (endpoint or "").rstrip("/")
     if not base or not base.startswith(("http://", "https://")):
         return {"reachable": False, "url": None, "status_code": None,
-                "models": [], "model_found": False, "latency_ms": None,
+                "models": [], "latency_ms": None,
                 "error": f"invalid endpoint: {endpoint!r}"}
     url = f"{base}/models"
     out: dict = {
         "reachable": False, "url": url, "status_code": None,
-        "models": [], "model_found": False, "latency_ms": None, "error": None,
+        "models": [], "latency_ms": None, "error": None,
     }
     start = time.time()
     try:
@@ -344,7 +344,6 @@ async def validate_inference(endpoint: str, model: str) -> dict:
                 if isinstance(items, list):
                     out["models"] = [m.get("id") for m in items
                                      if isinstance(m, dict) and m.get("id")]
-                out["model_found"] = model in out["models"]
             except Exception as e:
                 out["error"] = f"could not parse /models response: {e}"
         else:
@@ -355,6 +354,13 @@ async def validate_inference(endpoint: str, model: str) -> dict:
     except httpx.RequestError as e:
         out["latency_ms"] = int((time.time() - start) * 1000)
         out["error"] = f"connection error: {e}"
+    return out
+
+
+async def validate_inference(endpoint: str, model: str) -> dict:
+    """Reachability + specific-model presence check. Wraps list_inference_models."""
+    out = await list_inference_models(endpoint)
+    out["model_found"] = bool(model) and (model in out.get("models", []))
     return out
 
 
