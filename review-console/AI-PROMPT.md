@@ -115,30 +115,43 @@ External tools observe and participate in the workflow through:
 
 This section is normative. The console's database shape is load-bearing for everything above; readers extending the console should match it.
 
-### 4.1 Current — the spec-review subsystem
+### 4.1 Current — the spec-review and use-case-management subsystems
 
-Three tables, all in `review-console/api/app/schema.sql`:
+All tables are in `review-console/api/app/schema.sql` (idempotent — safe to re-apply).
 
+**Corpus file review (legacy, preserved for backward compat):**
 - **`files`** — corpus file content + SHA. One row per spec file. Updated on corpus reload.
 - **`review_events`** — append-only event log. Every review action (review, update, clear) is a row. Captures the file's SHA at the time of review, the reviewer identity, the status, and free-text notes.
-- Two views derived from the above: `review_current` (latest non-cleared review per file × reviewer) and `review_drift` (review SHA ≠ current file SHA).
+- Views: `review_current` (latest non-cleared review per file × reviewer), `review_drift` (review SHA ≠ current file SHA), `file_current_status` (latest review per file).
 
-The append-only-events + derived-views pattern is **deliberate** and worth preserving. Reviews are a historical record; the current state is a projection. New capabilities should follow the same pattern.
+**Managed use cases:**
+- **`managed_use_cases`** — one row per managed UC. UUID (from YAML), title, full YAML text, `lifecycle_state` (draft/ready/in_review/approved/deprecated), tags, created/updated by/at. UUID is extracted from YAML content at write time.
+- **`lifecycle_events`** — append-only audit trail for lifecycle state transitions. Every transition is a row: `uc_uuid`, `from_state`, `to_state`, `actor`, `notes`, `created_at`. The current lifecycle state is the `to_state` of the most recent event per UC.
 
-### 4.2 Planned — the analysis subsystem
+**Named UC sets:**
+- **`use_case_sets`** — one row per named set. `id`, `name` (unique case-insensitively), `description`, `created_by`, timestamps.
+- **`use_case_set_members`** — many-to-many between sets and UCs. `(set_id, uc_uuid)` PK. Tracks `uc_source` (managed/corpus), `uc_handle`, `uc_path`, `added_by`.
 
-To support analysis viewing, the console needs to ingest and query analyses. Required new tables:
+The append-only-events + derived-views pattern is **deliberate** and worth preserving. Reviews and lifecycle transitions are historical records; the current state is a projection. New capabilities should follow the same pattern.
 
-- **`analysis_runs`** — one row per DAV run. `run_id`, `mode`, `engine_version`, `engine_commit`, `consumer_version`, `started_at`, `completed_at`, `wall_time_seconds`, `tool_call_count_total`, `total_tokens`, `triggered_by`, `pipelinerun_name` (Tekton link).
-- **`uc_analyses`** — one row per (run, UC). The analysis YAML for that UC, plus extracted fields for query: `verdict`, `verdict_pattern` (e.g., `"2-1 partial"`), `overall_confidence_label`, `overall_confidence_band`, `has_dissent` (bool). Full analysis stored as JSONB for drill-down rendering.
-- **`uc_samples`** — one row per (run, UC, sample). `seed`, `tool_call_count`, `total_tokens`, `wall_time_seconds`, `verdict`, `confidence_label`, `rationale` (markdown). Required because per-sample drill-down is a primary view.
-- **`uc_gaps`** — one row per (run, UC, gap). Description, severity, confidence, recommendation, `consensus_count` ("3/3", "2/3", "1/3"), `theme` (extracted/normalized for aggregation), `source` (defaulting to `dav`; alternative sources for external findings).
+### 4.2 Current — the results subsystem
 
-Indexing: gap aggregation queries hit `(theme)` and `(theme, severity_label)`; trend queries hit `(uc_handle, run_started_at DESC)`; drill-down hits `(run_id, uc_handle)`. Plan accordingly.
+Analysis outputs are not ingested into Postgres. The API reads them directly from the shared workspace PVC at `/workspace/results/`. This sidesteps the ingestion pipeline and lets the Results tab work with zero additional schema. The trade-off: no cross-run aggregation queries (gap aggregation, trend). That's planned once the corpus is stable enough for multi-run comparison to be meaningful.
 
-The decision to extract fields from the analysis YAML rather than query JSONB throughout is **deliberate**. The extracted fields are stable across schema versions of the analysis; JSONB is for full-fidelity rendering. If the analysis schema (parent doc §3) bumps a major version, extraction logic adjusts; the queries don't move.
+The workspace reader is in `api/app/results.py`. It scans `<workspace>/results/` for run directories (format: `YYYY-MM-DDTHH-MM-SSZ-<7char-hash>`), reads `run-summary.yaml` for counts and metadata, and reads `analyses/<uc_uuid>.yaml` for per-UC detail. All three analysis modes (verification, reproduce, explore) are rendered; explore mode surfaces per-sample detail and the variance report.
 
-### 4.3 Planned — the proposal subsystem
+### 4.3 Planned — the analysis ingestion subsystem
+
+To support cross-run queries (gap aggregation, trend), the console will eventually ingest analyses into Postgres. Required new tables:
+
+- **`analysis_runs`** — one row per DAV run. `run_id`, `mode`, `engine_version`, `consumer_version`, `started_at`, `completed_at`, `triggered_by`, `pipelinerun_name`.
+- **`uc_analyses`** — one row per (run, UC). Extracted fields for query: `verdict`, `verdict_pattern`, `has_dissent`. Full analysis JSONB for rendering.
+- **`uc_samples`** — one row per (run, UC, sample). Per-sample drill-down data.
+- **`uc_gaps`** — one row per (run, UC, gap). For gap aggregation across UCs and runs.
+
+Indexing: gap aggregation hits `(theme)` and `(theme, severity_label)`; trend hits `(uc_handle, run_started_at DESC)`; drill-down hits `(run_id, uc_handle)`.
+
+### 4.5 Planned — the proposal subsystem
 
 For model-assisted resolution:
 
@@ -148,7 +161,7 @@ For model-assisted resolution:
 
 Hashing the gap (instead of using a gap ID) matters because gaps don't carry stable IDs across runs (parent doc §6.7). Hash on normalized description so a re-run of the same UC against unchanged spec finds the same proposal.
 
-### 4.4 Planned — the integration subsystem
+### 4.6 Planned — the integration subsystem
 
 For external tool integration:
 
@@ -394,22 +407,31 @@ For convenience, the consolidated list:
 - **Single GitHub App / PAT identity for PRs.** Multi-identity not supported.
 - **Schema applied idempotently on startup with advisory lock.** No separate migration tooling.
 
-## 13. What's not yet built
+## 13. What's built and what isn't
 
-In rough priority order:
+### Built (as of v0.4.0)
 
-- **Analysis ingestion endpoint** (`POST /api/v1/runs`) and the corresponding schema (`analysis_runs`, `uc_analyses`, `uc_samples`, `uc_gaps`).
-- **Analysis viewing UI** — the four views: run summary, per-UC, gap aggregation, trend.
-- **Model proxy + proposal subsystem** — server-side model calls, conversation persistence, in-console diff review.
-- **GitHub PR integration** — create PR, poll status, surface in UI.
-- **Service-account tokens** + scopes + admin issuance UI.
-- **Webhook subsystem** — subscriptions, delivery, retry, log.
-- **API v1 cutover** — version existing endpoints, publish OpenAPI as contract.
-- **Test suite** — API tests, schema migration test, proposal orchestration tests.
-- **SPA build split** — when complexity demands.
-- **GitHub webhook ingress** — replace PR-status polling.
+- **Runs tab** — PipelineRun list + trigger with full parameter control.
+- **Results tab** — workspace PVC browser; run summary, per-UC verdict + findings + gaps, explore-mode per-sample variance. Three-panel split.
+- **Use Cases tab** — managed UC CRUD (YAML editor), corpus UC browsing, lifecycle state machine (draft/ready/in_review/approved/deprecated), transition buttons, lifecycle audit history, set membership display.
+- **Sets tab** — named UC sets, member add/remove, run-set scoping, bulk promote (all members from state A → B in one transaction), per-set export.
+- **Import/export** — `.tar.gz` / `.zip` / `.tar` archives; archive structure encodes lifecycle stage and set name for round-trip; import creates/updates UCs and auto-creates sets.
+- **Config tab** — spec/corpus repo URL+branch switching with rollout status.
 
-Each is independently scoped enough to land in its own session. The dependency order is roughly: ingestion → viewing → proposals → PRs → tokens → webhooks → version cutover → tests. Tokens and webhooks can run in parallel with PRs. Tests should land alongside each subsystem, not after.
+### Not yet built (in rough priority order)
+
+- **Analysis ingestion into Postgres** — cross-run gap aggregation and trend views require `analysis_runs`, `uc_analyses`, `uc_samples`, `uc_gaps` tables (see §4.3). The Results tab currently reads directly from the workspace PVC; this works but can't do multi-run queries.
+- **Gap aggregation + trend views** — depend on ingestion above.
+- **Model proxy + proposal subsystem** — server-side model calls, conversation persistence, in-console diff review (§4.5).
+- **GitHub PR integration** — create PR from a proposal, poll status, surface in UI. The `POST /api/use-cases/{uuid}/promote` endpoint is not yet implemented; it needs a GitHub token Secret in the dav namespace.
+- **Service-account tokens** + scopes + admin issuance UI (§4.6).
+- **Webhook subsystem** — subscriptions, delivery, retry, log (§4.6).
+- **API v1 cutover** — version existing `/api/...` endpoints, publish OpenAPI as contract.
+- **Test suite** — API tests, schema migration test.
+- **SPA build split** — when `index.html` complexity demands it.
+- **PipelineRun ↔ results hard-link** — run directories don't embed the PipelineRun name today; correlate by timestamp.
+
+Dependency order: ingestion → aggregation/trend → proposals → PRs → tokens → webhooks → version cutover → tests. Tokens and webhooks can run in parallel with PRs. Tests should land alongside each subsystem, not after.
 
 ## 14. Final thought
 

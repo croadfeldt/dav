@@ -27,7 +27,7 @@ dav/
 ├── specs/                 DAV's normative specifications — contracts consumers conform to
 ├── engine/                Python inference engine (stages, agents, ensemble merger)
 ├── mcp/                   MCP server for serving consumer spec content to the agent
-├── review-console/        Operations frontend — trigger pipeline runs, browse results, manage use cases
+├── review-console/        Operations frontend — trigger pipeline runs, browse results, manage use cases with full lifecycle (draft→approved), named sets, import/export
 ├── ansible/               Deployment scaffolding (OpenShift); Tekton tasks and pipelines templated from here
 ├── examples/              Illustrative examples, including a minimal synthetic consumer
 └── docs/                  User-facing documentation
