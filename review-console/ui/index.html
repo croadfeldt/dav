@@ -747,7 +747,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.8.2</span>
+  <span>DAV Console · v0.8.3</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -803,6 +803,7 @@
         <div class="rd-tail-header" data-toggle="rdPromptsSection">
           <span class="lbl">Prompts &amp; responses (live) <span id="rdPromptsCount" style="text-transform:none;letter-spacing:0;color:var(--text-faint)"></span></span>
           <span class="ctl">
+            <button id="rdPromptsExpandBtn" title="default mode for new + reset records">expand all</button>
             <button id="rdPromptsAutoBtn" title="toggle auto-scroll">⤓ auto</button>
             <button id="rdPromptsClearBtn" title="clear visible buffer">clear</button>
           </span>
@@ -1312,7 +1313,15 @@ let _rdPromptsState = {
   perFile: {},                     // {file: {next_offset, records: []}}
   autoScroll: true,
   pollTimer: null,
+  // Per-record expand toggle (Set of record indices that are expanded).
+  // Re-derived from sorted order so cleared on each clear-buffer.
+  expanded: new Set(),
+  // Global default for new records: 'collapsed' (default) or 'expanded'.
+  // Persisted across drawer-opens via localStorage.
+  defaultMode: (() => { try { return localStorage.getItem('davPromptsDefaultMode') || 'collapsed'; } catch(e) { return 'collapsed'; } })(),
 };
+// Per-record collapsed display cap (characters before "show full" appears)
+const RD_PROMPTS_COLLAPSED_CHARS = 600;
 // Track metric value history so we can show "Xs since last change" and
 // flash cells when their value changes between polls.
 let _rdLastGpuValues  = {};   // {gpu_id: {metric: value}}
@@ -1409,6 +1418,33 @@ async function rdRefreshPrompts() {
   }
 }
 
+// Render one section of body text with optional collapse + show-full toggle.
+// Returns HTML. `idx` is the record index in `visible` (used as the toggle key).
+function _renderTurnBody(idx, label, text, originalLength) {
+  if (text == null || text === '') return '';
+  const cap = RD_PROMPTS_COLLAPSED_CHARS;
+  const len = (originalLength != null) ? originalLength : text.length;
+  const wantsExpanded = _rdPromptsState.expanded.has(idx) || _rdPromptsState.defaultMode === 'expanded';
+  const truncatedByEngine = len > text.length;          // engine hit MAX_FIELD_BYTES
+  const truncatedByUI     = !wantsExpanded && text.length > cap;
+  const display = truncatedByUI ? text.slice(0, cap) : text;
+  const labelPrefix = label ? `<span class="sub">${esc(label)}:</span> ` : '';
+  let suffix = '';
+  if (truncatedByUI || truncatedByEngine) {
+    const showing = display.length;
+    const note = truncatedByEngine
+      ? `<span class="sub">… ${(len-text.length).toLocaleString()} chars not stored (engine cap)</span>`
+      : `<span class="sub">… ${(len - cap).toLocaleString()} more</span>`;
+    const action = truncatedByUI
+      ? `<a href="javascript:void(0)" data-rd-toggle="${idx}" style="color:var(--accent);font-size:10px;margin-left:6px;">show full</a>`
+      : '';
+    suffix = `<div style="margin-top:2px">${note}${action}</div>`;
+  } else if (wantsExpanded && text.length > cap) {
+    suffix = `<div style="margin-top:2px"><a href="javascript:void(0)" data-rd-toggle="${idx}" style="color:var(--text-faint);font-size:10px;">collapse</a></div>`;
+  }
+  return `<div>${labelPrefix}<span style="white-space:pre-wrap">${esc(display)}</span></div>${suffix}`;
+}
+
 function rdRenderPrompts() {
   const all = [];
   for (const f of Object.keys(_rdPromptsState.perFile)) {
@@ -1417,40 +1453,54 @@ function rdRenderPrompts() {
   all.sort((a,b) => (a.ts || '').localeCompare(b.ts || ''));
   const el = document.getElementById('rdPrompts');
   document.getElementById('rdPromptsCount').textContent = all.length
-    ? `· ${all.length} turn records` : '';
+    ? `· ${all.length} turn records · default ${_rdPromptsState.defaultMode}` : '';
   if (!all.length) {
     el.innerHTML = '<div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet · written by engine after run-corpus starts</div>';
     return;
   }
   // Cap to most recent 400 to keep DOM bounded
   const visible = all.slice(-400);
-  const html = visible.map(r => {
+  const html = visible.map((r, idx) => {
     const kind = r.kind || 'turn';
     let head = `<span class="kind ${esc(kind)}">${esc(kind)}</span>`;
     head += `turn ${r.turn ?? '?'}`;
     if (r.tool_name) head += ` · ${esc(r.tool_name)}`;
     if (r.tokens_total != null) head += ` · ${r.tokens_total.toLocaleString()} tok`;
+    if (r.content_length != null && kind === 'response') head += ` · ${r.content_length.toLocaleString()} chars`;
+    if (r.result_length != null && kind === 'tool')     head += ` · ${r.result_length.toLocaleString()} chars`;
     let body = '';
     if (kind === 'start') {
-      body = `<div class="sub">UC ${esc(r.uc_uuid || '')}${r.sample_seed != null ? ' · seed '+r.sample_seed : ''} · max_tool_calls=${r.max_tool_calls ?? '?'}</div>`
-           + (r.system_prompt_preview ? `<div class="sub">system: ${esc((r.system_prompt_preview||'').slice(0,300))}…</div>` : '')
-           + (r.user_prompt_preview ? `<div>${esc(r.user_prompt_preview)}${(r.user_prompt_length||0) > (r.user_prompt_preview||'').length ? '…' : ''}</div>` : '');
+      body  = `<div class="sub">UC ${esc(r.uc_uuid || '')}${r.sample_seed != null ? ' · seed '+r.sample_seed : ''} · max_tool_calls=${r.max_tool_calls ?? '?'}</div>`;
+      // System prompt: prefer the new full key, fall back to legacy preview key
+      const sys = r.system_prompt ?? r.system_prompt_preview;
+      if (sys) body += _renderTurnBody(idx, 'system', sys, r.system_prompt_length);
+      const usr = r.user_prompt ?? r.user_prompt_preview;
+      if (usr) body += _renderTurnBody(idx, 'user', usr, r.user_prompt_length);
     } else if (kind === 'response') {
-      if (r.content_preview) {
-        body = `<div>${esc(r.content_preview)}${(r.content_length||0) > (r.content_preview||'').length ? '…' : ''}</div>`;
-      } else {
-        body = `<div class="sub">(no content; ${r.tool_call_count || 0} tool call(s))</div>`;
-      }
+      const content = r.content ?? r.content_preview;
+      if (content) body = _renderTurnBody(idx, null, content, r.content_length);
+      else body = `<div class="sub">(no content; ${r.tool_call_count || 0} tool call(s))</div>`;
     } else if (kind === 'tool') {
-      const args = r.args ? JSON.stringify(r.args) : '';
-      body = `<div class="sub">args: ${esc(args.slice(0,200))}${args.length > 200 ? '…' : ''}</div>`
-           + `<div>${esc((r.result_preview||'').slice(0,400))}${(r.result_length || (r.result_preview||'').length) > 400 ? '…' : ''}</div>`;
+      const args = r.args ? JSON.stringify(r.args, null, 2) : '';
+      body = _renderTurnBody(idx + ':args', 'args', args, args.length);
+      const result = r.result ?? r.result_preview;
+      if (result) body += _renderTurnBody(idx, null, result, r.result_length);
     } else {
       body = `<div>${esc(JSON.stringify(r).slice(0,300))}</div>`;
     }
     return `<div class="turn-rec"><div class="head">${head}</div><div class="body">${body}</div></div>`;
   }).join('');
   el.innerHTML = html;
+  // Wire up per-record toggle links
+  el.querySelectorAll('[data-rd-toggle]').forEach(a => {
+    a.addEventListener('click', e => {
+      e.preventDefault();
+      const key = a.dataset.rdToggle;
+      if (_rdPromptsState.expanded.has(key)) _rdPromptsState.expanded.delete(key);
+      else _rdPromptsState.expanded.add(key);
+      rdRenderPrompts();
+    });
+  });
   if (_rdPromptsState.autoScroll) el.scrollTop = el.scrollHeight;
 }
 
@@ -3288,7 +3338,7 @@ document.querySelectorAll('#runDrawer .rd-tail-header[data-toggle]').forEach(h =
   });
 });
 
-// Prompts panel auto-scroll + clear
+// Prompts panel auto-scroll + clear + global expand/collapse default
 document.getElementById('rdPromptsAutoBtn').addEventListener('click', e => {
   e.stopPropagation();
   _rdPromptsState.autoScroll = !_rdPromptsState.autoScroll;
@@ -3299,8 +3349,24 @@ document.getElementById('rdPromptsClearBtn').addEventListener('click', e => {
   // Clear visible buffer but keep next_offset cursors so we don't re-read
   for (const f of Object.keys(_rdPromptsState.perFile))
     _rdPromptsState.perFile[f].records = [];
+  _rdPromptsState.expanded = new Set();
   rdRenderPrompts();
 });
+document.getElementById('rdPromptsExpandBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  // Toggle the global default + reset per-record overrides so the new
+  // default applies uniformly. Persisted for future drawer-opens.
+  _rdPromptsState.defaultMode = (_rdPromptsState.defaultMode === 'expanded') ? 'collapsed' : 'expanded';
+  _rdPromptsState.expanded = new Set();
+  try { localStorage.setItem('davPromptsDefaultMode', _rdPromptsState.defaultMode); } catch(err) {}
+  e.target.textContent = _rdPromptsState.defaultMode === 'expanded' ? 'collapse all' : 'expand all';
+  rdRenderPrompts();
+});
+// Initialize button label from persisted default
+(function(){
+  const btn = document.getElementById('rdPromptsExpandBtn');
+  if (btn) btn.textContent = _rdPromptsState.defaultMode === 'expanded' ? 'collapse all' : 'expand all';
+})();
 
 document.getElementById('refreshResultsBtn').addEventListener('click', loadResults);
 document.getElementById('resultFilter').addEventListener('input', renderResultList);

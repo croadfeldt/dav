@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -236,21 +237,46 @@ class Stage2Agent:
         # run so each sample uses a distinct seed.
         self._sample_seed: int | None = None
 
+    # Safety cap on any single field's stored length. Prevents a runaway
+    # prompt or tool result from making the JSONL file pathologically large.
+    # Default 256 KB per field — easily enough for typical DCM analysis
+    # prompts (30-50 KB) and tool results (1-5 KB). Override via env var
+    # DAV_TURNS_MAX_FIELD_BYTES for stress tests.
+    _TURNS_MAX_FIELD_BYTES = int(os.environ.get("DAV_TURNS_MAX_FIELD_BYTES", "262144"))
+
     def _emit_turn(self, turn: int, kind: str, **fields) -> None:
         """Append a single structured-turn record to turns_log_path (JSONL).
 
         Errors are swallowed — emission must never disrupt the run itself.
-        `kind` values: 'start', 'turn-start', 'response', 'tool', 'final'.
+        `kind` values: 'start', 'response', 'tool', 'final'.
+
+        Fields are written in full (no preview truncation) up to a per-field
+        safety cap (DAV_TURNS_MAX_FIELD_BYTES, default 256 KB). Length is
+        recorded alongside each capped string so the UI can show "+N bytes
+        not stored" if the cap kicked in.
         """
         if self.turns_log_path is None:
             return
         try:
             import datetime as _dt
+            # Cap any oversize string fields and tag with _truncated:true so
+            # the UI can be honest about the elision.
+            capped: dict = {}
+            cap = self._TURNS_MAX_FIELD_BYTES
+            for k, v in fields.items():
+                if isinstance(v, str) and len(v.encode("utf-8")) > cap:
+                    # Truncate by byte budget (safe re: utf-8 boundaries via
+                    # the errors='ignore' decode)
+                    truncated = v.encode("utf-8")[:cap].decode("utf-8", errors="ignore")
+                    capped[k] = truncated
+                    capped[k + "_truncated"] = True
+                else:
+                    capped[k] = v
             rec = {
                 "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
                 "turn": turn,
                 "kind": kind,
-                **fields,
+                **capped,
             }
             self.turns_log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.turns_log_path.open("a") as f:
@@ -283,8 +309,9 @@ class Stage2Agent:
             turn=0, kind="start",
             uc_uuid=use_case.uuid,
             sample_seed=self._sample_seed,
-            system_prompt_preview=sys_prompt[:600],
-            user_prompt_preview=user_prompt[:1200],
+            system_prompt=sys_prompt,
+            system_prompt_length=len(sys_prompt),
+            user_prompt=user_prompt,
             user_prompt_length=len(user_prompt),
             max_tool_calls=self.config.max_tool_calls,
         )
@@ -327,7 +354,7 @@ class Stage2Agent:
 
             self._emit_turn(
                 turn=turn, kind="response",
-                content_preview=(response.content or "")[:1200],
+                content=response.content or "",
                 content_length=len(response.content or ""),
                 tool_call_count=len(response.tool_calls or []),
                 tokens_used=usage.get("total_tokens", 0),
@@ -355,14 +382,14 @@ class Stage2Agent:
                     log.info("turn %d: mcp call %s args=%s", turn, tool_name, args)
 
                     mcp_result = self.mcp.call(tool_name, args)
-                    result_preview = (
-                        mcp_result.result[:1200] if mcp_result.ok
+                    full_result = (
+                        mcp_result.result if mcp_result.ok
                         else f"ERROR: {mcp_result.error}"
                     )
                     self._tool_trace.append(ToolCall(
                         tool=tool_name,
                         args=args,
-                        result_summary=result_preview[:500],
+                        result_summary=full_result[:500],   # ToolTrace stays compact
                         purpose=f"turn {turn}",
                     ))
                     self._emit_turn(
@@ -370,8 +397,8 @@ class Stage2Agent:
                         tool_name=tool_name,
                         args=args,
                         ok=mcp_result.ok,
-                        result_preview=result_preview,
-                        result_length=len(mcp_result.result or "") if mcp_result.ok else None,
+                        result=full_result,
+                        result_length=len(mcp_result.result or "") if mcp_result.ok else len(full_result),
                     )
 
                     messages.append(ChatMessage(

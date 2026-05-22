@@ -185,7 +185,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DAV Console API", version="0.8.2", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.8.3", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
