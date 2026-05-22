@@ -31,6 +31,7 @@ from . import validations
 from . import sources
 from . import metrics
 from . import results as _results
+from . import uc_assist
 
 log = logging.getLogger("dav-review-api")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -783,6 +784,23 @@ async def metrics_snapshot():
         raise HTTPException(500, f"snapshot failed: {e}")
 
 
+@app.get("/api/metrics/timeseries")
+async def metrics_timeseries(
+    start: str = Query(..., description="ISO 8601 run start timestamp"),
+    end: str = Query("", description="ISO 8601 run end timestamp; omit for in-flight runs (defaults to now)"),
+):
+    """Time-series GPU + vLLM data for sparkline rendering in the run-detail drawer.
+
+    Returns ~60 data points per metric across the run window (step auto-chosen).
+    GPU metrics return one series per GPU; vLLM metrics return a single aggregated series.
+    """
+    try:
+        return await metrics.timeseries(start, end or None)
+    except Exception as e:
+        log.exception("metrics timeseries failed")
+        raise HTTPException(500, f"timeseries failed: {e}")
+
+
 # ========================= RESULTS =========================
 
 
@@ -801,12 +819,35 @@ async def list_results():
         raise HTTPException(500, f"list failed: {e}")
 
 
-@app.get("/api/results/{run_id}")
-async def get_result(run_id: str):
-    """Return the run-summary.yaml content for a specific run."""
+# Static sub-paths must be declared before the /{run_id} catch-all.
+@app.get("/api/results/compare")
+async def compare_results(
+    a: str = Query(..., description="first run_id (baseline)"),
+    b: str = Query(..., description="second run_id (the newer run)"),
+):
+    """Compare two workspace runs side-by-side.
+
+    Returns per-UC verdict diff, added/removed gap IDs, and summary-level
+    deltas (wall time, pass/fail counts, verdict change count).
+    """
     if not _results.is_available():
         raise HTTPException(503, "workspace PVC not mounted")
-    summary = _results.get_run_summary(run_id)
+    try:
+        return _results.compare_runs(a, b)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        log.exception("compare_runs failed")
+        raise HTTPException(500, f"compare failed: {e}")
+
+
+@app.get("/api/results/{run_id}")
+async def get_result(run_id: str):
+    """Return the run-summary.yaml content for a specific run, enriched with
+    per-UC verdicts read from the individual analysis files."""
+    if not _results.is_available():
+        raise HTTPException(503, "workspace PVC not mounted")
+    summary = _results.get_run_summary_enriched(run_id)
     if summary is None:
         raise HTTPException(404, f"run {run_id!r} not found")
     return summary
@@ -821,6 +862,43 @@ async def get_result_uc(run_id: str, uc_uuid: str):
     if analysis is None:
         raise HTTPException(404, f"analysis for {uc_uuid!r} not found in run {run_id!r}")
     return analysis
+
+
+# ========================= UC ASSIST =========================
+
+
+class UCAssistIn(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+    current_yaml: Optional[str] = Field(None, max_length=64000)
+    context: Optional[str] = Field(None, max_length=2000)
+
+
+@app.get("/api/uc-assist/status")
+async def uc_assist_status():
+    """Check whether the UC assist endpoint is configured."""
+    return {
+        "available": uc_assist.is_available(),
+        "model": uc_assist.ASSIST_MODEL,
+        "endpoint": uc_assist.ASSIST_ENDPOINT if uc_assist.is_available() else None,
+    }
+
+
+@app.post("/api/uc-assist")
+async def uc_assist_chat(payload: UCAssistIn, request: Request):
+    """NL-assisted UC authoring — ask the model to draft or refine a UC.
+
+    Returns {"explanation": str, "yaml_suggestion": str|null} on success,
+    or {"error": str} if the assist endpoint is misconfigured or unreachable.
+    """
+    get_user(request)  # auth check — require authenticated caller
+    result = await uc_assist.chat(
+        user_message=payload.message,
+        current_yaml=payload.current_yaml,
+        context=payload.context,
+    )
+    if "error" in result and not result.get("explanation"):
+        raise HTTPException(503, result["error"])
+    return result
 
 
 # ========================= USE CASES =========================
@@ -1777,6 +1855,224 @@ async def dashboard():
             {**dict(r), "last_active": r["last_active"].isoformat()}
             for r in reviewers
         ],
+    }
+
+
+# ========================= ANALYSIS INGESTION =========================
+
+
+async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
+    """Ingest a workspace run's analysis results into Postgres.
+
+    Reads run-summary.yaml (enriched with verdicts) + individual analysis files.
+    Idempotent — existing rows for this run_id are deleted and re-inserted so
+    re-ingestion after a re-run is safe. Returns a summary dict.
+    """
+    if not _results.is_available():
+        raise HTTPException(503, "workspace PVC not mounted")
+    summary = _results.get_run_summary_enriched(run_id)
+    if not summary:
+        raise HTTPException(404, f"run {run_id!r} not found on workspace PVC")
+
+    from datetime import datetime as _dt
+
+    def _parse_ts(s):
+        if not s:
+            return None
+        try:
+            return _dt.fromisoformat(str(s).replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    async with conn.transaction():
+        # Clear existing ingestion for this run so re-ingestion is safe
+        await conn.execute("DELETE FROM analysis_runs WHERE run_id=$1", run_id)
+
+        await conn.execute(
+            """INSERT INTO analysis_runs
+               (run_id, mode, started_at, finished_at, total_ucs,
+                successful, failed, total_samples)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+            run_id,
+            summary.get("mode"),
+            _parse_ts(summary.get("started_at")),
+            _parse_ts(summary.get("finished_at")),
+            summary.get("total_ucs", 0),
+            summary.get("successful", 0),
+            summary.get("failed", 0),
+            summary.get("total_samples", 0),
+        )
+
+        ingested_ucs = 0
+        ingested_gaps = 0
+        for uc in (summary.get("ucs") or []):
+            uc_uuid = uc.get("uc_uuid")
+            if not uc_uuid:
+                continue
+            # Load full analysis for this UC
+            analysis = _results.get_analysis(run_id, uc_uuid)
+            meta = {}
+            overall = None
+            analyzed_at = None
+            model = None
+            endpoint_url = None
+            engine_version = None
+            gaps = []
+            if analysis and analysis.get("_source") == "single":
+                a_meta = analysis.get("analysis_metadata") or {}
+                summary_block = analysis.get("summary") or {}
+                meta = a_meta
+                overall = summary_block.get("overall_assessment") or analysis.get("overall_assessment")
+                analyzed_at = _parse_ts(a_meta.get("analyzed_at"))
+                model = a_meta.get("model")
+                endpoint_url = a_meta.get("endpoint_url")
+                engine_version = a_meta.get("engine_version")
+                gaps = analysis.get("gaps_identified") or []
+            elif analysis and analysis.get("_source") == "explore":
+                # Use first sample's metadata
+                first = (analysis.get("samples") or [{}])[0] if analysis.get("samples") else {}
+                a_meta = first.get("analysis_metadata") or {}
+                model = a_meta.get("model")
+                endpoint_url = a_meta.get("endpoint_url")
+                engine_version = a_meta.get("engine_version")
+                # Collect gaps from all samples (deduplicated by gap_id)
+                seen_gap_ids = set()
+                for sample in (analysis.get("samples") or []):
+                    for g in (sample.get("gaps_identified") or []):
+                        gid = g.get("gap_id")
+                        if gid and gid not in seen_gap_ids:
+                            gaps.append(g)
+                            seen_gap_ids.add(gid)
+
+            row = await conn.fetchrow(
+                """INSERT INTO uc_analyses
+                   (run_id, uc_uuid, uc_handle, status, verdict, overall_assessment,
+                    wall_time_seconds, sample_count, engine_version, model,
+                    endpoint_url, analyzed_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                   RETURNING id""",
+                run_id, uc_uuid,
+                uc.get("uc_handle"),
+                uc.get("status"),
+                uc.get("verdict"),
+                overall,
+                uc.get("wall_time_seconds"),
+                uc.get("sample_count"),
+                engine_version, model, endpoint_url, analyzed_at,
+            )
+            analysis_id = row["id"]
+            ingested_ucs += 1
+
+            for gap in gaps:
+                if not isinstance(gap, dict):
+                    continue
+                sev = gap.get("severity")
+                if isinstance(sev, dict):
+                    sev = sev.get("label")
+                await conn.execute(
+                    """INSERT INTO uc_gaps
+                       (analysis_id, run_id, uc_uuid, gap_id, title, description, severity)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7)""",
+                    analysis_id, run_id, uc_uuid,
+                    gap.get("gap_id"),
+                    gap.get("title"),
+                    gap.get("description"),
+                    sev,
+                )
+                ingested_gaps += 1
+
+    return {
+        "run_id": run_id,
+        "ingested_ucs": ingested_ucs,
+        "ingested_gaps": ingested_gaps,
+    }
+
+
+@app.post("/api/analysis/ingest/{run_id:path}")
+async def ingest_analysis(run_id: str, request: Request):
+    """Ingest a workspace run's analysis results into Postgres.
+
+    Idempotent — safe to re-run after additional UCs complete or to refresh
+    data after a re-run. Returns counts of ingested UC analyses and gaps.
+    """
+    get_user(request)
+    try:
+        async with pool.acquire() as conn:
+            result = await _ingest_run_analyses(run_id, conn)
+        return {"ok": True, **result}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("analysis ingest failed for %s", run_id)
+        raise HTTPException(500, f"ingest failed: {e}")
+
+
+@app.get("/api/analysis/runs")
+async def list_ingested_runs(limit: int = Query(50, ge=1, le=500)):
+    """List all runs that have been ingested into Postgres, newest first."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT run_id, mode, started_at, finished_at, total_ucs,
+                      successful, failed, total_samples, ingested_at
+               FROM analysis_runs ORDER BY started_at DESC NULLS LAST LIMIT $1""",
+            limit,
+        )
+    return {
+        "runs": [
+            {**dict(r),
+             "started_at":  r["started_at"].isoformat()  if r["started_at"]  else None,
+             "finished_at": r["finished_at"].isoformat() if r["finished_at"] else None,
+             "ingested_at": r["ingested_at"].isoformat() if r["ingested_at"] else None,
+            }
+            for r in rows
+        ]
+    }
+
+
+@app.get("/api/analysis/gaps")
+async def query_gaps(
+    uc_uuid: Optional[str] = Query(None, description="filter by UC uuid"),
+    gap_id: Optional[str] = Query(None, description="filter by gap ID"),
+    run_id: Optional[str] = Query(None, description="filter by run ID"),
+    limit: int = Query(200, ge=1, le=2000),
+):
+    """Query ingested gaps across runs. Useful for cross-run gap trend analysis."""
+    clauses = []
+    args: list = []
+
+    def _add(clause: str, val):
+        args.append(val)
+        clauses.append(clause.replace("?", f"${len(args)}"))
+
+    if uc_uuid:
+        _add("g.uc_uuid = ?", uc_uuid)
+    if gap_id:
+        _add("g.gap_id = ?", gap_id)
+    if run_id:
+        _add("g.run_id = ?", run_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""SELECT g.id, g.run_id, g.uc_uuid, g.gap_id, g.title,
+                       g.description, g.severity, g.ingested_at,
+                       ua.verdict, ua.uc_handle,
+                       ar.started_at AS run_started_at
+                FROM uc_gaps g
+                JOIN uc_analyses ua ON ua.id = g.analysis_id
+                JOIN analysis_runs ar ON ar.run_id = g.run_id
+                {where}
+                ORDER BY g.ingested_at DESC
+                LIMIT ${len(args)+1}""",
+            *args, limit,
+        )
+    return {
+        "gaps": [
+            {**dict(r),
+             "ingested_at":    r["ingested_at"].isoformat()    if r["ingested_at"]    else None,
+             "run_started_at": r["run_started_at"].isoformat() if r["run_started_at"] else None,
+            }
+            for r in rows
+        ]
     }
 
 

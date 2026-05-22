@@ -370,6 +370,41 @@
   .split-resizer:hover, .split-resizer.dragging { background:var(--accent-soft); }
   .split-resizer::after { content:''; position:absolute; left:2px; top:0; bottom:0; width:1px; background:var(--border-bright); }
 
+  /* ── Sparklines ── */
+  .sparkline { display:block; width:100%; height:22px; overflow:visible; }
+  .sparkline polyline { fill:none; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+  .spk-power { stroke:var(--accent); }
+  .spk-gfx   { stroke:var(--blue); }
+  .spk-tps   { stroke:var(--green); }
+  .spk-run   { stroke:var(--accent-soft); }
+  .sparkline-wrap { margin-top:4px; opacity:0.8; }
+  .gpu-tile-sparklines { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-top:6px; }
+  .gpu-spk-block { display:flex; flex-direction:column; }
+  .gpu-spk-label { font-size:8px; text-transform:uppercase; letter-spacing:0.1em; color:var(--text-faint); margin-bottom:1px; }
+
+  /* ── Run comparison ── */
+  .cmp-banner { display:flex; align-items:center; gap:8px; padding:6px 10px; background:var(--bg-raised); border-bottom:1px solid var(--border-bright); font-size:10px; color:var(--text-dim); flex-shrink:0; }
+  .cmp-banner em { color:var(--accent); font-style:normal; }
+  .cmp-banner button { margin-left:auto; }
+  .cmp-row { display:flex; align-items:flex-start; gap:6px; padding:6px 12px; font-size:11px; color:var(--text-dim); cursor:pointer; border-left:2px solid transparent; }
+  .cmp-row:hover { background:var(--accent-bg); }
+  .cmp-row.active { background:var(--accent-bg); border-left-color:var(--accent); }
+  .cmp-row.changed { color:var(--text); }
+  .cmp-row .cmp-handle { flex:1; word-break:break-word; line-height:1.4; }
+  .cmp-row .cmp-arrow { font-size:10px; flex-shrink:0; width:90px; text-align:right; white-space:nowrap; }
+  .cmp-only-a { color:var(--red); font-size:9px; }
+  .cmp-only-b { color:var(--green); font-size:9px; }
+  .cmp-compare-pane { flex:1; overflow-y:auto; padding:24px 28px; }
+  .cmp-side-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:20px; }
+  .cmp-side { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:12px 14px; }
+  .cmp-side-label { font-size:9px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px; }
+  .cmp-gap-list { font-size:11px; color:var(--text-dim); margin-top:8px; }
+  .cmp-gap-list .added   { color:var(--green); }
+  .cmp-gap-list .removed { color:var(--red); }
+  .cmp-filter-row { display:flex; gap:4px; flex-wrap:wrap; padding:6px 8px; border-bottom:1px solid var(--border); flex-shrink:0; }
+  .cmp-filter-btn { font-size:9px; padding:2px 7px; border:1px solid var(--border-bright); background:transparent; color:var(--text-dim); border-radius:2px; cursor:pointer; text-transform:uppercase; letter-spacing:0.1em; }
+  .cmp-filter-btn.active { background:var(--accent-bg); color:var(--accent); border-color:var(--accent-soft); }
+
   /* ── Analysis rendering ── */
   .analysis-block { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; margin-bottom:12px; overflow:hidden; }
   .analysis-block-header { padding:8px 14px; display:flex; align-items:center; justify-content:space-between; font-size:11px; border-bottom:1px solid var(--border); }
@@ -551,7 +586,10 @@
     <div class="split-left" id="resultsRunsPanel" style="width:320px; min-width:200px;">
       <div class="panel-header">
         <div class="panel-title">Run <em>results</em></div>
-        <button class="btn ghost btn-icon" id="refreshResultsBtn" title="Refresh">↻</button>
+        <div style="display:flex;gap:4px;flex-shrink:0;">
+          <button class="btn ghost btn-icon" id="ingestResultBtn" title="Ingest selected run into Postgres" style="font-size:10px;padding:3px 8px;display:none;">↓ Ingest</button>
+          <button class="btn ghost btn-icon" id="refreshResultsBtn" title="Refresh">↻</button>
+        </div>
       </div>
       <div class="panel-toolbar">
         <input id="resultFilter" placeholder="filter runs…" />
@@ -562,8 +600,23 @@
     <div class="split-right">
       <div class="split" id="resultDetail">
         <div class="split-left" id="ucListPanel" style="width:340px; min-width:200px;">
-          <div class="panel-header"><span style="font-size:11px; color:var(--text-dim);">Use Cases</span></div>
-          <div class="panel-toolbar" style="gap:6px;">
+          <div class="panel-header">
+            <span style="font-size:11px; color:var(--text-dim);" id="ucPanelTitle">Use Cases</span>
+            <button class="btn ghost btn-icon" id="cmpToggleBtn" title="Compare with another run" style="font-size:10px;padding:3px 8px;">⇄ Compare</button>
+          </div>
+          <!-- Compare run picker (hidden until compare mode active) -->
+          <div id="cmpPickerRow" style="display:none; padding:6px 10px; border-bottom:1px solid var(--border-bright); gap:6px; flex-direction:column;">
+            <div style="font-size:10px; color:var(--text-dim);">Compare <em style="color:var(--accent);" id="cmpRunALabel">…</em> vs:</div>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <select id="cmpRunBSelect" style="flex:1; font-size:10px; padding:3px 5px;">
+                <option value="">— pick a run —</option>
+              </select>
+              <button class="btn ghost btn-icon" id="cmpRunBtn" style="font-size:10px;">Go</button>
+              <button class="btn ghost btn-icon" id="cmpCancelBtn" style="font-size:10px; color:var(--text-faint);">✕</button>
+            </div>
+          </div>
+          <!-- Normal UC list controls -->
+          <div id="ucNormalControls" class="panel-toolbar" style="gap:6px;">
             <select id="ucVerdictFilter" style="flex:1">
               <option value="">all verdicts</option>
               <option value="supported">supported</option>
@@ -571,10 +624,18 @@
               <option value="not_supported">not supported</option>
               <option value="failed">failed</option>
             </select>
-            <label style="display:flex; align-items:center; gap:4px; font-size:10px; color:var(--text-faint); white-space:nowrap;">
-              <input type="checkbox" id="ucGroupByVerdict" checked style="width:auto;height:auto;accent-color:var(--accent);" />
-              group
-            </label>
+            <select id="ucGroupBy" style="flex:none;font-size:10px;padding:3px 5px;" title="Grouping mode">
+              <option value="">flat</option>
+              <option value="verdict" selected>verdict group</option>
+              <option value="category">category group</option>
+            </select>
+          </div>
+          <!-- Compare filter bar (shown in compare mode) -->
+          <div id="cmpFilterRow" class="cmp-filter-row" style="display:none;">
+            <button class="cmp-filter-btn active" data-cf="all">all</button>
+            <button class="cmp-filter-btn" data-cf="changed">changed</button>
+            <button class="cmp-filter-btn" data-cf="only_a">only A</button>
+            <button class="cmp-filter-btn" data-cf="only_b">only B</button>
           </div>
           <div class="scrollable" id="ucResultList"><div class="empty">select a run</div></div>
         </div>
@@ -941,17 +1002,40 @@
 
 <!-- ══════════════════════════ UC EDITOR MODAL ══════════════════════════ -->
 <div class="modal-overlay" id="ucModal">
-  <div class="modal" style="width:780px;">
+  <div class="modal" style="width:920px; max-width:96vw;">
     <div class="modal-header">
       <div class="modal-title" id="ucModalTitle">New use case</div>
-      <button class="btn ghost btn-icon" id="closeUCModal">✕</button>
-    </div>
-    <div class="modal-body">
-      <div class="form-field"><label>YAML content</label>
-        <textarea class="yaml-editor" id="ucYamlEditor" rows="22" spellcheck="false"></textarea>
+      <div style="display:flex; gap:6px; align-items:center;">
+        <button class="btn ghost btn-icon" id="ucAssistToggleBtn" title="AI-assisted authoring" style="font-size:10px; padding:3px 8px;">✦ Assist</button>
+        <button class="btn ghost btn-icon" id="closeUCModal">✕</button>
       </div>
-      <div class="form-field"><label>Tags (comma-separated)</label>
-        <input id="ucTagsInput" placeholder="e.g. happy-path, auth, regression" />
+    </div>
+    <div class="modal-body" style="display:flex; gap:0; padding:0; overflow:hidden; max-height:calc(90vh - 100px);">
+      <!-- YAML editor pane -->
+      <div style="flex:1; min-width:0; padding:16px 20px; overflow-y:auto; display:flex; flex-direction:column; gap:12px;">
+        <div class="form-field"><label>YAML content</label>
+          <textarea class="yaml-editor" id="ucYamlEditor" rows="22" spellcheck="false"></textarea>
+        </div>
+        <div class="form-field"><label>Tags (comma-separated)</label>
+          <input id="ucTagsInput" placeholder="e.g. happy-path, auth, regression" />
+        </div>
+      </div>
+      <!-- AI assist panel (hidden until toggled) -->
+      <div id="ucAssistPanel" style="display:none; width:360px; min-width:280px; border-left:1px solid var(--border); background:var(--bg-raised); display:none; flex-direction:column; overflow:hidden;">
+        <div style="padding:10px 14px; border-bottom:1px solid var(--border); font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); display:flex; justify-content:space-between; align-items:center;">
+          <span>✦ AI Assist</span>
+          <span id="ucAssistStatus" style="color:var(--text-faint); font-size:9px; letter-spacing:0"></span>
+        </div>
+        <!-- Chat history -->
+        <div id="ucAssistHistory" style="flex:1; overflow-y:auto; padding:10px 14px; font-size:12px; display:flex; flex-direction:column; gap:10px; min-height:0;"></div>
+        <!-- Input area -->
+        <div style="border-top:1px solid var(--border); padding:10px 12px; display:flex; flex-direction:column; gap:6px; flex-shrink:0;">
+          <textarea id="ucAssistInput" rows="3" placeholder="Describe what you want to create or change…" style="width:100%; font-family:var(--mono); font-size:11px; background:var(--bg-input); border:1px solid var(--border); color:var(--text); padding:7px 9px; border-radius:2px; resize:none; line-height:1.5;"></textarea>
+          <div style="display:flex; gap:6px; justify-content:flex-end;">
+            <button class="btn ghost btn-icon" id="ucAssistClearBtn" style="font-size:10px;">Clear</button>
+            <button class="btn primary" id="ucAssistSendBtn" style="font-size:10px; padding:4px 12px;">Send</button>
+          </div>
+        </div>
       </div>
     </div>
     <div class="modal-footer">
@@ -1350,6 +1434,10 @@ let _rdFreshTimer     = null; // separate timer that updates the "Xs ago" label 
 // the entire cumulative-since-vLLM-start total. Reset if the underlying
 // counter regresses (process restart).
 let _rdTokenBaseline  = {gen: null, prompt: null};
+// Timeseries cache for sparklines. Loaded once per drawer session (or re-fetched
+// every 60s for in-flight runs). Null = not yet loaded.
+let _rdSparklines     = null;
+let _rdSparkTimer     = null;  // periodic re-fetch for in-flight runs
 
 function rdApplyLayout(layout) {
   if (!RD_LAYOUTS.includes(layout)) layout = 'detailed';
@@ -1536,6 +1624,8 @@ function openRunDrawer(name) {
   _rdLastGpuValues = {}; _rdLastVllmValues = {};
   _rdGpuLastChange = 0;  _rdVllmLastChange = 0;
   _rdTokenBaseline = {gen: null, prompt: null};
+  _rdSparklines    = null;
+  if (_rdSparkTimer) { clearInterval(_rdSparkTimer); _rdSparkTimer = null; }
   _rdPromptsState = {filesKnown:[], perFile:{}, autoScroll:true, pollTimer:null};
   // Apply the last-used (or default) layout
   rdApplyLayout(rdInitialLayout());
@@ -1555,8 +1645,9 @@ function openRunDrawer(name) {
 function closeRunDrawer() {
   document.getElementById('runDrawer').classList.remove('open');
   _rdName = null;
-  if (_rdPollTimer) { clearInterval(_rdPollTimer); _rdPollTimer = null; }
+  if (_rdPollTimer)  { clearInterval(_rdPollTimer);  _rdPollTimer  = null; }
   if (_rdFreshTimer) { clearInterval(_rdFreshTimer); _rdFreshTimer = null; }
+  if (_rdSparkTimer) { clearInterval(_rdSparkTimer); _rdSparkTimer = null; }
   if (_rdPromptsState.pollTimer) { clearInterval(_rdPromptsState.pollTimer); _rdPromptsState.pollTimer = null; }
 }
 
@@ -1585,6 +1676,93 @@ function _flashChanged(domId) {
   const el = document.getElementById(domId); if (!el) return;
   el.classList.add('metric-flash');
   setTimeout(() => el.classList.remove('metric-flash'), 800);
+}
+
+// Build a small inline SVG sparkline from an array of [ts, val] pairs.
+// Returns an SVG element string (or empty string if no data).
+function _sparklineSVG(pts, cls, w = 110, h = 22) {
+  if (!pts || pts.length < 2) return '';
+  const vals = pts.map(p => p[1]);
+  const times = pts.map(p => p[0]);
+  const minV = Math.min(...vals), maxV = Math.max(...vals);
+  const rangeV = maxV - minV || 1;
+  const minT = times[0], maxT = times[times.length - 1];
+  const rangeT = maxT - minT || 1;
+  const pad = 2;
+  const points = pts.map(([t, v]) => {
+    const x = pad + ((t - minT) / rangeT) * (w - 2 * pad);
+    const y = (h - pad) - ((v - minV) / rangeV) * (h - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return `<svg class="sparkline" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <polyline class="${cls}" points="${points}"/>
+  </svg>`;
+}
+
+async function _fetchSparklines(startedAt, completedAt) {
+  if (!startedAt) return;
+  try {
+    const qp = `start=${encodeURIComponent(startedAt)}` +
+               (completedAt ? `&end=${encodeURIComponent(completedAt)}` : '');
+    const data = await api(`/api/metrics/timeseries?${qp}`);
+    if (data && data.available) {
+      _rdSparklines = data;
+      _renderSparklines();
+    }
+  } catch(e) {
+    // Metrics unavailable — silently skip sparklines
+  }
+}
+
+// Inject sparkline SVGs into the GPU tiles and vLLM cells that are
+// currently rendered in the drawer. Safe to call multiple times.
+function _renderSparklines() {
+  if (!_rdSparklines) return;
+  const sp = _rdSparklines;
+  // GPU sparklines: match each GPU series by gpu_id label
+  const powerSeries = sp.gpu_power_watts || [];
+  const gfxSeries   = sp.gpu_gfx_activity || [];
+  document.querySelectorAll('#rdGpus .gpu-tile').forEach((tile, idx) => {
+    // Find matching series by position (same order as snapshot)
+    const ps = powerSeries[idx];
+    const gs = gfxSeries[idx];
+    let spkEl = tile.querySelector('.gpu-tile-sparklines');
+    if (!spkEl) {
+      spkEl = document.createElement('div');
+      spkEl.className = 'gpu-tile-sparklines';
+      tile.appendChild(spkEl);
+    }
+    let html = '';
+    if (ps && ps.values && ps.values.length >= 2) {
+      html += `<div class="gpu-spk-block"><div class="gpu-spk-label">power</div>
+        <div class="sparkline-wrap">${_sparklineSVG(ps.values, 'spk-power')}</div></div>`;
+    }
+    if (gs && gs.values && gs.values.length >= 2) {
+      html += `<div class="gpu-spk-block"><div class="gpu-spk-label">gfx activity</div>
+        <div class="sparkline-wrap">${_sparklineSVG(gs.values, 'spk-gfx')}</div></div>`;
+    }
+    spkEl.innerHTML = html;
+  });
+  // vLLM sparklines: gen TPS and running requests
+  const tpsSeries = (sp.vllm_gen_tps  || [])[0];
+  const runSeries = (sp.vllm_running   || [])[0];
+  for (const [cellId, series, cls, label] of [
+    ['rdv-gentps', tpsSeries, 'spk-tps', 'gen t/s'],
+    ['rdv-running', runSeries, 'spk-run', 'running'],
+  ]) {
+    if (!series || !series.values || series.values.length < 2) continue;
+    const cell = document.getElementById(cellId);
+    if (!cell) continue;
+    const parent = cell.closest('.vllm-cell');
+    if (!parent) continue;
+    let spkWrap = parent.querySelector('.sparkline-wrap');
+    if (!spkWrap) {
+      spkWrap = document.createElement('div');
+      spkWrap.className = 'sparkline-wrap';
+      parent.appendChild(spkWrap);
+    }
+    spkWrap.innerHTML = _sparklineSVG(series.values, cls);
+  }
 }
 
 async function rdToggleLogs(runName, step, logsId, link) {
@@ -1617,9 +1795,24 @@ async function refreshRunDrawer() {
     document.getElementById('rdSub').innerHTML = `<span style="color:var(--red)">${esc(detail._err)}</span>`;
   } else {
     renderRunDrawerDetail(detail);
+    const isTerminal = ['Succeeded','Failed','Cancelled','TimedOut'].includes(detail.phase);
     // Stop polling once the run is in a terminal state
-    if (['Succeeded','Failed','Cancelled','TimedOut'].includes(detail.phase)) {
+    if (isTerminal) {
       if (_rdPollTimer) { clearInterval(_rdPollTimer); _rdPollTimer = null; }
+    }
+    // Sparklines: fetch once when we first get start/end timestamps.
+    // For terminal runs: one-shot. For in-flight runs: refresh every 60s.
+    const startedAt   = detail.started_at || detail.created_at;
+    const completedAt = isTerminal ? (detail.completed_at || null) : null;
+    if (startedAt && _rdSparklines === null) {
+      _fetchSparklines(startedAt, completedAt);
+      if (!isTerminal) {
+        if (_rdSparkTimer) clearInterval(_rdSparkTimer);
+        _rdSparkTimer = setInterval(() => _fetchSparklines(startedAt, null), 60000);
+      }
+    } else if (_rdSparklines) {
+      // Already loaded — just re-render in case DOM was rebuilt
+      _renderSparklines();
     }
   }
   // Inject server-computed live session deltas (persisted across reloads)
@@ -2062,6 +2255,8 @@ async function selectRunResult(runId) {
   document.getElementById('ucResultList').innerHTML = '<div class="empty">loading…</div>';
   document.getElementById('ucListPanel').style.display = '';
   document.getElementById('analysisDetail').innerHTML = '<div class="detail-empty">Select a use case.</div>';
+  // Show ingest button when a run is selected
+  document.getElementById('ingestResultBtn').style.display = '';
   try {
     const summary = await api(`/api/results/${encodeURIComponent(runId)}`);
     activeRunSummary = summary;
@@ -2071,6 +2266,20 @@ async function selectRunResult(runId) {
     document.getElementById('ucResultList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
   }
 }
+
+document.getElementById('ingestResultBtn').addEventListener('click', async () => {
+  if (!activeRunResultId) return;
+  const btn = document.getElementById('ingestResultBtn');
+  btn.disabled = true; btn.textContent = 'Ingesting…';
+  try {
+    const resp = await api(`/api/analysis/ingest/${encodeURIComponent(activeRunResultId)}`, { method: 'POST' });
+    toast(`Ingested ${resp.ingested_ucs} UCs, ${resp.ingested_gaps} gaps`);
+  } catch(e) {
+    toast('Ingest failed: ' + e.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = '↓ Ingest';
+  }
+});
 
 function renderRunSummaryHeader(s) {
   const pct = s.total_ucs > 0 ? Math.round((s.successful/s.total_ucs)*100) : 0;
@@ -2109,24 +2318,75 @@ function _ucBucketKey(u) {
   return u.verdict || 'unknown';
 }
 
-function _ucRowEl(u) {
+// Extract the category and display-label from a UC handle.
+// Handle convention: <prefix>/<category>/<descriptor>  (e.g. test/standard/vm-provision-happy)
+// When grouped by category the category segment is surfaced as the group header
+// and stripped from the displayed label so the row stays compact.
+function _ucHandleParts(handle) {
+  if (!handle) return { category: null, display: handle || '' };
+  const parts = handle.split('/');
+  if (parts.length >= 3) {
+    // Skip the first segment (conventional prefix like "test"), take next as category.
+    return { category: parts[1], display: parts.slice(2).join('/') };
+  }
+  if (parts.length === 2) {
+    return { category: parts[0], display: parts[1] };
+  }
+  return { category: null, display: handle };
+}
+
+function _ucRowEl(u, { stripCategory = false } = {}) {
   const item = document.createElement('div');
   item.className = 'uc-row' + (activeUCResult===u.uc_uuid ? ' active' : '');
   const vClass = u.status==='failed' ? 'verdict-error' : verdictClass(u.verdict);
   const vLabel = u.status==='failed' ? 'failed'
     : (u.verdict||'?').replace(/_/g,' ').replace('partially supported','partial').replace('not supported','not supp.');
+  const rawHandle = u.uc_handle || u.uc_uuid;
+  const displayHandle = stripCategory ? _ucHandleParts(rawHandle).display : rawHandle;
   item.innerHTML = `
     <span class="${vClass}" style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;flex-shrink:0;width:52px;padding-top:1px">${esc(vLabel)}</span>
-    <span class="uc-handle">${esc(u.uc_handle||u.uc_uuid)}</span>
+    <span class="uc-handle">${esc(displayHandle)}</span>
     <span class="uc-time">${u.wall_time_seconds ? u.wall_time_seconds+'s' : ''}</span>`;
   item.addEventListener('click', () => selectUCResult(u.uc_uuid));
   return item;
 }
 
+function _renderGrouped(el, items, keyFn, labelFn, storagePrefix, rowOpts = {}) {
+  const buckets = new Map();
+  const order = [];
+  for (const u of items) {
+    const k = keyFn(u);
+    if (!buckets.has(k)) { buckets.set(k, []); order.push(k); }
+    buckets.get(k).push(u);
+  }
+  for (const key of order) {
+    const groupItems = buckets.get(key);
+    const groupEl = document.createElement('div');
+    groupEl.className = 'uc-group';
+    const storKey = storagePrefix + key;
+    try {
+      if (localStorage.getItem('ucGroupCollapsed:' + storKey) === '1') groupEl.classList.add('collapsed');
+    } catch(e) {}
+    const header = document.createElement('div');
+    header.className = 'uc-group-header';
+    header.innerHTML = `<span>${esc(labelFn(key))}</span><span class="badge">${groupItems.length}</span>`;
+    header.addEventListener('click', () => {
+      groupEl.classList.toggle('collapsed');
+      try { localStorage.setItem('ucGroupCollapsed:'+storKey, groupEl.classList.contains('collapsed') ? '1' : '0'); } catch(e) {}
+    });
+    groupEl.appendChild(header);
+    const body = document.createElement('div');
+    body.className = 'uc-group-body';
+    groupItems.forEach(u => body.appendChild(_ucRowEl(u, rowOpts)));
+    groupEl.appendChild(body);
+    el.appendChild(groupEl);
+  }
+}
+
 function renderUCResultList(summary) {
   const el = document.getElementById('ucResultList');
   const vFilter = document.getElementById('ucVerdictFilter').value;
-  const group   = document.getElementById('ucGroupByVerdict').checked;
+  const groupBy  = document.getElementById('ucGroupBy').value;  // '' | 'verdict' | 'category'
   const ucs = summary.ucs || [];
   const filtered = vFilter
     ? ucs.filter(u => vFilter==='failed' ? u.status==='failed' : u.verdict===vFilter)
@@ -2134,41 +2394,55 @@ function renderUCResultList(summary) {
   if (!filtered.length) { el.innerHTML = '<div class="empty">No use cases match.</div>'; return; }
   el.innerHTML = '';
 
-  if (!group) {
-    // Flat list (original behaviour)
-    filtered.forEach(u => el.appendChild(_ucRowEl(u)));
+  if (groupBy === 'verdict') {
+    // Fixed-order verdict buckets
+    const buckets = {};
+    for (const u of filtered) {
+      const k = _ucBucketKey(u);
+      (buckets[k] = buckets[k] || []).push(u);
+    }
+    UC_VERDICT_GROUPS.forEach(([key, label]) => {
+      const items = buckets[key];
+      if (!items || !items.length) return;
+      const groupEl = document.createElement('div');
+      groupEl.className = 'uc-group';
+      try {
+        if (localStorage.getItem('ucGroupCollapsed:v:' + key) === '1') groupEl.classList.add('collapsed');
+      } catch(e) {}
+      const header = document.createElement('div');
+      header.className = 'uc-group-header';
+      header.innerHTML = `<span>${esc(label)}</span><span class="badge">${items.length}</span>`;
+      header.addEventListener('click', () => {
+        groupEl.classList.toggle('collapsed');
+        try { localStorage.setItem('ucGroupCollapsed:v:'+key, groupEl.classList.contains('collapsed') ? '1' : '0'); } catch(e) {}
+      });
+      groupEl.appendChild(header);
+      const body = document.createElement('div');
+      body.className = 'uc-group-body';
+      items.forEach(u => body.appendChild(_ucRowEl(u)));
+      groupEl.appendChild(body);
+      el.appendChild(groupEl);
+    });
     return;
   }
 
-  // Group by verdict bucket
-  const buckets = {};
-  for (const u of filtered) {
-    const k = _ucBucketKey(u);
-    (buckets[k] = buckets[k] || []).push(u);
+  if (groupBy === 'category') {
+    // Group by UC category (2nd segment of handle), alpha-sorted groups.
+    // Within each group strip the category prefix from the displayed handle.
+    const catOf = u => _ucHandleParts(u.uc_handle || u.uc_uuid).category || '(uncategorized)';
+    const sorted = [...filtered].sort((a, b) => catOf(a).localeCompare(catOf(b)));
+    _renderGrouped(
+      el, sorted,
+      u => catOf(u),
+      k => k,
+      'cat:',
+      { stripCategory: true },
+    );
+    return;
   }
-  UC_VERDICT_GROUPS.forEach(([key, label]) => {
-    const items = buckets[key];
-    if (!items || !items.length) return;
-    const groupEl = document.createElement('div');
-    groupEl.className = 'uc-group';
-    // Restore collapsed state from localStorage
-    try {
-      if (localStorage.getItem('ucGroupCollapsed:' + key) === '1') groupEl.classList.add('collapsed');
-    } catch(e) {}
-    const header = document.createElement('div');
-    header.className = 'uc-group-header';
-    header.innerHTML = `<span>${esc(label)}</span><span class="badge">${items.length}</span>`;
-    header.addEventListener('click', () => {
-      groupEl.classList.toggle('collapsed');
-      try { localStorage.setItem('ucGroupCollapsed:'+key, groupEl.classList.contains('collapsed') ? '1' : '0'); } catch(e) {}
-    });
-    groupEl.appendChild(header);
-    const body = document.createElement('div');
-    body.className = 'uc-group-body';
-    items.forEach(u => body.appendChild(_ucRowEl(u)));
-    groupEl.appendChild(body);
-    el.appendChild(groupEl);
-  });
+
+  // Flat list
+  filtered.forEach(u => el.appendChild(_ucRowEl(u)));
 }
 
 async function selectUCResult(ucUuid) {
@@ -2180,6 +2454,199 @@ async function selectUCResult(ucUuid) {
   } catch (e) {
     document.getElementById('analysisDetail').innerHTML = `<div class="detail-pane"><div style="color:var(--red)">${esc(e.message)}</div></div>`;
   }
+}
+
+// ══════════════════════════ COMPARISON ══════════════════════════
+
+let compareData = null;
+let cmpMode = false;
+let cmpFilter = 'all';
+let activeCompareUCUuid = null;
+
+function _enterCompareMode() {
+  cmpMode = true;
+  document.getElementById('ucNormalControls').style.display = 'none';
+  document.getElementById('cmpFilterRow').style.display = 'flex';
+  document.getElementById('ucPanelTitle').textContent = 'Comparison';
+  document.getElementById('cmpToggleBtn').style.color = 'var(--accent)';
+}
+
+function _exitCompareMode() {
+  cmpMode = false; compareData = null; activeCompareUCUuid = null; cmpFilter = 'all';
+  document.getElementById('ucNormalControls').style.display = '';
+  document.getElementById('cmpFilterRow').style.display = 'none';
+  document.getElementById('cmpPickerRow').style.display = 'none';
+  document.getElementById('ucPanelTitle').textContent = 'Use Cases';
+  document.getElementById('cmpToggleBtn').style.color = '';
+  if (activeRunSummary) renderUCResultList(activeRunSummary);
+  else document.getElementById('ucResultList').innerHTML = '<div class="empty">select a run</div>';
+  document.getElementById('analysisDetail').innerHTML = '<div class="detail-empty">Select a use case to view its analysis.</div>';
+}
+
+document.getElementById('cmpToggleBtn').addEventListener('click', () => {
+  if (cmpMode) { _exitCompareMode(); return; }
+  if (!activeRunResultId) return;
+  // Populate run B picker with all other result runs
+  const sel = document.getElementById('cmpRunBSelect');
+  sel.innerHTML = '<option value="">— pick a run —</option>';
+  allResults.forEach(r => {
+    if (r.run_id === activeRunResultId) return;
+    const opt = document.createElement('option');
+    opt.value = r.run_id;
+    opt.textContent = r.run_id;
+    sel.appendChild(opt);
+  });
+  document.getElementById('cmpRunALabel').textContent = activeRunResultId;
+  document.getElementById('cmpPickerRow').style.display = 'flex';
+});
+
+document.getElementById('cmpCancelBtn').addEventListener('click', () => {
+  document.getElementById('cmpPickerRow').style.display = 'none';
+  if (cmpMode) _exitCompareMode();
+});
+
+document.getElementById('cmpRunBtn').addEventListener('click', async () => {
+  const runB = document.getElementById('cmpRunBSelect').value;
+  if (!runB) return;
+  document.getElementById('cmpPickerRow').style.display = 'none';
+  _enterCompareMode();
+  document.getElementById('ucResultList').innerHTML = '<div class="empty">loading comparison…</div>';
+  document.getElementById('analysisDetail').innerHTML = '<div class="detail-empty">Loading…</div>';
+  try {
+    compareData = await api(`/api/results/compare?a=${encodeURIComponent(activeRunResultId)}&b=${encodeURIComponent(runB)}`);
+    renderCompareHeader();
+    renderCompareList();
+  } catch(e) {
+    document.getElementById('ucResultList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+  }
+});
+
+document.querySelectorAll('.cmp-filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.cmp-filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    cmpFilter = btn.dataset.cf;
+    if (compareData) renderCompareList();
+  });
+});
+
+function renderCompareHeader() {
+  if (!compareData) return;
+  const d = compareData.delta;
+  const sa = compareData.summary_a, sb = compareData.summary_b;
+  const dtSign = (v) => v === null ? '—' : (v > 0 ? '+' + v : '' + v);
+  const el = document.getElementById('analysisDetail');
+  el.innerHTML = `<div class="detail-pane">
+    <div class="detail-title">Run <em>comparison</em></div>
+    <div class="detail-sub">${esc(compareData.run_a)} → ${esc(compareData.run_b)}</div>
+    <div class="stat-row">
+      <div class="stat-box"><div class="sv">${d.verdict_changes}</div><div class="sl">Verdict changes</div></div>
+      <div class="stat-box ${d.successful > 0 ? 'green' : (d.successful < 0 ? 'red' : '')}">
+        <div class="sv">${dtSign(d.successful)}</div><div class="sl">Successes</div></div>
+      <div class="stat-box ${d.failed < 0 ? 'green' : (d.failed > 0 ? 'red' : '')}">
+        <div class="sv">${dtSign(d.failed)}</div><div class="sl">Failures</div></div>
+      ${d.wall_time_seconds !== null ? `<div class="stat-box"><div class="sv" style="font-size:20px">${dtSign(d.wall_time_seconds)}s</div><div class="sl">Wall time Δ</div></div>` : ''}
+    </div>
+    <div class="cmp-side-grid">
+      <div class="cmp-side">
+        <div class="cmp-side-label">A · ${esc(compareData.run_a)}</div>
+        <div class="kv-grid">
+          <div class="kv-label">UCs</div><div class="kv-val">${sa.total_ucs ?? '—'}</div>
+          <div class="kv-label">Succeeded</div><div class="kv-val">${sa.successful ?? '—'}</div>
+          <div class="kv-label">Failed</div><div class="kv-val">${sa.failed ?? '—'}</div>
+          <div class="kv-label">Wall time</div><div class="kv-val">${sa.runner_total_seconds != null ? sa.runner_total_seconds+'s' : '—'}</div>
+        </div>
+      </div>
+      <div class="cmp-side">
+        <div class="cmp-side-label">B · ${esc(compareData.run_b)}</div>
+        <div class="kv-grid">
+          <div class="kv-label">UCs</div><div class="kv-val">${sb.total_ucs ?? '—'}</div>
+          <div class="kv-label">Succeeded</div><div class="kv-val">${sb.successful ?? '—'}</div>
+          <div class="kv-label">Failed</div><div class="kv-val">${sb.failed ?? '—'}</div>
+          <div class="kv-label">Wall time</div><div class="kv-val">${sb.runner_total_seconds != null ? sb.runner_total_seconds+'s' : '—'}</div>
+        </div>
+      </div>
+    </div>
+    <div style="color:var(--text-faint);font-family:var(--serif);font-style:italic;font-size:13px;margin-top:4px;">
+      ← Select a use case to view its verdict diff.
+    </div>
+  </div>`;
+}
+
+function _verdictArrow(va, vb) {
+  if (!va && !vb) return '';
+  if (!va) return `<span class="cmp-only-b">+ ${esc(vb)}</span>`;
+  if (!vb) return `<span class="cmp-only-a">− ${esc(va)}</span>`;
+  if (va === vb) return `<span style="color:var(--text-faint)">${esc(vb.replace(/_/g,' '))}</span>`;
+  const aClass = verdictClass(va), bClass = verdictClass(vb);
+  return `<span class="${aClass}" style="font-size:9px">${esc(va.replace(/_/g,' '))}</span>
+          <span style="color:var(--text-faint);font-size:9px">→</span>
+          <span class="${bClass}" style="font-size:9px">${esc(vb.replace(/_/g,' '))}</span>`;
+}
+
+function renderCompareList() {
+  if (!compareData) return;
+  const el = document.getElementById('ucResultList');
+  let diffs = compareData.uc_diffs || [];
+  if (cmpFilter === 'changed') diffs = diffs.filter(d => d.changed || d.only_a || d.only_b);
+  else if (cmpFilter === 'only_a') diffs = diffs.filter(d => d.only_a);
+  else if (cmpFilter === 'only_b') diffs = diffs.filter(d => d.only_b);
+  // Sort: changed first, then by handle
+  diffs = [...diffs].sort((a, b) => {
+    const ac = a.changed || a.only_a || a.only_b ? 0 : 1;
+    const bc = b.changed || b.only_a || b.only_b ? 0 : 1;
+    if (ac !== bc) return ac - bc;
+    return (a.uc_handle || a.uc_uuid || '').localeCompare(b.uc_handle || b.uc_uuid || '');
+  });
+  if (!diffs.length) { el.innerHTML = '<div class="empty">No diffs match filter.</div>'; return; }
+  el.innerHTML = '';
+  diffs.forEach(d => {
+    const row = document.createElement('div');
+    const changed = d.changed || d.only_a || d.only_b;
+    const isActive = activeCompareUCUuid === d.uc_uuid;
+    row.className = 'cmp-row' + (changed ? ' changed' : '') + (isActive ? ' active' : '');
+    row.innerHTML = `
+      <span class="cmp-handle">${esc(d.uc_handle || d.uc_uuid)}</span>
+      <span class="cmp-arrow">${_verdictArrow(d.verdict_a, d.verdict_b)}</span>`;
+    row.addEventListener('click', () => selectCompareUC(d));
+    el.appendChild(row);
+  });
+}
+
+function selectCompareUC(diff) {
+  activeCompareUCUuid = diff.uc_uuid;
+  renderCompareList();
+  const el = document.getElementById('analysisDetail');
+  const va = diff.verdict_a, vb = diff.verdict_b;
+  const gapsAdded   = diff.gaps_added || [];
+  const gapsRemoved = diff.gaps_removed || [];
+  let gapHtml = '';
+  if (gapsAdded.length || gapsRemoved.length) {
+    gapHtml = '<div class="detail-section"><div class="detail-section-title">Gap changes</div><div class="cmp-gap-list">';
+    gapsAdded.forEach(g => { gapHtml += `<div class="added">+ ${esc(g)}</div>`; });
+    gapsRemoved.forEach(g => { gapHtml += `<div class="removed">− ${esc(g)}</div>`; });
+    gapHtml += '</div></div>';
+  }
+  el.innerHTML = `<div class="detail-pane">
+    <div class="detail-title">Verdict <em>diff</em></div>
+    <div class="detail-sub">${esc(diff.uc_handle || diff.uc_uuid)}</div>
+    <div class="cmp-side-grid" style="margin-bottom:16px;">
+      <div class="cmp-side">
+        <div class="cmp-side-label">A</div>
+        ${diff.only_a ? '<span class="cmp-only-a">only in run A</span>' : ''}
+        ${!diff.only_a ? `<span class="${verdictClass(va)}" style="font-size:18px;font-family:var(--serif);font-weight:300">${esc((va||'—').replace(/_/g,' '))}</span>` : ''}
+        ${diff.wall_time_a != null ? `<div style="font-size:10px;color:var(--text-faint);margin-top:6px">${diff.wall_time_a}s</div>` : ''}
+      </div>
+      <div class="cmp-side">
+        <div class="cmp-side-label">B</div>
+        ${diff.only_b ? '<span class="cmp-only-b">only in run B</span>' : ''}
+        ${!diff.only_b ? `<span class="${verdictClass(vb)}" style="font-size:18px;font-family:var(--serif);font-weight:300">${esc((vb||'—').replace(/_/g,' '))}</span>` : ''}
+        ${diff.wall_time_b != null ? `<div style="font-size:10px;color:var(--text-faint);margin-top:6px">${diff.wall_time_b}s</div>` : ''}
+      </div>
+    </div>
+    ${gapHtml}
+    ${!diff.changed && !diff.only_a && !diff.only_b ? '<div style="color:var(--text-faint);font-style:italic;font-size:12px;">Verdict unchanged between runs.</div>' : ''}
+  </div>`;
 }
 
 function renderAnalysis(data, ucUuid) {
@@ -2560,7 +3027,118 @@ async function deleteUC(uuid) {
     loadUCs();
   } catch (e) { toast('Delete failed: ' + e.message, true); }
 }
-function closeUCModal() { document.getElementById('ucModal').classList.remove('open'); editingUCId = null; }
+function closeUCModal() {
+  document.getElementById('ucModal').classList.remove('open');
+  editingUCId = null;
+  // Close assist panel too so next open starts fresh
+  _ucAssistClose();
+}
+
+// ══════════════════════════ UC ASSIST PANEL ══════════════════════════
+
+let _ucAssistAvailable = null;  // null=unknown, true/false
+
+async function _ucAssistCheckAvail() {
+  if (_ucAssistAvailable !== null) return _ucAssistAvailable;
+  try {
+    const s = await api('/api/uc-assist/status');
+    _ucAssistAvailable = s.available;
+    const statusEl = document.getElementById('ucAssistStatus');
+    if (statusEl) statusEl.textContent = s.available ? s.model : 'not configured';
+  } catch(e) {
+    _ucAssistAvailable = false;
+  }
+  return _ucAssistAvailable;
+}
+
+function _ucAssistOpen() {
+  const panel = document.getElementById('ucAssistPanel');
+  panel.style.display = 'flex';
+  _ucAssistCheckAvail();
+  document.getElementById('ucAssistInput').focus();
+}
+
+function _ucAssistClose() {
+  const panel = document.getElementById('ucAssistPanel');
+  if (panel) panel.style.display = 'none';
+}
+
+function _ucAssistAppendMessage(role, text, yaml, error) {
+  const hist = document.getElementById('ucAssistHistory');
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex; flex-direction:column; gap:4px;';
+  const bubble = document.createElement('div');
+  const isUser = role === 'user';
+  bubble.style.cssText = `font-size:11px; line-height:1.6; padding:7px 10px; border-radius:3px;
+    background:${isUser ? 'var(--accent-bg)' : 'var(--bg-input)'};
+    color:${isUser ? 'var(--text)' : 'var(--text)'};
+    border:1px solid ${isUser ? 'var(--accent-soft)' : 'var(--border)'};
+    align-self:${isUser ? 'flex-end' : 'flex-start'}; max-width:95%;
+    ${error ? 'color:var(--red);' : ''}`;
+  bubble.textContent = text;
+  wrap.appendChild(bubble);
+  if (yaml) {
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'btn success';
+    applyBtn.style.cssText = 'font-size:9px; padding:3px 10px; align-self:flex-start;';
+    applyBtn.textContent = '↑ Apply to editor';
+    applyBtn.addEventListener('click', () => {
+      document.getElementById('ucYamlEditor').value = yaml;
+      applyBtn.textContent = '✓ Applied';
+      applyBtn.disabled = true;
+    });
+    wrap.appendChild(applyBtn);
+  }
+  hist.appendChild(wrap);
+  hist.scrollTop = hist.scrollHeight;
+}
+
+async function _ucAssistSend() {
+  const input = document.getElementById('ucAssistInput');
+  const msg = (input.value || '').trim();
+  if (!msg) return;
+  const avail = await _ucAssistCheckAvail();
+  if (!avail) {
+    _ucAssistAppendMessage('assistant', 'UC Assist is not configured. Set DAV_UC_ASSIST_API_KEY and DAV_UC_ASSIST_ENDPOINT on the API pod.', null, true);
+    return;
+  }
+  _ucAssistAppendMessage('user', msg);
+  input.value = '';
+  const btn = document.getElementById('ucAssistSendBtn');
+  btn.disabled = true; btn.textContent = '…';
+  const currentYaml = document.getElementById('ucYamlEditor').value || '';
+  try {
+    const resp = await api('/api/uc-assist', {
+      method: 'POST',
+      body: JSON.stringify({ message: msg, current_yaml: currentYaml }),
+    });
+    const explanation = resp.explanation || (resp.error ? `Error: ${resp.error}` : '(no response)');
+    _ucAssistAppendMessage('assistant', explanation, resp.yaml_suggestion || null, !!resp.error);
+  } catch(e) {
+    _ucAssistAppendMessage('assistant', `Request failed: ${e.message}`, null, true);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Send';
+  }
+}
+
+document.getElementById('ucAssistToggleBtn').addEventListener('click', () => {
+  const panel = document.getElementById('ucAssistPanel');
+  if (panel.style.display === 'none' || !panel.style.display) {
+    _ucAssistOpen();
+    document.getElementById('ucAssistToggleBtn').style.color = 'var(--accent)';
+  } else {
+    _ucAssistClose();
+    document.getElementById('ucAssistToggleBtn').style.color = '';
+  }
+});
+
+document.getElementById('ucAssistSendBtn').addEventListener('click', _ucAssistSend);
+document.getElementById('ucAssistInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); _ucAssistSend(); }
+});
+document.getElementById('ucAssistClearBtn').addEventListener('click', () => {
+  document.getElementById('ucAssistHistory').innerHTML = '';
+});
 async function saveUC() {
   const btn = document.getElementById('saveUCModal'), status = document.getElementById('ucModalStatus');
   btn.disabled = true; status.textContent = 'saving…';
@@ -3444,14 +4022,14 @@ document.getElementById('resultFilter').addEventListener('input', renderResultLi
 document.getElementById('ucVerdictFilter').addEventListener('change', () => {
   if (activeRunSummary) renderUCResultList(activeRunSummary);
 });
-document.getElementById('ucGroupByVerdict').addEventListener('change', () => {
-  try { localStorage.setItem('ucGroupByVerdictDefault', document.getElementById('ucGroupByVerdict').checked ? '1' : '0'); } catch(e) {}
+document.getElementById('ucGroupBy').addEventListener('change', () => {
+  try { localStorage.setItem('ucGroupByMode', document.getElementById('ucGroupBy').value); } catch(e) {}
   if (activeRunSummary) renderUCResultList(activeRunSummary);
 });
 // Restore group-by preference on load
 try {
-  const saved = localStorage.getItem('ucGroupByVerdictDefault');
-  if (saved === '0') document.getElementById('ucGroupByVerdict').checked = false;
+  const saved = localStorage.getItem('ucGroupByMode');
+  if (saved !== null) document.getElementById('ucGroupBy').value = saved;
 } catch(e) {}
 
 // ── Generic split-resizer: any .split-resizer[data-rs-left=<panelId>][data-rs-storage=<key>]

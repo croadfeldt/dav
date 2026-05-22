@@ -159,4 +159,58 @@ CREATE INDEX IF NOT EXISTS idx_run_sessions_created   ON run_sessions(created_at
 CREATE INDEX IF NOT EXISTS idx_run_sessions_category  ON run_sessions(category);
 CREATE INDEX IF NOT EXISTS idx_run_sessions_phase     ON run_sessions(phase);
 
+-- ── Analysis ingestion ──────────────────────────────────────────────────
+-- Structured storage for per-run + per-UC + per-gap analysis results read
+-- from the workspace PVC. Enables cross-run gap aggregation + trend queries.
+
+CREATE TABLE IF NOT EXISTS analysis_runs (
+  run_id           TEXT PRIMARY KEY,      -- workspace run directory name
+  run_name         TEXT,                  -- Tekton PipelineRun name (may be NULL)
+  mode             TEXT,
+  started_at       TIMESTAMPTZ,
+  finished_at      TIMESTAMPTZ,
+  total_ucs        INTEGER,
+  successful       INTEGER,
+  failed           INTEGER,
+  total_samples    INTEGER,
+  ingested_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_started ON analysis_runs(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS uc_analyses (
+  id               BIGSERIAL PRIMARY KEY,
+  run_id           TEXT NOT NULL REFERENCES analysis_runs(run_id) ON DELETE CASCADE,
+  uc_uuid          TEXT NOT NULL,
+  uc_handle        TEXT,
+  status           TEXT,                  -- 'success' | 'failed'
+  verdict          TEXT,                  -- supported | partially_supported | not_supported | null
+  overall_assessment TEXT,
+  wall_time_seconds DOUBLE PRECISION,
+  sample_count     INTEGER,
+  engine_version   TEXT,
+  model            TEXT,
+  endpoint_url     TEXT,
+  analyzed_at      TIMESTAMPTZ,
+  ingested_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (run_id, uc_uuid)
+);
+CREATE INDEX IF NOT EXISTS idx_uc_analyses_run  ON uc_analyses(run_id);
+CREATE INDEX IF NOT EXISTS idx_uc_analyses_uuid ON uc_analyses(uc_uuid, ingested_at DESC);
+CREATE INDEX IF NOT EXISTS idx_uc_analyses_verdict ON uc_analyses(verdict);
+
+CREATE TABLE IF NOT EXISTS uc_gaps (
+  id               BIGSERIAL PRIMARY KEY,
+  analysis_id      BIGINT NOT NULL REFERENCES uc_analyses(id) ON DELETE CASCADE,
+  run_id           TEXT NOT NULL,
+  uc_uuid          TEXT NOT NULL,
+  gap_id           TEXT,
+  title            TEXT,
+  description      TEXT,
+  severity         TEXT,
+  ingested_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_uc_gaps_run    ON uc_gaps(run_id);
+CREATE INDEX IF NOT EXISTS idx_uc_gaps_uuid   ON uc_gaps(uc_uuid);
+CREATE INDEX IF NOT EXISTS idx_uc_gaps_gap_id ON uc_gaps(gap_id);
+
 COMMIT;

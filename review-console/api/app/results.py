@@ -186,6 +186,179 @@ def get_run_summary(run_id: str) -> Optional[dict]:
     return _safe_load(path)
 
 
+def _extract_verdict(analysis: dict) -> Optional[str]:
+    """Pull the top-level verdict out of an analysis YAML dict.
+
+    Analysis YAMLs written by the engine nest the verdict under
+    summary.verdict. Explore-mode multi-sample analyses surface it via
+    sample_annotations.consensus_verdict or the first sample's verdict.
+    """
+    if not analysis:
+        return None
+    # Single / reproduce mode: summary.verdict
+    summary = analysis.get("summary")
+    if isinstance(summary, dict):
+        v = summary.get("verdict")
+        if v:
+            return v
+    # Explore mode: consensus from sample_annotations
+    sa = analysis.get("sample_annotations")
+    if isinstance(sa, dict):
+        v = sa.get("consensus_verdict")
+        if v:
+            return v
+    # Explore mode: first sample's verdict
+    for sample in analysis.get("samples") or []:
+        if isinstance(sample, dict):
+            s = sample.get("summary") or {}
+            v = s.get("verdict") if isinstance(s, dict) else None
+            if v:
+                return v
+    return None
+
+
+def get_run_summary_enriched(run_id: str) -> Optional[dict]:
+    """Return run-summary.yaml enriched with per-UC verdict from analysis files.
+
+    The engine's run-summary.yaml only records status (success/failed) per UC.
+    Verdicts live in analyses/<uc_uuid>.yaml. This function patches each UC
+    entry with its verdict so the Results UC list can display and group by it.
+    """
+    summary = get_run_summary(run_id)
+    if summary is None:
+        return None
+    run_dir = _results_root() / run_id
+    analyses_dir = run_dir / "analyses"
+    for uc in summary.get("ucs") or []:
+        uc_uuid = uc.get("uc_uuid")
+        if not uc_uuid or uc.get("verdict"):
+            continue
+        # Single-file analysis (verification / reproduce)
+        single = analyses_dir / f"{uc_uuid}.yaml"
+        if single.exists():
+            data = _safe_load(single)
+            if data:
+                v = _extract_verdict(data)
+                if v:
+                    uc["verdict"] = v
+            continue
+        # Explore mode: directory of sample files
+        explore_dir = analyses_dir / uc_uuid
+        if explore_dir.is_dir():
+            # Aggregate from sample_annotations in first sample or variance
+            vp = explore_dir / "variance.yaml"
+            if vp.exists():
+                vdata = _safe_load(vp)
+                if vdata:
+                    v = _extract_verdict({"sample_annotations": vdata.get("sample_annotations")})
+                    if v:
+                        uc["verdict"] = v
+                        continue
+            for sf in sorted(explore_dir.glob("sample-*.yaml")):
+                sdata = _safe_load(sf)
+                if sdata:
+                    v = _extract_verdict(sdata)
+                    if v:
+                        uc["verdict"] = v
+                        break
+    return summary
+
+
+def compare_runs(run_id_a: str, run_id_b: str) -> dict:
+    """Compare two runs side-by-side.
+
+    Returns per-UC verdict diff, gap diff, and summary-level deltas.
+    Both run_ids must correspond to directories found under results_root.
+    """
+    sum_a = get_run_summary_enriched(run_id_a)
+    sum_b = get_run_summary_enriched(run_id_b)
+    if sum_a is None:
+        raise FileNotFoundError(f"run {run_id_a!r} not found")
+    if sum_b is None:
+        raise FileNotFoundError(f"run {run_id_b!r} not found")
+
+    # Index UCs by uuid for quick lookup
+    ucs_a = {u["uc_uuid"]: u for u in (sum_a.get("ucs") or [])}
+    ucs_b = {u["uc_uuid"]: u for u in (sum_b.get("ucs") or [])}
+
+    all_uuids = sorted(set(ucs_a) | set(ucs_b))
+
+    uc_diffs = []
+    verdict_changes = 0
+    for uuid in all_uuids:
+        ua = ucs_a.get(uuid)
+        ub = ucs_b.get(uuid)
+        va = (ua or {}).get("verdict") or ("failed" if (ua or {}).get("status") == "failed" else None)
+        vb = (ub or {}).get("verdict") or ("failed" if (ub or {}).get("status") == "failed" else None)
+        changed = va != vb
+        if changed:
+            verdict_changes += 1
+
+        # Pull gap IDs from analysis files for a richer diff
+        gaps_a = _get_gap_ids(run_id_a, uuid) if ua else []
+        gaps_b = _get_gap_ids(run_id_b, uuid) if ub else []
+        gaps_added   = [g for g in gaps_b if g not in gaps_a]
+        gaps_removed = [g for g in gaps_a if g not in gaps_b]
+
+        uc_diffs.append({
+            "uc_uuid":     uuid,
+            "uc_handle":   (ua or ub or {}).get("uc_handle"),
+            "verdict_a":   va,
+            "verdict_b":   vb,
+            "changed":     changed,
+            "gaps_added":  gaps_added,
+            "gaps_removed": gaps_removed,
+            "wall_time_a": (ua or {}).get("wall_time_seconds"),
+            "wall_time_b": (ub or {}).get("wall_time_seconds"),
+            "only_in_a":   ub is None,
+            "only_in_b":   ua is None,
+        })
+
+    def _safe_delta(a, b):
+        if a is not None and b is not None:
+            return round(b - a, 2)
+        return None
+
+    return {
+        "run_a": run_id_a,
+        "run_b": run_id_b,
+        "summary_a": {k: sum_a.get(k) for k in
+                      ("mode", "started_at", "finished_at", "runner_total_seconds",
+                       "total_ucs", "successful", "failed", "total_samples")},
+        "summary_b": {k: sum_b.get(k) for k in
+                      ("mode", "started_at", "finished_at", "runner_total_seconds",
+                       "total_ucs", "successful", "failed", "total_samples")},
+        "delta": {
+            "wall_time_seconds": _safe_delta(sum_a.get("runner_total_seconds"),
+                                             sum_b.get("runner_total_seconds")),
+            "successful": _safe_delta(sum_a.get("successful"), sum_b.get("successful")),
+            "failed":     _safe_delta(sum_a.get("failed"),     sum_b.get("failed")),
+            "verdict_changes": verdict_changes,
+        },
+        "uc_diffs": uc_diffs,
+    }
+
+
+def _get_gap_ids(run_id: str, uc_uuid: str) -> list[str]:
+    """Return the list of gap IDs from a UC's analysis file (best-effort)."""
+    run_dir = _results_root() / run_id
+    single = run_dir / "analyses" / f"{uc_uuid}.yaml"
+    data = None
+    if single.exists():
+        data = _safe_load(single)
+    else:
+        explore_dir = run_dir / "analyses" / uc_uuid
+        if explore_dir.is_dir():
+            for sf in sorted(explore_dir.glob("sample-*.yaml")):
+                data = _safe_load(sf)
+                if data:
+                    break
+    if not data:
+        return []
+    gaps = data.get("gaps_identified") or []
+    return [g.get("gap_id", "") for g in gaps if isinstance(g, dict) and g.get("gap_id")]
+
+
 def get_analysis(run_id: str, uc_uuid: str) -> Optional[dict]:
     """Return the analysis output for a specific UC within a run.
 

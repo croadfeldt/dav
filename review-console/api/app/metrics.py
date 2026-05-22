@@ -251,6 +251,113 @@ async def range_aggregates(started_at_iso: str, completed_at_iso: str) -> dict:
     return out
 
 
+async def query_range(promql: str, start: float, end: float, step: int,
+                      timeout: float = 10.0) -> dict:
+    """Run a PromQL range query against thanos-querier.
+
+    Returns the standard Prometheus envelope with resultType=matrix.
+    """
+    token = _read_token()
+    if not token:
+        return {"status": "error", "errorType": "no_token",
+                "error": "SA token not available"}
+    url = f"{THANOS_URL.rstrip('/')}/api/v1/query_range"
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {"query": promql, "start": start, "end": end, "step": step}
+    try:
+        async with httpx.AsyncClient(timeout=timeout, verify=_verify_ctx()) as cx:
+            resp = await cx.get(url, headers=headers, params=params)
+        if resp.status_code == 401:
+            _token_cache["value"] = None
+            token = _read_token()
+            if token:
+                async with httpx.AsyncClient(timeout=timeout, verify=_verify_ctx()) as cx:
+                    resp = await cx.get(url, headers={"Authorization": f"Bearer {token}"},
+                                        params=params)
+        if resp.status_code != 200:
+            return {"status": "error", "errorType": f"http_{resp.status_code}",
+                    "error": resp.text[:300]}
+        return resp.json()
+    except httpx.TimeoutException:
+        return {"status": "error", "errorType": "timeout",
+                "error": f"thanos-querier range query timed out after {timeout}s"}
+    except httpx.RequestError as e:
+        return {"status": "error", "errorType": "connection",
+                "error": f"{type(e).__name__}: {e}"}
+
+
+def _matrix_to_series(res: dict) -> list[list[list]]:
+    """Extract [[ts, val], ...] series list from a matrix query result.
+
+    Returns one list per label-set (GPU), or an empty list on error.
+    Filters out non-finite values.
+    """
+    if (res or {}).get("status") != "success":
+        return []
+    rows = (res.get("data") or {}).get("result") or []
+    out = []
+    for row in rows:
+        pts = []
+        for ts, v in (row.get("values") or []):
+            try:
+                fv = float(v)
+                if fv == fv and fv not in (float("inf"), float("-inf")):
+                    pts.append([ts, round(fv, 3)])
+            except (ValueError, TypeError):
+                pass
+        if pts:
+            out.append({"metric": row.get("metric") or {}, "values": pts})
+    return out
+
+
+# Queries to include in the timeseries response.
+# Each entry is (key, promql). GPU per-series queries return one series per GPU.
+_TIMESERIES_QUERIES: list[tuple[str, str]] = [
+    ("gpu_power_watts",   "gpu_average_package_power"),
+    ("gpu_gfx_activity",  "gpu_gfx_activity"),
+    ("vllm_gen_tps",      "sum(rate(vllm:generation_tokens_total[1m]))"),
+    ("vllm_running",      "sum(vllm:num_requests_running)"),
+    ("vllm_kv_pct",       "avg(vllm:gpu_cache_usage_perc) * 100"),
+]
+
+
+async def timeseries(started_at_iso: str, completed_at_iso: Optional[str] = None) -> dict:
+    """Fetch time-series data for sparkline rendering in the run-detail drawer.
+
+    Returns per-metric arrays of {metric: {labels}, values: [[ts, val], ...]}
+    for the run window between started_at and completed_at (or now if still
+    running). Step is auto-chosen based on window duration.
+    """
+    import math
+    try:
+        start_ts = (
+            __import__("datetime").datetime
+            .fromisoformat(started_at_iso.replace("Z", "+00:00"))
+            .timestamp()
+        )
+        end_ts = (
+            __import__("datetime").datetime
+            .fromisoformat(completed_at_iso.replace("Z", "+00:00"))
+            .timestamp()
+            if completed_at_iso
+            else time.time()
+        )
+    except Exception as e:
+        return {"available": False, "reason": f"bad timestamps: {e}"}
+    if end_ts <= start_ts:
+        end_ts = start_ts + 60  # at least 60s window
+    window = end_ts - start_ts
+    # Choose step so we get ~60 data points — good for a sparkline
+    step = max(10, int(math.ceil(window / 60)))
+    results = await asyncio.gather(
+        *[query_range(promql, start_ts, end_ts, step) for _, promql in _TIMESERIES_QUERIES]
+    )
+    out = {"available": True, "start": start_ts, "end": end_ts, "step": step}
+    for (key, _), res in zip(_TIMESERIES_QUERIES, results):
+        out[key] = _matrix_to_series(res)
+    return out
+
+
 async def snapshot() -> dict:
     """Run all curated queries in parallel; return structured snapshot.
 
