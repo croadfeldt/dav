@@ -72,7 +72,6 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
 pool: Optional[asyncpg.Pool] = None
 
 
-@asynccontextmanager
 async def _finalizer_loop():
     """Background task: find run_sessions rows whose PipelineRun has reached
     terminal phase but stats were never finalized (user never opened the
@@ -119,6 +118,7 @@ async def _finalizer_loop():
             log.warning("finalizer loop hiccup: %s", e)
 
 
+@asynccontextmanager
 async def lifespan(app: FastAPI):
     global pool
     log.info("Connecting to Postgres...")
