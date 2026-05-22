@@ -1,32 +1,94 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="amber" data-mode="dark">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>DAV Console</title>
+<script>
+  // Early-init theme: avoid FOUC by setting data-theme/data-mode on <html>
+  // before any styles or body render. Resolves "auto" to current system preference.
+  (function() {
+    try {
+      var t = localStorage.getItem('davTheme') || 'amber';
+      var m = localStorage.getItem('davMode')  || 'auto';
+      var resolved = m === 'auto'
+        ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+        : m;
+      document.documentElement.setAttribute('data-theme', t);
+      document.documentElement.setAttribute('data-mode', resolved);
+    } catch(e) { /* localStorage blocked — stay with defaults */ }
+  })();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,400&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,600;1,6..72,400&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg:             #0d0c0a;
-    --bg-raised:      #16140f;
-    --bg-panel:       #1c1915;
-    --bg-input:       #100e0a;
-    --border:         #2a2620;
-    --border-bright:  #3d372c;
-    --text:           #e8e1d1;
-    --text-dim:       #8a8373;
-    --text-faint:     #55503f;
-    --accent:         #d99a3a;
-    --accent-soft:    #b8802c;
-    --accent-bg:      rgba(217,154,58,0.08);
-    --red:            #d9653a;
-    --green:          #7ba84f;
-    --blue:           #4a90c9;
-    --purple:         #8a5a8a;
     --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
     --serif: 'Newsreader', 'Iowan Old Style', Georgia, serif;
+  }
+
+  /* ── Amber · Dark (default) ── */
+  html[data-theme="amber"][data-mode="dark"] {
+    --bg:#0d0c0a; --bg-raised:#16140f; --bg-panel:#1c1915; --bg-input:#100e0a;
+    --border:#3a3429; --border-bright:#4d4537;
+    --text:#f2ece0; --text-dim:#b5ac95; --text-faint:#7a7361;
+    --accent:#e0a850; --accent-soft:#c4892f; --accent-bg:rgba(224,168,80,0.10);
+    --red:#e07a4f; --green:#92c25c; --blue:#6ba9d9; --purple:#a872a8;
+    --blue-bg:rgba(107,169,217,0.14); --green-bg:rgba(146,194,92,0.14);
+    --bg-grad-1:rgba(224,168,80,0.05); --bg-grad-2:rgba(107,169,217,0.04);
+  }
+  /* ── Amber · Light ── */
+  html[data-theme="amber"][data-mode="light"] {
+    --bg:#faf6ed; --bg-raised:#f3eddc; --bg-panel:#ede4cd; --bg-input:#ffffff;
+    --border:#d4c9a9; --border-bright:#b8ab87;
+    --text:#2d2820; --text-dim:#5a4f3a; --text-faint:#8c7f60;
+    --accent:#a06824; --accent-soft:#8a5a20; --accent-bg:rgba(160,104,36,0.10);
+    --red:#b8442a; --green:#5e8035; --blue:#2d6a9a; --purple:#6a3d6a;
+    --blue-bg:rgba(45,106,154,0.10); --green-bg:rgba(94,128,53,0.10);
+    --bg-grad-1:rgba(160,104,36,0.03); --bg-grad-2:rgba(45,106,154,0.02);
+  }
+
+  /* ── Slate · Dark (GitHub-dark feel) ── */
+  html[data-theme="slate"][data-mode="dark"] {
+    --bg:#0e1116; --bg-raised:#161b22; --bg-panel:#1c2128; --bg-input:#0d1117;
+    --border:#30363d; --border-bright:#444c56;
+    --text:#e6edf3; --text-dim:#9aa4b0; --text-faint:#6e7681;
+    --accent:#58a6ff; --accent-soft:#388bfd; --accent-bg:rgba(88,166,255,0.10);
+    --red:#f85149; --green:#3fb950; --blue:#79c0ff; --purple:#d2a8ff;
+    --blue-bg:rgba(121,192,255,0.12); --green-bg:rgba(63,185,80,0.12);
+    --bg-grad-1:rgba(88,166,255,0.04); --bg-grad-2:rgba(63,185,80,0.03);
+  }
+  /* ── Slate · Light ── */
+  html[data-theme="slate"][data-mode="light"] {
+    --bg:#ffffff; --bg-raised:#f6f8fa; --bg-panel:#eaeef2; --bg-input:#ffffff;
+    --border:#d0d7de; --border-bright:#afb8c1;
+    --text:#1f2328; --text-dim:#57606a; --text-faint:#8c959f;
+    --accent:#0969da; --accent-soft:#0550ae; --accent-bg:rgba(9,105,218,0.08);
+    --red:#cf222e; --green:#1a7f37; --blue:#0969da; --purple:#8250df;
+    --blue-bg:rgba(9,105,218,0.08); --green-bg:rgba(26,127,55,0.08);
+    --bg-grad-1:rgba(9,105,218,0.02); --bg-grad-2:rgba(26,127,55,0.02);
+  }
+
+  /* ── Solarized · Dark ── */
+  html[data-theme="solarized"][data-mode="dark"] {
+    --bg:#002b36; --bg-raised:#073642; --bg-panel:#0a4351; --bg-input:#00252e;
+    --border:#1d4e5b; --border-bright:#2a6271;
+    --text:#fdf6e3; --text-dim:#93a1a1; --text-faint:#657b83;
+    --accent:#cb4b16; --accent-soft:#b04014; --accent-bg:rgba(203,75,22,0.12);
+    --red:#dc322f; --green:#859900; --blue:#268bd2; --purple:#d33682;
+    --blue-bg:rgba(38,139,210,0.12); --green-bg:rgba(133,153,0,0.12);
+    --bg-grad-1:rgba(203,75,22,0.04); --bg-grad-2:rgba(38,139,210,0.03);
+  }
+  /* ── Solarized · Light ── */
+  html[data-theme="solarized"][data-mode="light"] {
+    --bg:#fdf6e3; --bg-raised:#eee8d5; --bg-panel:#e0d9bf; --bg-input:#fdf6e3;
+    --border:#c8c0a8; --border-bright:#a8a18b;
+    --text:#073642; --text-dim:#586e75; --text-faint:#93a1a1;
+    --accent:#cb4b16; --accent-soft:#b04014; --accent-bg:rgba(203,75,22,0.10);
+    --red:#dc322f; --green:#859900; --blue:#268bd2; --purple:#d33682;
+    --blue-bg:rgba(38,139,210,0.10); --green-bg:rgba(133,153,0,0.10);
+    --bg-grad-1:rgba(203,75,22,0.03); --bg-grad-2:rgba(38,139,210,0.02);
   }
   * { box-sizing:border-box; margin:0; padding:0; }
   html,body { height:100%; }
@@ -35,8 +97,9 @@
     font-family:var(--mono); font-size:13px; line-height:1.5;
     overflow:hidden;
     background-image:
-      radial-gradient(circle at 15% 20%, rgba(217,154,58,0.04), transparent 45%),
-      radial-gradient(circle at 85% 80%, rgba(74,144,201,0.03), transparent 50%);
+      radial-gradient(circle at 15% 20%, var(--bg-grad-1), transparent 45%),
+      radial-gradient(circle at 85% 80%, var(--bg-grad-2), transparent 50%);
+    transition: background-color .2s ease, color .2s ease;
   }
   button  { font-family:inherit; font-size:inherit; cursor:pointer; border:none; background:none; color:inherit; }
   input, textarea, select { font-family:inherit; font-size:inherit; color:inherit; background:var(--bg-input); border:1px solid var(--border); padding:6px 8px; border-radius:2px; outline:none; }
@@ -72,6 +135,19 @@
   .api-err .api-dot { background:var(--red); }
   .dropdown-item { display:block; width:100%; text-align:left; padding:7px 12px; font-size:11px; color:var(--text-dim); cursor:pointer; border:none; background:none; font-family:inherit; }
   .dropdown-item:hover { color:var(--text); background:var(--bg-raised); }
+  .dropdown-item.active { color:var(--accent); }
+  .dropdown-item.active::before { content:'●'; margin-right:6px; font-size:8px; }
+  .dropdown-item:not(.active)::before { content:'○'; margin-right:6px; font-size:8px; color:var(--text-faint); }
+
+  /* ── Theme picker ── */
+  .theme-chip { position:relative; display:inline-block; }
+  .theme-chip-btn { padding:4px 10px; background:var(--bg-input); border:1px solid var(--border); border-radius:2px; font-size:11px; color:var(--text-dim); cursor:pointer; transition:color .15s, border-color .15s; }
+  .theme-chip-btn:hover { color:var(--text); border-color:var(--border-bright); }
+  .theme-chip-btn::before { content:'◐'; color:var(--accent); margin-right:6px; font-size:10px; }
+  .theme-menu { display:none; position:absolute; right:0; top:calc(100% + 4px); background:var(--bg-panel); border:1px solid var(--border-bright); border-radius:2px; z-index:200; min-width:180px; padding:6px 0; box-shadow:0 4px 16px rgba(0,0,0,0.35); }
+  .theme-menu.open { display:block; }
+  .theme-menu-section { padding:6px 12px 4px; font-size:9px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); }
+  .theme-menu hr { border:none; border-top:1px solid var(--border); margin:4px 0; }
 
   /* ── Split panels ── */
   .split { display:flex; width:100%; height:100%; overflow:hidden; }
@@ -134,9 +210,9 @@
   /* ── Lifecycle state pills ── */
   .lc { display:inline-flex; align-items:center; font-size:9px; text-transform:uppercase; letter-spacing:0.1em; padding:2px 7px; border-radius:2px; white-space:nowrap; flex-shrink:0; }
   .lc-draft      { color:var(--text-dim);   background:var(--border); }
-  .lc-ready      { color:var(--blue);        background:rgba(74,144,201,0.12); }
+  .lc-ready      { color:var(--blue);        background:var(--blue-bg); }
   .lc-in_review  { color:var(--accent);      background:var(--accent-bg); }
-  .lc-approved   { color:var(--green);       background:rgba(123,168,79,0.12); }
+  .lc-approved   { color:var(--green);       background:var(--green-bg); }
   .lc-deprecated { color:var(--text-faint);  background:var(--border); text-decoration:line-through; }
 
   /* ── Detail pane ── */
@@ -283,6 +359,20 @@
   </div>
   <div class="header-right">
     <span id="triggerStatus" style="color:var(--text-faint)"></span>
+    <div class="theme-chip">
+      <button class="theme-chip-btn" id="themeChipBtn"><span id="themeChipLabel">Auto · Amber</span></button>
+      <div class="theme-menu" id="themeMenu">
+        <div class="theme-menu-section">Mode</div>
+        <button class="dropdown-item" data-mode="auto">Auto (system)</button>
+        <button class="dropdown-item" data-mode="light">Light</button>
+        <button class="dropdown-item" data-mode="dark">Dark</button>
+        <hr>
+        <div class="theme-menu-section">Theme</div>
+        <button class="dropdown-item" data-theme="amber">Amber (warm)</button>
+        <button class="dropdown-item" data-theme="slate">Slate (cool)</button>
+        <button class="dropdown-item" data-theme="solarized">Solarized</button>
+      </div>
+    </div>
     <div class="reviewer-chip anon" id="reviewerChip">—</div>
   </div>
 </header>
@@ -470,6 +560,7 @@
           <div class="kv-grid">
             <div class="kv-label">current repo</div><div class="kv-val" id="srcCorpusRepo">—</div>
             <div class="kv-label">current branch</div><div class="kv-val" id="srcCorpusBranch" style="color:var(--accent)">—</div>
+            <div class="kv-label">UC subpath</div><div class="kv-val" id="srcCorpusSubpath" style="color:var(--accent)">—</div>
             <div class="kv-label">last applied</div><div class="kv-val" id="srcCorpusWhen">—</div>
             <div class="kv-label">applied by</div><div class="kv-val" id="srcCorpusWho">—</div>
             <div class="kv-label">rollout</div><div class="kv-val" id="srcCorpusStatus">—</div>
@@ -490,11 +581,35 @@
           </div>
         </div>
       </div>
+      <div class="panel-card" id="configInferencePanel">
+        <div class="panel-card-header"><div>
+          <div class="pc-title">Inference endpoint</div>
+          <div class="pc-sub">OpenAI-compatible /v1 — read at pipeline-run trigger time</div>
+        </div></div>
+        <div class="panel-card-body">
+          <div class="kv-grid">
+            <div class="kv-label">current endpoint</div><div class="kv-val" id="srcInfEndpoint">—</div>
+            <div class="kv-label">current model</div><div class="kv-val" id="srcInfModel" style="color:var(--accent)">—</div>
+            <div class="kv-label">last applied</div><div class="kv-val" id="srcInfWhen">—</div>
+            <div class="kv-label">applied by</div><div class="kv-val" id="srcInfWho">—</div>
+          </div>
+          <hr class="section-sep" style="margin:8px 0;">
+          <div class="form-field"><label>New endpoint</label>
+            <input id="srcInfEndpointInput" placeholder="http://your-inference-host:8000/v1" /></div>
+          <div class="form-field"><label>New model</label>
+            <input id="srcInfModelInput" placeholder="e.g. qwen3-32b" /></div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
+            <button class="btn primary" id="srcInfApplyBtn">Apply</button>
+            <span id="srcInfMsg" style="font-size:11px; color:var(--text-faint);"></span>
+          </div>
+          <div class="form-hint" style="margin-top:6px;">No pod restart — next pipeline run picks up the new values.</div>
+        </div>
+      </div>
     </div>
     <div style="font-size:11px; color:var(--text-faint); line-height:1.7;">
       Switching the <b>spec</b> retargets the MCP that Stage 2 calls — affects every in-flight or subsequent analysis.
-      Switching the <b>corpus</b> changes which use cases the review console loads.
-      Changes take ~60s to complete (pod rollout).
+      Switching the <b>corpus</b> changes which use cases the review console loads. Both trigger a ~60s pod rollout.
+      Switching <b>inference</b> takes effect on the next pipeline run (no rollout).
     </div>
   </div>
 </section>
@@ -502,7 +617,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.4</span>
+  <span>DAV Console · v0.5</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -534,32 +649,35 @@
         </div>
       </div>
       <hr class="section-sep">
-      <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Corpus</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint);">Corpus <span id="nrCorpusDetected" style="text-transform:none;letter-spacing:0;color:var(--text-faint);font-size:10px;"></span></div>
+        <button type="button" class="btn ghost" style="font-size:10px; padding:2px 8px;" id="nrReloadDefaults">↻ reload defaults</button>
+      </div>
       <div class="form-field"><label>UC subpath (partial run)</label>
-        <input id="nrCorpusSubpath" placeholder="use-cases/  or  use-cases/auth  (blank = full corpus)" />
-        <div class="form-hint">Relative path within workspace corpus directory. Leave blank for full corpus.</div>
+        <input id="nrCorpusSubpath" placeholder="(detecting…)" />
+        <div class="form-hint">Relative path within the cloned corpus. Auto-detected from <code>dav/use-cases/</code> or <code>use-cases/</code>. Blank = full corpus.</div>
       </div>
       <div class="form-row">
-        <div class="form-field"><label>Corpus repo URL override</label>
-          <input id="nrCorpusRepo" placeholder="(use configured corpus repo)" /></div>
-        <div class="form-field"><label>Corpus branch override</label>
-          <input id="nrCorpusBranch" placeholder="(use configured branch)" /></div>
+        <div class="form-field"><label>Corpus repo URL</label>
+          <input id="nrCorpusRepo" placeholder="(loading…)" /></div>
+        <div class="form-field"><label>Corpus branch</label>
+          <input id="nrCorpusBranch" placeholder="(loading…)" /></div>
       </div>
       <hr class="section-sep">
-      <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Spec</div>
+      <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Spec / Architecture</div>
       <div class="form-row">
-        <div class="form-field"><label>Spec repo URL override</label>
-          <input id="nrSpecRepo" placeholder="(use configured spec repo)" /></div>
-        <div class="form-field"><label>Spec branch override</label>
-          <input id="nrSpecBranch" placeholder="(use configured branch)" /></div>
+        <div class="form-field"><label>Spec repo URL</label>
+          <input id="nrSpecRepo" placeholder="(loading…)" /></div>
+        <div class="form-field"><label>Spec branch</label>
+          <input id="nrSpecBranch" placeholder="(loading…)" /></div>
       </div>
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Inference</div>
       <div class="form-row">
-        <div class="form-field"><label>Endpoint override</label>
-          <input id="nrEndpoint" placeholder="(use configured endpoint)" /></div>
-        <div class="form-field"><label>Model override</label>
-          <input id="nrModel" placeholder="(use configured model)" /></div>
+        <div class="form-field"><label>Endpoint</label>
+          <input id="nrEndpoint" placeholder="(loading…)" /></div>
+        <div class="form-field"><label>Model</label>
+          <input id="nrModel" placeholder="(loading…)" /></div>
       </div>
       <hr class="section-sep">
       <div class="form-field">
@@ -842,6 +960,7 @@ let ucStateFilter = '';
 
 // ── Init ─────────────────────────────────────────────────────
 async function init() {
+  initTheme();
   try { await Promise.all([loadMe(), loadRunStatus()]); setApiStatus(true); }
   catch (e) { console.error(e); setApiStatus(false, e.message); }
   switchView('runs');
@@ -927,6 +1046,42 @@ function renderRunsTable() {
   });
 }
 
+async function loadNewRunDefaults(forcedSubpath) {
+  // Fetch current spec/corpus/inference state + detect UC subpath, populate fields.
+  // forcedSubpath: if set (e.g. when called from "Run set"), use that and skip auto-detect.
+  const detectedEl = document.getElementById('nrCorpusDetected');
+  detectedEl.textContent = '';
+  try {
+    const sourcesResp = await api('/api/sources').catch(() => ({sources:{}}));
+    const sources = sourcesResp.sources || {};
+    const spec    = sources.spec      || {};
+    const corpus  = sources.corpus    || {};
+    const inf     = sources.inference || {};
+    document.getElementById('nrSpecRepo').value    = spec.repo_url      || '';
+    document.getElementById('nrSpecBranch').value  = spec.repo_branch   || '';
+    document.getElementById('nrCorpusRepo').value  = corpus.repo_url    || '';
+    document.getElementById('nrCorpusBranch').value= corpus.repo_branch || '';
+    document.getElementById('nrEndpoint').value    = inf.endpoint       || '';
+    document.getElementById('nrModel').value       = inf.model          || '';
+
+    if (forcedSubpath !== undefined) {
+      document.getElementById('nrCorpusSubpath').value = forcedSubpath || '';
+    } else {
+      const detect = await api('/api/sources/corpus/uc-subpath').catch(() => ({}));
+      document.getElementById('nrCorpusSubpath').value = detect.detected || '';
+      if (detect.detected) {
+        detectedEl.textContent = `· auto-detected ${detect.detected}/`;
+      } else if (detect.corpus_dir_exists === false) {
+        detectedEl.innerHTML = `· <span style="color:var(--red)">corpus not cloned yet</span>`;
+      } else {
+        detectedEl.innerHTML = `· <span style="color:var(--text-faint)">no dav/ or use-cases/ found</span>`;
+      }
+    }
+  } catch (e) {
+    toast('Could not load run defaults: ' + e.message, true);
+  }
+}
+
 function openNewRun(banner, subpath) {
   document.getElementById('newRunModal').classList.add('open');
   document.getElementById('nrStatus').textContent = '';
@@ -935,7 +1090,7 @@ function openNewRun(banner, subpath) {
   const bannerEl = document.getElementById('newRunBanner');
   if (banner) { bannerEl.textContent = banner; bannerEl.style.display = ''; }
   else bannerEl.style.display = 'none';
-  document.getElementById('nrCorpusSubpath').value = subpath || '';
+  loadNewRunDefaults(subpath);
 }
 
 function closeNewRun() { document.getElementById('newRunModal').classList.remove('open'); }
@@ -1754,6 +1909,80 @@ async function saveAddMember() {
   }
 }
 
+// ══════════════════════════ THEME PICKER ══════════════════════════
+
+const THEMES = ['amber', 'slate', 'solarized'];
+const MODES  = ['auto', 'light', 'dark'];
+const THEME_LABEL = { amber:'Amber', slate:'Slate', solarized:'Solarized' };
+const MODE_LABEL  = { auto:'Auto', light:'Light', dark:'Dark' };
+
+let currentTheme = 'amber';
+let currentMode  = 'auto';  // user selection: 'auto' | 'light' | 'dark'
+
+function getResolvedMode() {
+  if (currentMode !== 'auto') return currentMode;
+  return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+}
+
+function applyTheme() {
+  document.documentElement.setAttribute('data-theme', currentTheme);
+  document.documentElement.setAttribute('data-mode', getResolvedMode());
+  document.getElementById('themeChipLabel').textContent =
+    `${MODE_LABEL[currentMode]} · ${THEME_LABEL[currentTheme]}`;
+  // Mark the active option in the menu
+  document.querySelectorAll('#themeMenu [data-mode]').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === currentMode));
+  document.querySelectorAll('#themeMenu [data-theme]').forEach(b =>
+    b.classList.toggle('active', b.dataset.theme === currentTheme));
+}
+
+function setTheme(t) {
+  if (!THEMES.includes(t)) return;
+  currentTheme = t;
+  try { localStorage.setItem('davTheme', t); } catch(e) {}
+  applyTheme();
+}
+function setMode(m) {
+  if (!MODES.includes(m)) return;
+  currentMode = m;
+  try { localStorage.setItem('davMode', m); } catch(e) {}
+  applyTheme();
+}
+
+function initTheme() {
+  try {
+    currentTheme = localStorage.getItem('davTheme') || 'amber';
+    currentMode  = localStorage.getItem('davMode')  || 'auto';
+  } catch(e) {}
+  if (!THEMES.includes(currentTheme)) currentTheme = 'amber';
+  if (!MODES.includes(currentMode))   currentMode  = 'auto';
+  applyTheme();
+
+  // Re-apply when the system preference changes (only matters in 'auto' mode)
+  if (window.matchMedia) {
+    const mql = window.matchMedia('(prefers-color-scheme: light)');
+    const onChange = () => { if (currentMode === 'auto') applyTheme(); };
+    if (mql.addEventListener) mql.addEventListener('change', onChange);
+    else if (mql.addListener) mql.addListener(onChange);
+  }
+
+  // Wire up menu
+  document.getElementById('themeChipBtn').addEventListener('click', e => {
+    e.stopPropagation();
+    const m = document.getElementById('themeMenu');
+    m.classList.toggle('open');
+  });
+  document.querySelectorAll('#themeMenu [data-mode]').forEach(b =>
+    b.addEventListener('click', () => setMode(b.dataset.mode)));
+  document.querySelectorAll('#themeMenu [data-theme]').forEach(b =>
+    b.addEventListener('click', () => setTheme(b.dataset.theme)));
+  document.addEventListener('click', e => {
+    const menu = document.getElementById('themeMenu');
+    const btn  = document.getElementById('themeChipBtn');
+    if (!menu.contains(e.target) && e.target !== btn) menu.classList.remove('open');
+  });
+}
+
 // ══════════════════════════ EXPORT / IMPORT / PROMOTE ══════════════════════════
 
 function exportUCs(format) {
@@ -1862,7 +2091,7 @@ async function confirmPromote() {
 // ══════════════════════════ CONFIG / SOURCES ══════════════════════════
 
 const sourcesPollers = {spec:null,corpus:null};
-const sourcesState   = {spec:null,corpus:null};
+const sourcesState   = {spec:null,corpus:null,inference:null};
 
 const SOURCE_UI = {
   spec:   {repo:'srcSpecRepo',branch:'srcSpecBranch',when:'srcSpecWhen',who:'srcSpecWho',status:'srcSpecStatus',
@@ -1878,10 +2107,64 @@ async function loadConfig() {
     const resp = await api('/api/sources');
     const data = resp.sources || {};
     for (const kind of ['spec','corpus']) { sourcesState[kind] = data[kind]||null; renderSourcePanel(kind); }
+    if (data.inference) { sourcesState.inference = data.inference; renderInferencePanel(); }
   } catch (e) {
     for (const kind of ['spec','corpus'])
       document.getElementById(SOURCE_UI[kind].msg).innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
   }
+  // Surface detected UC subpath on the corpus panel
+  try {
+    const detect = await api('/api/sources/corpus/uc-subpath');
+    const el = document.getElementById('srcCorpusSubpath');
+    if (detect.detected) el.textContent = detect.detected + '/';
+    else if (detect.corpus_dir_exists === false) {
+      el.innerHTML = '<span style="color:var(--red)">corpus not cloned yet</span>';
+    } else {
+      el.innerHTML = '<span style="color:var(--text-faint)">no dav/ or use-cases/ found</span>';
+    }
+  } catch {}
+}
+
+function renderInferencePanel() {
+  const s = sourcesState.inference; if (!s) return;
+  document.getElementById('srcInfEndpoint').textContent = s.endpoint || '—';
+  document.getElementById('srcInfModel').textContent    = s.model    || '—';
+  document.getElementById('srcInfWhen').textContent     = fmtTs(s.last_applied_at);
+  document.getElementById('srcInfWho').textContent      = s.last_applied_by || '—';
+  const eIn = document.getElementById('srcInfEndpointInput');
+  const mIn = document.getElementById('srcInfModelInput');
+  if (!eIn.value && !eIn.dataset.userEdited) eIn.value = s.endpoint || '';
+  if (!mIn.value && !mIn.dataset.userEdited) mIn.value = s.model    || '';
+}
+
+async function applyInference() {
+  const endpoint = document.getElementById('srcInfEndpointInput').value.trim();
+  const model    = document.getElementById('srcInfModelInput').value.trim();
+  const msg = document.getElementById('srcInfMsg'), btn = document.getElementById('srcInfApplyBtn');
+  if (!endpoint) { msg.innerHTML = '<span style="color:var(--red)">endpoint required</span>'; return; }
+  if (!model)    { msg.innerHTML = '<span style="color:var(--red)">model required</span>';    return; }
+  const cur = sourcesState.inference;
+  if (cur && cur.endpoint === endpoint && cur.model === model) {
+    msg.innerHTML = '<span style="color:var(--text-faint)">same as current — nothing to do</span>'; return;
+  }
+  btn.disabled = true; msg.innerHTML = '<span style="color:var(--blue)">applying…</span>';
+  try {
+    const resp = await api('/api/sources/inference', {method:'POST', body:JSON.stringify({endpoint, model})});
+    sourcesState.inference = resp.state; renderInferencePanel();
+    msg.innerHTML = '<span style="color:var(--green)">applied · effective on next run</span>';
+    toast(`inference: ${endpoint} · ${model}`);
+    document.getElementById('srcInfEndpointInput').dataset.userEdited = '';
+    document.getElementById('srcInfModelInput').dataset.userEdited = '';
+  } catch (e) {
+    msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    toast('Apply failed: '+e.message, true);
+  } finally { btn.disabled = false; }
+}
+
+function wireInferencePanel() {
+  document.getElementById('srcInfEndpointInput').addEventListener('input', e => e.target.dataset.userEdited = '1');
+  document.getElementById('srcInfModelInput').addEventListener('input',    e => e.target.dataset.userEdited = '1');
+  document.getElementById('srcInfApplyBtn').addEventListener('click', applyInference);
 }
 
 function renderSourcePanel(kind) {
@@ -1990,6 +2273,7 @@ document.getElementById('newRunBtn').addEventListener('click', () => openNewRun(
 document.getElementById('closeNewRun').addEventListener('click', closeNewRun);
 document.getElementById('cancelNewRun').addEventListener('click', closeNewRun);
 document.getElementById('submitNewRun').addEventListener('click', submitNewRun);
+document.getElementById('nrReloadDefaults').addEventListener('click', () => loadNewRunDefaults());
 document.getElementById('refreshRunsBtn').addEventListener('click', loadRuns);
 
 document.getElementById('refreshResultsBtn').addEventListener('click', loadResults);
@@ -2064,6 +2348,7 @@ document.getElementById('memberSearchInput').addEventListener('blur', () => {
 
 wireSourcesPanel('spec');
 wireSourcesPanel('corpus');
+wireInferencePanel();
 
 // Highlight "All" state filter on init
 document.getElementById('lcAll').style.borderColor = 'var(--accent)';

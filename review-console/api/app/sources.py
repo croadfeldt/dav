@@ -46,10 +46,20 @@ SOURCES = {
     "spec": {
         "configmap": "dav-source-spec",
         "deployment": "dav-docs-mcp",
+        "data_keys": ("repo_url", "repo_branch"),
     },
     "corpus": {
         "configmap": "dav-source-corpus",
         "deployment": "dav-review-api",
+        "data_keys": ("repo_url", "repo_branch"),
+    },
+    "inference": {
+        # Read by the pipeline trigger at PipelineRun creation time, not
+        # any Deployment. No pod restart needed when this changes — the
+        # next run picks up the new values.
+        "configmap": "dav-source-inference",
+        "deployment": None,
+        "data_keys": ("endpoint", "model"),
     },
 }
 
@@ -109,14 +119,18 @@ def is_available() -> bool:
 # ------------------------- Read -------------------------
 
 
-def _cm_to_source_state(cm) -> dict:
-    """Extract a uniform state dict from a ConfigMap object."""
+def _cm_to_source_state(cm, data_keys: tuple) -> dict:
+    """Extract a uniform state dict from a ConfigMap object.
+
+    `data_keys` names the fields this source kind stores in ConfigMap.data —
+    e.g. ('repo_url','repo_branch') for repo sources, ('endpoint','model')
+    for inference. Returned as both flat keys (back-compat) and under 'data'.
+    """
     data = cm.data or {}
     meta = cm.metadata
     ann = meta.annotations or {}
-    return {
-        "repo_url": data.get("repo_url"),
-        "repo_branch": data.get("repo_branch"),
+    out = {
+        "data": {k: data.get(k) for k in data_keys},
         "managed_by": ann.get(f"{ANNOTATION_PREFIX}/managed-by"),
         "last_applied_by": ann.get(f"{ANNOTATION_PREFIX}/last-applied-by"),
         "last_applied_at": ann.get(f"{ANNOTATION_PREFIX}/last-applied-at"),
@@ -128,6 +142,11 @@ def _cm_to_source_state(cm) -> dict:
         ),
         "configmap_resource_version": meta.resource_version,
     }
+    # Promote each data field to the top level for back-compat with the
+    # existing UI / spec/corpus consumers that read repo_url, repo_branch.
+    for k in data_keys:
+        out[k] = data.get(k)
+    return out
 
 
 def _deploy_to_rollout_state(dep) -> dict:
@@ -177,23 +196,25 @@ def get_source_state(kind: str) -> dict:
         log.error("ConfigMap %s not found: %s", cfg["configmap"], e)
         raise
 
-    try:
-        dep = _apps().read_namespaced_deployment(
-            name=cfg["deployment"], namespace=NAMESPACE
-        )
-    except ApiException as e:
-        log.warning(
-            "Deployment %s not found: %s (sourcing state may be stale)",
-            cfg["deployment"],
-            e,
-        )
-        dep = None
+    dep = None
+    if cfg.get("deployment"):
+        try:
+            dep = _apps().read_namespaced_deployment(
+                name=cfg["deployment"], namespace=NAMESPACE
+            )
+        except ApiException as e:
+            log.warning(
+                "Deployment %s not found: %s (sourcing state may be stale)",
+                cfg["deployment"],
+                e,
+            )
+            dep = None
 
     state = {
         "kind": kind,
         "configmap": cfg["configmap"],
-        "deployment": cfg["deployment"],
-        **_cm_to_source_state(cm),
+        "deployment": cfg.get("deployment"),
+        **_cm_to_source_state(cm, cfg["data_keys"]),
     }
     if dep is not None:
         state["rollout"] = _deploy_to_rollout_state(dep)
@@ -305,38 +326,60 @@ def _now_iso() -> str:
     )
 
 
-def _validate_apply_input(repo_url: str, repo_branch: str) -> None:
-    """Basic input validation. Raises ValueError on bad input."""
+def _validate_repo_input(repo_url: str, repo_branch: str) -> None:
     if not repo_url or not repo_url.startswith(("http://", "https://", "git@")):
         raise ValueError(f"invalid repo_url: {repo_url!r}")
     if not repo_branch or any(c.isspace() for c in repo_branch):
         raise ValueError(f"invalid repo_branch: {repo_branch!r}")
-    # Guard against absurdly long values that suggest a mistake
     if len(repo_url) > 512 or len(repo_branch) > 256:
         raise ValueError("repo_url or repo_branch too long")
 
 
+def _validate_inference_input(endpoint: str, model: str) -> None:
+    if not endpoint or not endpoint.startswith(("http://", "https://")):
+        raise ValueError(f"invalid inference endpoint: {endpoint!r}")
+    if not model or any(c.isspace() for c in model):
+        raise ValueError(f"invalid inference model: {model!r}")
+    if len(endpoint) > 512 or len(model) > 256:
+        raise ValueError("endpoint or model too long")
+
+
 def apply_source(
     kind: str,
-    repo_url: str,
-    repo_branch: str,
     applied_by: str,
+    repo_url: Optional[str] = None,
+    repo_branch: Optional[str] = None,
+    endpoint: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> dict:
-    """Apply a new repo+branch to the given source kind.
+    """Apply new values to the given source kind.
 
-    Atomically:
-      1. Patch ConfigMap data + managed-by/last-applied-* annotations
-      2. Patch Deployment source-* annotations to mirror new values
-      3. Annotate pod template with restart timestamp (rolling restart)
+    For spec/corpus: requires repo_url + repo_branch; triggers Deployment rollout.
+    For inference:   requires endpoint + model; no Deployment to roll (pipeline
+                     picks up the values at PipelineRun creation time).
 
     Returns the resulting state dict (same shape as get_source_state).
     """
     if kind not in SOURCES:
         raise ValueError(f"unknown source kind: {kind}")
-    _validate_apply_input(repo_url, repo_branch)
-
     cfg = SOURCES[kind]
     now = _now_iso()
+
+    # Build the data patch + validate per source kind.
+    if kind == "inference":
+        _validate_inference_input(endpoint or "", model or "")
+        data_patch = {"endpoint": endpoint, "model": model}
+        mirror_annotations = {
+            f"{ANNOTATION_PREFIX}/source-endpoint": endpoint,
+            f"{ANNOTATION_PREFIX}/source-model": model,
+        }
+    else:
+        _validate_repo_input(repo_url or "", repo_branch or "")
+        data_patch = {"repo_url": repo_url, "repo_branch": repo_branch}
+        mirror_annotations = {
+            f"{ANNOTATION_PREFIX}/source-repo-url": repo_url,
+            f"{ANNOTATION_PREFIX}/source-repo-branch": repo_branch,
+        }
 
     # Step 1: patch the ConfigMap
     cm_patch_body = {
@@ -347,10 +390,7 @@ def apply_source(
                 f"{ANNOTATION_PREFIX}/last-applied-at": now,
             },
         },
-        "data": {
-            "repo_url": repo_url,
-            "repo_branch": repo_branch,
-        },
+        "data": data_patch,
     }
     try:
         _core().patch_namespaced_config_map(
@@ -358,57 +398,43 @@ def apply_source(
             namespace=NAMESPACE,
             body=cm_patch_body,
         )
-        log.info(
-            "Patched ConfigMap %s: url=%s branch=%s by=%s",
-            cfg["configmap"], repo_url, repo_branch, applied_by,
-        )
+        log.info("Patched ConfigMap %s by=%s", cfg["configmap"], applied_by)
     except ApiException as e:
         log.error("ConfigMap patch failed for %s: %s", cfg["configmap"], e)
         raise
 
-    # Step 2 + 3: patch Deployment — mirror source-* annotations
-    # AND annotate the pod template to trigger a rolling restart.
-    # Done as one patch so we get a single rollout event.
-    dep_patch_body = {
-        "metadata": {
-            "annotations": {
-                f"{ANNOTATION_PREFIX}/source-repo-url": repo_url,
-                f"{ANNOTATION_PREFIX}/source-repo-branch": repo_branch,
-                f"{ANNOTATION_PREFIX}/last-applied-at": now,
-                f"{ANNOTATION_PREFIX}/last-applied-by": applied_by,
+    # Step 2: patch Deployment (skip when source kind has no Deployment).
+    if cfg.get("deployment"):
+        dep_patch_body = {
+            "metadata": {
+                "annotations": {
+                    **mirror_annotations,
+                    f"{ANNOTATION_PREFIX}/last-applied-at": now,
+                    f"{ANNOTATION_PREFIX}/last-applied-by": applied_by,
+                },
             },
-        },
-        "spec": {
-            "template": {
-                "metadata": {
-                    "annotations": {
-                        # Standard kubectl-rollout-restart pattern:
-                        # changing this annotation on the pod template
-                        # forces a new ReplicaSet, which triggers a
-                        # rolling restart. The value itself is the
-                        # current timestamp so each call always differs.
-                        f"{ANNOTATION_PREFIX}/restartedAt": now,
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {
+                            # Standard kubectl-rollout-restart pattern:
+                            # changing the pod-template annotation forces a
+                            # new ReplicaSet, which triggers a rolling restart.
+                            f"{ANNOTATION_PREFIX}/restartedAt": now,
+                        },
                     },
                 },
             },
-        },
-    }
-    try:
-        _apps().patch_namespaced_deployment(
-            name=cfg["deployment"],
-            namespace=NAMESPACE,
-            body=dep_patch_body,
-        )
-        log.info(
-            "Patched Deployment %s: triggered rollout for %s#%s",
-            cfg["deployment"], repo_url, repo_branch,
-        )
-    except ApiException as e:
-        log.error("Deployment patch failed for %s: %s", cfg["deployment"], e)
-        # Note: ConfigMap is already patched. This is inconsistent state.
-        # The next pod restart (manual or scheduled) will pick up the new
-        # ConfigMap values regardless of the Deployment annotation mirror.
-        # The UI will surface the inconsistency via state readout.
-        raise
+        }
+        try:
+            _apps().patch_namespaced_deployment(
+                name=cfg["deployment"],
+                namespace=NAMESPACE,
+                body=dep_patch_body,
+            )
+            log.info("Patched Deployment %s: triggered rollout", cfg["deployment"])
+        except ApiException as e:
+            log.error("Deployment patch failed for %s: %s", cfg["deployment"], e)
+            raise
 
     return get_source_state(kind)

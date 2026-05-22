@@ -23,10 +23,10 @@ metadata:
     app: dav-review
     component: review-console-sourcing
 rules:
-  # The two sourcing ConfigMaps — read + patch
+  # The three sourcing ConfigMaps — read + patch
   - apiGroups: [""]
     resources: ["configmaps"]
-    resourceNames: ["dav-source-spec", "dav-source-corpus"]
+    resourceNames: ["dav-source-spec", "dav-source-corpus", "dav-source-inference"]
     verbs: ["get", "patch", "update"]
 
   # List permission on the configmaps collection (needed by k8s client to

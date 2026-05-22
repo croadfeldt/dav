@@ -119,7 +119,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DAV Console API", version="0.4.0", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.5.0", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -210,8 +210,12 @@ class SetPromoteIn(BaseModel):
 
 
 class SourceApplyIn(BaseModel):
-    repo_url: str = Field(..., min_length=1, max_length=512)
-    repo_branch: str = Field(..., min_length=1, max_length=256)
+    # Repo sources (spec, corpus): both must be present.
+    repo_url: Optional[str] = Field(None, max_length=512)
+    repo_branch: Optional[str] = Field(None, max_length=256)
+    # Inference source: both must be present.
+    endpoint: Optional[str] = Field(None, max_length=512)
+    model: Optional[str] = Field(None, max_length=256)
 
 
 # ------------------------- Helpers -------------------------
@@ -270,6 +274,62 @@ async def list_runs(limit: int = Query(50, ge=1, le=200)):
         raise HTTPException(500, f"list failed: {e}")
 
 
+def _resolve_run_params(payload: "RunTriggerIn") -> dict:
+    """Fill missing pipeline params from current source ConfigMap state.
+
+    Modal-supplied values take precedence; anything blank falls back to the
+    spec/corpus/inference ConfigMaps. This makes Config-tab values the
+    authoritative defaults for every run, instead of relying on Ansible-time
+    pipeline defaults that drift from runtime state.
+    """
+    resolved = {
+        "spec_repo_url": payload.spec_repo_url,
+        "spec_repo_branch": payload.spec_repo_branch,
+        "corpus_repo_url": payload.corpus_repo_url,
+        "corpus_repo_branch": payload.corpus_repo_branch,
+        "corpus_subpath": payload.corpus_subpath,
+        "inference_endpoint": payload.inference_endpoint,
+        "inference_model": payload.inference_model,
+    }
+    if not sources.is_available():
+        return resolved
+    try:
+        spec_state = sources.get_source_state("spec")
+        if not resolved["spec_repo_url"]:
+            resolved["spec_repo_url"] = spec_state.get("repo_url")
+        if not resolved["spec_repo_branch"]:
+            resolved["spec_repo_branch"] = spec_state.get("repo_branch")
+    except Exception as e:
+        log.warning("could not read spec source: %s", e)
+    try:
+        corpus_state = sources.get_source_state("corpus")
+        if not resolved["corpus_repo_url"]:
+            resolved["corpus_repo_url"] = corpus_state.get("repo_url")
+        if not resolved["corpus_repo_branch"]:
+            resolved["corpus_repo_branch"] = corpus_state.get("repo_branch")
+    except Exception as e:
+        log.warning("could not read corpus source: %s", e)
+    try:
+        inf_state = sources.get_source_state("inference")
+        if not resolved["inference_endpoint"]:
+            resolved["inference_endpoint"] = inf_state.get("endpoint")
+        if not resolved["inference_model"]:
+            resolved["inference_model"] = inf_state.get("model")
+    except Exception as e:
+        log.info("inference source not available (likely not deployed yet): %s", e)
+    # If the modal didn't pass a UC subpath, probe the cloned corpus tree.
+    if not resolved["corpus_subpath"]:
+        try:
+            root = Path(CORPUS_DIR)
+            for c in ("dav/use-cases", "use-cases"):
+                if (root / c).is_dir():
+                    resolved["corpus_subpath"] = c
+                    break
+        except Exception as e:
+            log.warning("UC subpath probe failed: %s", e)
+    return resolved
+
+
 @app.post("/api/runs")
 async def trigger_run(payload: RunTriggerIn, request: Request):
     """Trigger a new DAV pipeline run."""
@@ -278,23 +338,24 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
     if payload.mode not in VALID_MODES:
         raise HTTPException(400, f"invalid mode; must be one of {sorted(VALID_MODES)}")
     reviewer = get_user(request)
+    params = _resolve_run_params(payload)
     try:
         result = validations.trigger_run(
             triggered_by=reviewer,
             branch=payload.branch,
             commit_sha=payload.commit_sha,
-            inference_endpoint=payload.inference_endpoint,
-            inference_model=payload.inference_model,
+            inference_endpoint=params["inference_endpoint"],
+            inference_model=params["inference_model"],
             mode=payload.mode,
             sample_count=payload.sample_count,
-            corpus_subpath=payload.corpus_subpath,
-            corpus_repo_url=payload.corpus_repo_url,
-            corpus_repo_branch=payload.corpus_repo_branch,
-            spec_repo_url=payload.spec_repo_url,
-            spec_repo_branch=payload.spec_repo_branch,
+            corpus_subpath=params["corpus_subpath"],
+            corpus_repo_url=params["corpus_repo_url"],
+            corpus_repo_branch=params["corpus_repo_branch"],
+            spec_repo_url=params["spec_repo_url"],
+            spec_repo_branch=params["spec_repo_branch"],
             halt_on_error=payload.halt_on_error,
         )
-        return {"ok": True, "run": result}
+        return {"ok": True, "run": result, "resolved_params": params}
     except Exception as e:
         log.exception("run trigger failed")
         raise HTTPException(500, f"trigger failed: {e}")
@@ -1325,6 +1386,34 @@ async def sources_state():
         raise HTTPException(500, f"read failed: {e}")
 
 
+@app.get("/api/sources/corpus/uc-subpath")
+async def detect_uc_subpath():
+    """Probe the cloned corpus tree for a UC directory.
+
+    DAV-consumer convention: `dav/use-cases/` at the corpus root.
+    Legacy convention: `use-cases/` at the corpus root.
+    Falls back to None if neither exists.
+
+    Returns the relative path the pipeline's corpus-uc-subpath param should use.
+    """
+    root = Path(CORPUS_DIR)
+    candidates = ["dav/use-cases", "use-cases"]
+    detected = None
+    available = []
+    for c in candidates:
+        if (root / c).is_dir():
+            available.append(c)
+            if detected is None:
+                detected = c
+    return {
+        "corpus_dir": str(root),
+        "corpus_dir_exists": root.exists(),
+        "detected": detected,
+        "candidates_found": available,
+        "fallback": "use-cases",
+    }
+
+
 @app.get("/api/sources/branches")
 async def sources_branches(repo_url: str = Query(..., min_length=1)):
     try:
@@ -1345,9 +1434,11 @@ async def sources_apply(kind: str, payload: SourceApplyIn, request: Request):
     try:
         new_state = sources.apply_source(
             kind=kind,
+            applied_by=reviewer,
             repo_url=payload.repo_url,
             repo_branch=payload.repo_branch,
-            applied_by=reviewer,
+            endpoint=payload.endpoint,
+            model=payload.model,
         )
         return {"ok": True, "state": new_state}
     except ValueError as e:

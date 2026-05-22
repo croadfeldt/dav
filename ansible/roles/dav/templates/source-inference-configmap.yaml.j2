@@ -1,0 +1,29 @@
+---
+# DAV Inference Sourcing ConfigMap
+# ---
+# Single source of truth for "which inference endpoint + model does the next
+# pipeline run target?". Read by the review-console API at PipelineRun creation
+# time (no Deployment consumes this directly — unlike spec/corpus, no pod restart
+# is needed when this changes; the next run picks up the new values).
+#
+# Reconciliation: same as spec/corpus — Ansible plants initial values from
+# inference_primary_endpoint / inference_primary_model, the web UI takes over
+# after first apply (managed-by=runtime).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dav-source-inference
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav
+    component: sourcing
+    dav.dev/source-type: "inference"
+  annotations:
+    dav.dev/managed-by: "ansible"
+    dav.dev/last-applied-by: "ansible"
+    dav.dev/last-applied-at: "{{ ansible_date_time.iso8601 }}"
+    dav.dev/ansible-managed-initial-endpoint: "{{ inference_primary_endpoint }}"
+    dav.dev/ansible-managed-initial-model: "{{ inference_primary_model }}"
+data:
+  endpoint: "{{ inference_primary_endpoint }}"
+  model: "{{ inference_primary_model }}"

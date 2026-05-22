@@ -87,6 +87,36 @@
       'dav.dev/managed-by', '(unset)') }} — leaving alone.
       {% endif %}
 
+# --- Inference sourcing ConfigMap ---
+
+- name: Check if dav-source-inference ConfigMap exists
+  kubernetes.core.k8s_info:
+    kind: ConfigMap
+    namespace: "{{ dav_namespace }}"
+    name: dav-source-inference
+  register: source_inference_existing
+
+- name: Create dav-source-inference ConfigMap (first-time only)
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'source-inference-configmap.yaml.j2') | from_yaml }}"
+  when: source_inference_existing.resources | length == 0
+
+- name: Report dav-source-inference state
+  ansible.builtin.debug:
+    msg: >-
+      {% if source_inference_existing.resources | length == 0 %}
+      Created dav-source-inference ConfigMap from vars
+      (endpoint={{ inference_primary_endpoint }} model={{ inference_primary_model }}).
+      {% else %}
+      dav-source-inference already exists
+      (endpoint={{ source_inference_existing.resources[0].data.endpoint }}
+      model={{ source_inference_existing.resources[0].data.model }}) —
+      managed-by={{
+      source_inference_existing.resources[0].metadata.annotations.get(
+      'dav.dev/managed-by', '(unset)') }} — leaving alone.
+      {% endif %}
+
 # NOTE: The sourcing RBAC (Role + RoleBinding binding the dav-review-api
 # ServiceAccount to read/patch the ConfigMaps and Deployments) is deployed
 # in review_console.yaml right after the dav-review-api ServiceAccount is
