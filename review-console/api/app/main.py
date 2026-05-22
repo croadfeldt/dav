@@ -120,7 +120,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DAV Console API", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.6.2", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -377,6 +377,29 @@ async def runs_status():
         "namespace": validations.NAMESPACE,
         "default_branch": validations.DEFAULT_BRANCH,
     }
+
+
+@app.get("/api/runs/{name}/logs")
+async def get_run_task_logs(
+    name: str,
+    task: str = Query(..., description="logical step name within the pipeline (e.g. 'run-corpus')"),
+    tail: int = Query(200, ge=1, le=2000, description="number of trailing log lines"),
+):
+    """Return the tail of a specific TaskRun's pod logs.
+
+    The run-detail UI uses this to surface why a Failed task failed.
+    Falls back to logs from all containers if step-name container isn't found.
+    """
+    if not validations.ENABLED:
+        raise HTTPException(403, "pipeline trigger disabled")
+    try:
+        result = validations.get_task_logs(run_name=name, step=task, tail=tail)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:
+        log.exception("task logs fetch failed")
+        raise HTTPException(500, f"logs failed: {e}")
+    return result
 
 
 @app.get("/api/runs/{name}")

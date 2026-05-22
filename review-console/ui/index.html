@@ -162,6 +162,9 @@
   .task-name { font-family:var(--mono); color:var(--text); }
   .task-step-sub { font-size:10px; color:var(--text-faint); }
   .task-time { font-size:11px; color:var(--text-dim); text-align:right; }
+  .task-failure-block { grid-column: 1 / -1; margin-top:6px; padding:8px 10px; background:rgba(217,101,58,0.08); border-left:2px solid var(--red); border-radius:2px; font-size:11px; line-height:1.6; }
+  .task-failure-block pre { font-family:var(--mono); font-size:10px; line-height:1.5; max-height:240px; overflow:auto; white-space:pre-wrap; word-break:break-word; margin-top:4px; color:var(--text-dim); }
+  .task-failure-toggle { font-size:10px; color:var(--accent); cursor:pointer; text-decoration:underline; margin-left:6px; }
   .gpu-tile { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:10px 12px; margin-bottom:8px; }
   .gpu-tile-header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; }
   .gpu-tile-id { font-size:11px; font-weight:500; color:var(--accent); }
@@ -672,7 +675,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.6.1</span>
+  <span>DAV Console · v0.6.2</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -698,6 +701,10 @@
         GPUs (live)<span id="rdGpuFresh" class="freshness-chip"></span>
       </div>
       <div id="rdGpus"><div class="empty" style="font-size:11px">loading metrics…</div></div>
+      <div style="font-size:10px;color:var(--text-faint);margin-top:6px;line-height:1.6;">
+        Note: <b>VRAM</b> stays near 100% because vLLM allocates it upfront (model + KV cache pool).
+        AMD <b>GFX activity</b> on RDNA4 latches at 100% under light load — use <b>power</b> (warm-idle ~90 W per R9700; under load 200–300 W) and the vLLM <b>KV cache %</b> tile below as the real "GPU busy?" signal.
+      </div>
     </div>
     <div class="run-section">
       <div class="run-section-title">
@@ -1208,6 +1215,25 @@ function _flashChanged(domId) {
   setTimeout(() => el.classList.remove('metric-flash'), 800);
 }
 
+async function rdToggleLogs(runName, step, logsId, link) {
+  const el = document.getElementById(logsId);
+  if (!el) return;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none'; link.textContent = 'view logs'; return;
+  }
+  el.style.display = ''; link.textContent = 'hide logs';
+  if (el.dataset.loaded) return;
+  el.innerHTML = '<div style="color:var(--text-faint);font-size:10px;margin-top:6px">loading logs…</div>';
+  try {
+    const resp = await api(`/api/runs/${encodeURIComponent(runName)}/logs?task=${encodeURIComponent(step)}&tail=200`);
+    el.innerHTML = `<pre>${esc(resp.logs || '(empty)')}</pre>`
+                 + `<div style="color:var(--text-faint);font-size:10px;margin-top:4px">${resp.lines||0} lines · pod ${esc(resp.pod||'')}</div>`;
+    el.dataset.loaded = '1';
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red);font-size:11px">log fetch failed: ${esc(e.message)}</div>`;
+  }
+}
+
 async function refreshRunDrawer() {
   if (!_rdName) return;
   // Two requests in parallel: run detail (Tekton) + live metrics snapshot
@@ -1239,23 +1265,34 @@ function renderRunDrawerDetail(d) {
     tasksEl.innerHTML = '<div class="empty" style="font-size:11px">No tasks reported yet.</div>';
   } else {
     tasksEl.innerHTML = '';
-    tasks.forEach(t => {
+    tasks.forEach((t, idx) => {
       const phaseCls = (t.phase||'pending').toLowerCase();
       const marker = phaseCls === 'succeeded' ? '✓'
                    : phaseCls === 'failed'    ? '✗'
                    : phaseCls === 'running' || phaseCls === 'started' || phaseCls === 'pending' ? '●'
                    : '○';
       const dur = t.started_at ? fmtDuration(t.started_at, t.completed_at) : '—';
+      const isFailed = phaseCls === 'failed';
+      const stepName = t.step || t.name;
+      const logsId = `rd-logs-${idx}`;
       const row = document.createElement('div');
       row.className = 'task-row';
+      row.style.gridTemplateColumns = '18px 1fr 90px 80px';
       row.innerHTML = `
         <div class="task-marker ${phaseCls}">${marker}</div>
         <div>
-          <div class="task-name">${esc(t.step || t.name)}</div>
-          ${t.message ? `<div class="task-step-sub">${esc(t.message.slice(0,140))}</div>` : ''}
+          <div class="task-name">${esc(stepName)}</div>
+          ${t.message && !isFailed ? `<div class="task-step-sub">${esc(t.message.slice(0,140))}</div>` : ''}
         </div>
         <div class="task-time">${esc(t.phase || 'pending')}</div>
-        <div class="task-time">${esc(dur)}</div>`;
+        <div class="task-time">${esc(dur)}</div>
+        ${isFailed ? `
+          <div class="task-failure-block">
+            <div><b>Failure:</b> ${esc(t.message || 'no message')}
+              <span class="task-failure-toggle" onclick="rdToggleLogs('${esc(_rdName)}','${esc(stepName)}','${logsId}', this)">view logs</span>
+            </div>
+            <div id="${logsId}" style="display:none"></div>
+          </div>` : ''}`;
       tasksEl.appendChild(row);
     });
   }

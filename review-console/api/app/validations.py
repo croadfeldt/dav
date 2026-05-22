@@ -270,6 +270,74 @@ def list_recent(limit: int = 20) -> list[dict]:
     return runs[:limit]
 
 
+def get_task_logs(run_name: str, step: str, tail: int = 200) -> dict:
+    """Return the tail of pod logs for a specific TaskRun within a PipelineRun.
+
+    Resolves `step` (the logical pipelineTask name, e.g. 'run-corpus') to the
+    actual TaskRun child of the named PipelineRun, then fetches the trailing
+    `tail` lines of its pod's `step-<step>` container logs. Tekton names the
+    runtime container `step-<step-name>` per task step.
+    """
+    # Load child TaskRuns from the PipelineRun
+    try:
+        pr = _api().get_namespaced_custom_object(
+            group=_TEKTON_GROUP, version=_TEKTON_VERSION,
+            namespace=NAMESPACE, plural=_PIPELINERUN_PLURAL, name=run_name,
+        )
+    except ApiException as e:
+        if e.status == 404:
+            raise KeyError(f"pipelinerun {run_name!r} not found")
+        raise
+    status = pr.get("status", {}) or {}
+    child_refs = status.get("childReferences", []) or []
+    target_tr = None
+    for c in child_refs:
+        if c.get("kind") != "TaskRun":
+            continue
+        # Each TaskRun has the pipelineTask label; resolve by GET so we can match
+        tr_name = c.get("name")
+        try:
+            tr = _api().get_namespaced_custom_object(
+                group=_TEKTON_GROUP, version=_TEKTON_VERSION,
+                namespace=NAMESPACE, plural="taskruns", name=tr_name,
+            )
+        except ApiException:
+            continue
+        tr_step = (tr.get("metadata", {}).get("labels") or {}).get("tekton.dev/pipelineTask")
+        if tr_step == step:
+            target_tr = tr
+            break
+    if target_tr is None:
+        raise KeyError(f"no TaskRun for step {step!r} under {run_name!r}")
+
+    pod_name = (target_tr.get("status") or {}).get("podName")
+    if not pod_name:
+        return {"run": run_name, "step": step, "pod": None,
+                "container": None, "logs": "(no pod yet)", "lines": 0}
+
+    # Tekton names step containers `step-<step-name>`. Try that first, fall
+    # back to "any container" if the naming convention has drifted.
+    core = client.CoreV1Api()
+    container_candidates = [f"step-{step}", None]  # None = let the API pick
+    last_err = None
+    for container in container_candidates:
+        try:
+            log_data = core.read_namespaced_pod_log(
+                name=pod_name, namespace=NAMESPACE,
+                container=container, tail_lines=tail,
+            )
+            return {
+                "run": run_name, "step": step, "pod": pod_name,
+                "container": container or "(default)",
+                "logs": log_data,
+                "lines": log_data.count("\n") + (1 if log_data and not log_data.endswith("\n") else 0),
+            }
+        except ApiException as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"could not read pod logs: {last_err}")
+
+
 def get_run_detail(name: str) -> dict:
     """Fetch a single PipelineRun and its child TaskRun statuses.
 
