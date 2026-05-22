@@ -93,8 +93,8 @@ _DEFAULT_CACHE_PROMPT = {
     "explore": True,
 }
 _DEFAULT_SAMPLER_PARAMS = {
-    # Diagnosed 2026-04-26: the inference server (vis.roadfeldt.com:8000)
-    # ships --top-k 1 as a CLI default, making it greedy regardless of
+    # Diagnosed 2026-04-26: some llama.cpp inference servers ship
+    # --top-k 1 as a CLI default, making them greedy regardless of
     # per-request temperature or seed unless top_k is explicitly overridden.
     # Per-request fields override CLI defaults per-field; unsent fields keep
     # CLI values. So variance-wanting modes MUST set top_k/top_p/min_p in the

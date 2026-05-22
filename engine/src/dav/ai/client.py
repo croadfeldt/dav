@@ -71,8 +71,8 @@ class EndpointConfig:
     # and the server's CLI default applies. When set, the per-request value
     # overrides whatever the server has defaulted.
     #
-    # Why this matters: the llama.cpp server at vis.roadfeldt.com:8000 was
-    # launched with --top-k 1, which makes the sampler strictly greedy
+    # Why this matters: we saw an llama.cpp inference server launched
+    # with --top-k 1, which makes the sampler strictly greedy
     # regardless of temperature or seed. Per-request overrides only apply
     # to the fields you send; unsent fields keep the CLI default. So a body
     # of {temperature: 0.2, seed: <varying>} produces identical output across

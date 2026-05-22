@@ -658,8 +658,8 @@ def test_corpus_cache_prompt_locked_values():
 
 
 # --- Sampler-param defaults (diagnosed bug 2026-04-26) ---
-# The llama.cpp server vis.roadfeldt.com:8000 ships --top-k 1 as a CLI
-# default, making it greedy regardless of per-request temperature/seed
+# Some llama.cpp servers ship --top-k 1 as a CLI default, making them
+# greedy regardless of per-request temperature/seed
 # unless top_k is explicitly overridden. Per-request fields override
 # CLI defaults per-field. The fix: variance-wanting modes must set
 # top_k/top_p/min_p in the body explicitly. These tests pin the values.
