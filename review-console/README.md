@@ -24,13 +24,29 @@ Lists all PipelineRuns for the configured Tekton pipeline, sorted newest first. 
 
 Run creation is guarded by `DAV_TRIGGER_ENABLED` (Ansible default `true`); set to `false` for a read-only deployment.
 
-**Click any PipelineRun row** to open the live run-detail drawer (slides in from the right). The drawer polls every 3 seconds while open and stops on terminal phase (Succeeded / Failed / Cancelled / TimedOut). Shows:
-- **Pipeline tasks**: the 4-step Tekton ladder (cleanup-workspace → sync-spec ∥ sync-corpus → run-corpus) with per-task phase, duration, and condition message
-- **GPUs (live)**: per-GPU tiles for AMD GPUs on the cluster — GFX activity %, VRAM %, power (W), edge temp (°C), with color-coded thresholds (amber > 70/80, red > 90/95) and bar visualisations
-- **Inference (vLLM, live)**: aggregates across all replicas — running/waiting requests, KV cache %, gen + prompt tokens/sec, TTFT p95 (s), and **session token totals** (delta from drawer-open baseline; resets if the underlying counter regresses on a vLLM process restart)
-- **Params**: the resolved Tekton parameters this run was triggered with
+**Cluster-wide energy chip** (Runs view top bar, right-aligned): `⚡ X.XX kWh total · last 24h Y · 7d Z · N runs`. Pulled from `/api/runs/stats` which sums `gpu_energy_joules` from finalized `run_sessions` rows and converts to kWh (÷ 3.6e6). Hidden until at least one run has reached terminal phase and been finalized.
 
-Each section shows a `· no change Xs` freshness indicator next to its title (amber > 30 s, red > 90 s) so it's obvious when the displayed snapshot is stale vs. just hasn't changed because the workload is idle. Values that change between polls briefly flash with the accent colour.
+**Click any PipelineRun row** to open the live run-detail drawer (slides in from the right, 960px wide). The drawer polls Tekton + metrics every 3 s, prompts/responses every 5 s, and stops on terminal phase (Succeeded / Failed / Cancelled / TimedOut).
+
+The drawer has **four layout modes**, switched via the picker chip in the drawer header. The last choice sticks per browser; "set current as default" pins one as the auto-applied layout on next open.
+
+| Mode | Best for | What changes |
+|---|---|---|
+| **Detailed** | Single-pane analysis, low monitor density | Full GPU + vLLM tile blocks, no scroll constraints. The original layout. |
+| **Stacked + tails** | Watching an active run while keeping ambient stats nearby | Compact one-row stats (GPU + vLLM), tasks + prompts panels become fixed-height auto-scrolling tails (~240 px each) |
+| **Side-by-side dense** | Wide screens; want tasks and prompts visible at once | Tasks and prompts render as a 2-column grid; compact stats row above |
+| **Prompts dominant** | Debugging agent behavior — what's it asking, what's it being told | Thin stats; prompts panel takes ~560 px; tasks shrinks to ~140 px |
+
+What's in each drawer (visibility varies by layout):
+- **Session**: name, description, category, tags. On terminal phase: wall time, GPU energy (J/Wh/kWh auto-scaled), avg/peak power, total gen+prompt tokens.
+- **UC progress (live)**: counter `X / N · A ok · B failed`, tri-color progress bar (green succeeded · red failed · pulsing blue active), currently-processing UC handle with elapsed time. Sourced from `<run_dir>/run-progress.yaml` (engine writes after each UC).
+- **Pipeline tasks**: the 4-step Tekton ladder (cleanup-workspace → sync-spec ∥ sync-corpus → run-corpus) with per-task phase, duration, condition message. Failed tasks render inline failure block + "view logs" expander (tails the last 200 lines).
+- **Prompts & responses (live)**: per-turn JSONL stream from `<run_dir>/turns/<uc_uuid>.seed-<N>.jsonl` — `start` (initial system + user prompts), `response` (model output + token usage), `tool` (mcp call name + args + result preview). Auto-scrolls to newest; ⤓ toggles auto-scroll; clear drops the visible buffer without resetting the file cursors. Bounded to ~400 records in the DOM.
+- **GPUs (live)** (detailed mode): per-GPU tiles for AMD GPUs — GFX %, VRAM %, power (W), edge temp (°C), color-coded thresholds + bar visualizations. Plus the calibration note about AMD GFX activity latching at 100% on RDNA4 under light load.
+- **Inference (vLLM, live)** (detailed mode): running/waiting requests, KV cache %, gen + prompt tokens/s, TTFT p95, and **session token totals** (delta from a baseline captured at trigger time in `run_sessions.baseline_*_tokens` — survives browser reload).
+- **Params**: resolved Tekton parameters for this run.
+
+Each live section shows a `· no change Xs` freshness indicator next to its title (amber > 30 s, red > 90 s) so it's obvious when the snapshot is stale vs. the workload is just idle. Values that change between polls briefly flash with the accent colour.
 
 ### Results
 
@@ -142,10 +158,10 @@ python -m http.server 8001
 
 | Path | Purpose |
 |------|---------|
-| `api/app/main.py` | FastAPI app, lifespan, all route definitions (v0.6.x) |
-| `api/app/schema.sql` | Postgres schema: corpus file cache, `managed_use_cases`, `lifecycle_events`, `use_case_sets`, `use_case_set_members` |
-| `api/app/results.py` | Scans workspace PVC for run summaries and analysis YAMLs |
-| `api/app/validations.py` | Tekton PipelineRun listing, triggering, status translation, and run-detail (TaskRun walk) for the drawer |
+| `api/app/main.py` | FastAPI app, lifespan, all route definitions (v0.8.x) |
+| `api/app/schema.sql` | Postgres schema: corpus file cache, `managed_use_cases`, `lifecycle_events`, `use_case_sets`, `use_case_set_members`, `run_sessions` (with token-counter baselines + finalized energy/token stats) |
+| `api/app/results.py` | Scans workspace PVC for run summaries, analysis YAMLs, **per-UC progress** (`run-progress.yaml`), and **per-turn JSONL** (`turns/<uuid>.seed-<N>.jsonl`) with byte-offset cursor for tail polling |
+| `api/app/validations.py` | Tekton PipelineRun listing, triggering, status translation, run-detail (TaskRun walk), and failed-task log tail |
 | `api/app/sources.py` | Spec / corpus / inference sourcing — ConfigMap writes, branch enumeration, inference endpoint validation (`/models` probe + model-presence check) |
 | `api/app/metrics.py` | Async Prometheus query proxy targeting `thanos-querier` via the SA bearer token + service-CA bundle. Curated `snapshot()` runs ~12 PromQL queries in parallel; grouped GPU rows + vLLM scalars |
 | `api/Containerfile` | API container image spec |

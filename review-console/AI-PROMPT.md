@@ -409,9 +409,15 @@ For convenience, the consolidated list:
 
 ## 13. What's built and what isn't
 
-### Built (as of v0.6.x)
+### Built (as of v0.8.x)
 
-- **Runs tab** — PipelineRun list + trigger with full parameter control (pre-populates from `/api/sources` + UC subpath auto-detect). **Click any row** to open a live run-detail drawer with Tekton task ladder (4 steps), AMD GPU tiles (gfx %, vram %, power, temp), and vLLM aggregates (running/waiting/KV cache/throughput/TTFT/session token totals). Polls every 3 s while open; freshness indicator + value-change flash so stale snapshots are visually obvious.
+- **Runs tab** — PipelineRun list + trigger with full parameter control (pre-populates from `/api/sources` + UC subpath auto-detect). User-supplied session name + curated category + description per run. Cluster-wide energy chip in the top bar (`/api/runs/stats`: total kWh, last 24h, last 7d, run count). **Click any row** for a live run-detail drawer with **four selectable layouts** (detailed / stacked-tails / side-by-side / prompts-dominant) — picker chip in the drawer header persists choice in localStorage, with explicit "set current as default". Drawer shows:
+  - Session metadata + finalized energy/token stats on terminal phase
+  - Live per-UC progress counter + tri-color bar (from `<run_dir>/run-progress.yaml` written by the engine after each UC)
+  - Tekton task ladder with inline failure block + log-tail expander on failed tasks
+  - **Live prompts/responses panel** tailing `<run_dir>/turns/<uuid>.seed-<N>.jsonl` (engine emits per-turn JSONL with kind=start/response/tool); byte-offset cursor for incremental tail polling
+  - AMD per-GPU tiles + vLLM aggregates (running/waiting/KV/throughput/TTFT); session token totals delta from persisted `run_sessions.baseline_*_tokens`
+  - Freshness indicator + value-change flash on metric tiles
 - **Results tab** — workspace PVC browser; run summary, per-UC verdict + findings + gaps, explore-mode per-sample variance. Three-panel split.
 - **Use Cases tab** — managed UC CRUD (YAML editor), corpus UC browsing, lifecycle state machine (draft/ready/in_review/approved/deprecated), transition buttons, lifecycle audit history, set membership display.
 - **Sets tab** — named UC sets, member add/remove, run-set scoping, bulk promote (all members from state A → B in one transaction), per-set export.
@@ -422,8 +428,9 @@ For convenience, the consolidated list:
 
 ### Not yet built (in rough priority order)
 
-- **Per-UC progress in run-detail** — the drawer shows Tekton-task-level progress (4 steps). The current step within `run-corpus` (which UC, X of N) is not surfaced. Two paths: (a) engine writes `<run_dir>/run-progress.yaml` incrementally and the API exposes it, or (b) tail the `run-corpus` pod logs for `[i/N] uc_path` markers. Path (a) is the right architectural answer.
 - **Time-series GPU + inference graphs** — the drawer renders point-in-time snapshots. For historical context ("throughput over the last hour"), the API would query Prometheus over a `[range]` and return time-series; UI would render a sparkline per tile. Defer until a single-snapshot view is no longer enough.
+- **NL-assisted UC authoring** (task #29) — chat UC editor with model assist. Configurable model endpoint per Config tab: (a) DAV's primary inference, (b) an MCP-discovered model, or (c) an external endpoint the user enters with API/OAuth tokens. New `dav-source-uc-assist` ConfigMap + secrets plumbing.
+- **FMS scraper Pi → smartwatch** (task #27) — separate project; FRC FMS published pages → live match stats to a watch + other consumers.
 - **Analysis ingestion into Postgres** — cross-run gap aggregation and trend views require `analysis_runs`, `uc_analyses`, `uc_samples`, `uc_gaps` tables (see §4.3). The Results tab currently reads directly from the workspace PVC; this works but can't do multi-run queries.
 - **Gap aggregation + trend views** — depend on ingestion above.
 - **Model proxy + proposal subsystem** — server-side model calls, conversation persistence, in-console diff review (§4.5).
