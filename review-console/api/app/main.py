@@ -648,18 +648,26 @@ async def _maybe_finalize_session(detail: dict) -> Optional[dict]:
     # We DO know whether the pipeline succeeded overall; UC-level stats need
     # workspace/results parse — defer; leave NULL for now.
 
+    # asyncpg refuses str for TIMESTAMPTZ even with ::timestamptz cast; convert.
+    from datetime import datetime as _dt
+    try:
+        started_dt   = _dt.fromisoformat(started.replace("Z", "+00:00"))
+        completed_dt = _dt.fromisoformat(completed.replace("Z", "+00:00"))
+    except Exception as e:
+        log.warning("finalize: bad timestamps for %s: %s", name, e)
+        return out
     try:
         async with pool.acquire() as conn:
             await conn.execute(
                 """UPDATE run_sessions SET
-                    started_at=$2::timestamptz, completed_at=$3::timestamptz, phase=$4,
+                    started_at=$2, completed_at=$3, phase=$4,
                     wall_time_seconds=$5,
                     gpu_energy_joules=$6, gpu_avg_power_watts=$7,
                     gpu_peak_power_watts=$8, gpu_avg_gfx_activity=$9,
                     total_prompt_tokens=$10, total_gen_tokens=$11,
                     finalized_at=now()
                    WHERE run_name=$1""",
-                name, started, completed, phase,
+                name, started_dt, completed_dt, phase,
                 float(agg.get("window_seconds") or 0),
                 agg.get("gpu_energy_joules"),
                 agg.get("gpu_avg_power_watts"),
