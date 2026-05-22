@@ -179,13 +179,24 @@
   .turn-rec .body { color:var(--text); white-space:pre-wrap; word-break:break-word; }
   .turn-rec .body .sub { color:var(--text-dim); font-size:10px; }
   /* Layout-mode-specific overrides — set on .run-drawer via data-rd-layout */
-  .run-drawer[data-rd-layout="detailed"]            { /* original layout — no extra overrides */ }
-  .run-drawer[data-rd-layout="stacked-tails"] .rd-tail-body  { max-height:200px; }
-  .run-drawer[data-rd-layout="side-by-side"]   .rd-twocol    { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  .run-drawer[data-rd-layout="side-by-side"]   .rd-tail-body { max-height:160px; }
-  .run-drawer[data-rd-layout="prompts-dominant"] .rd-tail-body            { max-height:160px; }
-  .run-drawer[data-rd-layout="prompts-dominant"] #rdPromptsSection .rd-tail-body { max-height:520px; }
-  /* twocol-grid container only renders when the layout asks for it */
+  /* Detailed: full original layout — tiles shown, no scroll constraints, no compact row */
+  .run-drawer[data-rd-layout="detailed"] #rdCompactStats   { display:none !important; }
+  .run-drawer[data-rd-layout="detailed"] .rd-tail-section .rd-tail-body { max-height:none; overflow-y:visible; }
+  /* Stacked + tail panels: compact row + scrollable tails */
+  .run-drawer[data-rd-layout="stacked-tails"] #rdCompactStats { display:flex !important; }
+  .run-drawer[data-rd-layout="stacked-tails"] #rdGpusSection, .run-drawer[data-rd-layout="stacked-tails"] #rdVllmSection { display:none; }
+  .run-drawer[data-rd-layout="stacked-tails"] .rd-tail-body  { max-height:240px; }
+  /* Side-by-side: same hide-tiles + 2-col arrangement for tasks/prompts */
+  .run-drawer[data-rd-layout="side-by-side"] #rdCompactStats { display:flex !important; }
+  .run-drawer[data-rd-layout="side-by-side"] #rdGpusSection, .run-drawer[data-rd-layout="side-by-side"] #rdVllmSection { display:none; }
+  .run-drawer[data-rd-layout="side-by-side"] .rd-twocol  { display:grid !important; grid-template-columns:1fr 1fr; gap:10px; }
+  .run-drawer[data-rd-layout="side-by-side"] .rd-tail-body { max-height:280px; }
+  /* Prompts dominant: thin top stats, hide tiles, prompts panel takes the most */
+  .run-drawer[data-rd-layout="prompts-dominant"] #rdCompactStats { display:flex !important; }
+  .run-drawer[data-rd-layout="prompts-dominant"] #rdGpusSection, .run-drawer[data-rd-layout="prompts-dominant"] #rdVllmSection { display:none; }
+  .run-drawer[data-rd-layout="prompts-dominant"] #rdTasksSection .rd-tail-body  { max-height:140px; }
+  .run-drawer[data-rd-layout="prompts-dominant"] #rdPromptsSection .rd-tail-body { max-height:560px; }
+  /* twocol-grid host is a passthrough unless the side-by-side rule overrides */
   .rd-twocol { display:contents; }
   .run-drawer-header { padding:14px 20px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; flex-shrink:0; background:var(--bg-raised); }
   .run-drawer-title { font-family:var(--serif); font-size:18px; font-weight:400; }
@@ -499,6 +510,12 @@
       <button class="btn primary" id="newRunBtn">+ New Run</button>
       <button class="btn ghost" id="refreshRunsBtn">Refresh</button>
       <span id="runsNote" style="font-size:11px; color:var(--text-faint); margin-left:4px;"></span>
+      <span id="kwhChip" title="Cluster-wide GPU energy across all finalized runs"
+            style="margin-left:auto; padding:4px 10px; background:var(--bg-input); border:1px solid var(--border); border-radius:2px; font-size:11px; color:var(--text-dim); display:none;">
+        <span style="color:var(--accent);">⚡</span>
+        <span id="kwhValue">—</span>
+        <span style="color:var(--text-faint); margin-left:6px;" id="kwhBreakdown"></span>
+      </span>
     </div>
     <div style="flex:1; overflow-y:auto;">
       <table class="runs-table" id="runsTable">
@@ -730,7 +747,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.7.1</span>
+  <span>DAV Console · v0.8</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -738,13 +755,26 @@
 </footer>
 
 <!-- ══════════════════════════ RUN DETAIL DRAWER ══════════════════════════ -->
-<div class="run-drawer" id="runDrawer">
+<div class="run-drawer" id="runDrawer" data-rd-layout="detailed">
   <div class="run-drawer-header">
     <div>
       <div class="run-drawer-title" id="rdTitle">Run detail</div>
       <div class="run-drawer-sub" id="rdSub">—</div>
     </div>
-    <button class="btn ghost btn-icon" id="rdClose">✕</button>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <div class="rd-layout-picker">
+        <button class="rd-layout-btn" id="rdLayoutBtn">layout: <span id="rdLayoutLabel">detailed</span></button>
+        <div class="rd-layout-menu" id="rdLayoutMenu">
+          <button class="dropdown-item" data-rdl="detailed">Detailed (full tiles)</button>
+          <button class="dropdown-item" data-rdl="stacked-tails">Stacked + tail panels</button>
+          <button class="dropdown-item" data-rdl="side-by-side">Side-by-side dense</button>
+          <button class="dropdown-item" data-rdl="prompts-dominant">Prompts dominant</button>
+          <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
+          <button class="dropdown-item" id="rdLayoutMakeDefault" style="font-size:10px;color:var(--text-faint);">set current as default</button>
+        </div>
+      </div>
+      <button class="btn ghost btn-icon" id="rdClose">✕</button>
+    </div>
   </div>
   <div class="run-drawer-body">
     <div class="run-section" id="rdSessionSection" style="display:none;">
@@ -755,11 +785,34 @@
       <div class="run-section-title">UC progress (live)</div>
       <div id="rdProgress"></div>
     </div>
-    <div class="run-section">
-      <div class="run-section-title">Pipeline tasks</div>
-      <div id="rdTasks"><div class="empty" style="font-size:11px">loading…</div></div>
+
+    <!-- Compact one-row stats; shown in stacked-tails / side-by-side / prompts-dominant -->
+    <div id="rdCompactStats" class="rd-compact-row" style="display:none;"></div>
+
+    <!-- Side-by-side host: when layout=side-by-side, the two children below render as a 2-col grid. Other layouts ignore .rd-twocol (display:contents). -->
+    <div class="rd-twocol">
+      <div class="rd-tail-section" id="rdTasksSection">
+        <div class="rd-tail-header" data-toggle="rdTasksSection">
+          <span class="lbl">Pipeline tasks <span id="rdTasksCount" style="text-transform:none;letter-spacing:0;color:var(--text-faint)"></span></span>
+          <span class="ctl">auto-scroll · click to collapse</span>
+        </div>
+        <div class="rd-tail-body" id="rdTasks"><div class="empty" style="font-size:11px">loading…</div></div>
+      </div>
+
+      <div class="rd-tail-section" id="rdPromptsSection">
+        <div class="rd-tail-header" data-toggle="rdPromptsSection">
+          <span class="lbl">Prompts &amp; responses (live) <span id="rdPromptsCount" style="text-transform:none;letter-spacing:0;color:var(--text-faint)"></span></span>
+          <span class="ctl">
+            <button id="rdPromptsAutoBtn" title="toggle auto-scroll">⤓ auto</button>
+            <button id="rdPromptsClearBtn" title="clear visible buffer">clear</button>
+          </span>
+        </div>
+        <div class="rd-tail-body" id="rdPrompts"><div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet · written after engine rebuild ships</div></div>
+      </div>
     </div>
-    <div class="run-section">
+
+    <!-- Detailed tiles; hidden in non-detailed layouts -->
+    <div class="run-section" id="rdGpusSection">
       <div class="run-section-title">
         GPUs (live)<span id="rdGpuFresh" class="freshness-chip"></span>
       </div>
@@ -769,12 +822,13 @@
         AMD <b>GFX activity</b> on RDNA4 latches at 100% under light load — use <b>power</b> (warm-idle ~90 W per R9700; under load 200–300 W) and the vLLM <b>KV cache %</b> tile below as the real "GPU busy?" signal.
       </div>
     </div>
-    <div class="run-section">
+    <div class="run-section" id="rdVllmSection">
       <div class="run-section-title">
         Inference (vLLM, live)<span id="rdVllmFresh" class="freshness-chip"></span>
       </div>
       <div id="rdVllm" class="vllm-grid"></div>
     </div>
+
     <div class="run-section">
       <div class="run-section-title">Params</div>
       <div id="rdParams" class="kv-grid" style="font-size:11px"></div>
@@ -1175,6 +1229,20 @@ function switchView(name) {
 
 // ══════════════════════════ RUNS ══════════════════════════
 
+async function loadRunsStats() {
+  try {
+    const s = await api('/api/runs/stats');
+    const chip = document.getElementById('kwhChip');
+    if (!s || !s.total_runs) { chip.style.display = 'none'; return; }
+    chip.style.display = '';
+    const total = s.total_kwh || 0;
+    const fmt = v => v < 0.1 ? `${(v*1000).toFixed(0)} Wh` : `${v.toFixed(2)} kWh`;
+    document.getElementById('kwhValue').textContent = fmt(total) + ' total';
+    document.getElementById('kwhBreakdown').textContent =
+      `· last 24h ${fmt(s.last_24h_kwh||0)} · 7d ${fmt(s.last_7d_kwh||0)} · ${s.total_runs} runs`;
+  } catch {}
+}
+
 async function loadRuns() {
   document.getElementById('runsBody').innerHTML = '<tr><td colspan="7" class="empty">loading…</td></tr>';
   try {
@@ -1183,6 +1251,8 @@ async function loadRuns() {
     document.getElementById('badgeRuns').textContent = allRuns.length;
     renderRunsTable();
     if (!resp.enabled) document.getElementById('runsNote').textContent = 'Pipeline trigger not available.';
+    // Update the cluster-wide kWh chip alongside the list refresh
+    loadRunsStats();
   } catch (e) {
     document.getElementById('runsBody').innerHTML = `<tr><td colspan="7" class="empty" style="color:var(--red)">${esc(e.message)}</td></tr>`;
   }
@@ -1226,8 +1296,23 @@ function renderRunsTable() {
 }
 
 // ── Run detail drawer ─────────────────────────────────────────
+const RD_LAYOUTS = ['detailed','stacked-tails','side-by-side','prompts-dominant'];
+const RD_LAYOUT_LABEL = {
+  'detailed':'detailed',
+  'stacked-tails':'stacked + tails',
+  'side-by-side':'side-by-side',
+  'prompts-dominant':'prompts',
+};
+let _rdLayout = 'detailed';
 let _rdName = null;
 let _rdPollTimer = null;
+// Prompts/responses tail state — keyed by file (each UC × sample has its own)
+let _rdPromptsState = {
+  filesKnown: [],                  // list of turns files we've seen
+  perFile: {},                     // {file: {next_offset, records: []}}
+  autoScroll: true,
+  pollTimer: null,
+};
 // Track metric value history so we can show "Xs since last change" and
 // flash cells when their value changes between polls.
 let _rdLastGpuValues  = {};   // {gpu_id: {metric: value}}
@@ -1241,6 +1326,134 @@ let _rdFreshTimer     = null; // separate timer that updates the "Xs ago" label 
 // counter regresses (process restart).
 let _rdTokenBaseline  = {gen: null, prompt: null};
 
+function rdApplyLayout(layout) {
+  if (!RD_LAYOUTS.includes(layout)) layout = 'detailed';
+  _rdLayout = layout;
+  document.getElementById('runDrawer').setAttribute('data-rd-layout', layout);
+  document.getElementById('rdLayoutLabel').textContent = RD_LAYOUT_LABEL[layout];
+  // Active marker in the menu
+  document.querySelectorAll('#rdLayoutMenu [data-rdl]').forEach(b =>
+    b.classList.toggle('active', b.dataset.rdl === layout));
+  try { localStorage.setItem('davDrawerLayoutLast', layout); } catch(e) {}
+}
+
+function rdSetDefaultLayout() {
+  try { localStorage.setItem('davDrawerLayoutDefault', _rdLayout); } catch(e) {}
+  const m = document.getElementById('rdLayoutMakeDefault');
+  m.textContent = `default: ${RD_LAYOUT_LABEL[_rdLayout]} ✓`;
+  setTimeout(() => { m.textContent = 'set current as default'; }, 1800);
+}
+
+function rdInitialLayout() {
+  // Preference order: last-used (sticky) → user default → "detailed"
+  try {
+    return localStorage.getItem('davDrawerLayoutLast')
+        || localStorage.getItem('davDrawerLayoutDefault')
+        || 'detailed';
+  } catch(e) { return 'detailed'; }
+}
+
+function rdRenderCompactStats(snap, vlive) {
+  // Single dense row for stacked/side/prompts layouts. snap is the metrics
+  // snapshot; vlive optionally has server-supplied session token deltas.
+  const el = document.getElementById('rdCompactStats');
+  if (!snap || !snap.available) { el.innerHTML = '<span style="color:var(--text-faint)">metrics unavailable</span>'; return; }
+  const gpus = snap.gpus || [];
+  const v = snap.vllm || {};
+  const gpuParts = gpus.map((g,i) => {
+    const gfx = g.gpu_gfx_activity, vp = g.used_vram_pct, pw = g.gpu_power_watts, t = g.gpu_edge_temp_c;
+    const tCls = t == null ? '' : (t > 90 ? 'hot' : t > 80 ? 'warn' : '');
+    return `<span><span class="label">G${g.gpu_id ?? i}</span><span class="v">${_fmtN(gfx,0)}%</span>` +
+           `<span class="sep">·</span><span class="v">${_fmtN(vp,0)}% vram</span>` +
+           `<span class="sep">·</span><span class="v">${_fmtN(pw,0)}W</span>` +
+           `<span class="sep">·</span><span class="v ${tCls}">${_fmtN(t,0)}°C</span></span>`;
+  }).join('<span class="sep">|</span>');
+  const sgen = (vlive && vlive.live_session_gen_tokens != null) ? vlive.live_session_gen_tokens : null;
+  const spr  = (vlive && vlive.live_session_prompt_tokens != null) ? vlive.live_session_prompt_tokens : null;
+  el.innerHTML = gpuParts + '<span class="sep">||</span>' +
+    `<span><span class="label">vLLM</span>` +
+    `<span class="v">${_fmtN(v.running_requests,0)} run</span>` +
+    `<span class="sep">·</span><span class="v">${_fmtN(v.waiting_requests,0)} q</span>` +
+    `<span class="sep">·</span><span class="v">${_fmtN(v.kv_cache_pct,0)}% KV</span>` +
+    `<span class="sep">·</span><span class="v">${_fmtN(v.generation_tps,1)} t/s gen</span>` +
+    `<span class="sep">·</span><span class="v">${_fmtN(v.prompt_tps,0)} t/s prompt</span>` +
+    (sgen != null ? `<span class="sep">·</span><span class="v">${(sgen||0).toLocaleString()} gen / ${(spr||0).toLocaleString()} prompt session</span>` : '') +
+    `</span>`;
+}
+
+async function rdRefreshPrompts() {
+  // Discover turns files (once per drawer-open), then incrementally tail
+  // each one. Renders the union in chronological-by-ts order.
+  if (!_rdName) return;
+  try {
+    if (!_rdPromptsState.filesKnown.length) {
+      const ls = await api(`/api/runs/${encodeURIComponent(_rdName)}/turns`).catch(() => ({}));
+      _rdPromptsState.filesKnown = ls.files || [];
+      for (const f of _rdPromptsState.filesKnown) {
+        if (!_rdPromptsState.perFile[f]) _rdPromptsState.perFile[f] = {next_offset:0, records:[]};
+      }
+    }
+    // Poll each known file for delta
+    for (const f of _rdPromptsState.filesKnown) {
+      const st = _rdPromptsState.perFile[f];
+      const r = await api(`/api/runs/${encodeURIComponent(_rdName)}/turns?file=${encodeURIComponent(f)}&since=${st.next_offset}`).catch(() => null);
+      if (!r || !r.records) continue;
+      if (r.records.length) {
+        st.records.push(...r.records.map(rec => ({...rec, _file: f})));
+      }
+      st.next_offset = r.next_offset ?? st.next_offset;
+    }
+    rdRenderPrompts();
+  } catch (e) {
+    // silent
+  }
+}
+
+function rdRenderPrompts() {
+  const all = [];
+  for (const f of Object.keys(_rdPromptsState.perFile)) {
+    all.push(..._rdPromptsState.perFile[f].records);
+  }
+  all.sort((a,b) => (a.ts || '').localeCompare(b.ts || ''));
+  const el = document.getElementById('rdPrompts');
+  document.getElementById('rdPromptsCount').textContent = all.length
+    ? `· ${all.length} turn records` : '';
+  if (!all.length) {
+    el.innerHTML = '<div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet · written by engine after run-corpus starts</div>';
+    return;
+  }
+  // Cap to most recent 400 to keep DOM bounded
+  const visible = all.slice(-400);
+  const html = visible.map(r => {
+    const kind = r.kind || 'turn';
+    let head = `<span class="kind ${esc(kind)}">${esc(kind)}</span>`;
+    head += `turn ${r.turn ?? '?'}`;
+    if (r.tool_name) head += ` · ${esc(r.tool_name)}`;
+    if (r.tokens_total != null) head += ` · ${r.tokens_total.toLocaleString()} tok`;
+    let body = '';
+    if (kind === 'start') {
+      body = `<div class="sub">UC ${esc(r.uc_uuid || '')}${r.sample_seed != null ? ' · seed '+r.sample_seed : ''} · max_tool_calls=${r.max_tool_calls ?? '?'}</div>`
+           + (r.system_prompt_preview ? `<div class="sub">system: ${esc((r.system_prompt_preview||'').slice(0,300))}…</div>` : '')
+           + (r.user_prompt_preview ? `<div>${esc(r.user_prompt_preview)}${(r.user_prompt_length||0) > (r.user_prompt_preview||'').length ? '…' : ''}</div>` : '');
+    } else if (kind === 'response') {
+      if (r.content_preview) {
+        body = `<div>${esc(r.content_preview)}${(r.content_length||0) > (r.content_preview||'').length ? '…' : ''}</div>`;
+      } else {
+        body = `<div class="sub">(no content; ${r.tool_call_count || 0} tool call(s))</div>`;
+      }
+    } else if (kind === 'tool') {
+      const args = r.args ? JSON.stringify(r.args) : '';
+      body = `<div class="sub">args: ${esc(args.slice(0,200))}${args.length > 200 ? '…' : ''}</div>`
+           + `<div>${esc((r.result_preview||'').slice(0,400))}${(r.result_length || (r.result_preview||'').length) > 400 ? '…' : ''}</div>`;
+    } else {
+      body = `<div>${esc(JSON.stringify(r).slice(0,300))}</div>`;
+    }
+    return `<div class="turn-rec"><div class="head">${head}</div><div class="body">${body}</div></div>`;
+  }).join('');
+  el.innerHTML = html;
+  if (_rdPromptsState.autoScroll) el.scrollTop = el.scrollHeight;
+}
+
 function openRunDrawer(name) {
   _rdName = name;
   document.getElementById('rdTitle').textContent = name;
@@ -1251,14 +1464,23 @@ function openRunDrawer(name) {
   document.getElementById('rdParams').innerHTML = '';
   document.getElementById('rdGpuFresh').textContent = '';
   document.getElementById('rdVllmFresh').textContent = '';
+  document.getElementById('rdPromptsCount').textContent = '';
+  document.getElementById('rdPrompts').innerHTML = '<div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet</div>';
   // Reset value history so the first render isn't a "change"
   _rdLastGpuValues = {}; _rdLastVllmValues = {};
   _rdGpuLastChange = 0;  _rdVllmLastChange = 0;
   _rdTokenBaseline = {gen: null, prompt: null};
+  _rdPromptsState = {filesKnown:[], perFile:{}, autoScroll:true, pollTimer:null};
+  // Apply the last-used (or default) layout
+  rdApplyLayout(rdInitialLayout());
   document.getElementById('runDrawer').classList.add('open');
   refreshRunDrawer();
   if (_rdPollTimer) clearInterval(_rdPollTimer);
   _rdPollTimer = setInterval(refreshRunDrawer, 3000);
+  // Prompts panel polls slightly less aggressively (turns can be small +
+  // frequent or huge; 5s is a reasonable compromise vs 3s for metrics)
+  rdRefreshPrompts();
+  _rdPromptsState.pollTimer = setInterval(rdRefreshPrompts, 5000);
   // Update the "Xs since change" label every 1s so it counts in real time
   if (_rdFreshTimer) clearInterval(_rdFreshTimer);
   _rdFreshTimer = setInterval(updateFreshnessLabels, 1000);
@@ -1269,6 +1491,7 @@ function closeRunDrawer() {
   _rdName = null;
   if (_rdPollTimer) { clearInterval(_rdPollTimer); _rdPollTimer = null; }
   if (_rdFreshTimer) { clearInterval(_rdFreshTimer); _rdFreshTimer = null; }
+  if (_rdPromptsState.pollTimer) { clearInterval(_rdPromptsState.pollTimer); _rdPromptsState.pollTimer = null; }
 }
 
 function _freshnessLabel(lastChangeEpoch) {
@@ -1341,6 +1564,8 @@ async function refreshRunDrawer() {
     if (detail.live_session_prompt_tokens !== undefined) snap.vllm._live_session_prompt = detail.live_session_prompt_tokens;
   }
   renderRunDrawerMetrics(snap);
+  // Compact one-row stats — only visible in the non-detailed layouts (CSS-gated).
+  rdRenderCompactStats(snap, detail && !detail._err ? detail : null);
 }
 
 function _fmtEnergy(j) {
@@ -3022,6 +3247,49 @@ document.getElementById('submitNewRun').addEventListener('click', submitNewRun);
 document.getElementById('nrReloadDefaults').addEventListener('click', () => loadNewRunDefaults());
 document.getElementById('refreshRunsBtn').addEventListener('click', loadRuns);
 document.getElementById('rdClose').addEventListener('click', closeRunDrawer);
+
+// Layout picker
+document.getElementById('rdLayoutBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  document.getElementById('rdLayoutMenu').classList.toggle('open');
+});
+document.querySelectorAll('#rdLayoutMenu [data-rdl]').forEach(b => {
+  b.addEventListener('click', () => {
+    rdApplyLayout(b.dataset.rdl);
+    document.getElementById('rdLayoutMenu').classList.remove('open');
+  });
+});
+document.getElementById('rdLayoutMakeDefault').addEventListener('click', e => {
+  e.stopPropagation();
+  rdSetDefaultLayout();
+});
+document.addEventListener('click', e => {
+  const m = document.getElementById('rdLayoutMenu');
+  if (m && !m.contains(e.target) && e.target.id !== 'rdLayoutBtn' && !e.target.closest('#rdLayoutBtn'))
+    m.classList.remove('open');
+});
+
+// Collapse/expand tail sections by clicking their header
+document.querySelectorAll('#runDrawer .rd-tail-header[data-toggle]').forEach(h => {
+  h.addEventListener('click', () => {
+    const id = h.dataset.toggle;
+    document.getElementById(id).classList.toggle('collapsed');
+  });
+});
+
+// Prompts panel auto-scroll + clear
+document.getElementById('rdPromptsAutoBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  _rdPromptsState.autoScroll = !_rdPromptsState.autoScroll;
+  e.target.style.color = _rdPromptsState.autoScroll ? 'var(--accent)' : 'var(--text-faint)';
+});
+document.getElementById('rdPromptsClearBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  // Clear visible buffer but keep next_offset cursors so we don't re-read
+  for (const f of Object.keys(_rdPromptsState.perFile))
+    _rdPromptsState.perFile[f].records = [];
+  rdRenderPrompts();
+});
 
 document.getElementById('refreshResultsBtn').addEventListener('click', loadResults);
 document.getElementById('resultFilter').addEventListener('input', renderResultList);
