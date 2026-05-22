@@ -261,6 +261,22 @@
   loop: "{{ lookup('template', 'review-console-self-test-rbac.yaml.j2') | from_yaml_all | list }}"
   when: review_console_runs_trigger_enabled | bool
 
+- name: Deploy review console cluster-monitoring-view ClusterRoleBinding
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-monitoring-rbac.yaml.j2') | from_yaml }}"
+
+- name: Deploy review console service-CA ConfigMap (auto-populated by OCP)
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-service-ca-cm.yaml.j2') | from_yaml }}"
+
 - name: Check if review console API Deployment exists
   kubernetes.core.k8s_info:
     kind: Deployment

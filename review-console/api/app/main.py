@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from .corpus_loader import walk_corpus, parse_patterns
 from . import validations
 from . import sources
+from . import metrics
 from . import results as _results
 
 log = logging.getLogger("dav-review-api")
@@ -119,7 +120,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DAV Console API", version="0.5.2", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.6.0", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -376,6 +377,35 @@ async def runs_status():
         "namespace": validations.NAMESPACE,
         "default_branch": validations.DEFAULT_BRANCH,
     }
+
+
+@app.get("/api/runs/{name}")
+async def get_run_detail(name: str):
+    """Return Tekton PipelineRun spec + per-TaskRun status for the run-detail UI."""
+    if not validations.ENABLED:
+        raise HTTPException(403, "pipeline trigger disabled")
+    try:
+        detail = validations.get_run_detail(name)
+    except KeyError:
+        raise HTTPException(404, f"run {name!r} not found")
+    except Exception as e:
+        log.exception("run detail fetch failed")
+        raise HTTPException(500, f"detail failed: {e}")
+    return detail
+
+
+@app.get("/api/metrics/snapshot")
+async def metrics_snapshot():
+    """Live GPU + vLLM metric snapshot for the run-detail UI.
+
+    Queries cluster Prometheus (thanos-querier) via the API pod's SA token.
+    Returns per-GPU rows + vLLM aggregates. Polled by the UI every ~3s.
+    """
+    try:
+        return await metrics.snapshot()
+    except Exception as e:
+        log.exception("metrics snapshot failed")
+        raise HTTPException(500, f"snapshot failed: {e}")
 
 
 # ========================= RESULTS =========================

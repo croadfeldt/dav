@@ -1,0 +1,16 @@
+---
+# OpenShift's service-CA controller injects the cluster's service-CA bundle
+# into ConfigMaps annotated with `service.beta.openshift.io/inject-cabundle`.
+# The review-console API mounts this CM and uses the bundle to verify TLS
+# when calling thanos-querier (whose cert is signed by the same service CA).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dav-review-service-ca
+  namespace: {{ dav_namespace }}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+  labels:
+    app: dav-review
+    component: review-console-monitoring
+# data is populated by the service-ca controller; do not set it here.

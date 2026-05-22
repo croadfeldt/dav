@@ -139,6 +139,49 @@
   .dropdown-item.active::before { content:'●'; margin-right:6px; font-size:8px; }
   .dropdown-item:not(.active)::before { content:'○'; margin-right:6px; font-size:8px; color:var(--text-faint); }
 
+  /* ── Run-detail drawer ── */
+  .run-drawer { position:fixed; top:52px; right:-720px; bottom:36px; width:720px; max-width:95vw;
+                background:var(--bg-panel); border-left:1px solid var(--border-bright);
+                z-index:90; transition:right .25s ease; overflow:hidden; display:flex; flex-direction:column;
+                box-shadow:-8px 0 24px rgba(0,0,0,0.25); }
+  .run-drawer.open { right:0; }
+  .run-drawer-header { padding:14px 20px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; flex-shrink:0; background:var(--bg-raised); }
+  .run-drawer-title { font-family:var(--serif); font-size:18px; font-weight:400; }
+  .run-drawer-sub { font-size:11px; color:var(--text-dim); margin-top:2px; }
+  .run-drawer-body { flex:1; overflow-y:auto; padding:16px 20px; }
+  .run-section { margin-bottom:22px; }
+  .run-section-title { font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px; }
+  .task-row { display:grid; grid-template-columns:18px 1fr 90px 80px; gap:10px; align-items:center; padding:6px 0; border-bottom:1px solid var(--border); font-size:12px; }
+  .task-row:last-child { border-bottom:none; }
+  .task-marker { font-size:13px; }
+  .task-marker.succeeded { color:var(--green); }
+  .task-marker.running   { color:var(--blue); animation:pulse 1.6s infinite; }
+  .task-marker.failed    { color:var(--red); }
+  .task-marker.pending   { color:var(--text-faint); }
+  @keyframes pulse { 0%{opacity:1} 50%{opacity:0.4} 100%{opacity:1} }
+  .task-name { font-family:var(--mono); color:var(--text); }
+  .task-step-sub { font-size:10px; color:var(--text-faint); }
+  .task-time { font-size:11px; color:var(--text-dim); text-align:right; }
+  .gpu-tile { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:10px 12px; margin-bottom:8px; }
+  .gpu-tile-header { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; }
+  .gpu-tile-id { font-size:11px; font-weight:500; color:var(--accent); }
+  .gpu-tile-node { font-size:10px; color:var(--text-faint); }
+  .gpu-tile-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; font-size:11px; }
+  .gpu-stat { display:flex; flex-direction:column; }
+  .gpu-stat-label { font-size:9px; text-transform:uppercase; letter-spacing:0.1em; color:var(--text-faint); }
+  .gpu-stat-value { font-size:14px; font-family:var(--mono); color:var(--text); margin-top:2px; }
+  .gpu-stat-value.warn { color:var(--accent); }
+  .gpu-stat-value.hot  { color:var(--red); }
+  .gpu-bar { height:4px; background:var(--bg-input); border-radius:2px; margin-top:4px; overflow:hidden; }
+  .gpu-bar-fill { height:100%; background:var(--blue); transition:width .3s ease; }
+  .gpu-bar-fill.high { background:var(--accent); }
+  .gpu-bar-fill.crit { background:var(--red); }
+  .vllm-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .vllm-cell { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:10px 12px; }
+  .vllm-cell-label { font-size:9px; text-transform:uppercase; letter-spacing:0.1em; color:var(--text-faint); }
+  .vllm-cell-value { font-size:18px; font-family:var(--mono); color:var(--text); margin-top:2px; }
+  .vllm-cell-unit  { font-size:11px; color:var(--text-faint); margin-left:4px; }
+
   /* ── Theme picker ── */
   .theme-chip { position:relative; display:inline-block; }
   .theme-chip-btn { padding:4px 10px; background:var(--bg-input); border:1px solid var(--border); border-radius:2px; font-size:11px; color:var(--text-dim); cursor:pointer; transition:color .15s, border-color .15s; }
@@ -624,12 +667,41 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.5.2</span>
+  <span>DAV Console · v0.6</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
   </div>
 </footer>
+
+<!-- ══════════════════════════ RUN DETAIL DRAWER ══════════════════════════ -->
+<div class="run-drawer" id="runDrawer">
+  <div class="run-drawer-header">
+    <div>
+      <div class="run-drawer-title" id="rdTitle">Run detail</div>
+      <div class="run-drawer-sub" id="rdSub">—</div>
+    </div>
+    <button class="btn ghost btn-icon" id="rdClose">✕</button>
+  </div>
+  <div class="run-drawer-body">
+    <div class="run-section">
+      <div class="run-section-title">Pipeline tasks</div>
+      <div id="rdTasks"><div class="empty" style="font-size:11px">loading…</div></div>
+    </div>
+    <div class="run-section">
+      <div class="run-section-title" id="rdGpuTitle">GPUs (live)</div>
+      <div id="rdGpus"><div class="empty" style="font-size:11px">loading metrics…</div></div>
+    </div>
+    <div class="run-section">
+      <div class="run-section-title">Inference (vLLM, live)</div>
+      <div id="rdVllm" class="vllm-grid"></div>
+    </div>
+    <div class="run-section">
+      <div class="run-section-title">Params</div>
+      <div id="rdParams" class="kv-grid" style="font-size:11px"></div>
+    </div>
+  </div>
+</div>
 
 </div><!-- /shell -->
 
@@ -1048,9 +1120,175 @@ function renderRunsTable() {
     tr.addEventListener('click', () => {
       document.querySelectorAll('#runsTable tr.active').forEach(t => t.classList.remove('active'));
       tr.classList.add('active');
+      openRunDrawer(r.name);
     });
     body.appendChild(tr);
   });
+}
+
+// ── Run detail drawer ─────────────────────────────────────────
+let _rdName = null;
+let _rdPollTimer = null;
+
+function openRunDrawer(name) {
+  _rdName = name;
+  document.getElementById('rdTitle').textContent = name;
+  document.getElementById('rdSub').textContent = 'loading…';
+  document.getElementById('rdTasks').innerHTML = '<div class="empty" style="font-size:11px">loading…</div>';
+  document.getElementById('rdGpus').innerHTML = '<div class="empty" style="font-size:11px">loading metrics…</div>';
+  document.getElementById('rdVllm').innerHTML = '';
+  document.getElementById('rdParams').innerHTML = '';
+  document.getElementById('runDrawer').classList.add('open');
+  refreshRunDrawer();
+  if (_rdPollTimer) clearInterval(_rdPollTimer);
+  _rdPollTimer = setInterval(refreshRunDrawer, 3000);
+}
+
+function closeRunDrawer() {
+  document.getElementById('runDrawer').classList.remove('open');
+  _rdName = null;
+  if (_rdPollTimer) { clearInterval(_rdPollTimer); _rdPollTimer = null; }
+}
+
+async function refreshRunDrawer() {
+  if (!_rdName) return;
+  // Two requests in parallel: run detail (Tekton) + live metrics snapshot
+  const [detail, snap] = await Promise.all([
+    api(`/api/runs/${encodeURIComponent(_rdName)}`).catch(e => ({_err: e.message})),
+    api('/api/metrics/snapshot').catch(e => ({_err: e.message})),
+  ]);
+  if (detail._err) {
+    document.getElementById('rdSub').innerHTML = `<span style="color:var(--red)">${esc(detail._err)}</span>`;
+  } else {
+    renderRunDrawerDetail(detail);
+    // Stop polling once the run is in a terminal state
+    if (['Succeeded','Failed','Cancelled','TimedOut'].includes(detail.phase)) {
+      if (_rdPollTimer) { clearInterval(_rdPollTimer); _rdPollTimer = null; }
+    }
+  }
+  renderRunDrawerMetrics(snap);
+}
+
+function renderRunDrawerDetail(d) {
+  document.getElementById('rdSub').innerHTML =
+    `${phaseHtml(d.phase)} · started ${esc(fmtTs(d.started_at||d.created_at))} · ${esc(fmtDuration(d.started_at||d.created_at, d.completed_at))}`
+    + (d.status_reason ? ` · <span style="color:var(--text-dim)">${esc(d.status_reason)}</span>` : '');
+
+  // Task ladder
+  const tasksEl = document.getElementById('rdTasks');
+  const tasks = d.tasks || [];
+  if (!tasks.length) {
+    tasksEl.innerHTML = '<div class="empty" style="font-size:11px">No tasks reported yet.</div>';
+  } else {
+    tasksEl.innerHTML = '';
+    tasks.forEach(t => {
+      const phaseCls = (t.phase||'pending').toLowerCase();
+      const marker = phaseCls === 'succeeded' ? '✓'
+                   : phaseCls === 'failed'    ? '✗'
+                   : phaseCls === 'running' || phaseCls === 'started' || phaseCls === 'pending' ? '●'
+                   : '○';
+      const dur = t.started_at ? fmtDuration(t.started_at, t.completed_at) : '—';
+      const row = document.createElement('div');
+      row.className = 'task-row';
+      row.innerHTML = `
+        <div class="task-marker ${phaseCls}">${marker}</div>
+        <div>
+          <div class="task-name">${esc(t.step || t.name)}</div>
+          ${t.message ? `<div class="task-step-sub">${esc(t.message.slice(0,140))}</div>` : ''}
+        </div>
+        <div class="task-time">${esc(t.phase || 'pending')}</div>
+        <div class="task-time">${esc(dur)}</div>`;
+      tasksEl.appendChild(row);
+    });
+  }
+
+  // Params
+  const pe = document.getElementById('rdParams');
+  pe.innerHTML = '';
+  Object.entries(d.params || {}).forEach(([k,v]) => {
+    pe.innerHTML += `<div class="kv-label">${esc(k)}</div><div class="kv-val" style="word-break:break-all">${esc(v)}</div>`;
+  });
+}
+
+function _fmtN(v, digits) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  return Number(v).toLocaleString(undefined, {maximumFractionDigits: digits ?? 1});
+}
+
+function renderRunDrawerMetrics(snap) {
+  const gpusEl = document.getElementById('rdGpus');
+  const vllmEl = document.getElementById('rdVllm');
+  if (snap._err) {
+    gpusEl.innerHTML = `<div class="empty" style="font-size:11px;color:var(--red)">metrics: ${esc(snap._err)}</div>`;
+    vllmEl.innerHTML = '';
+    return;
+  }
+  if (snap && !snap.available) {
+    gpusEl.innerHTML = `<div class="empty" style="font-size:11px;color:var(--text-faint)">metrics unavailable: ${esc(snap.reason||'')}</div>`;
+    vllmEl.innerHTML = '';
+    return;
+  }
+
+  // GPU tiles
+  const gpus = (snap && snap.gpus) || [];
+  if (!gpus.length) {
+    gpusEl.innerHTML = '<div class="empty" style="font-size:11px;color:var(--text-faint)">No GPU metrics yet (exporter scrape pending).</div>';
+  } else {
+    gpusEl.innerHTML = '';
+    gpus.forEach(g => {
+      const gfx = g.gpu_gfx_activity ?? null;
+      const vramPct = g.used_vram_pct ?? null;
+      const power = g.gpu_power_watts ?? null;
+      const temp = g.gpu_edge_temp_c ?? g.gpu_junction_temp_c ?? null;
+      const gfxCls = gfx === null ? '' : (gfx > 90 ? 'crit' : gfx > 70 ? 'high' : '');
+      const vCls = vramPct === null ? '' : (vramPct > 95 ? 'crit' : vramPct > 80 ? 'high' : '');
+      const tCls = temp === null ? '' : (temp > 90 ? 'hot' : temp > 80 ? 'warn' : '');
+      const tile = document.createElement('div');
+      tile.className = 'gpu-tile';
+      tile.innerHTML = `
+        <div class="gpu-tile-header">
+          <span class="gpu-tile-id">GPU ${esc(g.gpu_id ?? '?')}${g.model ? ' · '+esc(g.model) : ''}</span>
+          <span class="gpu-tile-node">${esc(g.node || '')}</span>
+        </div>
+        <div class="gpu-tile-stats">
+          <div class="gpu-stat">
+            <div class="gpu-stat-label">GFX</div>
+            <div class="gpu-stat-value">${_fmtN(gfx, 0)}<span class="vllm-cell-unit">%</span></div>
+            <div class="gpu-bar"><div class="gpu-bar-fill ${gfxCls}" style="width:${Math.max(0,Math.min(100, gfx||0))}%"></div></div>
+          </div>
+          <div class="gpu-stat">
+            <div class="gpu-stat-label">VRAM</div>
+            <div class="gpu-stat-value">${_fmtN(vramPct, 0)}<span class="vllm-cell-unit">%</span></div>
+            <div class="gpu-bar"><div class="gpu-bar-fill ${vCls}" style="width:${Math.max(0,Math.min(100, vramPct||0))}%"></div></div>
+          </div>
+          <div class="gpu-stat">
+            <div class="gpu-stat-label">Power</div>
+            <div class="gpu-stat-value">${_fmtN(power, 0)}<span class="vllm-cell-unit">W</span></div>
+          </div>
+          <div class="gpu-stat">
+            <div class="gpu-stat-label">Temp</div>
+            <div class="gpu-stat-value ${tCls}">${_fmtN(temp, 0)}<span class="vllm-cell-unit">°C</span></div>
+          </div>
+        </div>`;
+      gpusEl.appendChild(tile);
+    });
+  }
+
+  // vLLM aggregates
+  const v = (snap && snap.vllm) || {};
+  vllmEl.innerHTML = `
+    <div class="vllm-cell"><div class="vllm-cell-label">Running</div>
+      <div class="vllm-cell-value">${_fmtN(v.running_requests, 0)}</div></div>
+    <div class="vllm-cell"><div class="vllm-cell-label">Waiting</div>
+      <div class="vllm-cell-value">${_fmtN(v.waiting_requests, 0)}</div></div>
+    <div class="vllm-cell"><div class="vllm-cell-label">KV cache</div>
+      <div class="vllm-cell-value">${_fmtN(v.kv_cache_pct, 0)}<span class="vllm-cell-unit">%</span></div></div>
+    <div class="vllm-cell"><div class="vllm-cell-label">Gen tokens/s</div>
+      <div class="vllm-cell-value">${_fmtN(v.generation_tps, 1)}</div></div>
+    <div class="vllm-cell"><div class="vllm-cell-label">Prompt tokens/s</div>
+      <div class="vllm-cell-value">${_fmtN(v.prompt_tps, 1)}</div></div>
+    <div class="vllm-cell"><div class="vllm-cell-label">TTFT p95</div>
+      <div class="vllm-cell-value">${_fmtN(v.ttft_p95_seconds, 2)}<span class="vllm-cell-unit">s</span></div></div>`;
 }
 
 async function loadNewRunDefaults(forcedSubpath) {
@@ -2436,6 +2674,7 @@ document.getElementById('cancelNewRun').addEventListener('click', closeNewRun);
 document.getElementById('submitNewRun').addEventListener('click', submitNewRun);
 document.getElementById('nrReloadDefaults').addEventListener('click', () => loadNewRunDefaults());
 document.getElementById('refreshRunsBtn').addEventListener('click', loadRuns);
+document.getElementById('rdClose').addEventListener('click', closeRunDrawer);
 
 document.getElementById('refreshResultsBtn').addEventListener('click', loadResults);
 document.getElementById('resultFilter').addEventListener('input', renderResultList);

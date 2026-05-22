@@ -107,12 +107,17 @@ spec:
               value: "{{ consumer_spec_repo_branch }}"
             - name: DAV_WORKSPACE_PATH
               value: "/workspace"
+            - name: DAV_METRICS_CA_PATH
+              value: "/var/run/configmaps/service-ca/service-ca.crt"
           volumeMounts:
             - name: corpus
               mountPath: /data
               readOnly: true
             - name: workspace
               mountPath: /workspace
+              readOnly: true
+            - name: service-ca
+              mountPath: /var/run/configmaps/service-ca
               readOnly: true
           readinessProbe:
             httpGet:
@@ -140,3 +145,7 @@ spec:
           persistentVolumeClaim:
             claimName: "{{ dav_workspace_pvc_name }}"
             readOnly: true
+        - name: service-ca
+          configMap:
+            name: dav-review-service-ca
+            optional: true   # tolerate first deploy where service-ca CM hasn't reconciled yet

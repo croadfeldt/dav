@@ -270,6 +270,94 @@ def list_recent(limit: int = 20) -> list[dict]:
     return runs[:limit]
 
 
+def get_run_detail(name: str) -> dict:
+    """Fetch a single PipelineRun and its child TaskRun statuses.
+
+    Used by the run-detail UI: returns the pipeline-level phase + a list of
+    TaskRuns with their step/container status so the UI can render a task
+    ladder (current step, durations, conditions).
+    """
+    if not ENABLED:
+        raise RuntimeError("pipeline trigger disabled")
+    try:
+        pr = _api().get_namespaced_custom_object(
+            group=_TEKTON_GROUP,
+            version=_TEKTON_VERSION,
+            namespace=NAMESPACE,
+            plural=_PIPELINERUN_PLURAL,
+            name=name,
+        )
+    except ApiException as e:
+        if e.status == 404:
+            raise KeyError(name)
+        raise
+
+    meta = pr.get("metadata", {}) or {}
+    spec = pr.get("spec", {}) or {}
+    status = pr.get("status", {}) or {}
+    conditions = status.get("conditions", []) or []
+    succeeded = next((c for c in conditions if c.get("type") == "Succeeded"), {})
+
+    # Walk childReferences (Tekton v1+) and fetch each TaskRun's status.
+    # Fall back to status.taskRuns (older API) if childReferences absent.
+    child_refs = status.get("childReferences", []) or []
+    task_names = [c.get("name") for c in child_refs
+                  if c.get("kind") == "TaskRun" and c.get("name")]
+    if not task_names:
+        # Older shape: status.taskRuns is a map { name: { ... } }
+        task_names = list((status.get("taskRuns") or {}).keys())
+
+    tasks: list[dict] = []
+    for tn in task_names:
+        try:
+            tr = _api().get_namespaced_custom_object(
+                group=_TEKTON_GROUP, version=_TEKTON_VERSION,
+                namespace=NAMESPACE, plural="taskruns", name=tn,
+            )
+        except ApiException:
+            continue
+        tr_meta = tr.get("metadata", {}) or {}
+        tr_spec = tr.get("spec", {}) or {}
+        tr_status = tr.get("status", {}) or {}
+        tr_conds = tr_status.get("conditions", []) or []
+        tr_succ = next((c for c in tr_conds if c.get("type") == "Succeeded"), {})
+        # pipelineTask is the logical step name (e.g. "sync-corpus"); fall
+        # back to labels if absent.
+        step_name = (tr_meta.get("labels") or {}).get("tekton.dev/pipelineTask")
+        if not step_name:
+            step_name = tr_spec.get("taskRef", {}).get("name") or tn
+        tasks.append({
+            "name": tn,
+            "step": step_name,
+            "phase": _phase_from_condition(tr_succ),
+            "reason": tr_succ.get("reason"),
+            "message": tr_succ.get("message"),
+            "started_at": tr_status.get("startTime"),
+            "completed_at": tr_status.get("completionTime"),
+            "pod_name": tr_status.get("podName"),
+        })
+    # Sort by start time so the ladder reads in execution order
+    tasks.sort(key=lambda t: t.get("started_at") or "")
+
+    return {
+        "name": meta.get("name"),
+        "uid": meta.get("uid"),
+        "phase": _phase_from_condition(succeeded),
+        "status_reason": succeeded.get("reason"),
+        "status_message": succeeded.get("message"),
+        "created_at": meta.get("creationTimestamp"),
+        "started_at": status.get("startTime"),
+        "completed_at": status.get("completionTime"),
+        "triggered_by": (meta.get("annotations") or {}).get("dav-review/triggered-by-user"),
+        "params": {p["name"]: p.get("value") for p in spec.get("params", [])},
+        "workspaces": [
+            {"name": w.get("name"), "pvc": (w.get("persistentVolumeClaim") or {}).get("claimName")}
+            for w in spec.get("workspaces", [])
+        ],
+        "tasks": tasks,
+    }
+
+
 def _phase_from_condition(cond: dict) -> str:
     """Translate Tekton Succeeded condition into a display phase."""
     status = cond.get("status")

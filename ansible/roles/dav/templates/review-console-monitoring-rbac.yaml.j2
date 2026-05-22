@@ -1,0 +1,23 @@
+---
+# Grants the review-console API ServiceAccount read access to cluster
+# monitoring data via thanos-querier (openshift-monitoring), so the run-detail
+# UI can render GPU and inference metrics.
+#
+# `cluster-monitoring-view` is the standard OpenShift ClusterRole for "read
+# anything in cluster Prometheus / thanos-querier". It does NOT grant write
+# access to anything; safe to grant to UI backends that only render metrics.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dav-review-api-cluster-monitoring-view
+  labels:
+    app: dav-review
+    component: review-console-monitoring
+subjects:
+  - kind: ServiceAccount
+    name: dav-review-api
+    namespace: {{ dav_namespace }}
+roleRef:
+  kind: ClusterRole
+  name: cluster-monitoring-view
+  apiGroup: rbac.authorization.k8s.io
