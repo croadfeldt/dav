@@ -68,11 +68,11 @@ CREATE TABLE IF NOT EXISTS managed_use_cases (
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   tags            TEXT[] NOT NULL DEFAULT '{}'
 );
+-- Migrate existing deployments that predate lifecycle_state.
+-- Must run before the index on lifecycle_state below.
+ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT NULL DEFAULT 'draft';
 CREATE INDEX IF NOT EXISTS idx_managed_uc_updated ON managed_use_cases(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_managed_uc_state   ON managed_use_cases(lifecycle_state);
-
--- Add lifecycle_state to existing tables that predate this column.
-ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT NULL DEFAULT 'draft';
 
 -- ── Lifecycle event log ──────────────────────────────────────────────────
 -- Append-only audit trail for UC state transitions.
