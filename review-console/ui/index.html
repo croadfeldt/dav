@@ -179,8 +179,13 @@
   .vllm-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
   .vllm-cell { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:10px 12px; }
   .vllm-cell-label { font-size:9px; text-transform:uppercase; letter-spacing:0.1em; color:var(--text-faint); }
-  .vllm-cell-value { font-size:18px; font-family:var(--mono); color:var(--text); margin-top:2px; }
+  .vllm-cell-value { font-size:18px; font-family:var(--mono); color:var(--text); margin-top:2px; transition:background-color .8s ease; padding:0 2px; border-radius:2px; }
   .vllm-cell-unit  { font-size:11px; color:var(--text-faint); margin-left:4px; }
+  /* Value-change flash — applied by JS when a metric value changes between polls */
+  .metric-flash { background-color:var(--accent-bg) !important; }
+  .freshness-chip { font-size:10px; color:var(--text-faint); margin-left:8px; }
+  .freshness-chip.stale { color:var(--accent); }
+  .freshness-chip.very-stale { color:var(--red); }
 
   /* ── Theme picker ── */
   .theme-chip { position:relative; display:inline-block; }
@@ -667,7 +672,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.6</span>
+  <span>DAV Console · v0.6.1</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -689,11 +694,15 @@
       <div id="rdTasks"><div class="empty" style="font-size:11px">loading…</div></div>
     </div>
     <div class="run-section">
-      <div class="run-section-title" id="rdGpuTitle">GPUs (live)</div>
+      <div class="run-section-title">
+        GPUs (live)<span id="rdGpuFresh" class="freshness-chip"></span>
+      </div>
       <div id="rdGpus"><div class="empty" style="font-size:11px">loading metrics…</div></div>
     </div>
     <div class="run-section">
-      <div class="run-section-title">Inference (vLLM, live)</div>
+      <div class="run-section-title">
+        Inference (vLLM, live)<span id="rdVllmFresh" class="freshness-chip"></span>
+      </div>
       <div id="rdVllm" class="vllm-grid"></div>
     </div>
     <div class="run-section">
@@ -1129,6 +1138,13 @@ function renderRunsTable() {
 // ── Run detail drawer ─────────────────────────────────────────
 let _rdName = null;
 let _rdPollTimer = null;
+// Track metric value history so we can show "Xs since last change" and
+// flash cells when their value changes between polls.
+let _rdLastGpuValues  = {};   // {gpu_id: {metric: value}}
+let _rdLastVllmValues = {};   // {key: value}
+let _rdGpuLastChange  = 0;    // epoch seconds when any GPU metric last changed
+let _rdVllmLastChange = 0;    // epoch seconds when any vLLM metric last changed
+let _rdFreshTimer     = null; // separate timer that updates the "Xs ago" label every second
 
 function openRunDrawer(name) {
   _rdName = name;
@@ -1138,16 +1154,52 @@ function openRunDrawer(name) {
   document.getElementById('rdGpus').innerHTML = '<div class="empty" style="font-size:11px">loading metrics…</div>';
   document.getElementById('rdVllm').innerHTML = '';
   document.getElementById('rdParams').innerHTML = '';
+  document.getElementById('rdGpuFresh').textContent = '';
+  document.getElementById('rdVllmFresh').textContent = '';
+  // Reset value history so the first render isn't a "change"
+  _rdLastGpuValues = {}; _rdLastVllmValues = {};
+  _rdGpuLastChange = 0;  _rdVllmLastChange = 0;
   document.getElementById('runDrawer').classList.add('open');
   refreshRunDrawer();
   if (_rdPollTimer) clearInterval(_rdPollTimer);
   _rdPollTimer = setInterval(refreshRunDrawer, 3000);
+  // Update the "Xs since change" label every 1s so it counts in real time
+  if (_rdFreshTimer) clearInterval(_rdFreshTimer);
+  _rdFreshTimer = setInterval(updateFreshnessLabels, 1000);
 }
 
 function closeRunDrawer() {
   document.getElementById('runDrawer').classList.remove('open');
   _rdName = null;
   if (_rdPollTimer) { clearInterval(_rdPollTimer); _rdPollTimer = null; }
+  if (_rdFreshTimer) { clearInterval(_rdFreshTimer); _rdFreshTimer = null; }
+}
+
+function _freshnessLabel(lastChangeEpoch) {
+  if (!lastChangeEpoch) return {text: '', cls: ''};
+  const ago = Math.max(0, Math.floor(Date.now()/1000 - lastChangeEpoch));
+  const cls = ago > 90 ? 'very-stale' : ago > 30 ? 'stale' : '';
+  // Show seconds up to 119, then "Xm Ys"
+  const text = ago < 120 ? `· no change ${ago}s` : `· no change ${Math.floor(ago/60)}m ${ago%60}s`;
+  return {text, cls};
+}
+
+function updateFreshnessLabels() {
+  for (const [el, last] of [
+    ['rdGpuFresh',  _rdGpuLastChange],
+    ['rdVllmFresh', _rdVllmLastChange],
+  ]) {
+    const e = document.getElementById(el); if (!e) continue;
+    const f = _freshnessLabel(last);
+    e.textContent = f.text;
+    e.className = 'freshness-chip ' + f.cls;
+  }
+}
+
+function _flashChanged(domId) {
+  const el = document.getElementById(domId); if (!el) return;
+  el.classList.add('metric-flash');
+  setTimeout(() => el.classList.remove('metric-flash'), 800);
 }
 
 async function refreshRunDrawer() {
@@ -1229,20 +1281,29 @@ function renderRunDrawerMetrics(snap) {
     return;
   }
 
-  // GPU tiles
+  // ── GPU tiles ───────────────────────────────────────────────
   const gpus = (snap && snap.gpus) || [];
+  const newGpuValues = {};
+  let gpuChanged = false;
   if (!gpus.length) {
     gpusEl.innerHTML = '<div class="empty" style="font-size:11px;color:var(--text-faint)">No GPU metrics yet (exporter scrape pending).</div>';
   } else {
     gpusEl.innerHTML = '';
-    gpus.forEach(g => {
+    gpus.forEach((g, idx) => {
+      const gid = g.gpu_id ?? idx;
       const gfx = g.gpu_gfx_activity ?? null;
       const vramPct = g.used_vram_pct ?? null;
       const power = g.gpu_power_watts ?? null;
       const temp = g.gpu_edge_temp_c ?? g.gpu_junction_temp_c ?? null;
+      newGpuValues[gid] = {gfx, vramPct, power, temp};
+      const prev = _rdLastGpuValues[gid] || {};
+      ['gfx','vramPct','power','temp'].forEach(k => {
+        if (prev[k] !== undefined && prev[k] !== newGpuValues[gid][k]) gpuChanged = true;
+      });
       const gfxCls = gfx === null ? '' : (gfx > 90 ? 'crit' : gfx > 70 ? 'high' : '');
-      const vCls = vramPct === null ? '' : (vramPct > 95 ? 'crit' : vramPct > 80 ? 'high' : '');
-      const tCls = temp === null ? '' : (temp > 90 ? 'hot' : temp > 80 ? 'warn' : '');
+      const vCls   = vramPct === null ? '' : (vramPct > 95 ? 'crit' : vramPct > 80 ? 'high' : '');
+      const tCls   = temp === null ? '' : (temp > 90 ? 'hot' : temp > 80 ? 'warn' : '');
+      const idBase = `gpu${idx}`;
       const tile = document.createElement('div');
       tile.className = 'gpu-tile';
       tile.innerHTML = `
@@ -1253,42 +1314,60 @@ function renderRunDrawerMetrics(snap) {
         <div class="gpu-tile-stats">
           <div class="gpu-stat">
             <div class="gpu-stat-label">GFX</div>
-            <div class="gpu-stat-value">${_fmtN(gfx, 0)}<span class="vllm-cell-unit">%</span></div>
+            <div class="gpu-stat-value" id="${idBase}-gfx">${_fmtN(gfx, 0)}<span class="vllm-cell-unit">%</span></div>
             <div class="gpu-bar"><div class="gpu-bar-fill ${gfxCls}" style="width:${Math.max(0,Math.min(100, gfx||0))}%"></div></div>
           </div>
           <div class="gpu-stat">
             <div class="gpu-stat-label">VRAM</div>
-            <div class="gpu-stat-value">${_fmtN(vramPct, 0)}<span class="vllm-cell-unit">%</span></div>
+            <div class="gpu-stat-value" id="${idBase}-vram">${_fmtN(vramPct, 0)}<span class="vllm-cell-unit">%</span></div>
             <div class="gpu-bar"><div class="gpu-bar-fill ${vCls}" style="width:${Math.max(0,Math.min(100, vramPct||0))}%"></div></div>
           </div>
           <div class="gpu-stat">
             <div class="gpu-stat-label">Power</div>
-            <div class="gpu-stat-value">${_fmtN(power, 0)}<span class="vllm-cell-unit">W</span></div>
+            <div class="gpu-stat-value" id="${idBase}-pwr">${_fmtN(power, 0)}<span class="vllm-cell-unit">W</span></div>
           </div>
           <div class="gpu-stat">
             <div class="gpu-stat-label">Temp</div>
-            <div class="gpu-stat-value ${tCls}">${_fmtN(temp, 0)}<span class="vllm-cell-unit">°C</span></div>
+            <div class="gpu-stat-value ${tCls}" id="${idBase}-tmp">${_fmtN(temp, 0)}<span class="vllm-cell-unit">°C</span></div>
           </div>
         </div>`;
       gpusEl.appendChild(tile);
+      // Flash any value that changed from the previous poll
+      if (prev.gfx     !== undefined && prev.gfx     !== gfx)     _flashChanged(`${idBase}-gfx`);
+      if (prev.vramPct !== undefined && prev.vramPct !== vramPct) _flashChanged(`${idBase}-vram`);
+      if (prev.power   !== undefined && prev.power   !== power)   _flashChanged(`${idBase}-pwr`);
+      if (prev.temp    !== undefined && prev.temp    !== temp)    _flashChanged(`${idBase}-tmp`);
     });
   }
+  // First render: don't claim "no change" — start the clock now
+  if (Object.keys(_rdLastGpuValues).length === 0 || gpuChanged) {
+    _rdGpuLastChange = Math.floor(Date.now()/1000);
+  }
+  _rdLastGpuValues = newGpuValues;
 
-  // vLLM aggregates
+  // ── vLLM aggregates ─────────────────────────────────────────
   const v = (snap && snap.vllm) || {};
-  vllmEl.innerHTML = `
-    <div class="vllm-cell"><div class="vllm-cell-label">Running</div>
-      <div class="vllm-cell-value">${_fmtN(v.running_requests, 0)}</div></div>
-    <div class="vllm-cell"><div class="vllm-cell-label">Waiting</div>
-      <div class="vllm-cell-value">${_fmtN(v.waiting_requests, 0)}</div></div>
-    <div class="vllm-cell"><div class="vllm-cell-label">KV cache</div>
-      <div class="vllm-cell-value">${_fmtN(v.kv_cache_pct, 0)}<span class="vllm-cell-unit">%</span></div></div>
-    <div class="vllm-cell"><div class="vllm-cell-label">Gen tokens/s</div>
-      <div class="vllm-cell-value">${_fmtN(v.generation_tps, 1)}</div></div>
-    <div class="vllm-cell"><div class="vllm-cell-label">Prompt tokens/s</div>
-      <div class="vllm-cell-value">${_fmtN(v.prompt_tps, 1)}</div></div>
-    <div class="vllm-cell"><div class="vllm-cell-label">TTFT p95</div>
-      <div class="vllm-cell-value">${_fmtN(v.ttft_p95_seconds, 2)}<span class="vllm-cell-unit">s</span></div></div>`;
+  const vKeys = [
+    ['running_requests',  'Running',          'rdv-running',  0, ''],
+    ['waiting_requests',  'Waiting',          'rdv-waiting',  0, ''],
+    ['kv_cache_pct',      'KV cache',         'rdv-kv',       0, '%'],
+    ['generation_tps',    'Gen tokens/s',     'rdv-gentps',   1, ''],
+    ['prompt_tps',        'Prompt tokens/s',  'rdv-prompttps',1, ''],
+    ['ttft_p95_seconds',  'TTFT p95',         'rdv-ttft',     2, 's'],
+  ];
+  vllmEl.innerHTML = vKeys.map(([k,label,id,prec,unit]) => `
+    <div class="vllm-cell"><div class="vllm-cell-label">${label}</div>
+      <div class="vllm-cell-value" id="${id}">${_fmtN(v[k], prec)}${unit ? `<span class="vllm-cell-unit">${unit}</span>` : ''}</div></div>`).join('');
+  let vllmChanged = false;
+  vKeys.forEach(([k,_l,id]) => {
+    const prev = _rdLastVllmValues[k];
+    if (prev !== undefined && prev !== v[k]) { _flashChanged(id); vllmChanged = true; }
+    _rdLastVllmValues[k] = v[k];
+  });
+  if (Object.keys(_rdLastVllmValues).length === 0 || vllmChanged) {
+    _rdVllmLastChange = Math.floor(Date.now()/1000);
+  }
+  updateFreshnessLabels();
 }
 
 async function loadNewRunDefaults(forcedSubpath) {
