@@ -141,13 +141,23 @@ _SNAPSHOT_QUERIES: dict[str, str] = {
 
 
 def _scalarize(result: list) -> Optional[float]:
-    """Extract a single scalar from a Prometheus vector result (first row)."""
+    """Extract a single scalar from a Prometheus vector result (first row).
+
+    Returns None for missing rows or non-finite values. Prometheus returns
+    "NaN" / "+Inf" / "-Inf" as strings in the JSON response (e.g. when a
+    histogram_quantile has no samples), and FastAPI's default JSON encoder
+    rejects those — must coerce to None before they hit the wire.
+    """
     if not result:
         return None
     try:
-        return float(result[0]["value"][1])
+        v = float(result[0]["value"][1])
     except (KeyError, IndexError, TypeError, ValueError):
         return None
+    # math.isfinite would do the same; spell it out to avoid an import here
+    if v != v or v in (float("inf"), float("-inf")):
+        return None
+    return v
 
 
 async def snapshot() -> dict:
@@ -195,7 +205,9 @@ async def snapshot() -> dict:
                 "model": metric.get("card_model") or metric.get("model") or metric.get("device_id"),
             })
             try:
-                slot[name] = float(row["value"][1])
+                v = float(row["value"][1])
+                if v == v and v not in (float("inf"), float("-inf")):
+                    slot[name] = v
             except (KeyError, IndexError, TypeError, ValueError):
                 pass
 
