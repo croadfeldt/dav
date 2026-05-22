@@ -173,6 +173,7 @@ def run_samples(
     sample_seeds: list[int] | None = None,
     consumer_profile=None,
     consumer_content_path=None,
+    turns_log_path: "Path | None" = None,
 ) -> list[Analysis]:
     """Run N stage-2 samples and return them as a list, in seed order.
 
@@ -215,10 +216,22 @@ def run_samples(
 
     def _run_one(seed: int) -> Analysis:
         mcp = mcp_factory()
+        # When turns_log_path points at a directory we treat it as the
+        # parent dir and derive per-sample files; when it points at a file
+        # we use it directly (single-sample reproduce/verification).
+        per_sample = None
+        if turns_log_path is not None:
+            if turns_log_path.is_dir() or str(turns_log_path).endswith("/"):
+                per_sample = turns_log_path / f"{use_case.uuid}.seed-{seed}.jsonl"
+            else:
+                per_sample = turns_log_path.with_name(
+                    turns_log_path.stem + f".seed-{seed}.jsonl"
+                )
         agent = Stage2Agent(
             inference=inference, mcp=mcp, config=config,
             consumer_profile=consumer_profile,
             consumer_content_path=consumer_content_path,
+            turns_log_path=per_sample,
         )
         agent._sample_seed = seed
         log.info("starting sample with seed=%d", seed)

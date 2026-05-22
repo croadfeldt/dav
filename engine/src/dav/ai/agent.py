@@ -205,6 +205,7 @@ class Stage2Agent:
         config: AgentConfig | None = None,
         consumer_profile=None,
         consumer_content_path=None,
+        turns_log_path: "Path | None" = None,
     ):
         self.inference = inference
         self.mcp = mcp
@@ -221,6 +222,11 @@ class Stage2Agent:
         # consumer_version_string() at AnalysisMetadata population time.
         # When None, AnalysisMetadata.consumer_version stays empty.
         self.consumer_content_path = consumer_content_path
+        # Optional structured per-turn JSONL log. When set, every model
+        # response + tool call/result is appended as one JSON line. Consumed
+        # by the DAV review-console run-detail drawer for the live
+        # prompts/responses tail. None disables emission (cost = 0).
+        self.turns_log_path = turns_log_path
         self._tool_trace: list[ToolCall] = []
         self._total_tokens: int = 0
         # wall-time tracking for AnalysisMetadata.wall_time_seconds
@@ -229,6 +235,28 @@ class Stage2Agent:
         # config.seed. The runner sets this for each sample of a multi-sample
         # run so each sample uses a distinct seed.
         self._sample_seed: int | None = None
+
+    def _emit_turn(self, turn: int, kind: str, **fields) -> None:
+        """Append a single structured-turn record to turns_log_path (JSONL).
+
+        Errors are swallowed — emission must never disrupt the run itself.
+        `kind` values: 'start', 'turn-start', 'response', 'tool', 'final'.
+        """
+        if self.turns_log_path is None:
+            return
+        try:
+            import datetime as _dt
+            rec = {
+                "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                "turn": turn,
+                "kind": kind,
+                **fields,
+            }
+            self.turns_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.turns_log_path.open("a") as f:
+                f.write(json.dumps(rec, default=str) + "\n")
+        except Exception as e:
+            log.warning("turns emit failed: %s", e)
 
     def analyze(self, use_case: UseCase) -> Analysis:
         """
@@ -245,12 +273,21 @@ class Stage2Agent:
         self._wall_time_start = _time.monotonic()
 
         tool_defs = get_tool_definitions()
+        sys_prompt = build_stage2_system_prompt(self.consumer_profile)
+        user_prompt = build_stage2_user_prompt(use_case, self.consumer_profile)
         messages: list[ChatMessage] = [
-            ChatMessage(role="system",
-                        content=build_stage2_system_prompt(self.consumer_profile)),
-            ChatMessage(role="user",
-                        content=build_stage2_user_prompt(use_case, self.consumer_profile)),
+            ChatMessage(role="system",  content=sys_prompt),
+            ChatMessage(role="user",    content=user_prompt),
         ]
+        self._emit_turn(
+            turn=0, kind="start",
+            uc_uuid=use_case.uuid,
+            sample_seed=self._sample_seed,
+            system_prompt_preview=sys_prompt[:600],
+            user_prompt_preview=user_prompt[:1200],
+            user_prompt_length=len(user_prompt),
+            max_tool_calls=self.config.max_tool_calls,
+        )
 
         # Tool-use loop
         for turn in range(self.config.max_tool_calls + 1):
@@ -288,6 +325,16 @@ class Stage2Agent:
             usage = response.usage or {}
             self._total_tokens += usage.get("total_tokens", 0)
 
+            self._emit_turn(
+                turn=turn, kind="response",
+                content_preview=(response.content or "")[:1200],
+                content_length=len(response.content or ""),
+                tool_call_count=len(response.tool_calls or []),
+                tokens_used=usage.get("total_tokens", 0),
+                tokens_total=self._total_tokens,
+                messages_in_context=len(messages),
+            )
+
             # If the model wants to call tools, execute them and loop
             if response.tool_calls:
                 assistant_msg = ChatMessage(
@@ -308,16 +355,24 @@ class Stage2Agent:
                     log.info("turn %d: mcp call %s args=%s", turn, tool_name, args)
 
                     mcp_result = self.mcp.call(tool_name, args)
+                    result_preview = (
+                        mcp_result.result[:1200] if mcp_result.ok
+                        else f"ERROR: {mcp_result.error}"
+                    )
                     self._tool_trace.append(ToolCall(
                         tool=tool_name,
                         args=args,
-                        result_summary=(
-                            mcp_result.result[:500]
-                            if mcp_result.ok
-                            else f"ERROR: {mcp_result.error}"
-                        ),
+                        result_summary=result_preview[:500],
                         purpose=f"turn {turn}",
                     ))
+                    self._emit_turn(
+                        turn=turn, kind="tool",
+                        tool_name=tool_name,
+                        args=args,
+                        ok=mcp_result.ok,
+                        result_preview=result_preview,
+                        result_length=len(mcp_result.result or "") if mcp_result.ok else None,
+                    )
 
                     messages.append(ChatMessage(
                         role="tool",

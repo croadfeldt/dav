@@ -132,7 +132,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DAV Console API", version="0.7.1", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.8.0-pre", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -488,6 +488,71 @@ TERMINAL_PHASES = {"Succeeded", "Failed", "Cancelled", "TimedOut"}
 async def list_run_categories_v2():
     """Curated list of categories the New Run modal offers."""
     return {"categories": RUN_CATEGORIES}
+
+
+@app.get("/api/runs/stats")
+async def runs_stats():
+    """Aggregate energy + token stats across all finalized runs.
+
+    Used by the runs view header chip + the run-detail drawer's
+    'context' line. Energy reported in kWh (joules / 3.6e6).
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT
+                 COUNT(*)                                                AS total_runs,
+                 COALESCE(SUM(gpu_energy_joules), 0) / 3600000.0          AS total_kwh,
+                 COALESCE(SUM(gpu_energy_joules)
+                          FILTER (WHERE completed_at > now() - interval '24 hours'), 0) / 3600000.0 AS last_24h_kwh,
+                 COALESCE(SUM(gpu_energy_joules)
+                          FILTER (WHERE completed_at > now() - interval '7 days'),    0) / 3600000.0 AS last_7d_kwh,
+                 COALESCE(SUM(total_gen_tokens), 0)::BIGINT               AS total_gen_tokens,
+                 COALESCE(SUM(total_prompt_tokens), 0)::BIGINT            AS total_prompt_tokens
+               FROM run_sessions
+               WHERE finalized_at IS NOT NULL"""
+        )
+    return {
+        "total_runs":         int(row["total_runs"] or 0),
+        "total_kwh":          float(row["total_kwh"] or 0.0),
+        "last_24h_kwh":       float(row["last_24h_kwh"] or 0.0),
+        "last_7d_kwh":        float(row["last_7d_kwh"] or 0.0),
+        "total_gen_tokens":   int(row["total_gen_tokens"] or 0),
+        "total_prompt_tokens": int(row["total_prompt_tokens"] or 0),
+    }
+
+
+@app.get("/api/runs/{name}/turns")
+async def get_run_turns(
+    name: str,
+    file: Optional[str] = Query(None, description="specific turns file (e.g. <uuid>.seed-0.jsonl); when None, lists available files"),
+    since: int = Query(0, ge=0, description="byte offset returned by previous call's next_offset"),
+    max_records: int = Query(500, ge=1, le=2000),
+):
+    """List or tail the structured per-turn JSONL files for a PipelineRun.
+
+    First call: omit `file` → returns {"files": [...]} sorted by mtime.
+    Subsequent calls: pass `file` + `since` → returns delta records.
+    """
+    if not validations.ENABLED:
+        raise HTTPException(403, "pipeline trigger disabled")
+    # Resolve PipelineRun → workspace run_id via timestamp correlation
+    try:
+        detail = validations.get_run_detail(name)
+    except KeyError:
+        raise HTTPException(404, f"run {name!r} not found")
+    started = detail.get("started_at") or detail.get("created_at")
+    if not started or not _results.is_available():
+        return {"files": [], "records": []}
+    progress = _results.find_progress_near(started, tolerance_seconds=600)
+    if not progress:
+        return {"files": [], "records": [], "note": "no workspace run dir matches the PipelineRun start time"}
+    run_id = progress.get("_run_dir")
+    if not file:
+        return {"run_id": run_id, "files": _results.list_turns_files(run_id)}
+    res = _results.tail_turns(run_id, file, since_offset=since, max_records=max_records)
+    res["run_id"] = run_id
+    res["file"] = file
+    return res
 
 
 async def _maybe_finalize_session(detail: dict) -> Optional[dict]:

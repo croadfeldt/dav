@@ -115,6 +115,69 @@ def find_progress_near(started_at_iso: str, tolerance_seconds: int = 120) -> Opt
     return None
 
 
+def list_turns_files(run_id: str) -> list[str]:
+    """List the turns/*.jsonl files in a run directory. Each corresponds to
+    one (UC, sample) — filename pattern: <uc_uuid>.seed-<N>.jsonl."""
+    turns_dir = _results_root() / run_id / "turns"
+    if not turns_dir.is_dir():
+        return []
+    return sorted(p.name for p in turns_dir.iterdir()
+                  if p.is_file() and p.suffix == ".jsonl")
+
+
+def tail_turns(run_id: str, file_name: str, since_offset: int = 0,
+               max_records: int = 500) -> dict:
+    """Read a turns JSONL file from `since_offset` bytes onward; parse new
+    records. Returns {records, next_offset, total_lines}. Designed for
+    incremental tail-polling — UI keeps the offset between calls.
+    """
+    import json as _json
+    path = _results_root() / run_id / "turns" / file_name
+    if not path.is_file():
+        return {"records": [], "next_offset": since_offset, "total_lines": 0,
+                "error": "not found"}
+    try:
+        size = path.stat().st_size
+        # If the file was truncated/rotated, reset
+        if since_offset > size:
+            since_offset = 0
+        with path.open("rb") as f:
+            f.seek(since_offset)
+            raw = f.read()
+        next_offset = since_offset + len(raw)
+        text = raw.decode("utf-8", errors="replace")
+        # Only emit complete lines; partial trailing line stays in the file
+        # and gets picked up on the next poll once a newline is written.
+        if text and not text.endswith("\n"):
+            # Reduce next_offset so we re-read the partial line next time
+            last_nl = text.rfind("\n")
+            if last_nl >= 0:
+                next_offset = since_offset + last_nl + 1
+                text = text[:last_nl + 1]
+            else:
+                # No newline at all — wait for one
+                return {"records": [], "next_offset": since_offset,
+                        "total_lines": 0}
+        records: list[dict] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(_json.loads(line))
+            except Exception:
+                # Skip malformed lines but keep going
+                continue
+            if len(records) >= max_records:
+                break
+        return {"records": records, "next_offset": next_offset,
+                "total_lines": len(records)}
+    except Exception as e:
+        log.warning("tail_turns error %s/%s: %s", run_id, file_name, e)
+        return {"records": [], "next_offset": since_offset,
+                "total_lines": 0, "error": str(e)}
+
+
 def get_run_summary(run_id: str) -> Optional[dict]:
     """Return the full run-summary.yaml dict for a given run_id."""
     path = _results_root() / run_id / "run-summary.yaml"

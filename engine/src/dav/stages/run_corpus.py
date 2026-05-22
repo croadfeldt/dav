@@ -317,6 +317,13 @@ def run_one_uc(
         use_case.uuid, use_case.handle, mode, sample_count,
     )
 
+    # Per-UC turns log. Each sample writes <uc_uuid>.seed-<N>.jsonl into
+    # the run's turns/ dir. The DAV review-console drawer tails these for
+    # the live prompts/responses panel.
+    turns_dir = run_dir / "turns"
+    # Pass the dir; run_samples derives per-seed file names from use_case.uuid
+    turns_path = turns_dir
+
     # Run samples
     try:
         samples = run_samples(
@@ -327,6 +334,7 @@ def run_one_uc(
             sample_seeds=sample_seeds,
             consumer_profile=consumer_profile,
             consumer_content_path=consumer_content_path,
+            turns_log_path=turns_path,
         )
     except Exception as e:
         return CorpusUcResult(
