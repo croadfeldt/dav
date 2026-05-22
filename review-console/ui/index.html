@@ -44,7 +44,7 @@
   textarea { resize:vertical; line-height:1.5; }
   a { color:var(--accent); text-decoration:none; }
 
-  /* ---- Layout shell ---- */
+  /* ── Layout shell ── */
   header { display:flex; align-items:center; justify-content:space-between; padding:10px 20px; background:var(--bg-raised); border-bottom:1px solid var(--border); height:52px; flex-shrink:0; }
   .brand { display:flex; align-items:baseline; gap:12px; }
   .brand-mark { font-family:var(--serif); font-size:20px; font-weight:400; letter-spacing:0.01em; }
@@ -70,22 +70,23 @@
   .api-dot { width:6px; height:6px; border-radius:50%; background:var(--text-faint); display:inline-block; margin-right:6px; }
   .api-ok .api-dot { background:var(--green); }
   .api-err .api-dot { background:var(--red); }
+  .dropdown-item { display:block; width:100%; text-align:left; padding:7px 12px; font-size:11px; color:var(--text-dim); cursor:pointer; border:none; background:none; font-family:inherit; }
+  .dropdown-item:hover { color:var(--text); background:var(--bg-raised); }
 
-  /* ---- Two-panel layout ---- */
+  /* ── Split panels ── */
   .split { display:flex; width:100%; height:100%; overflow:hidden; }
   .split-left  { display:flex; flex-direction:column; border-right:1px solid var(--border); background:var(--bg-raised); overflow:hidden; }
   .split-right { flex:1; display:flex; flex-direction:column; overflow:hidden; }
 
-  /* ---- Panel chrome ---- */
   .panel-header { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:8px; flex-shrink:0; }
   .panel-title  { font-family:var(--serif); font-size:16px; font-weight:400; }
   .panel-title em { color:var(--accent); font-style:italic; }
-  .panel-toolbar { padding:8px 12px; border-bottom:1px solid var(--border); display:flex; gap:6px; align-items:center; flex-shrink:0; }
-  .panel-toolbar input, .panel-toolbar select { flex:1; font-size:11px; }
+  .panel-toolbar { padding:8px 12px; border-bottom:1px solid var(--border); display:flex; gap:6px; align-items:center; flex-shrink:0; flex-wrap:wrap; }
+  .panel-toolbar input, .panel-toolbar select { flex:1; font-size:11px; min-width:80px; }
   .scrollable { flex:1; overflow-y:auto; }
 
-  /* ---- Buttons ---- */
-  .btn { padding:5px 12px; font-size:11px; border:1px solid var(--border-bright); background:var(--bg-input); color:var(--text); border-radius:2px; text-transform:uppercase; letter-spacing:0.1em; transition:background .1s,border-color .1s; }
+  /* ── Buttons ── */
+  .btn { padding:5px 12px; font-size:11px; border:1px solid var(--border-bright); background:var(--bg-input); color:var(--text); border-radius:2px; text-transform:uppercase; letter-spacing:0.1em; transition:background .1s,border-color .1s; white-space:nowrap; }
   .btn:hover:not(:disabled) { background:var(--bg-raised); border-color:var(--accent-soft); }
   .btn:disabled { opacity:0.4; cursor:not-allowed; }
   .btn.primary { background:var(--accent); border-color:var(--accent); color:#1a1305; font-weight:500; }
@@ -94,9 +95,11 @@
   .btn.ghost:hover:not(:disabled) { color:var(--text); background:var(--bg-raised); }
   .btn.danger { border-color:var(--red); color:var(--red); }
   .btn.danger:hover:not(:disabled) { background:rgba(217,101,58,0.15); }
+  .btn.success { border-color:var(--green); color:var(--green); }
+  .btn.success:hover:not(:disabled) { background:rgba(123,168,79,0.15); }
   .btn-icon { padding:4px 8px; font-size:12px; }
 
-  /* ---- List items ---- */
+  /* ── List items ── */
   .list-item { display:flex; align-items:center; gap:8px; padding:8px 14px; font-size:12px; color:var(--text-dim); cursor:pointer; border-left:2px solid transparent; transition:background .1s,color .1s,border-color .1s; }
   .list-item:hover { background:var(--accent-bg); color:var(--text); }
   .list-item.active { background:var(--accent-bg); color:var(--text); border-left-color:var(--accent); }
@@ -105,7 +108,7 @@
   .list-item .li-sub { font-size:10px; color:var(--text-faint); margin-top:1px; }
   .list-group-label { padding:6px 14px 2px; font-size:9px; text-transform:uppercase; letter-spacing:0.16em; color:var(--text-faint); margin-top:6px; }
 
-  /* ---- Phase / verdict pills ---- */
+  /* ── Phase / verdict pills ── */
   .phase { display:inline-flex; align-items:center; gap:5px; font-size:10px; text-transform:uppercase; letter-spacing:0.1em; padding:2px 7px; border-radius:2px; white-space:nowrap; }
   .phase .dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
   .phase-running   { color:var(--blue);   background:rgba(74,144,201,0.12); }
@@ -123,12 +126,20 @@
   .phase-unknown   { color:var(--text-faint); background:var(--border); }
   .phase-unknown .dot   { background:var(--text-faint); }
 
-  .verdict-supported  { color:var(--green); }
-  .verdict-partial    { color:var(--accent); }
-  .verdict-unsupported{ color:var(--red); }
-  .verdict-error      { color:var(--red); opacity:0.6; }
+  .verdict-supported   { color:var(--green); }
+  .verdict-partial     { color:var(--accent); }
+  .verdict-unsupported { color:var(--red); }
+  .verdict-error       { color:var(--red); opacity:0.6; }
 
-  /* ---- Detail pane ---- */
+  /* ── Lifecycle state pills ── */
+  .lc { display:inline-flex; align-items:center; font-size:9px; text-transform:uppercase; letter-spacing:0.1em; padding:2px 7px; border-radius:2px; white-space:nowrap; flex-shrink:0; }
+  .lc-draft      { color:var(--text-dim);   background:var(--border); }
+  .lc-ready      { color:var(--blue);        background:rgba(74,144,201,0.12); }
+  .lc-in_review  { color:var(--accent);      background:var(--accent-bg); }
+  .lc-approved   { color:var(--green);       background:rgba(123,168,79,0.12); }
+  .lc-deprecated { color:var(--text-faint);  background:var(--border); text-decoration:line-through; }
+
+  /* ── Detail pane ── */
   .detail-pane { flex:1; overflow-y:auto; padding:24px 28px; }
   .detail-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-faint); font-family:var(--serif); font-style:italic; font-size:15px; }
   .detail-title { font-family:var(--serif); font-size:22px; font-weight:400; margin-bottom:4px; }
@@ -150,14 +161,14 @@
   .stat-box .sv { font-family:var(--serif); font-size:28px; font-weight:300; line-height:1; }
   .stat-box .sl { font-size:9px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-dim); margin-top:4px; }
 
-  /* ---- UC list in results ---- */
+  /* ── UC list in results ── */
   .uc-row { display:flex; align-items:center; gap:8px; padding:7px 14px; font-size:12px; color:var(--text-dim); cursor:pointer; border-left:2px solid transparent; }
   .uc-row:hover { background:var(--accent-bg); }
   .uc-row.active { background:var(--accent-bg); border-left-color:var(--accent); }
   .uc-row .uc-handle { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .uc-row .uc-time   { font-size:10px; color:var(--text-faint); flex-shrink:0; }
 
-  /* ---- Analysis rendering ---- */
+  /* ── Analysis rendering ── */
   .analysis-block { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; margin-bottom:12px; overflow:hidden; }
   .analysis-block-header { padding:8px 14px; display:flex; align-items:center; justify-content:space-between; font-size:11px; border-bottom:1px solid var(--border); }
   .analysis-block-body   { padding:12px 14px; font-size:12px; color:var(--text-dim); line-height:1.6; }
@@ -172,11 +183,25 @@
   .sev-major    { color:#e8a060; background:rgba(232,160,96,0.12); }
   .sev-critical { color:var(--red); background:rgba(217,101,58,0.12); }
 
-  /* ---- YAML editor ---- */
+  /* ── Lifecycle state machine ── */
+  .lc-machine { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:14px 16px; margin-bottom:16px; }
+  .lc-machine-row { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .lc-machine-label { font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:var(--text-faint); width:70px; flex-shrink:0; }
+  .lc-actions { display:flex; gap:6px; flex-wrap:wrap; }
+  .lc-history-row { display:flex; align-items:baseline; gap:10px; padding:4px 0; border-bottom:1px solid var(--border); font-size:11px; }
+  .lc-history-row:last-child { border-bottom:none; }
+  .lc-history-arrow { color:var(--text-faint); flex-shrink:0; }
+  .lc-history-who   { color:var(--text-faint); font-size:10px; flex-shrink:0; }
+  .lc-history-ts    { color:var(--text-faint); font-size:10px; margin-left:auto; flex-shrink:0; }
+
+  /* ── Membership tags in UC detail ── */
+  .set-chip { display:inline-flex; align-items:center; gap:5px; font-size:10px; padding:2px 8px; border:1px solid var(--border-bright); border-radius:2px; color:var(--text-dim); background:var(--bg-input); }
+
+  /* ── YAML editor ── */
   .yaml-editor { width:100%; min-height:320px; font-family:var(--mono); font-size:12px; line-height:1.6; background:var(--bg-input); border:1px solid var(--border); color:var(--text); padding:10px 12px; border-radius:2px; resize:vertical; }
   .yaml-editor:focus { border-color:var(--accent-soft); }
 
-  /* ---- Modal ---- */
+  /* ── Modal ── */
   .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:200; display:none; align-items:center; justify-content:center; }
   .modal-overlay.open { display:flex; }
   .modal { background:var(--bg-panel); border:1px solid var(--border-bright); border-radius:2px; width:600px; max-width:94vw; max-height:90vh; display:flex; flex-direction:column; overflow:hidden; }
@@ -190,8 +215,9 @@
   .form-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   .form-hint  { font-size:10px; color:var(--text-faint); margin-top:2px; }
   .section-sep { border:none; border-top:1px solid var(--border); margin:4px 0; }
+  .modal-banner { background:var(--accent-bg); border:1px solid var(--accent-soft); border-radius:2px; padding:8px 12px; font-size:12px; color:var(--accent); }
 
-  /* ---- Config / Sources ---- */
+  /* ── Config / Sources ── */
   .config-layout { width:100%; padding:24px 28px; overflow-y:auto; }
   .config-grid   { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:28px; }
   .panel-card    { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; overflow:hidden; }
@@ -200,26 +226,29 @@
   .panel-card-header .pc-sub   { font-size:10px; color:var(--text-faint); }
   .panel-card-body { padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
 
-  /* ---- Toast ---- */
+  /* ── Toast ── */
   .toast { position:fixed; bottom:50px; right:20px; background:var(--bg-panel); border:1px solid var(--accent); border-left:3px solid var(--accent); padding:10px 16px; font-size:12px; border-radius:2px; box-shadow:0 8px 24px rgba(0,0,0,0.5); opacity:0; transform:translateY(6px); transition:opacity .2s,transform .2s; pointer-events:none; z-index:300; max-width:380px; }
   .toast.show { opacity:1; transform:translateY(0); }
   .toast.error { border-color:var(--red); border-left-color:var(--red); }
 
-  /* ---- Empty states ---- */
+  /* ── Tags ── */
+  .tag { display:inline-block; font-size:9px; text-transform:uppercase; letter-spacing:0.08em; padding:1px 6px; border-radius:2px; background:var(--border); color:var(--text-dim); margin-right:4px; }
+
+  /* ── Empty states ── */
   .empty { padding:32px; text-align:center; color:var(--text-faint); font-family:var(--serif); font-style:italic; }
 
-  /* ---- Scrollbar ---- */
+  /* ── Scrollbar ── */
   ::-webkit-scrollbar { width:8px; height:8px; }
   ::-webkit-scrollbar-track { background:var(--bg); }
   ::-webkit-scrollbar-thumb { background:var(--border); border:2px solid var(--bg); border-radius:8px; }
   ::-webkit-scrollbar-thumb:hover { background:var(--border-bright); }
 
-  /* ---- Inline source badge ---- */
+  /* ── Source badge ── */
   .src-badge { font-size:9px; text-transform:uppercase; letter-spacing:0.08em; padding:1px 5px; border-radius:2px; flex-shrink:0; }
   .src-managed { background:var(--accent-bg); color:var(--accent); border:1px solid var(--accent-soft); }
   .src-corpus  { background:var(--border);    color:var(--text-dim); }
 
-  /* ---- Runs view specific ---- */
+  /* ── Runs table ── */
   .runs-table { width:100%; border-collapse:collapse; font-size:12px; }
   .runs-table th { text-align:left; padding:8px 14px; font-size:9px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); border-bottom:1px solid var(--border); background:var(--bg-panel); white-space:nowrap; }
   .runs-table td { padding:9px 14px; border-bottom:1px solid var(--border); color:var(--text-dim); vertical-align:middle; }
@@ -228,8 +257,19 @@
   .runs-table tr:hover td { background:var(--accent-bg); cursor:pointer; }
   .runs-table tr.active td { background:var(--accent-bg); }
 
-  /* ---- Tags ---- */
-  .tag { display:inline-block; font-size:9px; text-transform:uppercase; letter-spacing:0.08em; padding:1px 6px; border-radius:2px; background:var(--border); color:var(--text-dim); margin-right:4px; }
+  /* ── Sets member row ── */
+  .member-row { display:flex; align-items:center; gap:8px; padding:7px 14px; font-size:12px; border-bottom:1px solid var(--border); }
+  .member-row:last-child { border-bottom:none; }
+  .member-row .mr-uuid  { flex:1; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .member-row .mr-handle { font-size:11px; color:var(--text-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:160px; }
+
+  /* ── UC search dropdown ── */
+  .uc-search-wrap { position:relative; }
+  .uc-dropdown { position:absolute; top:100%; left:0; right:0; background:var(--bg-panel); border:1px solid var(--border-bright); border-radius:2px; z-index:100; max-height:220px; overflow-y:auto; box-shadow:0 8px 24px rgba(0,0,0,0.5); }
+  .uc-dropdown-item { padding:7px 12px; cursor:pointer; font-size:12px; display:flex; align-items:center; gap:8px; }
+  .uc-dropdown-item:hover { background:var(--accent-bg); }
+  .uc-dropdown-item .uid  { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .uc-dropdown-item .uhandle { font-size:10px; color:var(--text-faint); white-space:nowrap; }
 </style>
 </head>
 <body>
@@ -251,12 +291,13 @@
   <button data-view="runs" class="active">Runs <span class="badge" id="badgeRuns">…</span></button>
   <button data-view="results">Results <span class="badge" id="badgeResults">…</span></button>
   <button data-view="usecases">Use Cases <span class="badge" id="badgeUC">…</span></button>
+  <button data-view="sets">Sets <span class="badge" id="badgeSets">…</span></button>
   <button data-view="config">Config</button>
 </nav>
 
 <main>
 
-<!-- ==================== RUNS ==================== -->
+<!-- ══════════════════════════ RUNS ══════════════════════════ -->
 <section class="view active" id="view-runs">
   <div style="display:flex; flex-direction:column; width:100%; height:100%; overflow:hidden;">
     <div style="padding:14px 20px; border-bottom:1px solid var(--border); display:flex; gap:10px; align-items:center; flex-shrink:0;">
@@ -264,28 +305,24 @@
       <button class="btn ghost" id="refreshRunsBtn">Refresh</button>
       <span id="runsNote" style="font-size:11px; color:var(--text-faint); margin-left:4px;"></span>
     </div>
-    <div style="flex:1; overflow-y:auto; padding:0;">
+    <div style="flex:1; overflow-y:auto;">
       <table class="runs-table" id="runsTable">
-        <thead>
-          <tr>
-            <th style="width:200px">Run name</th>
-            <th style="width:100px">Phase</th>
-            <th style="width:100px">Mode</th>
-            <th style="width:130px">Triggered by</th>
-            <th style="width:140px">Started</th>
-            <th style="width:80px">Duration</th>
-            <th>Params</th>
-          </tr>
-        </thead>
-        <tbody id="runsBody">
-          <tr><td colspan="7" class="empty">loading…</td></tr>
-        </tbody>
+        <thead><tr>
+          <th style="width:200px">Run name</th>
+          <th style="width:100px">Phase</th>
+          <th style="width:100px">Mode</th>
+          <th style="width:130px">Triggered by</th>
+          <th style="width:140px">Started</th>
+          <th style="width:80px">Duration</th>
+          <th>Params</th>
+        </tr></thead>
+        <tbody id="runsBody"><tr><td colspan="7" class="empty">loading…</td></tr></tbody>
       </table>
     </div>
   </div>
 </section>
 
-<!-- ==================== RESULTS ==================== -->
+<!-- ══════════════════════════ RESULTS ══════════════════════════ -->
 <section class="view" id="view-results">
   <div class="split">
     <div class="split-left" style="width:320px; min-width:240px;">
@@ -296,17 +333,12 @@
       <div class="panel-toolbar">
         <input id="resultFilter" placeholder="filter runs…" />
       </div>
-      <div class="scrollable" id="resultList">
-        <div class="empty">loading…</div>
-      </div>
+      <div class="scrollable" id="resultList"><div class="empty">loading…</div></div>
     </div>
     <div class="split-right">
       <div class="split" id="resultDetail">
-        <!-- UC list sub-panel -->
-        <div class="split-left" style="width:300px; min-width:220px;" id="ucListPanel" style="display:none;">
-          <div class="panel-header">
-            <span style="font-size:11px; color:var(--text-dim);">Use Cases</span>
-          </div>
+        <div class="split-left" style="width:300px; min-width:220px;" id="ucListPanel">
+          <div class="panel-header"><span style="font-size:11px; color:var(--text-dim);">Use Cases</span></div>
           <div class="panel-toolbar">
             <select id="ucVerdictFilter">
               <option value="">all verdicts</option>
@@ -316,11 +348,8 @@
               <option value="failed">failed</option>
             </select>
           </div>
-          <div class="scrollable" id="ucResultList">
-            <div class="empty">select a run</div>
-          </div>
+          <div class="scrollable" id="ucResultList"><div class="empty">select a run</div></div>
         </div>
-        <!-- Analysis detail -->
         <div class="split-right" id="analysisPanel">
           <div class="detail-pane" id="analysisDetail">
             <div class="detail-empty">Select a run, then a use case to view its analysis.</div>
@@ -331,52 +360,83 @@
   </div>
 </section>
 
-<!-- ==================== USE CASES ==================== -->
+<!-- ══════════════════════════ USE CASES ══════════════════════════ -->
 <section class="view" id="view-usecases">
   <div class="split">
-    <div class="split-left" style="width:320px; min-width:240px;">
+    <div class="split-left" style="width:340px; min-width:260px;">
       <div class="panel-header">
         <div class="panel-title">Use <em>cases</em></div>
-        <button class="btn primary" style="font-size:10px; padding:4px 10px;" id="newUCBtn">+ New</button>
+        <div style="display:flex;gap:4px;flex-shrink:0;">
+          <button class="btn ghost btn-icon" id="importUCBtn" title="Import archive (.tar.gz / .zip)">↑ Import</button>
+          <div style="position:relative;display:inline-block;">
+            <button class="btn ghost btn-icon" id="exportUCBtn" title="Export all managed UCs">↓ Export</button>
+            <div id="exportUCMenu" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:130px;">
+              <button class="dropdown-item" onclick="exportUCs('tar.gz')">tar.gz (gzip)</button>
+              <button class="dropdown-item" onclick="exportUCs('zip')">zip</button>
+              <button class="dropdown-item" onclick="exportUCs('tar')">tar (uncompressed)</button>
+            </div>
+          </div>
+          <button class="btn primary" style="font-size:10px; padding:4px 10px;" id="newUCBtn">+ New</button>
+        </div>
       </div>
       <div class="panel-toolbar">
-        <input id="ucFilter" placeholder="filter…" />
-        <select id="ucSourceFilter" style="flex:none; width:90px;">
+        <input id="ucFilter" placeholder="search uuid / title / tag…" style="flex:1;" />
+      </div>
+      <div class="panel-toolbar" style="gap:4px; padding-top:4px; padding-bottom:4px;">
+        <button class="btn ghost btn-icon" data-lc="" id="lcAll" style="border-color:var(--border-bright)">All</button>
+        <button class="btn ghost btn-icon" data-lc="draft">Draft</button>
+        <button class="btn ghost btn-icon" data-lc="ready" style="color:var(--blue)">Ready</button>
+        <button class="btn ghost btn-icon" data-lc="in_review" style="color:var(--accent)">Review</button>
+        <button class="btn ghost btn-icon" data-lc="approved" style="color:var(--green)">Approved</button>
+        <button class="btn ghost btn-icon" data-lc="deprecated" style="color:var(--red)">Dep.</button>
+        <select id="ucSourceFilter" style="flex:none; width:82px; font-size:10px; padding:3px 5px;">
           <option value="">all</option>
           <option value="managed">managed</option>
           <option value="corpus">corpus</option>
         </select>
       </div>
-      <div class="scrollable" id="ucList">
-        <div class="empty">loading…</div>
-      </div>
+      <div class="scrollable" id="ucList"><div class="empty">loading…</div></div>
     </div>
     <div class="split-right">
       <div id="ucDetail" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
-        <div class="detail-pane">
-          <div class="detail-empty">Select a use case or create a new one.</div>
-        </div>
+        <div class="detail-pane"><div class="detail-empty">Select a use case or create a new one.</div></div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ==================== CONFIG ==================== -->
+<!-- ══════════════════════════ SETS ══════════════════════════ -->
+<section class="view" id="view-sets">
+  <div class="split">
+    <div class="split-left" style="width:300px; min-width:220px;">
+      <div class="panel-header">
+        <div class="panel-title">UC <em>sets</em></div>
+        <button class="btn primary" style="font-size:10px; padding:4px 10px;" id="newSetBtn">+ New</button>
+      </div>
+      <div class="panel-toolbar">
+        <input id="setFilter" placeholder="filter sets…" />
+      </div>
+      <div class="scrollable" id="setList"><div class="empty">loading…</div></div>
+    </div>
+    <div class="split-right">
+      <div id="setDetail" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+        <div class="detail-pane"><div class="detail-empty">Select a set or create a new one.</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════ CONFIG ══════════════════════════ -->
 <section class="view" id="view-config">
   <div class="config-layout">
     <div class="detail-title">Console <em>configuration</em></div>
     <div class="detail-sub">Spec &amp; corpus repositories · Inference endpoint</div>
-
     <div class="config-grid">
-
-      <!-- Spec source -->
       <div class="panel-card" id="configSpecPanel">
-        <div class="panel-card-header">
-          <div>
-            <div class="pc-title">Spec repository</div>
-            <div class="pc-sub">DCM architecture — served by MCP</div>
-          </div>
-        </div>
+        <div class="panel-card-header"><div>
+          <div class="pc-title">Spec repository</div>
+          <div class="pc-sub">DCM architecture — served by MCP</div>
+        </div></div>
         <div class="panel-card-body">
           <div class="kv-grid">
             <div class="kv-label">current repo</div><div class="kv-val" id="srcSpecRepo">—</div>
@@ -386,12 +446,9 @@
             <div class="kv-label">rollout</div><div class="kv-val" id="srcSpecStatus">—</div>
           </div>
           <hr class="section-sep" style="margin:8px 0;">
-          <div class="form-field">
-            <label>New repo URL</label>
-            <input id="srcSpecRepoInput" placeholder="https://github.com/owner/repo.git" />
-          </div>
-          <div class="form-field">
-            <label>Branch</label>
+          <div class="form-field"><label>New repo URL</label>
+            <input id="srcSpecRepoInput" placeholder="https://github.com/owner/repo.git" /></div>
+          <div class="form-field"><label>Branch</label>
             <div style="display:flex; gap:6px;">
               <select id="srcSpecBranchSelect" style="flex:1"><option value="">(loading…)</option></select>
               <input id="srcSpecBranchInput" placeholder="or type ref" style="flex:1;" />
@@ -404,15 +461,11 @@
           </div>
         </div>
       </div>
-
-      <!-- Corpus source -->
       <div class="panel-card" id="configCorpusPanel">
-        <div class="panel-card-header">
-          <div>
-            <div class="pc-title">Corpus repository</div>
-            <div class="pc-sub">Use cases + baselines</div>
-          </div>
-        </div>
+        <div class="panel-card-header"><div>
+          <div class="pc-title">Corpus repository</div>
+          <div class="pc-sub">Use cases + baselines</div>
+        </div></div>
         <div class="panel-card-body">
           <div class="kv-grid">
             <div class="kv-label">current repo</div><div class="kv-val" id="srcCorpusRepo">—</div>
@@ -422,12 +475,9 @@
             <div class="kv-label">rollout</div><div class="kv-val" id="srcCorpusStatus">—</div>
           </div>
           <hr class="section-sep" style="margin:8px 0;">
-          <div class="form-field">
-            <label>New repo URL</label>
-            <input id="srcCorpusRepoInput" placeholder="https://github.com/owner/repo.git" />
-          </div>
-          <div class="form-field">
-            <label>Branch</label>
+          <div class="form-field"><label>New repo URL</label>
+            <input id="srcCorpusRepoInput" placeholder="https://github.com/owner/repo.git" /></div>
+          <div class="form-field"><label>Branch</label>
             <div style="display:flex; gap:6px;">
               <select id="srcCorpusBranchSelect" style="flex:1"><option value="">(loading…)</option></select>
               <input id="srcCorpusBranchInput" placeholder="or type ref" style="flex:1;" />
@@ -440,9 +490,7 @@
           </div>
         </div>
       </div>
-
     </div>
-
     <div style="font-size:11px; color:var(--text-faint); line-height:1.7;">
       Switching the <b>spec</b> retargets the MCP that Stage 2 calls — affects every in-flight or subsequent analysis.
       Switching the <b>corpus</b> changes which use cases the review console loads.
@@ -454,7 +502,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.2</span>
+  <span>DAV Console · v0.4</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -463,74 +511,56 @@
 
 </div><!-- /shell -->
 
-<!-- ==================== NEW RUN MODAL ==================== -->
+<!-- ══════════════════════════ NEW RUN MODAL ══════════════════════════ -->
 <div class="modal-overlay" id="newRunModal">
   <div class="modal">
     <div class="modal-header">
-      <div class="modal-title">New run</div>
+      <div class="modal-title" id="newRunTitle">New run</div>
       <button class="btn ghost btn-icon" id="closeNewRun">✕</button>
     </div>
     <div class="modal-body">
+      <div id="newRunBanner" style="display:none;" class="modal-banner"></div>
       <div class="form-row">
-        <div class="form-field">
-          <label>Mode</label>
+        <div class="form-field"><label>Mode</label>
           <select id="nrMode">
             <option value="verification">verification (default — ensemble, conservative)</option>
             <option value="reproduce">reproduce (single sample, deterministic)</option>
             <option value="explore">explore (high-variance, authoring)</option>
           </select>
         </div>
-        <div class="form-field">
-          <label>Sample count override</label>
+        <div class="form-field"><label>Sample count override</label>
           <input id="nrSampleCount" type="number" min="1" max="20" placeholder="(mode default)" />
           <div class="form-hint">verification default: 3 · explore default: 10</div>
         </div>
       </div>
-
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Corpus</div>
-      <div class="form-field">
-        <label>UC subpath (partial run)</label>
+      <div class="form-field"><label>UC subpath (partial run)</label>
         <input id="nrCorpusSubpath" placeholder="use-cases/  or  use-cases/auth  (blank = full corpus)" />
         <div class="form-hint">Relative path within workspace corpus directory. Leave blank for full corpus.</div>
       </div>
       <div class="form-row">
-        <div class="form-field">
-          <label>Corpus repo URL override</label>
-          <input id="nrCorpusRepo" placeholder="(use configured corpus repo)" />
-        </div>
-        <div class="form-field">
-          <label>Corpus branch override</label>
-          <input id="nrCorpusBranch" placeholder="(use configured branch)" />
-        </div>
+        <div class="form-field"><label>Corpus repo URL override</label>
+          <input id="nrCorpusRepo" placeholder="(use configured corpus repo)" /></div>
+        <div class="form-field"><label>Corpus branch override</label>
+          <input id="nrCorpusBranch" placeholder="(use configured branch)" /></div>
       </div>
-
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Spec</div>
       <div class="form-row">
-        <div class="form-field">
-          <label>Spec repo URL override</label>
-          <input id="nrSpecRepo" placeholder="(use configured spec repo)" />
-        </div>
-        <div class="form-field">
-          <label>Spec branch override</label>
-          <input id="nrSpecBranch" placeholder="(use configured branch)" />
-        </div>
+        <div class="form-field"><label>Spec repo URL override</label>
+          <input id="nrSpecRepo" placeholder="(use configured spec repo)" /></div>
+        <div class="form-field"><label>Spec branch override</label>
+          <input id="nrSpecBranch" placeholder="(use configured branch)" /></div>
       </div>
-
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Inference</div>
       <div class="form-row">
-        <div class="form-field">
-          <label>Endpoint override</label>
-          <input id="nrEndpoint" placeholder="(use configured endpoint)" />
-        </div>
-        <div class="form-field">
-          <label>Model override</label>
-          <input id="nrModel" placeholder="(use configured model)" />
-        </div>
+        <div class="form-field"><label>Endpoint override</label>
+          <input id="nrEndpoint" placeholder="(use configured endpoint)" /></div>
+        <div class="form-field"><label>Model override</label>
+          <input id="nrModel" placeholder="(use configured model)" /></div>
       </div>
-
       <hr class="section-sep">
       <div class="form-field">
         <label style="display:flex; align-items:center; gap:8px;">
@@ -548,20 +578,18 @@
   </div>
 </div>
 
-<!-- ==================== UC EDITOR MODAL ==================== -->
+<!-- ══════════════════════════ UC EDITOR MODAL ══════════════════════════ -->
 <div class="modal-overlay" id="ucModal">
-  <div class="modal" style="width:760px;">
+  <div class="modal" style="width:780px;">
     <div class="modal-header">
       <div class="modal-title" id="ucModalTitle">New use case</div>
       <button class="btn ghost btn-icon" id="closeUCModal">✕</button>
     </div>
     <div class="modal-body">
-      <div class="form-field">
-        <label>YAML content</label>
+      <div class="form-field"><label>YAML content</label>
         <textarea class="yaml-editor" id="ucYamlEditor" rows="22" spellcheck="false"></textarea>
       </div>
-      <div class="form-field">
-        <label>Tags (comma-separated)</label>
+      <div class="form-field"><label>Tags (comma-separated)</label>
         <input id="ucTagsInput" placeholder="e.g. happy-path, auth, regression" />
       </div>
     </div>
@@ -573,47 +601,179 @@
   </div>
 </div>
 
+<!-- ══════════════════════════ SET EDITOR MODAL ══════════════════════════ -->
+<div class="modal-overlay" id="setModal">
+  <div class="modal" style="width:480px;">
+    <div class="modal-header">
+      <div class="modal-title" id="setModalTitle">New set</div>
+      <button class="btn ghost btn-icon" id="closeSetModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-field"><label>Name</label>
+        <input id="setModalName" placeholder="e.g. regression-suite, happy-paths" />
+      </div>
+      <div class="form-field"><label>Description</label>
+        <input id="setModalDesc" placeholder="Optional description" />
+      </div>
+    </div>
+    <div class="modal-footer">
+      <span id="setModalStatus" style="flex:1; font-size:11px; color:var(--text-faint);"></span>
+      <button class="btn ghost" id="cancelSetModal">Cancel</button>
+      <button class="btn primary" id="saveSetModal">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════ ADD MEMBER MODAL ══════════════════════════ -->
+<div class="modal-overlay" id="addMemberModal">
+  <div class="modal" style="width:520px;">
+    <div class="modal-header">
+      <div class="modal-title">Add use case to set</div>
+      <button class="btn ghost btn-icon" id="closeAddMember">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-field"><label>Search use cases</label>
+        <div class="uc-search-wrap">
+          <input id="memberSearchInput" placeholder="type uuid, handle, or title…" autocomplete="off" />
+          <div class="uc-dropdown" id="memberDropdown" style="display:none;"></div>
+        </div>
+      </div>
+      <div id="selectedMemberPreview" style="display:none; font-size:12px; color:var(--text-dim); padding:8px 0;">
+        Selected: <span id="selectedMemberLabel" style="color:var(--text)"></span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <span id="addMemberStatus" style="flex:1; font-size:11px; color:var(--text-faint);"></span>
+      <button class="btn ghost" id="cancelAddMember">Cancel</button>
+      <button class="btn primary" id="saveAddMember" disabled>Add to set</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════ LIFECYCLE TRANSITION MODAL ══════════════════════════ -->
+<div class="modal-overlay" id="lcModal">
+  <div class="modal" style="width:440px;">
+    <div class="modal-header">
+      <div class="modal-title" id="lcModalTitle">Transition state</div>
+      <button class="btn ghost btn-icon" id="closeLCModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:12px; color:var(--text-dim); margin-bottom:4px;" id="lcModalDesc"></div>
+      <div class="form-field"><label>Notes (optional)</label>
+        <textarea id="lcModalNotes" rows="3" placeholder="Reason for transition, review comments, etc."></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <span id="lcModalStatus" style="flex:1; font-size:11px; color:var(--text-faint);"></span>
+      <button class="btn ghost" id="cancelLCModal">Cancel</button>
+      <button class="btn primary" id="confirmLCModal">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════ PROMOTE SET MODAL ══════════════════════════ -->
+<div class="modal-overlay" id="promoteModal">
+  <div class="modal" style="width:480px;">
+    <div class="modal-header">
+      <div class="modal-title">Promote set — <em id="promoteModalSetName"></em></div>
+      <button class="btn ghost btn-icon" id="closePromoteModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">
+        Bulk-advance all managed UCs in this set from one stage to the next.
+        UCs that can't make the transition (wrong current state) are skipped.
+      </div>
+      <div class="form-row">
+        <div class="form-field"><label>From stage</label>
+          <select id="promoteFromState">
+            <option value="draft">draft</option>
+            <option value="ready" selected>ready</option>
+            <option value="in_review">in_review</option>
+            <option value="approved">approved</option>
+          </select>
+        </div>
+        <div class="form-field"><label>To stage</label>
+          <select id="promoteToState">
+            <option value="ready" selected>ready</option>
+            <option value="in_review">in_review</option>
+            <option value="approved">approved</option>
+            <option value="deprecated">deprecated</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-field"><label>Notes (optional)</label>
+        <textarea id="promoteNotes" rows="2" placeholder="Reason for batch promotion…"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <span id="promoteStatus" style="flex:1;font-size:11px;color:var(--text-faint);"></span>
+      <button class="btn ghost" id="cancelPromoteModal">Cancel</button>
+      <button class="btn primary" id="confirmPromoteModal">Promote all</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════ IMPORT MODAL ══════════════════════════ -->
+<div class="modal-overlay" id="importModal">
+  <div class="modal" style="width:520px;">
+    <div class="modal-header">
+      <div class="modal-title">Import use cases</div>
+      <button class="btn ghost btn-icon" id="closeImportModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;">
+        Archive structure: <code style="font-size:11px;color:var(--accent)">{lifecycle_state}/{set_name}/{uuid}.yaml</code><br>
+        UCs in <code style="font-size:11px">_ungrouped/</code> are imported without set membership.
+        Lifecycle state is inferred from the top-level directory name.
+      </div>
+      <div class="form-field">
+        <label>Archive file</label>
+        <input type="file" id="importFile" accept=".tar.gz,.tgz,.tar,.zip"
+          style="background:var(--bg-input);border:1px solid var(--border);border-radius:2px;padding:6px 8px;width:100%;cursor:pointer;" />
+      </div>
+      <div id="importResult" style="display:none;margin-top:12px;padding:10px;background:var(--bg-raised);border-radius:2px;border:1px solid var(--border);font-size:12px;line-height:1.7;"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn ghost" id="cancelImportModal">Cancel</button>
+      <button class="btn primary" id="submitImportBtn">Import</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
 'use strict';
 
-const API = '';  // same-origin via nginx proxy
+const API = '';
 
-// ===================== API helpers =====================
+// ── API helpers ──────────────────────────────────────────────
 async function api(path, opts = {}) {
   const res = await fetch(API + path, {
     headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
     ...opts,
   });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`${res.status}: ${txt}`);
-  }
+  if (!res.ok) { const txt = await res.text(); throw new Error(`${res.status}: ${txt}`); }
   return res.json();
 }
 
-// ===================== Toast =====================
+// ── Toast ────────────────────────────────────────────────────
 function toast(msg, isError) {
   const t = document.getElementById('toast');
-  t.textContent = msg;
-  t.classList.toggle('error', !!isError);
-  t.classList.add('show');
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => t.classList.remove('show'), 2800);
+  t.textContent = msg; t.classList.toggle('error', !!isError); t.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2800);
 }
 
-// ===================== Utilities =====================
+// ── Utilities ────────────────────────────────────────────────
 function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
 function fmtTs(ts) {
   if (!ts) return '—';
-  const d = new Date(ts);
-  const now = new Date();
+  const d = new Date(ts), now = new Date();
   const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-  return d.toLocaleDateString([], {month:'short', day:'numeric'})
-       + ' ' + d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  if (sameDay) return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  return d.toLocaleDateString([],{month:'short',day:'numeric'}) + ' ' +
+         d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
 }
 
 function fmtDuration(startTs, endTs) {
@@ -621,14 +781,13 @@ function fmtDuration(startTs, endTs) {
   const s = (endTs ? new Date(endTs) : new Date()) - new Date(startTs);
   const sec = Math.floor(s / 1000);
   if (sec < 60) return `${sec}s`;
-  const m = Math.floor(sec / 60);
-  const r = sec % 60;
+  const m = Math.floor(sec / 60), r = sec % 60;
   return r ? `${m}m ${r}s` : `${m}m`;
 }
 
 function phaseHtml(phase) {
-  const cls = 'phase-' + (phase || 'unknown').toLowerCase().replace(/\s+/g, '-');
-  return `<span class="phase ${cls}"><span class="dot"></span>${esc(phase || 'unknown')}</span>`;
+  const cls = 'phase-' + (phase || 'unknown').toLowerCase().replace(/\s+/g,'-');
+  return `<span class="phase ${cls}"><span class="dot"></span>${esc(phase||'unknown')}</span>`;
 }
 
 function verdictClass(v) {
@@ -638,68 +797,79 @@ function verdictClass(v) {
   if (v.includes('not_supported') || v === 'not_supported') return 'verdict-unsupported';
   return 'verdict-error';
 }
+function sevClass(label) { return 'sev-' + (label||'minor').toLowerCase(); }
 
-function sevClass(label) {
-  return 'sev-' + (label || 'minor').toLowerCase();
+function lcHtml(state) {
+  if (!state) return '';
+  const label = state.replace(/_/g,' ');
+  return `<span class="lc lc-${state}">${esc(label)}</span>`;
 }
 
-// ===================== State =====================
+const LC_TRANSITIONS = {
+  draft:      [{to:'ready',      label:'Submit for review', cls:'btn ghost'}],
+  ready:      [{to:'in_review',  label:'Start review',      cls:'btn primary'},
+               {to:'draft',      label:'Back to draft',     cls:'btn ghost'}],
+  in_review:  [{to:'approved',   label:'Approve',           cls:'btn success'},
+               {to:'ready',      label:'Send back',         cls:'btn ghost'}],
+  approved:   [{to:'in_review',  label:'Return to review',  cls:'btn ghost'},
+               {to:'deprecated', label:'Deprecate',         cls:'btn danger'}],
+  deprecated: [{to:'draft',      label:'Reactivate',        cls:'btn ghost'}],
+};
+
+// ── State ────────────────────────────────────────────────────
 let me = { reviewer: null, authenticated: false };
 let allRuns = [];
 let allResults = [];
 let allUCs = [];
+let allSets = [];
 
 let activeRunResultId = null;
-let activeRunSummary = null;
-let activeUCResult = null;
+let activeRunSummary  = null;
+let activeUCResult    = null;
+let activeUCId        = null;
+let editingUCId       = null;
 
-let activeUCId = null;
-let editingUCId = null;  // null = new UC
+let activeSetId       = null;
+let editingSetId      = null;
 
-// ===================== Init =====================
+let lcPendingUCId   = null;
+let lcPendingTo     = null;
+let addMemberSetId  = null;
+let selectedMember  = null;
+let promoteSetId    = null;
+
+let ucStateFilter = '';
+
+// ── Init ─────────────────────────────────────────────────────
 async function init() {
-  try {
-    await Promise.all([loadMe(), loadRunStatus()]);
-    setApiStatus(true);
-  } catch (e) {
-    console.error(e);
-    setApiStatus(false, e.message);
-  }
-  // Load data for current tab
+  try { await Promise.all([loadMe(), loadRunStatus()]); setApiStatus(true); }
+  catch (e) { console.error(e); setApiStatus(false, e.message); }
   switchView('runs');
 }
 
 async function loadMe() {
-  try { me = await api('/api/me'); } catch { me = { reviewer: null, authenticated: false }; }
+  try { me = await api('/api/me'); } catch { me = {reviewer:null,authenticated:false}; }
   const chip = document.getElementById('reviewerChip');
-  if (me.authenticated && me.reviewer) {
-    chip.textContent = me.reviewer;
-    chip.classList.remove('anon');
-  } else {
-    chip.textContent = 'unauthenticated';
-    chip.classList.add('anon');
-  }
+  if (me.authenticated && me.reviewer) { chip.textContent = me.reviewer; chip.classList.remove('anon'); }
+  else { chip.textContent = 'unauthenticated'; chip.classList.add('anon'); }
 }
 
 async function loadRunStatus() {
   try {
     const s = await api('/api/runs/status');
-    const el = document.getElementById('triggerStatus');
-    el.textContent = s.enabled && s.available
-      ? `pipeline: ${s.pipeline_name}`
+    document.getElementById('triggerStatus').textContent =
+      s.enabled && s.available ? `pipeline: ${s.pipeline_name}`
       : s.enabled ? 'pipeline: unavailable' : 'trigger disabled';
   } catch { /* non-fatal */ }
 }
 
 function setApiStatus(ok, msg) {
-  const el = document.getElementById('apiStatusEl');
-  const txt = document.getElementById('apiStatusText');
-  el.classList.toggle('api-ok', !!ok);
-  el.classList.toggle('api-err', !ok);
+  const el = document.getElementById('apiStatusEl'), txt = document.getElementById('apiStatusText');
+  el.classList.toggle('api-ok', !!ok); el.classList.toggle('api-err', !ok);
   txt.textContent = ok ? 'api ok' : ('error: ' + (msg || 'offline'));
 }
 
-// ===================== Tab routing =====================
+// ── Tab routing ──────────────────────────────────────────────
 function switchView(name) {
   document.querySelectorAll('nav.tabs button').forEach(b =>
     b.classList.toggle('active', b.dataset.view === name));
@@ -708,31 +878,29 @@ function switchView(name) {
   if (name === 'runs')     loadRuns();
   if (name === 'results')  loadResults();
   if (name === 'usecases') loadUCs();
+  if (name === 'sets')     loadSets();
   if (name === 'config')   loadConfig();
 }
 
-// ===================== RUNS =====================
+// ══════════════════════════ RUNS ══════════════════════════
+
 async function loadRuns() {
-  const body = document.getElementById('runsBody');
-  body.innerHTML = '<tr><td colspan="7" class="empty">loading…</td></tr>';
+  document.getElementById('runsBody').innerHTML = '<tr><td colspan="7" class="empty">loading…</td></tr>';
   try {
     const resp = await api('/api/runs?limit=100');
     allRuns = resp.runs || [];
     document.getElementById('badgeRuns').textContent = allRuns.length;
     renderRunsTable();
-    if (!resp.enabled) {
-      document.getElementById('runsNote').textContent = 'Pipeline trigger not available in this environment.';
-    }
+    if (!resp.enabled) document.getElementById('runsNote').textContent = 'Pipeline trigger not available.';
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="7" class="empty" style="color:var(--red)">${esc(e.message)}</td></tr>`;
+    document.getElementById('runsBody').innerHTML = `<tr><td colspan="7" class="empty" style="color:var(--red)">${esc(e.message)}</td></tr>`;
   }
 }
 
 function renderRunsTable() {
   const body = document.getElementById('runsBody');
   if (!allRuns.length) {
-    body.innerHTML = '<tr><td colspan="7" class="empty">No runs found. Trigger one with + New Run.</td></tr>';
-    return;
+    body.innerHTML = '<tr><td colspan="7" class="empty">No runs found. Trigger one with + New Run.</td></tr>'; return;
   }
   body.innerHTML = '';
   allRuns.forEach(r => {
@@ -740,15 +908,15 @@ function renderRunsTable() {
     const params = r.params || {};
     const paramParts = Object.entries(params)
       .filter(([k]) => !['git-branch','commit-sha'].includes(k))
-      .map(([k, v]) => `${k}=${v}`).join(' · ');
+      .map(([k,v]) => `${k}=${v}`).join(' · ');
     tr.innerHTML = `
-      <td><b>${esc(r.name || '?')}</b></td>
+      <td><b>${esc(r.name||'?')}</b></td>
       <td>${phaseHtml(r.phase)}</td>
-      <td style="color:var(--text-dim); font-size:11px;">${esc(params.mode || 'verification')}</td>
-      <td style="font-size:11px;">${esc(r.triggered_by || r.trigger_source || '—')}</td>
-      <td style="font-size:11px; color:var(--text-faint);">${fmtTs(r.started_at || r.created_at)}</td>
-      <td style="font-size:11px; color:var(--text-faint);">${fmtDuration(r.started_at || r.created_at, r.completed_at)}</td>
-      <td style="font-size:10px; color:var(--text-faint);">${esc(paramParts) || '—'}</td>
+      <td style="color:var(--text-dim);font-size:11px">${esc(params.mode||'verification')}</td>
+      <td style="font-size:11px">${esc(r.triggered_by||r.trigger_source||'—')}</td>
+      <td style="font-size:11px;color:var(--text-faint)">${fmtTs(r.started_at||r.created_at)}</td>
+      <td style="font-size:11px;color:var(--text-faint)">${fmtDuration(r.started_at||r.created_at,r.completed_at)}</td>
+      <td style="font-size:10px;color:var(--text-faint)">${esc(paramParts)||'—'}</td>
     `;
     tr.style.cursor = 'pointer';
     tr.addEventListener('click', () => {
@@ -759,20 +927,22 @@ function renderRunsTable() {
   });
 }
 
-// ===================== NEW RUN MODAL =====================
-function openNewRun() {
+function openNewRun(banner, subpath) {
   document.getElementById('newRunModal').classList.add('open');
   document.getElementById('nrStatus').textContent = '';
   document.getElementById('submitNewRun').disabled = false;
+  document.getElementById('newRunTitle').textContent = 'New run';
+  const bannerEl = document.getElementById('newRunBanner');
+  if (banner) { bannerEl.textContent = banner; bannerEl.style.display = ''; }
+  else bannerEl.style.display = 'none';
+  document.getElementById('nrCorpusSubpath').value = subpath || '';
 }
+
 function closeNewRun() { document.getElementById('newRunModal').classList.remove('open'); }
 
 async function submitNewRun() {
-  const btn = document.getElementById('submitNewRun');
-  const status = document.getElementById('nrStatus');
-  btn.disabled = true;
-  status.textContent = 'submitting…';
-
+  const btn = document.getElementById('submitNewRun'), status = document.getElementById('nrStatus');
+  btn.disabled = true; status.textContent = 'submitting…';
   const sc = document.getElementById('nrSampleCount').value.trim();
   const payload = {
     mode:               document.getElementById('nrMode').value,
@@ -786,21 +956,20 @@ async function submitNewRun() {
     inference_model:    document.getElementById('nrModel').value.trim() || null,
     halt_on_error:      document.getElementById('nrHaltOnError').checked,
   };
-
   try {
-    const resp = await api('/api/runs', { method: 'POST', body: JSON.stringify(payload) });
+    const resp = await api('/api/runs', {method:'POST', body:JSON.stringify(payload)});
     const name = resp.run?.name || '?';
     status.innerHTML = `<span style="color:var(--green)">triggered: ${esc(name)}</span>`;
     toast(`Run triggered: ${name}`);
     setTimeout(() => { closeNewRun(); loadRuns(); }, 800);
   } catch (e) {
     status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
-    toast('Trigger failed: ' + e.message, true);
-    btn.disabled = false;
+    toast('Trigger failed: ' + e.message, true); btn.disabled = false;
   }
 }
 
-// ===================== RESULTS =====================
+// ══════════════════════════ RESULTS ══════════════════════════
+
 async function loadResults() {
   document.getElementById('resultList').innerHTML = '<div class="empty">loading…</div>';
   try {
@@ -808,69 +977,55 @@ async function loadResults() {
     allResults = resp.results || [];
     document.getElementById('badgeResults').textContent = allResults.length;
     renderResultList();
-    if (!resp.available) {
+    if (!resp.available)
       document.getElementById('resultList').innerHTML =
-        `<div class="empty">Workspace PVC not mounted.<br><small style="color:var(--text-faint)">${esc(resp.workspace_path || '')}</small></div>`;
-    }
+        `<div class="empty">Workspace PVC not mounted.<br><small style="color:var(--text-faint)">${esc(resp.workspace_path||'')}</small></div>`;
   } catch (e) {
-    document.getElementById('resultList').innerHTML =
-      `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+    document.getElementById('resultList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
   }
 }
 
 function renderResultList() {
   const el = document.getElementById('resultList');
-  const filter = (document.getElementById('resultFilter').value || '').toLowerCase();
-  const filtered = allResults.filter(r =>
-    !filter || (r.run_id||'').toLowerCase().includes(filter));
-  if (!filtered.length) {
-    el.innerHTML = '<div class="empty">No results found.</div>';
-    return;
-  }
+  const filter = (document.getElementById('resultFilter').value||'').toLowerCase();
+  const filtered = allResults.filter(r => !filter || (r.run_id||'').toLowerCase().includes(filter));
+  if (!filtered.length) { el.innerHTML = '<div class="empty">No results found.</div>'; return; }
   el.innerHTML = '';
   filtered.forEach(r => {
     const item = document.createElement('div');
     item.className = 'list-item' + (activeRunResultId === r.run_id ? ' active' : '');
-    const pct = r.total_ucs > 0 ? Math.round((r.successful / r.total_ucs) * 100) : 0;
     const statusColor = r.failed > 0 ? 'var(--red)' : 'var(--green)';
-    item.innerHTML = `
-      <div class="li-main">
-        <div class="li-title">${esc(r.run_id)}</div>
-        <div class="li-sub">
-          <span style="color:var(--text-dim)">${esc(r.mode || '?')}</span>
-          · <span style="color:${statusColor}">${r.successful}/${r.total_ucs} passed</span>
-          · ${esc(fmtTs(r.started_at))}
-        </div>
-      </div>
-    `;
+    item.innerHTML = `<div class="li-main">
+      <div class="li-title">${esc(r.run_id)}</div>
+      <div class="li-sub">
+        <span style="color:var(--text-dim)">${esc(r.mode||'?')}</span>
+        · <span style="color:${statusColor}">${r.successful}/${r.total_ucs} passed</span>
+        · ${esc(fmtTs(r.started_at))}
+      </div></div>`;
     item.addEventListener('click', () => selectRunResult(r.run_id));
     el.appendChild(item);
   });
 }
 
 async function selectRunResult(runId) {
-  activeRunResultId = runId;
-  activeUCResult = null;
+  activeRunResultId = runId; activeUCResult = null;
   renderResultList();
   document.getElementById('ucResultList').innerHTML = '<div class="empty">loading…</div>';
   document.getElementById('ucListPanel').style.display = '';
   document.getElementById('analysisDetail').innerHTML = '<div class="detail-empty">Select a use case.</div>';
-
   try {
     const summary = await api(`/api/results/${encodeURIComponent(runId)}`);
     activeRunSummary = summary;
     renderRunSummaryHeader(summary);
     renderUCResultList(summary);
   } catch (e) {
-    document.getElementById('ucResultList').innerHTML =
-      `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+    document.getElementById('ucResultList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
   }
 }
 
 function renderRunSummaryHeader(s) {
-  const detail = document.getElementById('analysisDetail');
-  const pct = s.total_ucs > 0 ? Math.round((s.successful / s.total_ucs) * 100) : 0;
-  detail.innerHTML = `
+  const pct = s.total_ucs > 0 ? Math.round((s.successful/s.total_ucs)*100) : 0;
+  document.getElementById('analysisDetail').innerHTML = `<div class="detail-pane">
     <div class="detail-title">Run <em>summary</em></div>
     <div class="detail-sub">${esc(s.run_id)} · ${esc(s.mode)}</div>
     <div class="stat-row">
@@ -883,58 +1038,43 @@ function renderRunSummaryHeader(s) {
     <div class="kv-grid">
       <div class="kv-label">Started</div><div class="kv-val">${esc(fmtTs(s.started_at))}</div>
       <div class="kv-label">Finished</div><div class="kv-val">${esc(fmtTs(s.finished_at))}</div>
-      <div class="kv-label">Wall time</div><div class="kv-val">${s.runner_total_seconds ? s.runner_total_seconds + 's' : '—'}</div>
+      <div class="kv-label">Wall time</div><div class="kv-val">${s.runner_total_seconds ? s.runner_total_seconds+'s' : '—'}</div>
     </div>
-    <div style="margin-top:20px; color:var(--text-faint); font-family:var(--serif); font-style:italic; font-size:13px;">
-      ← Select a use case from the panel to view its analysis.
-    </div>
-  `;
+    <div style="margin-top:20px;color:var(--text-faint);font-family:var(--serif);font-style:italic;font-size:13px;">
+      ← Select a use case to view its analysis.
+    </div></div>`;
 }
 
 function renderUCResultList(summary) {
   const el = document.getElementById('ucResultList');
   const vFilter = document.getElementById('ucVerdictFilter').value;
-  const ucs = (summary.ucs || []);
-  const filtered = vFilter
-    ? ucs.filter(u => {
-        if (vFilter === 'failed') return u.status === 'failed';
-        return u.verdict === vFilter;
-      })
-    : ucs;
-
-  if (!filtered.length) {
-    el.innerHTML = '<div class="empty">No use cases match.</div>';
-    return;
-  }
+  const ucs = summary.ucs || [];
+  const filtered = vFilter ? ucs.filter(u => vFilter==='failed' ? u.status==='failed' : u.verdict===vFilter) : ucs;
+  if (!filtered.length) { el.innerHTML = '<div class="empty">No use cases match.</div>'; return; }
   el.innerHTML = '';
   filtered.forEach(u => {
     const item = document.createElement('div');
-    item.className = 'uc-row' + (activeUCResult === u.uc_uuid ? ' active' : '');
-    const vClass = u.status === 'failed' ? 'verdict-error'
-                   : verdictClass(u.verdict);
-    const vLabel = u.status === 'failed' ? 'failed'
-                   : (u.verdict || '?').replace('_', ' ').replace('partially supported', 'partial').replace('not supported', 'not supp.');
+    item.className = 'uc-row' + (activeUCResult===u.uc_uuid ? ' active' : '');
+    const vClass = u.status==='failed' ? 'verdict-error' : verdictClass(u.verdict);
+    const vLabel = u.status==='failed' ? 'failed'
+      : (u.verdict||'?').replace('_',' ').replace('partially supported','partial').replace('not supported','not supp.');
     item.innerHTML = `
-      <span class="${vClass}" style="font-size:9px; text-transform:uppercase; letter-spacing:0.08em; flex-shrink:0; width:52px;">${esc(vLabel)}</span>
-      <span class="uc-handle">${esc(u.uc_handle || u.uc_uuid)}</span>
-      <span class="uc-time">${u.wall_time_seconds ? u.wall_time_seconds + 's' : ''}</span>
-    `;
+      <span class="${vClass}" style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;flex-shrink:0;width:52px">${esc(vLabel)}</span>
+      <span class="uc-handle">${esc(u.uc_handle||u.uc_uuid)}</span>
+      <span class="uc-time">${u.wall_time_seconds ? u.wall_time_seconds+'s' : ''}</span>`;
     item.addEventListener('click', () => selectUCResult(u.uc_uuid));
     el.appendChild(item);
   });
 }
 
 async function selectUCResult(ucUuid) {
-  activeUCResult = ucUuid;
-  renderUCResultList(activeRunSummary);
-  document.getElementById('analysisDetail').innerHTML =
-    '<div class="detail-empty" style="padding-top:60px;">loading…</div>';
+  activeUCResult = ucUuid; renderUCResultList(activeRunSummary);
+  document.getElementById('analysisDetail').innerHTML = '<div class="detail-empty" style="padding-top:60px">loading…</div>';
   try {
     const data = await api(`/api/results/${encodeURIComponent(activeRunResultId)}/uc/${encodeURIComponent(ucUuid)}`);
     renderAnalysis(data, ucUuid);
   } catch (e) {
-    document.getElementById('analysisDetail').innerHTML =
-      `<div class="detail-pane"><div style="color:var(--red);">${esc(e.message)}</div></div>`;
+    document.getElementById('analysisDetail').innerHTML = `<div class="detail-pane"><div style="color:var(--red)">${esc(e.message)}</div></div>`;
   }
 }
 
@@ -944,162 +1084,87 @@ function renderAnalysis(data, ucUuid) {
     el.innerHTML = `<div class="detail-pane">
       <div class="detail-title" style="color:var(--red)">UC <em>failed</em></div>
       <div class="detail-sub">${esc(ucUuid)}</div>
-      <div class="analysis-block">
-        <div class="analysis-block-header">Error</div>
-        <div class="analysis-block-body"><pre style="white-space:pre-wrap; word-break:break-word">${esc(data.error)}</pre></div>
-      </div>
-    </div>`;
-    return;
+      <div class="analysis-block"><div class="analysis-block-header">Error</div>
+        <div class="analysis-block-body"><pre style="white-space:pre-wrap;word-break:break-word">${esc(data.error)}</pre></div>
+      </div></div>`; return;
   }
+  if (data._source === 'explore') { renderExploreAnalysis(data, ucUuid); return; }
 
-  if (data._source === 'explore') {
-    renderExploreAnalysis(data, ucUuid);
-    return;
-  }
-
-  // Single analysis (verification / reproduce)
   const verdict = data.verdict || '?';
-  const vClass = verdictClass(verdict);
-  const gaps = data.gaps || [];
-  const findings = data.findings || [];
-  const recs = data.recommendations || [];
-  const meta = data.analysis_metadata || {};
-  const sa = data.sample_annotations;
+  const gaps = data.gaps || [], findings = data.findings || [], recs = data.recommendations || [];
+  const meta = data.analysis_metadata || {}, sa = data.sample_annotations;
 
   let html = `<div class="detail-pane">
     <div class="detail-title">Analysis <em>result</em></div>
     <div class="detail-sub">${esc(ucUuid)}</div>
-
-    <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
-      <span style="font-size:22px; font-family:var(--serif); font-weight:300;" class="${vClass}">${esc(verdict.replace(/_/g,' '))}</span>
-      ${sa ? `<span style="font-size:11px; color:var(--text-dim);">agreement: ${Math.round((sa.agreement||0)*100)}% (${sa.sample_count||'?'} samples)</span>` : ''}
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <span style="font-size:22px;font-family:var(--serif);font-weight:300" class="${verdictClass(verdict)}">${esc(verdict.replace(/_/g,' '))}</span>
+      ${sa ? `<span style="font-size:11px;color:var(--text-dim)">agreement: ${Math.round((sa.agreement||0)*100)}% (${sa.sample_count||'?'} samples)</span>` : ''}
     </div>
-
     <div class="detail-section">
       <div class="detail-section-title">Overall assessment</div>
-      <div style="font-size:13px; font-family:var(--serif); line-height:1.7; color:var(--text);">
-        ${esc(data.overall_assessment || '—')}
-      </div>
-    </div>
-  `;
+      <div style="font-size:13px;font-family:var(--serif);line-height:1.7;color:var(--text)">${esc(data.overall_assessment||'—')}</div>
+    </div>`;
 
-  if (findings.length) {
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Findings (${findings.length})</div>
-      <div class="analysis-block">`;
-    findings.forEach(f => {
-      const sev = typeof f.severity === 'object' ? f.severity.label : f.severity;
-      const fvClass = verdictClass(f.verdict);
-      html += `<div class="finding-row">
-        <div>
-          <div class="finding-id">${esc(f.finding_id || '')}</div>
-          <span class="sev-label ${sevClass(sev)}">${esc(sev||'?')}</span>
-        </div>
-        <div>
-          <div class="finding-text" style="font-weight:500; margin-bottom:3px;">${esc(f.title || '')}</div>
-          <div style="font-size:11px; color:var(--text-dim); line-height:1.5;">${esc(f.text || '')}</div>
-        </div>
-        <span class="${fvClass}" style="font-size:10px; text-transform:uppercase; letter-spacing:0.08em;">${esc((f.verdict||'').replace(/_/g,' '))}</span>
+  const blockOf = (items, title, idKey, textKey, descKey) => {
+    if (!items.length) return '';
+    let b = `<div class="detail-section"><div class="detail-section-title">${title} (${items.length})</div><div class="analysis-block">`;
+    items.forEach(f => {
+      const sev = typeof f.severity==='object' ? f.severity.label : f.severity;
+      const verdict2 = f.verdict || '';
+      b += `<div class="finding-row">
+        <div><div class="finding-id">${esc(f[idKey]||'')}</div><span class="sev-label ${sevClass(sev)}">${esc(sev||'?')}</span></div>
+        <div><div class="finding-text" style="font-weight:500;margin-bottom:3px">${esc(f.title||'')}</div>
+          <div style="font-size:11px;color:var(--text-dim);line-height:1.5">${esc(f[textKey]||f[descKey]||'')}</div></div>
+        <span class="${verdictClass(verdict2)}" style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em">${esc(verdict2.replace(/_/g,' '))}</span>
       </div>`;
     });
-    html += `</div></div>`;
-  }
+    return b + '</div></div>';
+  };
 
-  if (gaps.length) {
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Gaps (${gaps.length})</div>
-      <div class="analysis-block">`;
-    gaps.forEach(g => {
-      const sev = typeof g.severity === 'object' ? g.severity.label : g.severity;
-      html += `<div class="finding-row">
-        <div>
-          <div class="finding-id">${esc(g.gap_id || '')}</div>
-          <span class="sev-label ${sevClass(sev)}">${esc(sev||'?')}</span>
-        </div>
-        <div>
-          <div class="finding-text" style="font-weight:500; margin-bottom:3px;">${esc(g.title || '')}</div>
-          <div style="font-size:11px; color:var(--text-dim); line-height:1.5;">${esc(g.description || '')}</div>
-        </div>
-        <div></div>
-      </div>`;
-    });
-    html += `</div></div>`;
-  }
-
-  if (recs.length) {
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Recommendations (${recs.length})</div>
-      <div class="analysis-block">`;
-    recs.forEach(r => {
-      const pri = typeof r.priority === 'object' ? r.priority.label : r.priority;
-      html += `<div class="finding-row">
-        <div>
-          <div class="finding-id">${esc(r.rec_id || '')}</div>
-          ${pri ? `<span class="sev-label ${sevClass(pri)}">${esc(pri)}</span>` : ''}
-        </div>
-        <div>
-          <div class="finding-text" style="font-weight:500; margin-bottom:3px;">${esc(r.title || '')}</div>
-          <div style="font-size:11px; color:var(--text-dim); line-height:1.5;">${esc(r.text || '')}</div>
-        </div>
-        <div></div>
-      </div>`;
-    });
-    html += `</div></div>`;
-  }
+  html += blockOf(findings, 'Findings', 'finding_id', 'text', 'text');
+  html += blockOf(gaps,     'Gaps',     'gap_id',     'description', 'description');
+  html += blockOf(recs,     'Recommendations', 'rec_id', 'text', 'text');
 
   if (meta.mode || meta.endpoint_url) {
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Metadata</div>
-      <div class="kv-grid">
-        ${meta.mode ? `<div class="kv-label">mode</div><div class="kv-val">${esc(meta.mode)}</div>` : ''}
-        ${meta.sample_count ? `<div class="kv-label">samples</div><div class="kv-val">${meta.sample_count}</div>` : ''}
-        ${meta.endpoint_url ? `<div class="kv-label">endpoint</div><div class="kv-val">${esc(meta.endpoint_url)}</div>` : ''}
-        ${meta.inference_topology ? `<div class="kv-label">topology</div><div class="kv-val">${esc(meta.inference_topology)}</div>` : ''}
-        ${meta.analyzed_at ? `<div class="kv-label">analyzed</div><div class="kv-val">${esc(fmtTs(meta.analyzed_at))}</div>` : ''}
-        ${meta.engine_version ? `<div class="kv-label">engine</div><div class="kv-val">${esc(meta.engine_version)}</div>` : ''}
-      </div>
-    </div>`;
+    html += `<div class="detail-section"><div class="detail-section-title">Metadata</div><div class="kv-grid">
+      ${meta.mode          ? `<div class="kv-label">mode</div><div class="kv-val">${esc(meta.mode)}</div>` : ''}
+      ${meta.sample_count  ? `<div class="kv-label">samples</div><div class="kv-val">${meta.sample_count}</div>` : ''}
+      ${meta.endpoint_url  ? `<div class="kv-label">endpoint</div><div class="kv-val">${esc(meta.endpoint_url)}</div>` : ''}
+      ${meta.analyzed_at   ? `<div class="kv-label">analyzed</div><div class="kv-val">${esc(fmtTs(meta.analyzed_at))}</div>` : ''}
+      ${meta.engine_version? `<div class="kv-label">engine</div><div class="kv-val">${esc(meta.engine_version)}</div>` : ''}
+    </div></div>`;
   }
-
   html += '</div>';
   el.innerHTML = html;
 }
 
 function renderExploreAnalysis(data, ucUuid) {
-  const el = document.getElementById('analysisDetail');
   const samples = data.samples || [];
-  const variance = data.variance;
   let html = `<div class="detail-pane">
     <div class="detail-title">Explore <em>mode</em></div>
-    <div class="detail-sub">${esc(ucUuid)} · ${samples.length} samples</div>
-  `;
-  if (variance) {
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Variance report</div>
+    <div class="detail-sub">${esc(ucUuid)} · ${samples.length} samples</div>`;
+  if (data.variance) {
+    html += `<div class="detail-section"><div class="detail-section-title">Variance report</div>
       <div class="analysis-block"><div class="analysis-block-body">
-        <pre style="white-space:pre-wrap; word-break:break-word; font-size:11px;">${esc(JSON.stringify(variance, null, 2))}</pre>
-      </div></div>
-    </div>`;
+        <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px">${esc(JSON.stringify(data.variance,null,2))}</pre>
+      </div></div></div>`;
   }
-  samples.forEach((s, i) => {
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Sample ${i}</div>
+  samples.forEach((s,i) => {
+    html += `<div class="detail-section"><div class="detail-section-title">Sample ${i}</div>
       <div class="analysis-block">
-        <div class="analysis-block-header">
-          <span class="${verdictClass(s.verdict)}">${esc((s.verdict||'?').replace(/_/g,' '))}</span>
-        </div>
-        <div class="analysis-block-body">${esc(s.overall_assessment || '—')}</div>
-      </div>
-    </div>`;
+        <div class="analysis-block-header"><span class="${verdictClass(s.verdict)}">${esc((s.verdict||'?').replace(/_/g,' '))}</span></div>
+        <div class="analysis-block-body">${esc(s.overall_assessment||'—')}</div>
+      </div></div>`;
   });
-  html += '</div>';
-  el.innerHTML = html;
+  document.getElementById('analysisDetail').innerHTML = html + '</div>';
 }
 
-// ===================== USE CASES =====================
-async function loadUCs(source) {
+// ══════════════════════════ USE CASES ══════════════════════════
+
+async function loadUCs() {
   document.getElementById('ucList').innerHTML = '<div class="empty">loading…</div>';
-  const src = source || document.getElementById('ucSourceFilter').value;
+  const src = document.getElementById('ucSourceFilter').value;
   try {
     const q = src ? `?source=${src}` : '';
     const resp = await api('/api/use-cases' + q);
@@ -1107,281 +1172,308 @@ async function loadUCs(source) {
     document.getElementById('badgeUC').textContent = allUCs.length;
     renderUCList();
   } catch (e) {
-    document.getElementById('ucList').innerHTML =
-      `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+    document.getElementById('ucList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
   }
 }
 
 function renderUCList() {
   const el = document.getElementById('ucList');
-  const filter = (document.getElementById('ucFilter').value || '').toLowerCase();
-  const filtered = allUCs.filter(u =>
+  const filter = (document.getElementById('ucFilter').value||'').toLowerCase();
+  let filtered = allUCs.filter(u =>
     !filter ||
     (u.uuid||'').toLowerCase().includes(filter) ||
     (u.title||'').toLowerCase().includes(filter) ||
     (u.handle||'').toLowerCase().includes(filter) ||
     (u.tags||[]).some(t => t.toLowerCase().includes(filter))
   );
+  if (ucStateFilter) filtered = filtered.filter(u => u.source==='corpus' || u.lifecycle_state===ucStateFilter);
 
-  if (!filtered.length) {
-    el.innerHTML = '<div class="empty">No use cases match.</div>';
-    return;
-  }
-
+  if (!filtered.length) { el.innerHTML = '<div class="empty">No use cases match.</div>'; return; }
   el.innerHTML = '';
-  const managedList = filtered.filter(u => u.source === 'managed');
-  const corpusList  = filtered.filter(u => u.source === 'corpus');
+
+  const managed = filtered.filter(u => u.source==='managed');
+  const corpus  = filtered.filter(u => u.source==='corpus');
 
   const renderGroup = (items, label) => {
     if (!items.length) return;
     const gl = document.createElement('div');
-    gl.className = 'list-group-label';
-    gl.textContent = label;
+    gl.className = 'list-group-label'; gl.textContent = label;
     el.appendChild(gl);
     items.forEach(u => {
       const item = document.createElement('div');
-      item.className = 'list-item' + (activeUCId === u.uuid ? ' active' : '');
-      const tags = (u.tags || []).slice(0, 3).map(t => `<span class="tag">${esc(t)}</span>`).join('');
+      item.className = 'list-item' + (activeUCId===u.uuid ? ' active' : '');
+      const tags = (u.tags||[]).slice(0,2).map(t => `<span class="tag">${esc(t)}</span>`).join('');
       item.innerHTML = `
         <div class="li-main">
-          <div class="li-title">${esc(u.uuid || u.handle || '?')}</div>
-          <div class="li-sub">${esc(u.title || u.handle || '')}</div>
-          ${tags ? `<div style="margin-top:3px;">${tags}</div>` : ''}
+          <div class="li-title">${esc(u.uuid||u.handle||'?')}</div>
+          <div class="li-sub">${esc(u.title||u.handle||'')}</div>
+          ${tags ? `<div style="margin-top:3px">${tags}</div>` : ''}
         </div>
-        <span class="src-badge src-${u.source}">${u.source}</span>
-      `;
+        ${u.lifecycle_state ? lcHtml(u.lifecycle_state) : `<span class="src-badge src-${u.source}">${u.source}</span>`}`;
       item.addEventListener('click', () => selectUC(u.uuid));
       el.appendChild(item);
     });
   };
 
-  renderGroup(managedList, 'Managed');
-  renderGroup(corpusList, 'Corpus');
+  renderGroup(managed, 'Managed');
+  renderGroup(corpus,  'Corpus');
 }
 
 async function selectUC(uuid) {
-  activeUCId = uuid;
-  renderUCList();
-  renderUCDetail(null, 'loading…');
+  activeUCId = uuid; renderUCList();
+  renderUCDetailLoading();
   try {
     const data = await api(`/api/use-cases/${encodeURIComponent(uuid)}`);
-    renderUCDetail(data);
+    let lifecycle = null;
+    if (data.source === 'managed') {
+      try { lifecycle = await api(`/api/use-cases/${encodeURIComponent(uuid)}/lifecycle`); } catch {}
+    }
+    renderUCDetail(data, lifecycle);
   } catch (e) {
-    renderUCDetail(null, e.message, true);
+    document.getElementById('ucDetail').innerHTML =
+      `<div class="detail-pane"><div style="color:var(--red);padding-top:40px">${esc(e.message)}</div></div>`;
   }
 }
 
-function renderUCDetail(data, loadingMsg, isErr) {
+function renderUCDetailLoading() {
+  document.getElementById('ucDetail').innerHTML =
+    '<div class="detail-pane"><div class="detail-empty">loading…</div></div>';
+}
+
+function renderUCDetail(data, lifecycle) {
   const el = document.getElementById('ucDetail');
-  if (!data) {
-    el.innerHTML = `<div class="detail-pane"><div class="${isErr ? '' : 'detail-empty'}" style="${isErr ? 'color:var(--red);padding-top:40px;' : ''}">${esc(loadingMsg || '')}</div></div>`;
-    return;
-  }
+  if (!data) { el.innerHTML = '<div class="detail-pane"><div class="detail-empty">Select a use case.</div></div>'; return; }
 
   const isManaged = data.source === 'managed';
   const parsed = data.parsed || {};
-  const scenario = parsed.scenario || (data.yaml_content ? tryParseYaml(data.yaml_content)?.scenario : null) || {};
+  const scenario = parsed.scenario || {};
   const tags = data.tags || parsed.tags || [];
   const uuid = data.uuid;
+  const state = data.lifecycle_state || 'draft';
+  const sets = data.sets || [];
 
   let html = `<div class="detail-pane">
-    <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:4px;">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px">
       <div>
         <div class="detail-title">Use <em>case</em></div>
         <div class="detail-sub">${esc(uuid)}</div>
       </div>
-      <div style="display:flex; gap:6px; flex-shrink:0; margin-top:4px;">
+      <div style="display:flex;gap:6px;flex-shrink:0;margin-top:4px">
         ${isManaged
           ? `<button class="btn ghost" onclick="editUC('${esc(uuid)}')">Edit</button>
              <button class="btn danger" onclick="deleteUC('${esc(uuid)}')">Delete</button>`
           : `<button class="btn ghost" onclick="cloneUC('${esc(uuid)}')">Clone to managed</button>`}
       </div>
     </div>
-    <div style="margin-bottom:14px;">${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>
-  `;
+    <div style="margin-bottom:14px">${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>`;
+
+  // ── Lifecycle state machine (managed only)
+  if (isManaged) {
+    const transitions = LC_TRANSITIONS[state] || [];
+    html += `<div class="lc-machine">
+      <div class="lc-machine-row">
+        <span class="lc-machine-label">State</span>
+        ${lcHtml(state)}
+      </div>
+      ${transitions.length ? `<div class="lc-machine-row">
+        <span class="lc-machine-label">Transition</span>
+        <div class="lc-actions">
+          ${transitions.map(t =>
+            `<button class="${t.cls}" onclick="openLCModal('${esc(uuid)}','${t.to}','${esc(t.label)}')">${esc(t.label)}</button>`
+          ).join('')}
+        </div></div>` : ''}
+    </div>`;
+
+    // Lifecycle history
+    if (lifecycle && lifecycle.events && lifecycle.events.length) {
+      html += `<div class="detail-section">
+        <div class="detail-section-title">Lifecycle history</div>
+        <div class="analysis-block"><div class="analysis-block-body" style="padding:4px 0">`;
+      lifecycle.events.forEach(e => {
+        html += `<div class="lc-history-row">
+          ${e.from_state ? lcHtml(e.from_state) : '<span style="color:var(--text-faint);font-size:10px">created</span>'}
+          <span class="lc-history-arrow">→</span>
+          ${lcHtml(e.to_state)}
+          <span class="lc-history-who">${esc(e.actor)}</span>
+          ${e.notes ? `<span style="color:var(--text-dim);font-size:11px">${esc(e.notes)}</span>` : ''}
+          <span class="lc-history-ts">${esc(fmtTs(e.created_at))}</span>
+        </div>`;
+      });
+      html += '</div></div></div>';
+    }
+
+    // Set memberships
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Sets</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
+        ${sets.length
+          ? sets.map(s => `<span class="set-chip" style="cursor:pointer" onclick="switchView('sets');setTimeout(()=>selectSet(${s.id}),100)">⊞ ${esc(s.name)}</span>`).join('')
+          : '<span style="color:var(--text-faint);font-size:11px">Not in any set</span>'}
+      </div>
+    </div>`;
+  }
 
   if (scenario.description) {
     html += `<div class="detail-section">
       <div class="detail-section-title">Scenario</div>
-      <div style="font-size:13px; font-family:var(--serif); line-height:1.7; color:var(--text);">${esc(scenario.description)}</div>
+      <div style="font-size:13px;font-family:var(--serif);line-height:1.7;color:var(--text)">${esc(scenario.description)}</div>
     </div>`;
   }
 
   const dims = scenario.dimensions || {};
   if (Object.keys(dims).length) {
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Dimensions</div>
-      <div class="kv-grid">`;
-    Object.entries(dims).forEach(([k, v]) => {
+    html += `<div class="detail-section"><div class="detail-section-title">Dimensions</div><div class="kv-grid">`;
+    Object.entries(dims).forEach(([k,v]) => {
       html += `<div class="kv-label">${esc(k.replace(/_/g,' '))}</div><div class="kv-val">${esc(v)}</div>`;
     });
-    html += `</div></div>`;
+    html += '</div></div>';
   }
 
   const criteria = scenario.success_criteria || [];
   if (criteria.length) {
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Success criteria</div>
-      <ul style="list-style:none; padding:0;">`;
+    html += `<div class="detail-section"><div class="detail-section-title">Success criteria</div><ul style="list-style:none;padding:0">`;
     criteria.forEach(c => {
-      html += `<li style="font-size:12px; color:var(--text-dim); padding:3px 0; padding-left:14px; position:relative;">
-        <span style="position:absolute; left:0; color:var(--accent);">·</span>${esc(c)}
-      </li>`;
+      html += `<li style="font-size:12px;color:var(--text-dim);padding:3px 0;padding-left:14px;position:relative">
+        <span style="position:absolute;left:0;color:var(--accent)">·</span>${esc(c)}</li>`;
     });
-    html += `</ul></div>`;
+    html += '</ul></div>';
   }
 
   const di = scenario.expected_domain_interactions || [];
   if (di.length) {
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Domain interactions</div>
-      <div class="analysis-block">`;
+    html += `<div class="detail-section"><div class="detail-section-title">Domain interactions</div><div class="analysis-block">`;
     di.forEach(d => {
       html += `<div class="finding-row">
-        <div style="font-size:10px; color:var(--accent);">${esc(d.domain || '')}</div>
-        <div style="font-size:12px; color:var(--text-dim);">${esc(d.interaction || '')}</div>
-        <div></div>
-      </div>`;
+        <div style="font-size:10px;color:var(--accent)">${esc(d.domain||'')}</div>
+        <div style="font-size:12px;color:var(--text-dim)">${esc(d.interaction||'')}</div>
+        <div></div></div>`;
     });
-    html += `</div></div>`;
+    html += '</div></div>';
   }
 
-  // Actor info
   if (scenario.actor) {
     const a = scenario.actor;
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Actor</div>
-      <div class="kv-grid">
-        ${a.persona ? `<div class="kv-label">persona</div><div class="kv-val">${esc(a.persona)}</div>` : ''}
-        ${a.profile ? `<div class="kv-label">profile</div><div class="kv-val">${esc(a.profile)}</div>` : ''}
-      </div>
-    </div>`;
+    html += `<div class="detail-section"><div class="detail-section-title">Actor</div><div class="kv-grid">
+      ${a.persona ? `<div class="kv-label">persona</div><div class="kv-val">${esc(a.persona)}</div>` : ''}
+      ${a.profile ? `<div class="kv-label">profile</div><div class="kv-val">${esc(a.profile)}</div>` : ''}
+    </div></div>`;
   }
 
   const genBy = parsed.generated_by || {};
   if (data.created_by || genBy.source) {
-    html += `<div class="detail-section">
-      <div class="detail-section-title">Provenance</div>
-      <div class="kv-grid">
-        ${data.created_by ? `<div class="kv-label">created by</div><div class="kv-val">${esc(data.created_by)}</div>` : ''}
-        ${data.created_at ? `<div class="kv-label">created</div><div class="kv-val">${esc(fmtTs(data.created_at))}</div>` : ''}
-        ${data.updated_by && data.updated_by !== data.created_by ? `<div class="kv-label">updated by</div><div class="kv-val">${esc(data.updated_by)}</div>` : ''}
-        ${data.updated_at ? `<div class="kv-label">updated</div><div class="kv-val">${esc(fmtTs(data.updated_at))}</div>` : ''}
-        ${genBy.source ? `<div class="kv-label">gen source</div><div class="kv-val">${esc(genBy.source)}</div>` : ''}
-        ${genBy.mode   ? `<div class="kv-label">gen mode</div><div class="kv-val">${esc(genBy.mode)}</div>` : ''}
-      </div>
-    </div>`;
+    html += `<div class="detail-section"><div class="detail-section-title">Provenance</div><div class="kv-grid">
+      ${data.created_by ? `<div class="kv-label">created by</div><div class="kv-val">${esc(data.created_by)}</div>` : ''}
+      ${data.created_at ? `<div class="kv-label">created</div><div class="kv-val">${esc(fmtTs(data.created_at))}</div>` : ''}
+      ${data.updated_by && data.updated_by!==data.created_by ? `<div class="kv-label">updated by</div><div class="kv-val">${esc(data.updated_by)}</div>` : ''}
+      ${data.updated_at ? `<div class="kv-label">updated</div><div class="kv-val">${esc(fmtTs(data.updated_at))}</div>` : ''}
+      ${genBy.source ? `<div class="kv-label">gen source</div><div class="kv-val">${esc(genBy.source)}</div>` : ''}
+      ${genBy.mode   ? `<div class="kv-label">gen mode</div><div class="kv-val">${esc(genBy.mode)}</div>` : ''}
+    </div></div>`;
   }
 
   if (data.yaml_content) {
     html += `<div class="detail-section">
-      <div class="detail-section-title" style="cursor:pointer;" onclick="toggleRaw(this)">
-        Raw YAML <span style="color:var(--text-faint); font-size:9px;">(click to toggle)</span>
+      <div class="detail-section-title" style="cursor:pointer" onclick="toggleRaw(this)">
+        Raw YAML <span style="color:var(--text-faint);font-size:9px">(click to toggle)</span>
       </div>
-      <div class="raw-yaml-block" style="display:none;">
-        <div class="analysis-block">
-          <div class="analysis-block-body">
-            <pre style="white-space:pre-wrap; word-break:break-word; font-size:11px;">${esc(data.yaml_content)}</pre>
-          </div>
-        </div>
-      </div>
-    </div>`;
+      <div class="raw-yaml-block" style="display:none">
+        <div class="analysis-block"><div class="analysis-block-body">
+          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px">${esc(data.yaml_content)}</pre>
+        </div></div>
+      </div></div>`;
   }
 
   html += '</div>';
   el.innerHTML = html;
 }
 
-function toggleRaw(titleEl) {
-  const block = titleEl.nextElementSibling;
-  if (block) block.style.display = block.style.display === 'none' ? '' : 'none';
+function toggleRaw(el) {
+  const b = el.nextElementSibling; if (b) b.style.display = b.style.display==='none' ? '' : 'none';
 }
 
-function tryParseYaml(content) {
-  // Minimal client-side YAML parser attempt — just for display purposes.
-  // Full parsing happens server-side; here we just extract top-level keys.
+// ── Lifecycle transition modal ──────────────────────────────
+function openLCModal(uuid, toState, label) {
+  lcPendingUCId = uuid; lcPendingTo = toState;
+  document.getElementById('lcModalTitle').textContent = label;
+  document.getElementById('lcModalDesc').textContent =
+    `Move "${uuid}" to "${toState.replace(/_/g,' ')}"`;
+  document.getElementById('lcModalNotes').value = '';
+  document.getElementById('lcModalStatus').textContent = '';
+  document.getElementById('confirmLCModal').disabled = false;
+  document.getElementById('lcModal').classList.add('open');
+}
+function closeLCModal() { document.getElementById('lcModal').classList.remove('open'); }
+
+async function confirmLCTransition() {
+  if (!lcPendingUCId || !lcPendingTo) return;
+  const btn = document.getElementById('confirmLCModal'), status = document.getElementById('lcModalStatus');
+  btn.disabled = true; status.textContent = 'saving…';
+  const notes = document.getElementById('lcModalNotes').value.trim();
   try {
-    // We don't ship js-yaml, so we use a heuristic: look for 'scenario:' block
-    // and return enough structure for the detail renderer.
-    return null;
-  } catch { return null; }
-}
-
-// ===================== UC CRUD =====================
-function openUCModal(uuid, yamlContent, tags) {
-  editingUCId = uuid || null;
-  document.getElementById('ucModalTitle').textContent = uuid ? 'Edit use case' : 'New use case';
-  document.getElementById('ucYamlEditor').value = yamlContent || UC_TEMPLATE;
-  document.getElementById('ucTagsInput').value = (tags || []).join(', ');
-  document.getElementById('ucModalStatus').textContent = '';
-  document.getElementById('saveUCModal').disabled = false;
-  document.getElementById('ucModal').classList.add('open');
-}
-
-async function editUC(uuid) {
-  try {
-    const data = await api(`/api/use-cases/${encodeURIComponent(uuid)}`);
-    openUCModal(uuid, data.yaml_content, data.tags);
-  } catch (e) {
-    toast('Load failed: ' + e.message, true);
-  }
-}
-
-async function cloneUC(uuid) {
-  try {
-    const data = await api(`/api/use-cases/${encodeURIComponent(uuid)}`);
-    openUCModal(null, data.yaml_content, data.tags);
-  } catch (e) {
-    toast('Load failed: ' + e.message, true);
-  }
-}
-
-async function deleteUC(uuid) {
-  if (!confirm(`Delete use case "${uuid}"? This cannot be undone.`)) return;
-  try {
-    await api(`/api/use-cases/${encodeURIComponent(uuid)}`, { method: 'DELETE' });
-    toast(`Deleted ${uuid}`);
-    activeUCId = null;
-    document.getElementById('ucDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">Use case deleted.</div></div>';
-    loadUCs();
-  } catch (e) {
-    toast('Delete failed: ' + e.message, true);
-  }
-}
-
-async function saveUC() {
-  const btn = document.getElementById('saveUCModal');
-  const status = document.getElementById('ucModalStatus');
-  btn.disabled = true;
-  status.textContent = 'saving…';
-
-  const yamlContent = document.getElementById('ucYamlEditor').value;
-  const tagsRaw = document.getElementById('ucTagsInput').value;
-  const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
-  const payload = { yaml_content: yamlContent, tags };
-
-  try {
-    let resp;
-    if (editingUCId) {
-      resp = await api(`/api/use-cases/${encodeURIComponent(editingUCId)}`,
-        { method: 'PUT', body: JSON.stringify(payload) });
-    } else {
-      resp = await api('/api/use-cases', { method: 'POST', body: JSON.stringify(payload) });
-    }
-    toast(`Saved ${resp.uuid}`);
-    closeUCModal();
-    activeUCId = resp.uuid;
-    await loadUCs();
-    selectUC(resp.uuid);
+    await api(`/api/use-cases/${encodeURIComponent(lcPendingUCId)}/transition`, {
+      method:'POST', body:JSON.stringify({to_state:lcPendingTo, notes})
+    });
+    toast(`UC moved to ${lcPendingTo.replace(/_/g,' ')}`);
+    closeLCModal();
+    // Refresh the UC in-place
+    const data = await api(`/api/use-cases/${encodeURIComponent(lcPendingUCId)}`);
+    let lifecycle = null;
+    try { lifecycle = await api(`/api/use-cases/${encodeURIComponent(lcPendingUCId)}/lifecycle`); } catch {}
+    renderUCDetail(data, lifecycle);
+    // Update list badge
+    const uc = allUCs.find(u => u.uuid === lcPendingUCId);
+    if (uc) { uc.lifecycle_state = lcPendingTo; renderUCList(); }
   } catch (e) {
     status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
     btn.disabled = false;
   }
 }
 
-function closeUCModal() {
-  document.getElementById('ucModal').classList.remove('open');
-  editingUCId = null;
+// ── UC CRUD ──────────────────────────────────────────────────
+function openUCModal(uuid, yamlContent, tags) {
+  editingUCId = uuid || null;
+  document.getElementById('ucModalTitle').textContent = uuid ? 'Edit use case' : 'New use case';
+  document.getElementById('ucYamlEditor').value = yamlContent || UC_TEMPLATE;
+  document.getElementById('ucTagsInput').value = (tags||[]).join(', ');
+  document.getElementById('ucModalStatus').textContent = '';
+  document.getElementById('saveUCModal').disabled = false;
+  document.getElementById('ucModal').classList.add('open');
+}
+async function editUC(uuid) {
+  try { const d = await api(`/api/use-cases/${encodeURIComponent(uuid)}`); openUCModal(uuid, d.yaml_content, d.tags); }
+  catch (e) { toast('Load failed: ' + e.message, true); }
+}
+async function cloneUC(uuid) {
+  try { const d = await api(`/api/use-cases/${encodeURIComponent(uuid)}`); openUCModal(null, d.yaml_content, d.tags); }
+  catch (e) { toast('Load failed: ' + e.message, true); }
+}
+async function deleteUC(uuid) {
+  if (!confirm(`Delete use case "${uuid}"? This cannot be undone.`)) return;
+  try {
+    await api(`/api/use-cases/${encodeURIComponent(uuid)}`, {method:'DELETE'});
+    toast(`Deleted ${uuid}`); activeUCId = null;
+    document.getElementById('ucDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">Deleted.</div></div>';
+    loadUCs();
+  } catch (e) { toast('Delete failed: ' + e.message, true); }
+}
+function closeUCModal() { document.getElementById('ucModal').classList.remove('open'); editingUCId = null; }
+async function saveUC() {
+  const btn = document.getElementById('saveUCModal'), status = document.getElementById('ucModalStatus');
+  btn.disabled = true; status.textContent = 'saving…';
+  const yamlContent = document.getElementById('ucYamlEditor').value;
+  const tags = document.getElementById('ucTagsInput').value.split(',').map(t => t.trim()).filter(Boolean);
+  const payload = {yaml_content: yamlContent, tags};
+  try {
+    let resp;
+    if (editingUCId)
+      resp = await api(`/api/use-cases/${encodeURIComponent(editingUCId)}`, {method:'PUT', body:JSON.stringify(payload)});
+    else
+      resp = await api('/api/use-cases', {method:'POST', body:JSON.stringify(payload)});
+    toast(`Saved ${resp.uuid}`); closeUCModal(); activeUCId = resp.uuid;
+    await loadUCs(); selectUC(resp.uuid);
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; btn.disabled = false;
+  }
 }
 
 const UC_TEMPLATE = `# DAV Use Case — v1.0
@@ -1425,88 +1517,403 @@ tags:
   - <tag>
 `;
 
-// ===================== CONFIG / SOURCES =====================
-const sourcesPollers = { spec: null, corpus: null };
-const sourcesState  = { spec: null, corpus: null };
+// ══════════════════════════ SETS ══════════════════════════
+
+async function loadSets() {
+  document.getElementById('setList').innerHTML = '<div class="empty">loading…</div>';
+  try {
+    const resp = await api('/api/sets');
+    allSets = resp.sets || [];
+    document.getElementById('badgeSets').textContent = allSets.length;
+    renderSetList();
+  } catch (e) {
+    document.getElementById('setList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+  }
+}
+
+function renderSetList() {
+  const el = document.getElementById('setList');
+  const filter = (document.getElementById('setFilter').value||'').toLowerCase();
+  const filtered = allSets.filter(s => !filter || s.name.toLowerCase().includes(filter) || (s.description||'').toLowerCase().includes(filter));
+  if (!filtered.length) { el.innerHTML = '<div class="empty">No sets. Create one with + New.</div>'; return; }
+  el.innerHTML = '';
+  filtered.forEach(s => {
+    const item = document.createElement('div');
+    item.className = 'list-item' + (activeSetId===s.id ? ' active' : '');
+    item.innerHTML = `<div class="li-main">
+      <div class="li-title">${esc(s.name)}</div>
+      <div class="li-sub">${esc(s.description||'')} · ${s.member_count} UC${s.member_count!==1?'s':''}</div>
+    </div>`;
+    item.addEventListener('click', () => selectSet(s.id));
+    el.appendChild(item);
+  });
+}
+
+async function selectSet(setId) {
+  activeSetId = setId; renderSetList();
+  document.getElementById('setDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">loading…</div></div>';
+  try {
+    const data = await api(`/api/sets/${setId}`);
+    renderSetDetail(data);
+  } catch (e) {
+    document.getElementById('setDetail').innerHTML =
+      `<div class="detail-pane"><div style="color:var(--red);padding-top:40px">${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderSetDetail(data) {
+  const el = document.getElementById('setDetail');
+  const members = data.members || [];
+
+  let html = `<div class="detail-pane">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px">
+      <div>
+        <div class="detail-title">Set: <em>${esc(data.name)}</em></div>
+        <div class="detail-sub">${esc(data.description||'')} · created by ${esc(data.created_by)}</div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;margin-top:4px">
+        <button class="btn primary" onclick="runSet(${data.id},'${esc(data.name)}')">▶ Run</button>
+        <button class="btn ghost" onclick="openPromoteModal(${data.id},'${esc(data.name)}')">↑ Promote</button>
+        <div style="position:relative;display:inline-block;">
+          <button class="btn ghost" onclick="toggleExportSetMenu(${data.id},event)">↓ Export</button>
+          <div id="exportSetMenu-${data.id}" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:140px;">
+            <button class="dropdown-item" onclick="exportSet(${data.id},'tar.gz')">tar.gz (gzip)</button>
+            <button class="dropdown-item" onclick="exportSet(${data.id},'zip')">zip</button>
+            <button class="dropdown-item" onclick="exportSet(${data.id},'tar')">tar (uncompressed)</button>
+          </div>
+        </div>
+        <button class="btn ghost" onclick="openSetModal(${data.id})">Edit</button>
+        <button class="btn danger" onclick="deleteSet(${data.id})">Delete</button>
+      </div>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title" style="justify-content:space-between">
+        <span style="display:flex;align-items:center;gap:10px">
+          <span>Members (${members.length})</span>
+        </span>
+        <button class="btn ghost btn-icon" onclick="openAddMember(${data.id})" style="font-size:11px">+ Add UC</button>
+      </div>`;
+
+  if (!members.length) {
+    html += '<div class="empty" style="padding:16px">No UCs in this set yet. Use + Add UC to populate it.</div>';
+  } else {
+    html += '<div class="analysis-block" style="overflow:hidden">';
+    members.forEach(m => {
+      const srcBadge = `<span class="src-badge src-${m.uc_source}">${m.uc_source}</span>`;
+      html += `<div class="member-row">
+        <span class="mr-uuid" style="cursor:pointer;color:var(--accent)"
+          onclick="switchView('usecases');setTimeout(()=>selectUC('${esc(m.uc_uuid)}'),100)">${esc(m.uc_uuid)}</span>
+        ${m.uc_handle ? `<span class="mr-handle">${esc(m.uc_handle)}</span>` : ''}
+        ${srcBadge}
+        <button class="btn danger btn-icon" title="Remove from set"
+          onclick="removeMember(${data.id},'${esc(m.uc_uuid)}')">×</button>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  html += '</div></div>';
+  el.innerHTML = html;
+}
+
+async function runSet(setId, setName) {
+  try {
+    const info = await api(`/api/sets/${setId}/corpus-subpath`);
+    const msg = info.managed_count > 0
+      ? `⚠ ${info.managed_count} managed UC(s) in this set will be skipped (promote to corpus first).`
+      : null;
+    const banner = `Running set "${setName}" — ${info.corpus_count} corpus UC${info.corpus_count!==1?'s':''}${msg ? '. '+msg : ''}`;
+    openNewRun(banner, info.subpath || '');
+    // Switch to runs tab so user sees the result
+  } catch (e) { toast('Could not compute set scope: ' + e.message, true); }
+}
+
+function openSetModal(id) {
+  editingSetId = id || null;
+  const existing = id ? allSets.find(s => s.id===id) : null;
+  document.getElementById('setModalTitle').textContent = id ? 'Edit set' : 'New set';
+  document.getElementById('setModalName').value  = existing ? existing.name        : '';
+  document.getElementById('setModalDesc').value  = existing ? existing.description : '';
+  document.getElementById('setModalStatus').textContent = '';
+  document.getElementById('saveSetModal').disabled = false;
+  document.getElementById('setModal').classList.add('open');
+}
+function closeSetModal() { document.getElementById('setModal').classList.remove('open'); editingSetId = null; }
+
+async function saveSet() {
+  const btn = document.getElementById('saveSetModal'), status = document.getElementById('setModalStatus');
+  btn.disabled = true; status.textContent = 'saving…';
+  const payload = {
+    name:        document.getElementById('setModalName').value.trim(),
+    description: document.getElementById('setModalDesc').value.trim(),
+  };
+  if (!payload.name) { status.innerHTML = '<span style="color:var(--red)">name required</span>'; btn.disabled = false; return; }
+  try {
+    let resp;
+    if (editingSetId)
+      resp = await api(`/api/sets/${editingSetId}`, {method:'PUT', body:JSON.stringify(payload)});
+    else
+      resp = await api('/api/sets', {method:'POST', body:JSON.stringify(payload)});
+    toast(editingSetId ? 'Set updated' : 'Set created');
+    closeSetModal();
+    await loadSets();
+    const newId = resp.id || editingSetId;
+    if (newId) selectSet(newId);
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; btn.disabled = false;
+  }
+}
+
+async function deleteSet(setId) {
+  const s = allSets.find(x => x.id===setId);
+  if (!confirm(`Delete set "${s?.name||setId}"? Members will be unlinked but not deleted.`)) return;
+  try {
+    await api(`/api/sets/${setId}`, {method:'DELETE'});
+    toast('Set deleted'); activeSetId = null;
+    document.getElementById('setDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">Deleted.</div></div>';
+    loadSets();
+  } catch (e) { toast('Delete failed: ' + e.message, true); }
+}
+
+async function removeMember(setId, ucUuid) {
+  try {
+    await api(`/api/sets/${setId}/members/${encodeURIComponent(ucUuid)}`, {method:'DELETE'});
+    toast('Removed from set'); selectSet(setId);
+  } catch (e) { toast('Remove failed: ' + e.message, true); }
+}
+
+// ── Add member modal ─────────────────────────────────────────
+function openAddMember(setId) {
+  addMemberSetId = setId; selectedMember = null;
+  document.getElementById('memberSearchInput').value = '';
+  document.getElementById('memberDropdown').style.display = 'none';
+  document.getElementById('memberDropdown').innerHTML = '';
+  document.getElementById('selectedMemberPreview').style.display = 'none';
+  document.getElementById('addMemberStatus').textContent = '';
+  document.getElementById('saveAddMember').disabled = true;
+  document.getElementById('addMemberModal').classList.add('open');
+  setTimeout(() => document.getElementById('memberSearchInput').focus(), 80);
+}
+function closeAddMember() { document.getElementById('addMemberModal').classList.remove('open'); }
+
+let memberSearchTimer = null;
+function onMemberSearch(val) {
+  clearTimeout(memberSearchTimer);
+  if (!val.trim()) { document.getElementById('memberDropdown').style.display = 'none'; return; }
+  memberSearchTimer = setTimeout(() => renderMemberDropdown(val.toLowerCase()), 180);
+}
+
+function renderMemberDropdown(query) {
+  const dd = document.getElementById('memberDropdown');
+  const matches = allUCs.filter(u =>
+    (u.uuid||'').toLowerCase().includes(query) ||
+    (u.title||'').toLowerCase().includes(query) ||
+    (u.handle||'').toLowerCase().includes(query)
+  ).slice(0, 12);
+
+  if (!matches.length) { dd.style.display = 'none'; return; }
+  dd.innerHTML = '';
+  matches.forEach(u => {
+    const item = document.createElement('div');
+    item.className = 'uc-dropdown-item';
+    item.innerHTML = `
+      <span class="uid">${esc(u.uuid||u.handle)}</span>
+      <span class="uhandle">${esc(u.title||u.handle||'')}</span>
+      <span class="src-badge src-${u.source}">${u.source}</span>`;
+    item.addEventListener('mousedown', (e) => { e.preventDefault(); selectMember(u); });
+    dd.appendChild(item);
+  });
+  dd.style.display = '';
+}
+
+function selectMember(u) {
+  selectedMember = u;
+  document.getElementById('memberSearchInput').value = u.uuid || u.handle;
+  document.getElementById('memberDropdown').style.display = 'none';
+  document.getElementById('selectedMemberLabel').textContent = (u.uuid||u.handle) + (u.title ? ' — '+u.title : '');
+  document.getElementById('selectedMemberPreview').style.display = '';
+  document.getElementById('saveAddMember').disabled = false;
+}
+
+async function saveAddMember() {
+  if (!selectedMember || !addMemberSetId) return;
+  const btn = document.getElementById('saveAddMember'), status = document.getElementById('addMemberStatus');
+  btn.disabled = true; status.textContent = 'adding…';
+  const payload = {
+    uc_uuid:   selectedMember.uuid || selectedMember.handle,
+    uc_source: selectedMember.source || 'corpus',
+    uc_handle: selectedMember.handle || null,
+    uc_path:   selectedMember.path || null,
+  };
+  try {
+    await api(`/api/sets/${addMemberSetId}/members`, {method:'POST', body:JSON.stringify(payload)});
+    toast('Added to set'); closeAddMember(); selectSet(addMemberSetId);
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; btn.disabled = false;
+  }
+}
+
+// ══════════════════════════ EXPORT / IMPORT / PROMOTE ══════════════════════════
+
+function exportUCs(format) {
+  document.getElementById('exportUCMenu').style.display = 'none';
+  const url = `/api/export?format=${encodeURIComponent(format)}`;
+  _triggerDownload(url);
+}
+
+function exportSet(setId, format) {
+  const menuId = `exportSetMenu-${setId}`;
+  const m = document.getElementById(menuId); if (m) m.style.display = 'none';
+  const url = `/api/export?format=${encodeURIComponent(format)}&set_id=${setId}`;
+  _triggerDownload(url);
+}
+
+function _triggerDownload(url) {
+  const a = document.createElement('a');
+  a.href = url; a.download = '';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+function toggleExportSetMenu(setId, event) {
+  event.stopPropagation();
+  const menuId = `exportSetMenu-${setId}`;
+  const m = document.getElementById(menuId);
+  if (!m) return;
+  const visible = m.style.display !== 'none';
+  // Close any other open menus
+  document.querySelectorAll('[id^="exportSetMenu-"],[id="exportUCMenu"]').forEach(el => el.style.display = 'none');
+  if (!visible) m.style.display = '';
+}
+
+// Close dropdowns on outside click
+document.addEventListener('click', () => {
+  document.querySelectorAll('[id^="exportSetMenu-"],[id="exportUCMenu"]').forEach(el => el.style.display = 'none');
+});
+
+function openImportModal() {
+  document.getElementById('importFile').value = '';
+  document.getElementById('importResult').style.display = 'none';
+  document.getElementById('importResult').innerHTML = '';
+  document.getElementById('submitImportBtn').disabled = false;
+  document.getElementById('importModal').classList.add('open');
+}
+function closeImportModal() { document.getElementById('importModal').classList.remove('open'); }
+
+async function submitImport() {
+  const fileInput = document.getElementById('importFile');
+  if (!fileInput.files.length) { toast('No file selected', true); return; }
+  const btn = document.getElementById('submitImportBtn');
+  btn.disabled = true;
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  try {
+    const res = await fetch('/api/import', {method: 'POST', body: formData});
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`${res.status}: ${err}`);
+    }
+    const result = await res.json();
+    const resultEl = document.getElementById('importResult');
+    resultEl.style.display = '';
+    const hasErrors = result.errors && result.errors.length;
+    resultEl.innerHTML = `<div style="color:var(--green);margin-bottom:${hasErrors?'8px':'0'}">
+      ✓ Created: ${result.created} · Updated: ${result.updated} · Transitioned: ${result.transitioned}${result.skipped ? ` · Skipped: ${result.skipped}` : ''}
+    </div>${hasErrors ? `<div style="color:var(--red)">${result.errors.map(e => `<div>${esc(e)}</div>`).join('')}</div>` : ''}`;
+    toast(`Import done: ${result.created} new, ${result.updated} updated`);
+    await loadUCs(); await loadSets();
+  } catch (e) {
+    toast('Import failed: ' + e.message, true);
+  } finally { btn.disabled = false; }
+}
+
+// ── Promote set modal ─────────────────────────────────────────
+function openPromoteModal(setId, setName) {
+  promoteSetId = setId;
+  document.getElementById('promoteModalSetName').textContent = setName;
+  document.getElementById('promoteNotes').value = '';
+  document.getElementById('promoteStatus').textContent = '';
+  document.getElementById('confirmPromoteModal').disabled = false;
+  document.getElementById('promoteModal').classList.add('open');
+}
+function closePromoteModal() { document.getElementById('promoteModal').classList.remove('open'); promoteSetId = null; }
+
+async function confirmPromote() {
+  if (!promoteSetId) return;
+  const fromState = document.getElementById('promoteFromState').value;
+  const toState   = document.getElementById('promoteToState').value;
+  const notes     = document.getElementById('promoteNotes').value.trim();
+  const btn = document.getElementById('confirmPromoteModal'), status = document.getElementById('promoteStatus');
+  btn.disabled = true; status.textContent = 'promoting…';
+  try {
+    const resp = await api(`/api/sets/${promoteSetId}/promote`, {
+      method: 'POST',
+      body: JSON.stringify({from_state: fromState, to_state: toState, notes}),
+    });
+    toast(`Promoted ${resp.promoted} UC${resp.promoted!==1?'s':''}: ${fromState} → ${toState}`);
+    closePromoteModal();
+    await loadUCs();
+    selectSet(promoteSetId);
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; btn.disabled = false;
+  }
+}
+
+// ══════════════════════════ CONFIG / SOURCES ══════════════════════════
+
+const sourcesPollers = {spec:null,corpus:null};
+const sourcesState   = {spec:null,corpus:null};
 
 const SOURCE_UI = {
-  spec: {
-    repo: 'srcSpecRepo', branch: 'srcSpecBranch',
-    when: 'srcSpecWhen', who: 'srcSpecWho', status: 'srcSpecStatus',
-    repoInput: 'srcSpecRepoInput',
-    branchSelect: 'srcSpecBranchSelect', branchInput: 'srcSpecBranchInput',
-    refreshBranchesBtn: 'srcSpecRefreshBranches',
-    applyBtn: 'srcSpecApplyBtn', msg: 'srcSpecMsg',
-  },
-  corpus: {
-    repo: 'srcCorpusRepo', branch: 'srcCorpusBranch',
-    when: 'srcCorpusWhen', who: 'srcCorpusWho', status: 'srcCorpusStatus',
-    repoInput: 'srcCorpusRepoInput',
-    branchSelect: 'srcCorpusBranchSelect', branchInput: 'srcCorpusBranchInput',
-    refreshBranchesBtn: 'srcCorpusRefreshBranches',
-    applyBtn: 'srcCorpusApplyBtn', msg: 'srcCorpusMsg',
-  },
+  spec:   {repo:'srcSpecRepo',branch:'srcSpecBranch',when:'srcSpecWhen',who:'srcSpecWho',status:'srcSpecStatus',
+           repoInput:'srcSpecRepoInput',branchSelect:'srcSpecBranchSelect',branchInput:'srcSpecBranchInput',
+           refreshBranchesBtn:'srcSpecRefreshBranches',applyBtn:'srcSpecApplyBtn',msg:'srcSpecMsg'},
+  corpus: {repo:'srcCorpusRepo',branch:'srcCorpusBranch',when:'srcCorpusWhen',who:'srcCorpusWho',status:'srcCorpusStatus',
+           repoInput:'srcCorpusRepoInput',branchSelect:'srcCorpusBranchSelect',branchInput:'srcCorpusBranchInput',
+           refreshBranchesBtn:'srcCorpusRefreshBranches',applyBtn:'srcCorpusApplyBtn',msg:'srcCorpusMsg'},
 };
 
 async function loadConfig() {
   try {
     const resp = await api('/api/sources');
     const data = resp.sources || {};
-    for (const kind of ['spec', 'corpus']) {
-      sourcesState[kind] = data[kind] || null;
-      renderSourcePanel(kind);
-    }
+    for (const kind of ['spec','corpus']) { sourcesState[kind] = data[kind]||null; renderSourcePanel(kind); }
   } catch (e) {
-    for (const kind of ['spec', 'corpus']) {
-      document.getElementById(SOURCE_UI[kind].msg).innerHTML =
-        `<span style="color:var(--red)">${esc(e.message)}</span>`;
-    }
+    for (const kind of ['spec','corpus'])
+      document.getElementById(SOURCE_UI[kind].msg).innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
   }
 }
 
 function renderSourcePanel(kind) {
-  const ui = SOURCE_UI[kind];
-  const s = sourcesState[kind];
-  if (!s) return;
-
-  document.getElementById(ui.repo).textContent   = s.repo_url || '—';
+  const ui = SOURCE_UI[kind], s = sourcesState[kind]; if (!s) return;
+  document.getElementById(ui.repo).textContent   = s.repo_url    || '—';
   document.getElementById(ui.branch).textContent = s.repo_branch || '—';
   document.getElementById(ui.when).textContent   = fmtTs(s.last_applied_at);
   document.getElementById(ui.who).textContent    = s.last_applied_by || '—';
-
   const statusEl = document.getElementById(ui.status);
   if (s.rollout) {
     const r = s.rollout;
     statusEl.innerHTML = r.rolled_out
       ? `<span style="color:var(--green)">rolled out</span> · ${r.replicas_ready}/${r.replicas_desired} ready`
       : `<span style="color:var(--blue)">applying</span> · ${r.replicas_ready}/${r.replicas_desired} ready`;
-  } else {
-    statusEl.textContent = '(deployment not found)';
-  }
-
+  } else statusEl.textContent = '(deployment not found)';
   if (s.deployment_annotations) {
     const da = s.deployment_annotations;
-    const drift = (da.source_repo_url && da.source_repo_url !== s.repo_url)
-               || (da.source_repo_branch && da.source_repo_branch !== s.repo_branch);
-    if (drift) statusEl.innerHTML +=
-      ' <span style="color:var(--red)" title="Deployment annotations lag ConfigMap">⚠ drift</span>';
+    if ((da.source_repo_url && da.source_repo_url!==s.repo_url) || (da.source_repo_branch && da.source_repo_branch!==s.repo_branch))
+      statusEl.innerHTML += ' <span style="color:var(--red)" title="Annotations lag ConfigMap">⚠ drift</span>';
   }
-
   const repoInput = document.getElementById(ui.repoInput);
   if (!repoInput.value && !repoInput.dataset.userEdited) {
     repoInput.value = s.repo_url || '';
     loadBranches(kind, s.repo_url).then(() => {
       const sel = document.getElementById(ui.branchSelect);
-      for (const opt of sel.options) {
-        if (opt.value === s.repo_branch) { sel.value = s.repo_branch; break; }
-      }
+      for (const opt of sel.options) { if (opt.value===s.repo_branch) { sel.value=s.repo_branch; break; } }
     });
   }
 }
 
 async function loadBranches(kind, repoUrl) {
-  const ui = SOURCE_UI[kind];
-  const sel = document.getElementById(ui.branchSelect);
+  const sel = document.getElementById(SOURCE_UI[kind].branchSelect);
   if (!repoUrl) { sel.innerHTML = '<option value="">(enter a repo URL first)</option>'; return; }
   sel.innerHTML = '<option value="">(loading…)</option>';
   try {
@@ -1514,72 +1921,48 @@ async function loadBranches(kind, repoUrl) {
     const branches = resp.branches || [];
     if (!branches.length) { sel.innerHTML = '<option value="">(no branches — use free-text)</option>'; return; }
     sel.innerHTML = '<option value="">(select a branch)</option>';
-    branches.forEach(b => {
-      const opt = document.createElement('option');
-      opt.value = b; opt.textContent = b;
-      sel.appendChild(opt);
-    });
-  } catch {
-    sel.innerHTML = '<option value="">(GitHub API failed — use free-text)</option>';
-  }
+    branches.forEach(b => { const o=document.createElement('option'); o.value=b; o.textContent=b; sel.appendChild(o); });
+  } catch { sel.innerHTML = '<option value="">(GitHub API failed — use free-text)</option>'; }
 }
 
 async function applySource(kind) {
   const ui = SOURCE_UI[kind];
   const repoUrl = document.getElementById(ui.repoInput).value.trim();
-  const branch  = document.getElementById(ui.branchInput).value.trim()
-               || document.getElementById(ui.branchSelect).value;
-  const msg = document.getElementById(ui.msg);
-  const btn = document.getElementById(ui.applyBtn);
-
+  const branch  = document.getElementById(ui.branchInput).value.trim() || document.getElementById(ui.branchSelect).value;
+  const msg = document.getElementById(ui.msg), btn = document.getElementById(ui.applyBtn);
   if (!repoUrl) { msg.innerHTML = '<span style="color:var(--red)">repo URL required</span>'; return; }
-  if (!branch)  { msg.innerHTML = '<span style="color:var(--red)">branch required</span>'; return; }
-
+  if (!branch)  { msg.innerHTML = '<span style="color:var(--red)">branch required</span>';   return; }
   const current = sourcesState[kind];
-  if (current && current.repo_url === repoUrl && current.repo_branch === branch) {
+  if (current && current.repo_url===repoUrl && current.repo_branch===branch) {
     msg.innerHTML = '<span style="color:var(--text-faint)">same as current — nothing to do</span>'; return;
   }
-
-  btn.disabled = true;
-  msg.innerHTML = '<span style="color:var(--blue)">applying…</span>';
+  btn.disabled = true; msg.innerHTML = '<span style="color:var(--blue)">applying…</span>';
   try {
-    const resp = await api(`/api/sources/${kind}`, {
-      method: 'POST', body: JSON.stringify({ repo_url: repoUrl, repo_branch: branch }),
-    });
-    sourcesState[kind] = resp.state;
-    renderSourcePanel(kind);
+    const resp = await api(`/api/sources/${kind}`, {method:'POST', body:JSON.stringify({repo_url:repoUrl,repo_branch:branch})});
+    sourcesState[kind] = resp.state; renderSourcePanel(kind);
     msg.innerHTML = '<span style="color:var(--green)">applied · rolling out</span>';
-    toast(`${kind}: applied ${repoUrl}#${branch}`);
-    startSourcePoll(kind);
+    toast(`${kind}: applied ${repoUrl}#${branch}`); startSourcePoll(kind);
     document.getElementById(ui.repoInput).dataset.userEdited = '';
     document.getElementById(ui.branchInput).value = '';
   } catch (e) {
-    msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
-    toast('Apply failed: ' + e.message, true);
-  } finally {
-    btn.disabled = false;
-  }
+    msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; toast('Apply failed: '+e.message, true);
+  } finally { btn.disabled = false; }
 }
 
 function startSourcePoll(kind) {
   if (sourcesPollers[kind]) clearInterval(sourcesPollers[kind]);
   sourcesPollers[kind] = setInterval(async () => {
     try {
-      const resp = await api('/api/sources/' + kind);
-      sourcesState[kind] = resp.state;
-      renderSourcePanel(kind);
+      const resp = await api('/api/sources/'+kind);
+      sourcesState[kind] = resp.state; renderSourcePanel(kind);
       if (resp.state.rollout?.rolled_out) {
-        clearInterval(sourcesPollers[kind]);
-        sourcesPollers[kind] = null;
-        document.getElementById(SOURCE_UI[kind].msg).innerHTML =
-          '<span style="color:var(--green)">rolled out</span>';
+        clearInterval(sourcesPollers[kind]); sourcesPollers[kind] = null;
+        document.getElementById(SOURCE_UI[kind].msg).innerHTML = '<span style="color:var(--green)">rolled out</span>';
         toast(`${kind}: rollout complete`);
       }
-    } catch { /* keep polling */ }
+    } catch {}
   }, 3000);
-  setTimeout(() => {
-    if (sourcesPollers[kind]) { clearInterval(sourcesPollers[kind]); sourcesPollers[kind] = null; }
-  }, 5 * 60 * 1000);
+  setTimeout(() => { if (sourcesPollers[kind]) { clearInterval(sourcesPollers[kind]); sourcesPollers[kind]=null; } }, 5*60*1000);
 }
 
 function wireSourcesPanel(kind) {
@@ -1589,24 +1972,21 @@ function wireSourcesPanel(kind) {
     loadBranches(kind, document.getElementById(ui.repoInput).value.trim());
   });
   document.getElementById(ui.branchSelect).addEventListener('change', () => {
-    if (document.getElementById(ui.branchSelect).value)
-      document.getElementById(ui.branchInput).value = '';
+    if (document.getElementById(ui.branchSelect).value) document.getElementById(ui.branchInput).value = '';
   });
   document.getElementById(ui.branchInput).addEventListener('input', () => {
-    if (document.getElementById(ui.branchInput).value)
-      document.getElementById(ui.branchSelect).value = '';
+    if (document.getElementById(ui.branchInput).value) document.getElementById(ui.branchSelect).value = '';
   });
-  document.getElementById(ui.refreshBranchesBtn).addEventListener('click', () => {
-    loadBranches(kind, document.getElementById(ui.repoInput).value.trim());
-  });
+  document.getElementById(ui.refreshBranchesBtn).addEventListener('click', () =>
+    loadBranches(kind, document.getElementById(ui.repoInput).value.trim()));
   document.getElementById(ui.applyBtn).addEventListener('click', () => applySource(kind));
 }
 
-// ===================== Wire-up =====================
+// ── Wire-up ──────────────────────────────────────────────────
 document.querySelectorAll('nav.tabs button').forEach(b =>
   b.addEventListener('click', () => switchView(b.dataset.view)));
 
-document.getElementById('newRunBtn').addEventListener('click', openNewRun);
+document.getElementById('newRunBtn').addEventListener('click', () => openNewRun());
 document.getElementById('closeNewRun').addEventListener('click', closeNewRun);
 document.getElementById('cancelNewRun').addEventListener('click', closeNewRun);
 document.getElementById('submitNewRun').addEventListener('click', submitNewRun);
@@ -1625,16 +2005,68 @@ document.getElementById('saveUCModal').addEventListener('click', saveUC);
 document.getElementById('ucFilter').addEventListener('input', renderUCList);
 document.getElementById('ucSourceFilter').addEventListener('change', () => loadUCs());
 
+// Lifecycle state filter chips
+document.querySelectorAll('.panel-toolbar [data-lc]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    ucStateFilter = btn.dataset.lc;
+    document.querySelectorAll('.panel-toolbar [data-lc]').forEach(b =>
+      b.style.borderColor = b.dataset.lc===ucStateFilter ? 'var(--accent)' : '');
+    document.getElementById('lcAll').style.borderColor = ucStateFilter==='' ? 'var(--accent)' : 'var(--border-bright)';
+    renderUCList();
+  });
+});
+
+// LC transition modal
+document.getElementById('closeLCModal').addEventListener('click', closeLCModal);
+document.getElementById('cancelLCModal').addEventListener('click', closeLCModal);
+document.getElementById('confirmLCModal').addEventListener('click', confirmLCTransition);
+
+// Sets
+document.getElementById('newSetBtn').addEventListener('click', () => openSetModal());
+document.getElementById('closeSetModal').addEventListener('click', closeSetModal);
+document.getElementById('cancelSetModal').addEventListener('click', closeSetModal);
+document.getElementById('saveSetModal').addEventListener('click', saveSet);
+document.getElementById('setFilter').addEventListener('input', renderSetList);
+
+// Import / export
+document.getElementById('importUCBtn').addEventListener('click', openImportModal);
+document.getElementById('exportUCBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  const m = document.getElementById('exportUCMenu');
+  const visible = m.style.display !== 'none';
+  document.querySelectorAll('[id^="exportSetMenu-"],[id="exportUCMenu"]').forEach(el => el.style.display = 'none');
+  if (!visible) m.style.display = '';
+});
+document.getElementById('closeImportModal').addEventListener('click', closeImportModal);
+document.getElementById('cancelImportModal').addEventListener('click', closeImportModal);
+document.getElementById('submitImportBtn').addEventListener('click', submitImport);
+
+// Promote set
+document.getElementById('closePromoteModal').addEventListener('click', closePromoteModal);
+document.getElementById('cancelPromoteModal').addEventListener('click', closePromoteModal);
+document.getElementById('confirmPromoteModal').addEventListener('click', confirmPromote);
+
+// Add member modal
+document.getElementById('closeAddMember').addEventListener('click', closeAddMember);
+document.getElementById('cancelAddMember').addEventListener('click', closeAddMember);
+document.getElementById('saveAddMember').addEventListener('click', saveAddMember);
+document.getElementById('memberSearchInput').addEventListener('input', e => onMemberSearch(e.target.value));
+document.getElementById('memberSearchInput').addEventListener('blur', () => {
+  setTimeout(() => { document.getElementById('memberDropdown').style.display = 'none'; }, 200);
+});
+
 // Close modals on overlay click
-['newRunModal', 'ucModal'].forEach(id => {
+['newRunModal','ucModal','setModal','addMemberModal','lcModal','importModal','promoteModal'].forEach(id => {
   document.getElementById(id).addEventListener('click', e => {
-    if (e.target === document.getElementById(id))
-      document.getElementById(id).classList.remove('open');
+    if (e.target===document.getElementById(id)) document.getElementById(id).classList.remove('open');
   });
 });
 
 wireSourcesPanel('spec');
 wireSourcesPanel('corpus');
+
+// Highlight "All" state filter on init
+document.getElementById('lcAll').style.borderColor = 'var(--accent)';
 
 init();
 </script>
