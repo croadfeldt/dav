@@ -449,15 +449,16 @@
     <div style="flex:1; overflow-y:auto;">
       <table class="runs-table" id="runsTable">
         <thead><tr>
-          <th style="width:200px">Run name</th>
-          <th style="width:100px">Phase</th>
-          <th style="width:100px">Mode</th>
-          <th style="width:130px">Triggered by</th>
-          <th style="width:140px">Started</th>
+          <th style="width:220px">Run</th>
+          <th style="width:90px">Phase</th>
+          <th style="width:100px">Category</th>
+          <th style="width:90px">Mode</th>
+          <th style="width:120px">Triggered by</th>
+          <th style="width:130px">Started</th>
           <th style="width:80px">Duration</th>
-          <th>Params</th>
+          <th>Notes / params</th>
         </tr></thead>
-        <tbody id="runsBody"><tr><td colspan="7" class="empty">loading…</td></tr></tbody>
+        <tbody id="runsBody"><tr><td colspan="8" class="empty">loading…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -675,7 +676,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.6.2</span>
+  <span>DAV Console · v0.7</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -692,6 +693,10 @@
     <button class="btn ghost btn-icon" id="rdClose">✕</button>
   </div>
   <div class="run-drawer-body">
+    <div class="run-section" id="rdSessionSection" style="display:none;">
+      <div class="run-section-title">Session</div>
+      <div id="rdSession" class="kv-grid" style="font-size:11px"></div>
+    </div>
     <div class="run-section">
       <div class="run-section-title">Pipeline tasks</div>
       <div id="rdTasks"><div class="empty" style="font-size:11px">loading…</div></div>
@@ -730,6 +735,20 @@
     </div>
     <div class="modal-body">
       <div id="newRunBanner" style="display:none;" class="modal-banner"></div>
+      <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Session</div>
+      <div class="form-row">
+        <div class="form-field" style="flex:2"><label>Name (optional)</label>
+          <input id="nrSessionName" placeholder="e.g. regression after policy-v3 merge" maxlength="120" />
+          <div class="form-hint">Human-friendly label shown in the Runs list. Tekton run name (auto-generated) stays the underlying ID.</div>
+        </div>
+        <div class="form-field"><label>Category</label>
+          <select id="nrCategory"><option value="ad-hoc">ad-hoc</option></select>
+        </div>
+      </div>
+      <div class="form-field"><label>Description (optional)</label>
+        <textarea id="nrDescription" rows="2" placeholder="What's this run for? Compared against? Anything to remember when reviewing later?"></textarea>
+      </div>
+      <hr class="section-sep">
       <div class="form-row">
         <div class="form-field"><label>Mode</label>
           <select id="nrMode">
@@ -1114,18 +1133,24 @@ async function loadRuns() {
 function renderRunsTable() {
   const body = document.getElementById('runsBody');
   if (!allRuns.length) {
-    body.innerHTML = '<tr><td colspan="7" class="empty">No runs found. Trigger one with + New Run.</td></tr>'; return;
+    body.innerHTML = '<tr><td colspan="8" class="empty">No runs found. Trigger one with + New Run.</td></tr>'; return;
   }
   body.innerHTML = '';
   allRuns.forEach(r => {
     const tr = document.createElement('tr');
     const params = r.params || {};
     const paramParts = Object.entries(params)
-      .filter(([k]) => !['git-branch','commit-sha'].includes(k))
+      .filter(([k]) => !['git-branch','commit-sha','consumer-spec-repo-url','consumer-corpus-repo-url'].includes(k))
       .map(([k,v]) => `${k}=${v}`).join(' · ');
+    const friendly = r.session_name || '';
+    const cat = r.category || '';
     tr.innerHTML = `
-      <td><b>${esc(r.name||'?')}</b></td>
+      <td>
+        ${friendly ? `<div style="font-weight:500">${esc(friendly)}</div>` : ''}
+        <div style="font-size:${friendly?'10px':'11px'};color:var(--text-faint);font-family:var(--mono)">${esc(r.name||'?')}</div>
+      </td>
       <td>${phaseHtml(r.phase)}</td>
+      <td>${cat ? `<span class="src-badge" style="background:var(--accent-bg);color:var(--accent);text-transform:none;letter-spacing:0">${esc(cat)}</span>` : '<span style="color:var(--text-faint);font-size:10px">—</span>'}</td>
       <td style="color:var(--text-dim);font-size:11px">${esc(params.mode||'verification')}</td>
       <td style="font-size:11px">${esc(r.triggered_by||r.trigger_source||'—')}</td>
       <td style="font-size:11px;color:var(--text-faint)">${fmtTs(r.started_at||r.created_at)}</td>
@@ -1253,10 +1278,59 @@ async function refreshRunDrawer() {
   renderRunDrawerMetrics(snap);
 }
 
+function _fmtEnergy(j) {
+  if (j === null || j === undefined) return '—';
+  // Joules to Wh: 1 Wh = 3600 J
+  const wh = j / 3600;
+  if (wh < 1) return `${j.toFixed(0)} J`;
+  if (wh < 1000) return `${wh.toFixed(1)} Wh`;
+  return `${(wh/1000).toFixed(2)} kWh`;
+}
+
 function renderRunDrawerDetail(d) {
+  const s = d.session || null;
+  // Title: prefer human-friendly name, fall back to Tekton name
+  const titleText = (s && s.name) ? s.name : d.name;
+  const titleEl = document.getElementById('rdTitle');
+  if (s && s.name) {
+    titleEl.innerHTML = `${esc(s.name)} <span style="font-family:var(--mono);font-size:10px;color:var(--text-faint);margin-left:8px">${esc(d.name)}</span>`;
+  } else {
+    titleEl.textContent = d.name;
+  }
+
   document.getElementById('rdSub').innerHTML =
     `${phaseHtml(d.phase)} · started ${esc(fmtTs(d.started_at||d.created_at))} · ${esc(fmtDuration(d.started_at||d.created_at, d.completed_at))}`
+    + (s && s.category ? ` · <span class="src-badge" style="background:var(--accent-bg);color:var(--accent);text-transform:none;letter-spacing:0">${esc(s.category)}</span>` : '')
     + (d.status_reason ? ` · <span style="color:var(--text-dim)">${esc(d.status_reason)}</span>` : '');
+
+  // Session block — only render if we have a session row
+  const sectEl = document.getElementById('rdSessionSection');
+  if (s) {
+    sectEl.style.display = '';
+    const tagsHtml = (s.tags && s.tags.length)
+      ? s.tags.map(t => `<span class="tag">${esc(t)}</span>`).join(' ')
+      : '<span style="color:var(--text-faint);font-size:10px">—</span>';
+    let html = '';
+    if (s.description) html += `<div class="kv-label">description</div><div class="kv-val">${esc(s.description)}</div>`;
+    html += `<div class="kv-label">category</div><div class="kv-val">${esc(s.category||'ad-hoc')}</div>`;
+    if (s.tags && s.tags.length) html += `<div class="kv-label">tags</div><div class="kv-val">${tagsHtml}</div>`;
+    // Finalized stats — only render once the lazy finalizer has populated them
+    if (s.finalized_at) {
+      html += `<div class="kv-label">wall time</div><div class="kv-val">${(s.wall_time_seconds||0).toFixed(0)}s</div>`;
+      if (s.gpu_energy_joules !== null && s.gpu_energy_joules !== undefined) {
+        html += `<div class="kv-label">GPU energy</div><div class="kv-val">${esc(_fmtEnergy(s.gpu_energy_joules))} ` +
+                `<span style="color:var(--text-faint);font-size:10px">(avg ${(s.gpu_avg_power_watts||0).toFixed(0)} W · peak ${(s.gpu_peak_power_watts||0).toFixed(0)} W)</span></div>`;
+      }
+      if (s.total_gen_tokens !== null && s.total_gen_tokens !== undefined) {
+        html += `<div class="kv-label">tokens</div><div class="kv-val">${(s.total_gen_tokens||0).toLocaleString()} gen · ${(s.total_prompt_tokens||0).toLocaleString()} prompt</div>`;
+      }
+    } else if (['Running','Pending','Started'].includes(d.phase)) {
+      html += `<div class="kv-label">stats</div><div class="kv-val" style="color:var(--text-faint)">computed on run completion</div>`;
+    }
+    document.getElementById('rdSession').innerHTML = html;
+  } else {
+    sectEl.style.display = 'none';
+  }
 
   // Task ladder
   const tasksEl = document.getElementById('rdTasks');
@@ -1471,10 +1545,30 @@ function openNewRun(banner, subpath) {
   document.getElementById('nrStatus').textContent = '';
   document.getElementById('submitNewRun').disabled = false;
   document.getElementById('newRunTitle').textContent = 'New run';
+  document.getElementById('nrSessionName').value = '';
+  document.getElementById('nrDescription').value = '';
   const bannerEl = document.getElementById('newRunBanner');
   if (banner) { bannerEl.textContent = banner; bannerEl.style.display = ''; }
   else bannerEl.style.display = 'none';
   loadNewRunDefaults(subpath);
+  loadRunCategories();
+}
+
+async function loadRunCategories() {
+  try {
+    const resp = await api('/api/runs/categories');
+    const sel = document.getElementById('nrCategory');
+    const prev = sel.value || 'ad-hoc';
+    sel.innerHTML = '';
+    (resp.categories || ['ad-hoc']).forEach(c => {
+      const o = document.createElement('option');
+      o.value = c; o.textContent = c;
+      sel.appendChild(o);
+    });
+    sel.value = prev;
+  } catch (e) {
+    // Endpoint might be unavailable; keep the hardcoded fallback option
+  }
 }
 
 function closeNewRun() { document.getElementById('newRunModal').classList.remove('open'); }
@@ -1494,6 +1588,9 @@ async function submitNewRun() {
     inference_endpoint: document.getElementById('nrEndpoint').value.trim() || null,
     inference_model:    document.getElementById('nrModel').value.trim() || null,
     halt_on_error:      document.getElementById('nrHaltOnError').checked,
+    name:               document.getElementById('nrSessionName').value.trim(),
+    description:        document.getElementById('nrDescription').value.trim(),
+    category:           document.getElementById('nrCategory').value || 'ad-hoc',
   };
   try {
     const resp = await api('/api/runs', {method:'POST', body:JSON.stringify(payload)});

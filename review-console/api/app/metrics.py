@@ -160,6 +160,97 @@ def _scalarize(result: list) -> Optional[float]:
     return v
 
 
+async def range_aggregates(started_at_iso: str, completed_at_iso: str) -> dict:
+    """Compute time-averaged GPU + token counters across a finished run's window.
+
+    Used by the run-detail finalizer to compute session-totals like
+    energy (J), avg/peak power, and total tokens generated/prompted.
+
+    `started_at` / `completed_at` are ISO 8601 strings (Kubernetes status).
+    Issues `query_range` against thanos-querier; falls back to instant
+    `query` with appropriate `avg_over_time` / `max_over_time` / `increase`
+    windows because thanos-querier handles those uniformly.
+    """
+    from datetime import datetime
+    try:
+        start = datetime.fromisoformat(started_at_iso.replace("Z", "+00:00")).timestamp()
+        end   = datetime.fromisoformat(completed_at_iso.replace("Z", "+00:00")).timestamp()
+    except Exception as e:
+        return {"available": False, "reason": f"bad timestamps: {e}"}
+    if end <= start:
+        return {"available": False, "reason": "non-positive run window"}
+    window = max(int(end - start), 1)
+    range_str = f"{window}s"
+
+    # offset() pins the range to the actual run window even if we're querying
+    # after the fact. "now() - end_time" gives the offset.
+    now = time.time()
+    offset = max(int(now - end), 0)
+    off_clause = f" offset {offset}s" if offset > 0 else ""
+
+    qs = {
+        "gpu_avg_power":   f"avg_over_time(gpu_average_package_power[{range_str}]{off_clause})",
+        "gpu_peak_power":  f"max_over_time(gpu_average_package_power[{range_str}]{off_clause})",
+        "gpu_avg_gfx":     f"avg_over_time(gpu_gfx_activity[{range_str}]{off_clause})",
+        # increase() returns total counter delta over the window
+        "prompt_tokens":   f"sum(increase(vllm:prompt_tokens_total[{range_str}]{off_clause}))",
+        "gen_tokens":      f"sum(increase(vllm:generation_tokens_total[{range_str}]{off_clause}))",
+    }
+    out: dict = {"available": True, "window_seconds": window, "queries": qs}
+    results = await asyncio.gather(*[query(q) for q in qs.values()])
+    by_name = dict(zip(qs.keys(), results))
+
+    # gpu_*: sum across GPU rows (each node has 2)
+    def _agg_sum(res):
+        if (res or {}).get("status") != "success":
+            return None
+        total = 0.0; count = 0
+        for r in (res.get("data") or {}).get("result", []) or []:
+            try:
+                v = float(r["value"][1])
+                if v == v and v not in (float("inf"), float("-inf")):
+                    total += v; count += 1
+            except (KeyError, IndexError, TypeError, ValueError):
+                pass
+        return total if count else None
+    def _agg_avg(res):
+        if (res or {}).get("status") != "success":
+            return None
+        vs = []
+        for r in (res.get("data") or {}).get("result", []) or []:
+            try:
+                v = float(r["value"][1])
+                if v == v and v not in (float("inf"), float("-inf")):
+                    vs.append(v)
+            except (KeyError, IndexError, TypeError, ValueError):
+                pass
+        return sum(vs)/len(vs) if vs else None
+    def _agg_max(res):
+        if (res or {}).get("status") != "success":
+            return None
+        vs = []
+        for r in (res.get("data") or {}).get("result", []) or []:
+            try:
+                v = float(r["value"][1])
+                if v == v and v not in (float("inf"), float("-inf")):
+                    vs.append(v)
+            except (KeyError, IndexError, TypeError, ValueError):
+                pass
+        return max(vs) if vs else None
+
+    gpu_avg_p_total = _agg_sum(by_name["gpu_avg_power"])   # sum across GPUs = total node draw
+    gpu_peak_p_total = _agg_sum(by_name["gpu_peak_power"]) # peak summed across GPUs (worst case)
+    out["gpu_avg_power_watts"]  = gpu_avg_p_total
+    out["gpu_peak_power_watts"] = gpu_peak_p_total
+    out["gpu_energy_joules"] = (gpu_avg_p_total * window) if gpu_avg_p_total is not None else None
+    out["gpu_avg_gfx_activity"] = _agg_avg(by_name["gpu_avg_gfx"])
+    pt = _agg_sum(by_name["prompt_tokens"])
+    gt = _agg_sum(by_name["gen_tokens"])
+    out["total_prompt_tokens"] = int(pt) if pt is not None else None
+    out["total_gen_tokens"]    = int(gt) if gt is not None else None
+    return out
+
+
 async def snapshot() -> dict:
     """Run all curated queries in parallel; return structured snapshot.
 

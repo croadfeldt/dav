@@ -49,6 +49,18 @@ STATUSES = {"unreviewed", "in-review", "needs-work", "approved", "stale"}
 VALID_MODES = {"verification", "reproduce", "explore"}
 
 UC_STATES = {"draft", "ready", "in_review", "approved", "deprecated"}
+
+# Curated run categories surfaced in the New Run modal. Sticking to a
+# closed set so we can build filter chips + analytics later without
+# normalisation grief. Add entries here; UI picks them up automatically.
+RUN_CATEGORIES = [
+    "regression",
+    "baseline",
+    "exploration",
+    "production-validation",
+    "debug",
+    "ad-hoc",
+]
 VALID_TRANSITIONS: dict[str, set[str]] = {
     "draft":      {"ready"},
     "ready":      {"in_review", "draft"},
@@ -120,7 +132,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DAV Console API", version="0.6.2", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.7.0", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -177,6 +189,11 @@ class RunTriggerIn(BaseModel):
     inference_endpoint: Optional[str] = None
     inference_model: Optional[str] = None
     halt_on_error: bool = False
+    # User-facing session metadata (persisted to run_sessions)
+    name: str = ""
+    description: str = ""
+    category: str = "ad-hoc"
+    tags: list[str] = []
     # Legacy params kept for backward compat with self-test UI
     branch: Optional[str] = None
     commit_sha: Optional[str] = None
@@ -269,15 +286,39 @@ async def me(request: Request):
 
 @app.get("/api/runs")
 async def list_runs(limit: int = Query(50, ge=1, le=200)):
-    """List recent PipelineRuns."""
+    """List recent PipelineRuns, enriched with run_sessions metadata when available."""
     if not validations.ENABLED:
         return {"runs": [], "enabled": False}
     try:
         runs = validations.list_recent(limit=limit)
-        return {"runs": runs, "enabled": True}
     except Exception as e:
         log.exception("list runs failed")
         raise HTTPException(500, f"list failed: {e}")
+    # Bulk-fetch session rows by run_name; the table is small (one row per run)
+    names = [r.get("name") for r in runs if r.get("name")]
+    sessions_by_name: dict[str, dict] = {}
+    if names:
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT run_name, name, description, category, tags, "
+                    "gpu_energy_joules, total_gen_tokens, total_prompt_tokens "
+                    "FROM run_sessions WHERE run_name = ANY($1::text[])",
+                    names,
+                )
+            for row in rows:
+                sessions_by_name[row["run_name"]] = dict(row)
+        except Exception as e:
+            log.warning("list_runs session join failed: %s", e)
+    for r in runs:
+        s = sessions_by_name.get(r.get("name"))
+        if s:
+            r["session_name"] = s.get("name") or None
+            r["category"] = s.get("category")
+            r["gpu_energy_joules"] = s.get("gpu_energy_joules")
+            r["total_gen_tokens"]  = s.get("total_gen_tokens")
+            r["total_prompt_tokens"] = s.get("total_prompt_tokens")
+    return {"runs": runs, "enabled": True}
 
 
 def _resolve_run_params(payload: "RunTriggerIn") -> dict:
@@ -344,6 +385,8 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
     if payload.mode not in VALID_MODES:
         raise HTTPException(400, f"invalid mode; must be one of {sorted(VALID_MODES)}")
     reviewer = get_user(request)
+    if payload.category and payload.category not in RUN_CATEGORIES:
+        raise HTTPException(400, f"invalid category; must be one of {RUN_CATEGORIES}")
     params = _resolve_run_params(payload)
     try:
         result = validations.trigger_run(
@@ -361,10 +404,34 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             spec_repo_branch=params["spec_repo_branch"],
             halt_on_error=payload.halt_on_error,
         )
-        return {"ok": True, "run": result, "resolved_params": params}
     except Exception as e:
         log.exception("run trigger failed")
         raise HTTPException(500, f"trigger failed: {e}")
+
+    # Persist the run-session row (name + category + audit trail). Failures
+    # here don't roll back the PipelineRun — the run still works, just won't
+    # show the user metadata in the drawer.
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO run_sessions
+                   (run_name, name, description, category, tags, mode,
+                    created_by, started_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, now())""",
+                result["name"], payload.name, payload.description,
+                payload.category or "ad-hoc", payload.tags or [],
+                payload.mode, reviewer,
+            )
+    except Exception as e:
+        log.warning("run_sessions insert failed for %s: %s", result.get("name"), e)
+
+    return {"ok": True, "run": result, "resolved_params": params}
+
+
+@app.get("/api/runs/categories")
+async def list_run_categories():
+    """Curated list of categories the New Run modal offers."""
+    return {"categories": RUN_CATEGORIES}
 
 
 @app.get("/api/runs/status")
@@ -402,9 +469,87 @@ async def get_run_task_logs(
     return result
 
 
+TERMINAL_PHASES = {"Succeeded", "Failed", "Cancelled", "TimedOut"}
+
+
+async def _maybe_finalize_session(detail: dict) -> Optional[dict]:
+    """If the run is in a terminal phase and we haven't computed final stats
+    yet, query Prometheus for energy/tokens and persist to run_sessions.
+
+    Returns the (possibly-newly-finalized) session row, or None if no session
+    row exists for this run.
+    """
+    name = detail.get("name"); phase = detail.get("phase")
+    if not name:
+        return None
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM run_sessions WHERE run_name=$1", name)
+    if not row:
+        return None
+    out = dict(row)
+    for k in ("created_at", "started_at", "completed_at", "finalized_at"):
+        if out.get(k):
+            out[k] = out[k].isoformat()
+
+    # Only attempt finalization once, and only for terminal phases
+    if phase not in TERMINAL_PHASES or out.get("finalized_at") or not metrics.is_available():
+        return out
+    started = detail.get("started_at") or detail.get("created_at")
+    completed = detail.get("completed_at")
+    if not started or not completed:
+        return out
+    try:
+        agg = await metrics.range_aggregates(started, completed)
+    except Exception as e:
+        log.warning("finalize: range_aggregates failed for %s: %s", name, e)
+        return out
+    if not agg.get("available"):
+        return out
+    # Walk the TaskRuns to compute UC totals (run-corpus has the counts in its
+    # final log line, but cheap proxy: count failed taskruns vs total)
+    uc_total = None  # not reliably available without parsing the run-corpus log
+    uc_succeeded = None; uc_failed = None
+    # We DO know whether the pipeline succeeded overall; UC-level stats need
+    # workspace/results parse — defer; leave NULL for now.
+
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE run_sessions SET
+                    started_at=$2::timestamptz, completed_at=$3::timestamptz, phase=$4,
+                    wall_time_seconds=$5,
+                    gpu_energy_joules=$6, gpu_avg_power_watts=$7,
+                    gpu_peak_power_watts=$8, gpu_avg_gfx_activity=$9,
+                    total_prompt_tokens=$10, total_gen_tokens=$11,
+                    finalized_at=now()
+                   WHERE run_name=$1""",
+                name, started, completed, phase,
+                float(agg.get("window_seconds") or 0),
+                agg.get("gpu_energy_joules"),
+                agg.get("gpu_avg_power_watts"),
+                agg.get("gpu_peak_power_watts"),
+                agg.get("gpu_avg_gfx_activity"),
+                agg.get("total_prompt_tokens"),
+                agg.get("total_gen_tokens"),
+            )
+            row = await conn.fetchrow("SELECT * FROM run_sessions WHERE run_name=$1", name)
+        out = dict(row)
+        for k in ("created_at", "started_at", "completed_at", "finalized_at"):
+            if out.get(k):
+                out[k] = out[k].isoformat()
+        log.info("finalized session %s: energy=%.0fJ tokens=p%s/g%s",
+                 name, agg.get("gpu_energy_joules") or 0,
+                 agg.get("total_prompt_tokens"), agg.get("total_gen_tokens"))
+    except Exception as e:
+        log.warning("finalize: DB update failed for %s: %s", name, e)
+    return out
+
+
 @app.get("/api/runs/{name}")
 async def get_run_detail(name: str):
-    """Return Tekton PipelineRun spec + per-TaskRun status for the run-detail UI."""
+    """Return Tekton PipelineRun spec + per-TaskRun status + session metadata
+    for the run-detail UI. Lazy-finalizes power/token stats on the first view
+    after the run reaches a terminal phase."""
     if not validations.ENABLED:
         raise HTTPException(403, "pipeline trigger disabled")
     try:
@@ -414,6 +559,9 @@ async def get_run_detail(name: str):
     except Exception as e:
         log.exception("run detail fetch failed")
         raise HTTPException(500, f"detail failed: {e}")
+    session = await _maybe_finalize_session(detail)
+    if session is not None:
+        detail["session"] = session
     return detail
 
 

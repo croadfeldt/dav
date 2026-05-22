@@ -112,4 +112,42 @@ CREATE TABLE IF NOT EXISTS use_case_set_members (
 );
 CREATE INDEX IF NOT EXISTS idx_set_members_uc ON use_case_set_members(uc_uuid);
 
+-- ── Run sessions ─────────────────────────────────────────────────────────
+-- User-facing metadata + accumulated runtime stats for each Tekton
+-- PipelineRun triggered from the console. The PipelineRun itself stays
+-- the source of truth for params + phase; this table adds:
+--   - human-meaningful name / description / category for sorting + filtering
+--   - resource accounting (GPU energy, peak/avg power, tokens, wall time)
+-- Stats are computed lazily on first run-detail view after the run
+-- reaches a terminal phase (Succeeded/Failed/Cancelled/TimedOut).
+
+CREATE TABLE IF NOT EXISTS run_sessions (
+  run_name           TEXT PRIMARY KEY,    -- Tekton PipelineRun name
+  name               TEXT NOT NULL DEFAULT '',
+  description        TEXT NOT NULL DEFAULT '',
+  category           TEXT NOT NULL DEFAULT 'ad-hoc',
+  tags               TEXT[] NOT NULL DEFAULT '{}',
+  mode               TEXT,                -- verification / reproduce / explore
+  created_by         TEXT NOT NULL,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  started_at         TIMESTAMPTZ,
+  completed_at       TIMESTAMPTZ,
+  phase              TEXT,
+  wall_time_seconds  DOUBLE PRECISION,
+  -- GPU + inference resource accounting (filled in at finalization)
+  gpu_energy_joules     DOUBLE PRECISION,
+  gpu_avg_power_watts   DOUBLE PRECISION,
+  gpu_peak_power_watts  DOUBLE PRECISION,
+  gpu_avg_gfx_activity  DOUBLE PRECISION,
+  total_prompt_tokens   BIGINT,
+  total_gen_tokens      BIGINT,
+  uc_total              INTEGER,
+  uc_succeeded          INTEGER,
+  uc_failed             INTEGER,
+  finalized_at          TIMESTAMPTZ        -- when stats were computed
+);
+CREATE INDEX IF NOT EXISTS idx_run_sessions_created   ON run_sessions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_run_sessions_category  ON run_sessions(category);
+CREATE INDEX IF NOT EXISTS idx_run_sessions_phase     ON run_sessions(phase);
+
 COMMIT;
