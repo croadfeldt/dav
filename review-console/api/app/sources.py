@@ -309,6 +309,55 @@ def list_branches(repo_url: str) -> list[str]:
     return branches
 
 
+async def validate_inference(endpoint: str, model: str) -> dict:
+    """Probe an OpenAI-compatible /models endpoint for reachability and model presence.
+
+    Returns a structured result so the UI can render specific feedback:
+      reachable: bool         — true when /models returned 2xx
+      status_code: int | None — HTTP status, if any
+      models: list[str]       — model IDs listed by the server
+      model_found: bool       — supplied model name is in `models`
+      error: str | None       — single-line error description, if any
+      latency_ms: int | None  — round-trip latency to /models
+    """
+    base = (endpoint or "").rstrip("/")
+    if not base or not base.startswith(("http://", "https://")):
+        return {"reachable": False, "url": None, "status_code": None,
+                "models": [], "model_found": False, "latency_ms": None,
+                "error": f"invalid endpoint: {endpoint!r}"}
+    url = f"{base}/models"
+    out: dict = {
+        "reachable": False, "url": url, "status_code": None,
+        "models": [], "model_found": False, "latency_ms": None, "error": None,
+    }
+    start = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as cx:
+            resp = await cx.get(url)
+        out["latency_ms"] = int((time.time() - start) * 1000)
+        out["status_code"] = resp.status_code
+        if 200 <= resp.status_code < 300:
+            out["reachable"] = True
+            try:
+                data = resp.json()
+                items = data.get("data") if isinstance(data, dict) else None
+                if isinstance(items, list):
+                    out["models"] = [m.get("id") for m in items
+                                     if isinstance(m, dict) and m.get("id")]
+                out["model_found"] = model in out["models"]
+            except Exception as e:
+                out["error"] = f"could not parse /models response: {e}"
+        else:
+            out["error"] = f"HTTP {resp.status_code}"
+    except httpx.TimeoutException:
+        out["latency_ms"] = int((time.time() - start) * 1000)
+        out["error"] = "timeout (5s) — endpoint unreachable from API pod"
+    except httpx.RequestError as e:
+        out["latency_ms"] = int((time.time() - start) * 1000)
+        out["error"] = f"connection error: {e}"
+    return out
+
+
 def clear_branch_cache(repo_url: Optional[str] = None) -> None:
     """Expose cache clear for admin / test. If repo_url is None, clear all."""
     if repo_url is None:

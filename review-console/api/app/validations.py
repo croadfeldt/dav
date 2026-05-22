@@ -23,6 +23,10 @@ PIPELINE_NAME = os.environ.get("DAV_PIPELINE_NAME", "dav")
 DEFAULT_BRANCH = os.environ.get("DAV_DEFAULT_BRANCH", "main")
 # Whether this feature is wired up at all
 ENABLED = os.environ.get("DAV_TRIGGER_ENABLED", "true").lower() == "true"
+# Workspace binding for PipelineRun — the Pipeline declares a workspace
+# named DAV_PIPELINE_WORKSPACE which must be bound to a PVC at run creation.
+WORKSPACE_NAME = os.environ.get("DAV_PIPELINE_WORKSPACE", "shared-data")
+WORKSPACE_PVC  = os.environ.get("DAV_PIPELINE_WORKSPACE_PVC", "dav-workspace")
 
 _TEKTON_GROUP = "tekton.dev"
 _TEKTON_VERSION = "v1"
@@ -130,6 +134,12 @@ def _mk_pipelinerun(
         "spec": {
             "pipelineRef": {"name": PIPELINE_NAME},
             "params": params,
+            "workspaces": [
+                {
+                    "name": WORKSPACE_NAME,
+                    "persistentVolumeClaim": {"claimName": WORKSPACE_PVC},
+                }
+            ],
             "timeouts": {"pipeline": "2h"},
         },
     }

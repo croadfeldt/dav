@@ -119,7 +119,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DAV Console API", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.5.1", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -216,6 +216,11 @@ class SourceApplyIn(BaseModel):
     # Inference source: both must be present.
     endpoint: Optional[str] = Field(None, max_length=512)
     model: Optional[str] = Field(None, max_length=256)
+
+
+class InferenceValidateIn(BaseModel):
+    endpoint: str = Field(..., min_length=1, max_length=512)
+    model: str = Field(..., min_length=1, max_length=256)
 
 
 # ------------------------- Helpers -------------------------
@@ -1424,6 +1429,19 @@ async def sources_branches(repo_url: str = Query(..., min_length=1)):
     except Exception as e:
         log.exception("branch listing failed")
         raise HTTPException(500, f"listing failed: {e}")
+
+
+@app.post("/api/sources/inference/validate")
+async def validate_inference_endpoint(payload: InferenceValidateIn):
+    """Probe an OpenAI-compatible endpoint for reachability + model presence.
+
+    Pure check — does NOT persist anything. Used by the Config UI before Apply.
+    """
+    try:
+        return await sources.validate_inference(payload.endpoint, payload.model)
+    except Exception as e:
+        log.exception("inference validation failed")
+        raise HTTPException(500, f"validate failed: {e}")
 
 
 @app.post("/api/sources/{kind}")

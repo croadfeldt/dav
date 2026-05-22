@@ -99,6 +99,10 @@ spec:
               value: "{{ dav_namespace }}"
             - name: DAV_PIPELINE_NAME
               value: "{{ review_console_runs_pipeline_name }}"
+            - name: DAV_PIPELINE_WORKSPACE
+              value: "{{ review_console_runs_pipeline_workspace | default('shared-data') }}"
+            - name: DAV_PIPELINE_WORKSPACE_PVC
+              value: "{{ dav_workspace_pvc_name }}"
             - name: DAV_DEFAULT_BRANCH
               value: "{{ consumer_spec_repo_branch }}"
             - name: DAV_WORKSPACE_PATH

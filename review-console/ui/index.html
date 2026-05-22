@@ -599,10 +599,12 @@
           <div class="form-field"><label>New model</label>
             <input id="srcInfModelInput" placeholder="e.g. qwen3-32b" /></div>
           <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
+            <button class="btn ghost" id="srcInfTestBtn">Test</button>
             <button class="btn primary" id="srcInfApplyBtn">Apply</button>
             <span id="srcInfMsg" style="font-size:11px; color:var(--text-faint);"></span>
           </div>
-          <div class="form-hint" style="margin-top:6px;">No pod restart — next pipeline run picks up the new values.</div>
+          <div id="srcInfValidation" style="display:none; margin-top:8px; padding:8px 10px; border-radius:2px; font-size:11px; line-height:1.6;"></div>
+          <div class="form-hint" style="margin-top:6px;">Test probes <code>/models</code> on the endpoint. Apply runs Test first; failure offers "Apply anyway". No pod restart — next pipeline run picks up the new values.</div>
         </div>
       </div>
     </div>
@@ -617,7 +619,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.5</span>
+  <span>DAV Console · v0.5.1</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -2137,6 +2139,47 @@ function renderInferencePanel() {
   if (!mIn.value && !mIn.dataset.userEdited) mIn.value = s.model    || '';
 }
 
+function renderInferenceValidation(v) {
+  // v: {reachable, status_code, models, model_found, error, latency_ms, url}
+  const el = document.getElementById('srcInfValidation');
+  el.style.display = '';
+  const lat = v.latency_ms !== null && v.latency_ms !== undefined ? `${v.latency_ms} ms` : '—';
+  if (v.reachable && v.model_found) {
+    el.style.background = 'var(--green-bg)'; el.style.color = 'var(--green)';
+    el.innerHTML = `✓ Reachable · model <b>${esc(v.models[v.models.indexOf(document.getElementById('srcInfModelInput').value.trim())] || '')}</b> found in ${v.models.length} listed · ${lat}`;
+  } else if (v.reachable && !v.model_found) {
+    el.style.background = 'var(--accent-bg)'; el.style.color = 'var(--accent)';
+    const list = v.models.length ? v.models.slice(0, 8).join(', ') + (v.models.length > 8 ? ` +${v.models.length-8} more` : '') : '(none reported)';
+    el.innerHTML = `⚠ Reachable but model not in /models list. Server reports: <span style="color:var(--text-dim)">${esc(list)}</span> · ${lat}`;
+  } else {
+    el.style.background = 'rgba(217,101,58,0.10)'; el.style.color = 'var(--red)';
+    el.innerHTML = `✗ Unreachable: ${esc(v.error || 'unknown error')} · ${lat}${v.url ? ` · <span style="color:var(--text-faint)">${esc(v.url)}</span>` : ''}`;
+  }
+}
+
+async function testInference() {
+  const endpoint = document.getElementById('srcInfEndpointInput').value.trim();
+  const model    = document.getElementById('srcInfModelInput').value.trim();
+  const msg = document.getElementById('srcInfMsg'), btn = document.getElementById('srcInfTestBtn');
+  if (!endpoint) { msg.innerHTML = '<span style="color:var(--red)">endpoint required</span>'; return null; }
+  if (!model)    { msg.innerHTML = '<span style="color:var(--red)">model required</span>';    return null; }
+  btn.disabled = true; msg.innerHTML = '<span style="color:var(--blue)">testing…</span>';
+  try {
+    const v = await api('/api/sources/inference/validate', {method:'POST', body:JSON.stringify({endpoint, model})});
+    renderInferenceValidation(v);
+    msg.innerHTML = v.reachable && v.model_found
+      ? '<span style="color:var(--green)">validated</span>'
+      : v.reachable
+        ? '<span style="color:var(--accent)">reachable, model mismatch</span>'
+        : '<span style="color:var(--red)">unreachable</span>';
+    return v;
+  } catch (e) {
+    msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    return null;
+  } finally { btn.disabled = false; }
+}
+
+let _infApplyArmed = false;
 async function applyInference() {
   const endpoint = document.getElementById('srcInfEndpointInput').value.trim();
   const model    = document.getElementById('srcInfModelInput').value.trim();
@@ -2147,6 +2190,18 @@ async function applyInference() {
   if (cur && cur.endpoint === endpoint && cur.model === model) {
     msg.innerHTML = '<span style="color:var(--text-faint)">same as current — nothing to do</span>'; return;
   }
+  // Validate first unless the user has already armed the "apply anyway" override
+  if (!_infApplyArmed) {
+    const v = await testInference();
+    if (!v) return;  // network error already shown
+    if (!v.reachable || !v.model_found) {
+      btn.textContent = 'Apply anyway'; btn.classList.add('danger');
+      _infApplyArmed = true;
+      msg.innerHTML = '<span style="color:var(--accent)">click Apply again to save despite validation warning</span>';
+      return;
+    }
+  }
+  _infApplyArmed = false; btn.textContent = 'Apply'; btn.classList.remove('danger');
   btn.disabled = true; msg.innerHTML = '<span style="color:var(--blue)">applying…</span>';
   try {
     const resp = await api('/api/sources/inference', {method:'POST', body:JSON.stringify({endpoint, model})});
@@ -2162,8 +2217,17 @@ async function applyInference() {
 }
 
 function wireInferencePanel() {
-  document.getElementById('srcInfEndpointInput').addEventListener('input', e => e.target.dataset.userEdited = '1');
-  document.getElementById('srcInfModelInput').addEventListener('input',    e => e.target.dataset.userEdited = '1');
+  // Editing the inputs resets the "armed" override and clears any prior validation render
+  const onEdit = e => {
+    e.target.dataset.userEdited = '1';
+    _infApplyArmed = false;
+    const b = document.getElementById('srcInfApplyBtn');
+    b.textContent = 'Apply'; b.classList.remove('danger');
+    document.getElementById('srcInfValidation').style.display = 'none';
+  };
+  document.getElementById('srcInfEndpointInput').addEventListener('input', onEdit);
+  document.getElementById('srcInfModelInput').addEventListener('input',    onEdit);
+  document.getElementById('srcInfTestBtn').addEventListener('click', testInference);
   document.getElementById('srcInfApplyBtn').addEventListener('click', applyInference);
 }
 
