@@ -1145,6 +1145,11 @@ let _rdLastVllmValues = {};   // {key: value}
 let _rdGpuLastChange  = 0;    // epoch seconds when any GPU metric last changed
 let _rdVllmLastChange = 0;    // epoch seconds when any vLLM metric last changed
 let _rdFreshTimer     = null; // separate timer that updates the "Xs ago" label every second
+// Session token baseline — captured on drawer open (first non-null counter
+// receipt). Used to compute "tokens this session" so the UI doesn't show
+// the entire cumulative-since-vLLM-start total. Reset if the underlying
+// counter regresses (process restart).
+let _rdTokenBaseline  = {gen: null, prompt: null};
 
 function openRunDrawer(name) {
   _rdName = name;
@@ -1159,6 +1164,7 @@ function openRunDrawer(name) {
   // Reset value history so the first render isn't a "change"
   _rdLastGpuValues = {}; _rdLastVllmValues = {};
   _rdGpuLastChange = 0;  _rdVllmLastChange = 0;
+  _rdTokenBaseline = {gen: null, prompt: null};
   document.getElementById('runDrawer').classList.add('open');
   refreshRunDrawer();
   if (_rdPollTimer) clearInterval(_rdPollTimer);
@@ -1347,13 +1353,30 @@ function renderRunDrawerMetrics(snap) {
 
   // ── vLLM aggregates ─────────────────────────────────────────
   const v = (snap && snap.vllm) || {};
+
+  // Compute session-relative token totals (delta from drawer-open baseline).
+  // If the underlying counter regresses (vLLM process restart), reset baseline.
+  const _sessTokens = (current, baselineKey) => {
+    if (current === null || current === undefined) return null;
+    const b = _rdTokenBaseline[baselineKey];
+    if (b === null) { _rdTokenBaseline[baselineKey] = current; return 0; }
+    if (current < b) { _rdTokenBaseline[baselineKey] = current; return 0; }  // counter reset
+    return current - b;
+  };
+  const sessGenTokens    = _sessTokens(v.gen_tokens_total,    'gen');
+  const sessPromptTokens = _sessTokens(v.prompt_tokens_total, 'prompt');
+  v.session_gen_tokens    = sessGenTokens;
+  v.session_prompt_tokens = sessPromptTokens;
+
   const vKeys = [
-    ['running_requests',  'Running',          'rdv-running',  0, ''],
-    ['waiting_requests',  'Waiting',          'rdv-waiting',  0, ''],
-    ['kv_cache_pct',      'KV cache',         'rdv-kv',       0, '%'],
-    ['generation_tps',    'Gen tokens/s',     'rdv-gentps',   1, ''],
-    ['prompt_tps',        'Prompt tokens/s',  'rdv-prompttps',1, ''],
-    ['ttft_p95_seconds',  'TTFT p95',         'rdv-ttft',     2, 's'],
+    ['running_requests',       'Running',          'rdv-running',  0, ''],
+    ['waiting_requests',       'Waiting',          'rdv-waiting',  0, ''],
+    ['kv_cache_pct',           'KV cache',         'rdv-kv',       0, '%'],
+    ['generation_tps',         'Gen tokens/s',     'rdv-gentps',   1, ''],
+    ['prompt_tps',             'Prompt tokens/s',  'rdv-prompttps',1, ''],
+    ['ttft_p95_seconds',       'TTFT p95',         'rdv-ttft',     2, 's'],
+    ['session_gen_tokens',     'Gen tokens (session)',    'rdv-sgen',  0, ''],
+    ['session_prompt_tokens',  'Prompt tokens (session)', 'rdv-sprm',  0, ''],
   ];
   vllmEl.innerHTML = vKeys.map(([k,label,id,prec,unit]) => `
     <div class="vllm-cell"><div class="vllm-cell-label">${label}</div>

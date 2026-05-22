@@ -269,6 +269,29 @@ oc exec -n dav deploy/dav-docs-mcp -- curl -sf http://localhost:8080/health
 # Webhook route admitted?
 oc get route dav-webhook -n dav -o jsonpath='{.spec.host}{"\n"}'
 # Expect: ${DAV_WEBHOOK_HOST}
+
+# Workspace PVC is RWX?
+oc get pvc dav-workspace -n dav -o jsonpath='{.spec.accessModes}{" / "}{.spec.storageClassName}{"\n"}'
+# Expect: ["ReadWriteMany"] / <your RWX storage class>
+# If you see ReadWriteOnce, the cluster default is RWO — override
+# dav_workspace_pvc_storage_class in vars.local.yaml (see §0.0) and
+# re-run the playbook.
+
+# Run-detail metrics endpoint healthy?
+# Queries thanos-querier via the API SA bearer token and the
+# service-CA bundle ConfigMap mounted in the pod.
+oc exec deploy/dav-review-api -n dav -c api -- curl -sf http://localhost:8000/api/metrics/snapshot \
+    | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print('available:', d.get('available'),
+                  '· gpus:', len(d.get('gpus',[])), '· vllm_keys:', len((d.get('vllm') or {})),
+                  '· errors:', list((d.get('errors') or {}).keys()))"
+# Expect: available: True · gpus: <count> · vllm_keys: 8 · errors: []
+# If gpus is empty: the AMD GPU exporter isn't publishing (operator not
+# installed, DeviceConfig.metricsExporter.enable false, or no GPU nodes).
+# If vllm_keys is non-empty but the values are all None: no vLLM
+# ServiceMonitor exists yet — that's OK if you haven't deployed inference.
+# If errors is non-empty: typically RBAC or TLS — verify the
+# dav-review-api SA has the cluster-monitoring-view ClusterRoleBinding
+# and the dav-review-service-ca ConfigMap is populated.
 ```
 
 **Verification gate (mandatory before Phase 2):**
@@ -276,11 +299,17 @@ oc get route dav-webhook -n dav -o jsonpath='{.spec.host}{"\n"}'
 - `dav-stage2` pipeline registered
 - MCP `/health` returns 200
 - Webhook route admitted (host resolves)
+- Workspace PVC is `ReadWriteMany`
+- `/api/metrics/snapshot` returns `available: True` with no errors
 
 If any fails, **stop**. Diagnose before proceeding. Common causes:
 - Pod ImagePullBackOff → BuildConfig failed; check `oc get builds -n dav`
 - MCP unhealthy → spec ConfigMap wrong or git clone failing in init-container; check `oc logs -n dav deploy/dav-docs-mcp -c init-clone`
 - Webhook route not admitted → cluster ingress controller issue; check `oc describe route dav-webhook -n dav`
+- Workspace PVC is RWO → cluster default class doesn't support RWX. Set `dav_workspace_pvc_storage_class` in `vars.local.yaml` (see §0.0 for class names by provider). Re-run with `--tags namespace`. **Pipeline runs will fail with `cleanup-workspace` Multi-Attach timeouts** if this isn't fixed before triggering a run.
+- `/api/metrics/snapshot` returns `available: False` → SA token unreachable; check `oc describe sa dav-review-api -n dav` and the pod's `/var/run/secrets/...` mount.
+- `/api/metrics/snapshot` returns errors with `http_403` → ClusterRoleBinding missing; verify `oc get clusterrolebinding dav-review-api-cluster-monitoring-view`.
+- `gpus: 0` and you have AMD GPU nodes → metrics-exporter not running; check `oc get pods -n openshift-amd-gpu` and `DeviceConfig.spec.metricsExporter.enable=true`. Recommended ServiceMonitor `interval: 10s` (operator default of 60s is too coarse for the run-detail drawer's 3 s polling).
 
 ---
 

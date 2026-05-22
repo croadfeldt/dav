@@ -131,6 +131,11 @@ _SNAPSHOT_QUERIES: dict[str, str] = {
     "vllm_kv_cache_pct":        "avg(vllm:gpu_cache_usage_perc) * 100",
     "vllm_gen_tps":             "sum(rate(vllm:generation_tokens_total[1m]))",
     "vllm_prompt_tps":          "sum(rate(vllm:prompt_tokens_total[1m]))",
+    # Cumulative counters since vLLM process start. Useful as both an
+    # absolute total and (via UI-side baseline subtraction) a "tokens
+    # this session" running stat.
+    "vllm_gen_tokens_total":    "sum(vllm:generation_tokens_total)",
+    "vllm_prompt_tokens_total": "sum(vllm:prompt_tokens_total)",
     "vllm_time_to_first_token": "histogram_quantile(0.95, sum by(le)(rate(vllm:time_to_first_token_seconds_bucket[5m])))",
 }
 
@@ -207,6 +212,8 @@ async def snapshot() -> dict:
         "kv_cache_pct":         _scalarize((raw["vllm_kv_cache_pct"].get("data") or {}).get("result", [])),
         "generation_tps":       _scalarize((raw["vllm_gen_tps"].get("data") or {}).get("result", [])),
         "prompt_tps":           _scalarize((raw["vllm_prompt_tps"].get("data") or {}).get("result", [])),
+        "gen_tokens_total":     _scalarize((raw["vllm_gen_tokens_total"].get("data") or {}).get("result", [])),
+        "prompt_tokens_total":  _scalarize((raw["vllm_prompt_tokens_total"].get("data") or {}).get("result", [])),
         "ttft_p95_seconds":     _scalarize((raw["vllm_time_to_first_token"].get("data") or {}).get("result", [])),
     }
 

@@ -14,15 +14,23 @@ Full operations frontend for DAV. Trigger pipeline runs, browse analysis results
 
 Lists all PipelineRuns for the configured Tekton pipeline, sorted newest first. Shows run name, phase (Running / Succeeded / Failed / TimedOut / Cancelled), mode, triggered-by identity, start time, and duration.
 
-**New Run** button opens a modal with full parameter control:
+**New Run** button opens a modal with full parameter control. The modal pre-populates from Config-tab values via `/api/sources` + corpus UC subpath auto-detection (`dav/use-cases` → `use-cases` → none), so what you see in the modal is what gets submitted. Editable per-run:
 - Mode (verification / reproduce / explore)
 - Sample count override
-- Corpus subpath override (can be pre-filled from a Set run)
-- Corpus and spec repo URL / branch overrides
-- Inference endpoint and model overrides
+- Corpus subpath (auto-detected; editable)
+- Corpus and spec repo URL / branch (pre-filled from Config)
+- Inference endpoint and model (pre-filled from Config)
 - Halt-on-error flag
 
 Run creation is guarded by `DAV_TRIGGER_ENABLED` (Ansible default `true`); set to `false` for a read-only deployment.
+
+**Click any PipelineRun row** to open the live run-detail drawer (slides in from the right). The drawer polls every 3 seconds while open and stops on terminal phase (Succeeded / Failed / Cancelled / TimedOut). Shows:
+- **Pipeline tasks**: the 4-step Tekton ladder (cleanup-workspace → sync-spec ∥ sync-corpus → run-corpus) with per-task phase, duration, and condition message
+- **GPUs (live)**: per-GPU tiles for AMD GPUs on the cluster — GFX activity %, VRAM %, power (W), edge temp (°C), with color-coded thresholds (amber > 70/80, red > 90/95) and bar visualisations
+- **Inference (vLLM, live)**: aggregates across all replicas — running/waiting requests, KV cache %, gen + prompt tokens/sec, TTFT p95 (s), and **session token totals** (delta from drawer-open baseline; resets if the underlying counter regresses on a vLLM process restart)
+- **Params**: the resolved Tekton parameters this run was triggered with
+
+Each section shows a `· no change Xs` freshness indicator next to its title (amber > 30 s, red > 90 s) so it's obvious when the displayed snapshot is stale vs. just hasn't changed because the workload is idle. Values that change between polls briefly flash with the accent colour.
 
 ### Results
 
@@ -91,10 +99,21 @@ Source switching: change the spec and/or corpus repo URL + branch. Updating trig
 The Ansible role at `../ansible/roles/dav/tasks/review_console.yaml` builds the API and UI as in-cluster images and deploys them as Kubernetes Deployments alongside a Postgres Deployment for state.
 
 The API pod mounts:
-- `dav-workspace` PVC at `/workspace` (read-only) — for results browsing
+- `dav-workspace` PVC at `/workspace` (read-only) — for results browsing. **Must be ReadWriteMany** (CephFS, NFS, EFS, etc.) — RWO causes Multi-Attach failure when pipeline pods land on a different node than the API pod. The role defaults to RWX and uses the cluster's default storage class; override `dav_workspace_pvc_storage_class` in `vars.local.yaml` if the cluster default is RWO. See `docs/operator-runbook.md` §0.0 for storage-class names by provider.
 - `corpus` emptyDir at `/data` — cloned from the corpus repo by an init container
+- `service-ca` ConfigMap at `/var/run/configmaps/service-ca` — OpenShift's service-CA bundle (auto-injected by the `service.beta.openshift.io/inject-cabundle` annotation). Used to verify the TLS cert of `thanos-querier` when the API queries Prometheus for run-detail metrics.
 
 The OAuth integration uses OpenShift's `origin-oauth-proxy` sidecar in the UI pod. The API trusts the `X-Forwarded-User` header set by the proxy and uses it as the identity on managed-UC writes and run triggers.
+
+**Cluster RBAC the role provisions** (in `ansible/roles/dav/templates/`):
+- `dav-review-runs-trigger` Role (namespace-scoped) — create PipelineRun + read TaskRuns/Pods for the Runs tab
+- `dav-review-sourcing` Role (namespace-scoped) — read/patch the three source ConfigMaps and the Deployments they target
+- `dav-review-api-cluster-monitoring-view` **ClusterRoleBinding** — grants the API SA the cluster `cluster-monitoring-view` ClusterRole so it can query `thanos-querier` for GPU/vLLM metrics. Read-only; safe to bind to UI backends that only render metrics.
+
+**Cluster-side prerequisites for the run-detail metrics** (not provisioned by this role — these are cluster-wide concerns):
+- OpenShift user-workload monitoring enabled (it is by default on 4.18+)
+- An AMD GPU metrics exporter publishing `gpu_gfx_activity`, `gpu_used_vram`, `gpu_average_package_power`, `gpu_edge_temperature` to cluster Prometheus. The AMD GPU Operator deploys this when `DeviceConfig.spec.metricsExporter.enable=true`. Recommended scrape `interval: 10s` for the run-detail UI freshness; the operator default of 60s is too coarse — the drawer polls every 3 s but Prometheus is the bottleneck.
+- A vLLM (or other OpenAI-compatible) inference server publishing `vllm:num_requests_running`, `vllm:gpu_cache_usage_perc`, `vllm:generation_tokens_total`, etc. KServe auto-generates a ServiceMonitor for `InferenceService` resources when annotated with `monitoring.opendatahub.io/scrape=true`.
 
 ## Run locally (development)
 
@@ -123,13 +142,14 @@ python -m http.server 8001
 
 | Path | Purpose |
 |------|---------|
-| `api/app/main.py` | FastAPI app, lifespan, all route definitions (v0.4.0) |
+| `api/app/main.py` | FastAPI app, lifespan, all route definitions (v0.6.x) |
 | `api/app/schema.sql` | Postgres schema: corpus file cache, `managed_use_cases`, `lifecycle_events`, `use_case_sets`, `use_case_set_members` |
 | `api/app/results.py` | Scans workspace PVC for run summaries and analysis YAMLs |
-| `api/app/validations.py` | Tekton PipelineRun listing, triggering, status translation |
-| `api/app/sources.py` | Spec/corpus content sourcing and ConfigMap writes |
+| `api/app/validations.py` | Tekton PipelineRun listing, triggering, status translation, and run-detail (TaskRun walk) for the drawer |
+| `api/app/sources.py` | Spec / corpus / inference sourcing — ConfigMap writes, branch enumeration, inference endpoint validation (`/models` probe + model-presence check) |
+| `api/app/metrics.py` | Async Prometheus query proxy targeting `thanos-querier` via the SA bearer token + service-CA bundle. Curated `snapshot()` runs ~12 PromQL queries in parallel; grouped GPU rows + vLLM scalars |
 | `api/Containerfile` | API container image spec |
-| `ui/index.html` | Complete single-file UI (no build step) |
+| `ui/index.html` | Complete single-file UI (no build step) — includes the run-detail drawer, theming system, and modal flows |
 | `ui/Containerfile` | UI/NGINX container image spec |
 
 ## Notes
