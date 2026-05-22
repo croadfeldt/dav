@@ -354,11 +354,21 @@
   .stat-box .sl { font-size:9px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-dim); margin-top:4px; }
 
   /* ── UC list in results ── */
-  .uc-row { display:flex; align-items:center; gap:8px; padding:7px 14px; font-size:12px; color:var(--text-dim); cursor:pointer; border-left:2px solid transparent; }
+  .uc-row { display:flex; align-items:flex-start; gap:8px; padding:7px 14px; font-size:12px; color:var(--text-dim); cursor:pointer; border-left:2px solid transparent; }
   .uc-row:hover { background:var(--accent-bg); }
   .uc-row.active { background:var(--accent-bg); border-left-color:var(--accent); }
-  .uc-row .uc-handle { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .uc-row .uc-time   { font-size:10px; color:var(--text-faint); flex-shrink:0; }
+  .uc-row .uc-handle { flex:1; word-break:break-word; overflow-wrap:anywhere; line-height:1.4; }
+  .uc-row .uc-time   { font-size:10px; color:var(--text-faint); flex-shrink:0; padding-top:1px; }
+  /* Verdict-grouped UC list — collapsible headers */
+  .uc-group { border-bottom:1px solid var(--border); }
+  .uc-group-header { display:flex; align-items:center; justify-content:space-between; padding:6px 12px; background:var(--bg-raised); cursor:pointer; user-select:none; font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:var(--text-dim); }
+  .uc-group-header:hover { color:var(--text); }
+  .uc-group-header .badge { font-family:var(--mono); font-size:10px; color:var(--text-faint); }
+  .uc-group.collapsed .uc-group-body { display:none; }
+  /* Resize handles between panels */
+  .split-resizer { width:5px; cursor:col-resize; background:transparent; flex-shrink:0; position:relative; z-index:2; transition:background-color .15s; }
+  .split-resizer:hover, .split-resizer.dragging { background:var(--accent-soft); }
+  .split-resizer::after { content:''; position:absolute; left:2px; top:0; bottom:0; width:1px; background:var(--border-bright); }
 
   /* ── Analysis rendering ── */
   .analysis-block { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; margin-bottom:12px; overflow:hidden; }
@@ -538,7 +548,7 @@
 <!-- ══════════════════════════ RESULTS ══════════════════════════ -->
 <section class="view" id="view-results">
   <div class="split">
-    <div class="split-left" style="width:320px; min-width:240px;">
+    <div class="split-left" id="resultsRunsPanel" style="width:320px; min-width:200px;">
       <div class="panel-header">
         <div class="panel-title">Run <em>results</em></div>
         <button class="btn ghost btn-icon" id="refreshResultsBtn" title="Refresh">↻</button>
@@ -548,21 +558,27 @@
       </div>
       <div class="scrollable" id="resultList"><div class="empty">loading…</div></div>
     </div>
+    <div class="split-resizer" data-rs-left="resultsRunsPanel" data-rs-storage="rsRunsW"></div>
     <div class="split-right">
       <div class="split" id="resultDetail">
-        <div class="split-left" style="width:300px; min-width:220px;" id="ucListPanel">
+        <div class="split-left" id="ucListPanel" style="width:340px; min-width:200px;">
           <div class="panel-header"><span style="font-size:11px; color:var(--text-dim);">Use Cases</span></div>
-          <div class="panel-toolbar">
-            <select id="ucVerdictFilter">
+          <div class="panel-toolbar" style="gap:6px;">
+            <select id="ucVerdictFilter" style="flex:1">
               <option value="">all verdicts</option>
               <option value="supported">supported</option>
               <option value="partially_supported">partial</option>
               <option value="not_supported">not supported</option>
               <option value="failed">failed</option>
             </select>
+            <label style="display:flex; align-items:center; gap:4px; font-size:10px; color:var(--text-faint); white-space:nowrap;">
+              <input type="checkbox" id="ucGroupByVerdict" checked style="width:auto;height:auto;accent-color:var(--accent);" />
+              group
+            </label>
           </div>
           <div class="scrollable" id="ucResultList"><div class="empty">select a run</div></div>
         </div>
+        <div class="split-resizer" data-rs-left="ucListPanel" data-rs-storage="rsUcsW"></div>
         <div class="split-right" id="analysisPanel">
           <div class="detail-pane" id="analysisDetail">
             <div class="detail-empty">Select a run, then a use case to view its analysis.</div>
@@ -747,7 +763,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.8.3</span>
+  <span>DAV Console · v0.8.4</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -2078,25 +2094,80 @@ function renderRunSummaryHeader(s) {
     </div></div>`;
 }
 
+// Order in which verdict groups render (top → bottom). 'failed' = stage-2
+// crash; 'unknown' = no verdict reported.
+const UC_VERDICT_GROUPS = [
+  ['not_supported',       'Not supported'],
+  ['partially_supported', 'Partial'],
+  ['supported',           'Supported'],
+  ['failed',              'Failed (errors)'],
+  ['unknown',             'Unknown'],
+];
+
+function _ucBucketKey(u) {
+  if (u.status === 'failed') return 'failed';
+  return u.verdict || 'unknown';
+}
+
+function _ucRowEl(u) {
+  const item = document.createElement('div');
+  item.className = 'uc-row' + (activeUCResult===u.uc_uuid ? ' active' : '');
+  const vClass = u.status==='failed' ? 'verdict-error' : verdictClass(u.verdict);
+  const vLabel = u.status==='failed' ? 'failed'
+    : (u.verdict||'?').replace(/_/g,' ').replace('partially supported','partial').replace('not supported','not supp.');
+  item.innerHTML = `
+    <span class="${vClass}" style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;flex-shrink:0;width:52px;padding-top:1px">${esc(vLabel)}</span>
+    <span class="uc-handle">${esc(u.uc_handle||u.uc_uuid)}</span>
+    <span class="uc-time">${u.wall_time_seconds ? u.wall_time_seconds+'s' : ''}</span>`;
+  item.addEventListener('click', () => selectUCResult(u.uc_uuid));
+  return item;
+}
+
 function renderUCResultList(summary) {
   const el = document.getElementById('ucResultList');
   const vFilter = document.getElementById('ucVerdictFilter').value;
+  const group   = document.getElementById('ucGroupByVerdict').checked;
   const ucs = summary.ucs || [];
-  const filtered = vFilter ? ucs.filter(u => vFilter==='failed' ? u.status==='failed' : u.verdict===vFilter) : ucs;
+  const filtered = vFilter
+    ? ucs.filter(u => vFilter==='failed' ? u.status==='failed' : u.verdict===vFilter)
+    : ucs;
   if (!filtered.length) { el.innerHTML = '<div class="empty">No use cases match.</div>'; return; }
   el.innerHTML = '';
-  filtered.forEach(u => {
-    const item = document.createElement('div');
-    item.className = 'uc-row' + (activeUCResult===u.uc_uuid ? ' active' : '');
-    const vClass = u.status==='failed' ? 'verdict-error' : verdictClass(u.verdict);
-    const vLabel = u.status==='failed' ? 'failed'
-      : (u.verdict||'?').replace('_',' ').replace('partially supported','partial').replace('not supported','not supp.');
-    item.innerHTML = `
-      <span class="${vClass}" style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;flex-shrink:0;width:52px">${esc(vLabel)}</span>
-      <span class="uc-handle">${esc(u.uc_handle||u.uc_uuid)}</span>
-      <span class="uc-time">${u.wall_time_seconds ? u.wall_time_seconds+'s' : ''}</span>`;
-    item.addEventListener('click', () => selectUCResult(u.uc_uuid));
-    el.appendChild(item);
+
+  if (!group) {
+    // Flat list (original behaviour)
+    filtered.forEach(u => el.appendChild(_ucRowEl(u)));
+    return;
+  }
+
+  // Group by verdict bucket
+  const buckets = {};
+  for (const u of filtered) {
+    const k = _ucBucketKey(u);
+    (buckets[k] = buckets[k] || []).push(u);
+  }
+  UC_VERDICT_GROUPS.forEach(([key, label]) => {
+    const items = buckets[key];
+    if (!items || !items.length) return;
+    const groupEl = document.createElement('div');
+    groupEl.className = 'uc-group';
+    // Restore collapsed state from localStorage
+    try {
+      if (localStorage.getItem('ucGroupCollapsed:' + key) === '1') groupEl.classList.add('collapsed');
+    } catch(e) {}
+    const header = document.createElement('div');
+    header.className = 'uc-group-header';
+    header.innerHTML = `<span>${esc(label)}</span><span class="badge">${items.length}</span>`;
+    header.addEventListener('click', () => {
+      groupEl.classList.toggle('collapsed');
+      try { localStorage.setItem('ucGroupCollapsed:'+key, groupEl.classList.contains('collapsed') ? '1' : '0'); } catch(e) {}
+    });
+    groupEl.appendChild(header);
+    const body = document.createElement('div');
+    body.className = 'uc-group-body';
+    items.forEach(u => body.appendChild(_ucRowEl(u)));
+    groupEl.appendChild(body);
+    el.appendChild(groupEl);
   });
 }
 
@@ -3373,6 +3444,57 @@ document.getElementById('resultFilter').addEventListener('input', renderResultLi
 document.getElementById('ucVerdictFilter').addEventListener('change', () => {
   if (activeRunSummary) renderUCResultList(activeRunSummary);
 });
+document.getElementById('ucGroupByVerdict').addEventListener('change', () => {
+  try { localStorage.setItem('ucGroupByVerdictDefault', document.getElementById('ucGroupByVerdict').checked ? '1' : '0'); } catch(e) {}
+  if (activeRunSummary) renderUCResultList(activeRunSummary);
+});
+// Restore group-by preference on load
+try {
+  const saved = localStorage.getItem('ucGroupByVerdictDefault');
+  if (saved === '0') document.getElementById('ucGroupByVerdict').checked = false;
+} catch(e) {}
+
+// ── Generic split-resizer: any .split-resizer[data-rs-left=<panelId>][data-rs-storage=<key>]
+// resizes the left-of-it panel. Width persisted in localStorage if storage key given.
+(function() {
+  function attachResizer(handle) {
+    const targetId = handle.dataset.rsLeft;
+    const storeKey = handle.dataset.rsStorage;
+    const target = document.getElementById(targetId);
+    if (!target) return;
+    // Restore saved width
+    if (storeKey) {
+      try {
+        const saved = localStorage.getItem(storeKey);
+        if (saved) target.style.width = saved + 'px';
+      } catch(e) {}
+    }
+    let dragging = false; let startX = 0; let startW = 0;
+    handle.addEventListener('mousedown', e => {
+      dragging = true; startX = e.clientX; startW = target.getBoundingClientRect().width;
+      handle.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', e => {
+      if (!dragging) return;
+      const newW = Math.max(160, Math.min(900, startW + (e.clientX - startX)));
+      target.style.width = newW + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      handle.classList.remove('dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (storeKey) {
+        try { localStorage.setItem(storeKey, parseInt(target.style.width, 10)); } catch(e) {}
+      }
+    });
+  }
+  document.querySelectorAll('.split-resizer').forEach(attachResizer);
+})();
 
 document.getElementById('newUCBtn').addEventListener('click', () => openUCModal());
 document.getElementById('closeUCModal').addEventListener('click', closeUCModal);
