@@ -217,16 +217,19 @@ def run_samples(
     def _run_one(seed: int) -> Analysis:
         mcp = mcp_factory()
         # When turns_log_path points at a directory we treat it as the
-        # parent dir and derive per-sample files; when it points at a file
-        # we use it directly (single-sample reproduce/verification).
+        # parent dir and derive per-sample files. We can't rely on is_dir()
+        # because the dir may not exist yet at call time — so use the
+        # extension as the signal: paths ending in .jsonl are concrete
+        # file targets; everything else is a directory.
         per_sample = None
         if turns_log_path is not None:
-            if turns_log_path.is_dir() or str(turns_log_path).endswith("/"):
-                per_sample = turns_log_path / f"{use_case.uuid}.seed-{seed}.jsonl"
-            else:
+            if str(turns_log_path).endswith(".jsonl"):
                 per_sample = turns_log_path.with_name(
                     turns_log_path.stem + f".seed-{seed}.jsonl"
                 )
+            else:
+                turns_log_path.mkdir(parents=True, exist_ok=True)
+                per_sample = turns_log_path / f"{use_case.uuid}.seed-{seed}.jsonl"
         agent = Stage2Agent(
             inference=inference, mcp=mcp, config=config,
             consumer_profile=consumer_profile,

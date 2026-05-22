@@ -73,6 +73,52 @@ pool: Optional[asyncpg.Pool] = None
 
 
 @asynccontextmanager
+async def _finalizer_loop():
+    """Background task: find run_sessions rows whose PipelineRun has reached
+    terminal phase but stats were never finalized (user never opened the
+    drawer post-completion). Trigger lazy finalization for them so the
+    cluster kWh chip + per-run energy stats catch up.
+
+    Runs every 60 s. Idempotent — once finalized_at is set, the row is
+    skipped on subsequent passes.
+    """
+    import asyncio
+    while True:
+        try:
+            await asyncio.sleep(60)
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT run_name FROM run_sessions "
+                    "WHERE finalized_at IS NULL "
+                    "AND created_at < now() - interval '2 minutes' "
+                    "ORDER BY created_at DESC LIMIT 20"
+                )
+            for r in rows:
+                try:
+                    detail = validations.get_run_detail(r["run_name"])
+                    if detail.get("phase") in TERMINAL_PHASES:
+                        await _maybe_finalize_session(detail)
+                except KeyError:
+                    # PipelineRun expired/deleted before finalize; mark as
+                    # finalized to stop trying. Use a sentinel value of
+                    # phase='expired' so it's distinguishable from real
+                    # finalizations.
+                    try:
+                        async with pool.acquire() as conn:
+                            await conn.execute(
+                                "UPDATE run_sessions SET phase='expired', finalized_at=now() WHERE run_name=$1",
+                                r["run_name"],
+                            )
+                    except Exception:
+                        pass
+                except Exception as e:
+                    log.info("background finalize for %s deferred: %s", r["run_name"], e)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.warning("finalizer loop hiccup: %s", e)
+
+
 async def lifespan(app: FastAPI):
     global pool
     log.info("Connecting to Postgres...")
@@ -82,7 +128,14 @@ async def lifespan(app: FastAPI):
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
     log.info("Ready.")
+    import asyncio
+    finalizer_task = asyncio.create_task(_finalizer_loop())
     yield
+    finalizer_task.cancel()
+    try:
+        await finalizer_task
+    except Exception:
+        pass
     await pool.close()
 
 
@@ -132,7 +185,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DAV Console API", version="0.8.0", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.8.1", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
