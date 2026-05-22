@@ -428,12 +428,6 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
     return {"ok": True, "run": result, "resolved_params": params}
 
 
-@app.get("/api/runs/categories")
-async def list_run_categories():
-    """Curated list of categories the New Run modal offers."""
-    return {"categories": RUN_CATEGORIES}
-
-
 @app.get("/api/runs/status")
 async def runs_status():
     """Capability check — is the pipeline trigger wired up?"""
@@ -470,6 +464,15 @@ async def get_run_task_logs(
 
 
 TERMINAL_PHASES = {"Succeeded", "Failed", "Cancelled", "TimedOut"}
+
+
+# Static routes must be declared before the catch-all /api/runs/{name}
+# (FastAPI matches in source order — without this the "categories" path
+# segment gets bound to the {name} parameter and returns 404).
+@app.get("/api/runs/categories")
+async def list_run_categories_v2():
+    """Curated list of categories the New Run modal offers."""
+    return {"categories": RUN_CATEGORIES}
 
 
 async def _maybe_finalize_session(detail: dict) -> Optional[dict]:
