@@ -23,7 +23,7 @@ import asyncpg
 import yaml as _yaml
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .corpus_loader import walk_corpus, parse_patterns
@@ -871,6 +871,23 @@ class UCAssistIn(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
     current_yaml: Optional[str] = Field(None, max_length=64000)
     context: Optional[str] = Field(None, max_length=2000)
+
+
+class ModelConfigIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    provider: str = Field(..., pattern="^(openai|anthropic)$")
+    endpoint_url: str = Field(..., min_length=1, max_length=512)
+    model_id: str = Field(..., min_length=1, max_length=256)
+    api_key: str = Field("", max_length=512)
+    enabled: bool = True
+    is_local: bool = False
+
+
+class ArchReviewIn(BaseModel):
+    scope: str = Field(..., pattern="^(uc|run)$")
+    model_config_id: int
+    run_id: Optional[str] = None
+    uc_uuid: Optional[str] = None
 
 
 @app.get("/api/uc-assist/status")
@@ -2234,3 +2251,150 @@ async def self_test_runs(limit: int = Query(20, ge=1, le=100)):
     except Exception as e:
         log.exception("list self-test runs failed")
         raise HTTPException(500, f"list failed: {e}")
+
+
+# ========================= REVIEW MODELS =========================
+
+
+@app.get("/api/models")
+async def list_review_models():
+    """List configured review models; api_key is masked."""
+    async with _pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, name, provider, endpoint_url, model_id,
+                      CASE WHEN api_key != '' THEN '••••••••' ELSE '' END AS api_key,
+                      enabled, is_local, created_by, created_at, updated_at
+               FROM review_model_configs ORDER BY created_at"""
+        )
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/models", status_code=201)
+async def create_review_model(payload: ModelConfigIn, request: Request):
+    user = get_user(request)
+    async with _pool.acquire() as conn:
+        try:
+            row = await conn.fetchrow(
+                """INSERT INTO review_model_configs
+                     (name, provider, endpoint_url, model_id, api_key, enabled, is_local, created_by)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                   RETURNING id, name, provider, endpoint_url, model_id, enabled, is_local, created_at""",
+                payload.name, payload.provider, payload.endpoint_url,
+                payload.model_id, payload.api_key, payload.enabled, payload.is_local, user,
+            )
+        except Exception as e:
+            if "unique" in str(e).lower():
+                raise HTTPException(409, f"A model named '{payload.name}' already exists")
+            raise HTTPException(500, str(e))
+    return dict(row)
+
+
+@app.put("/api/models/{mid}")
+async def update_review_model(mid: int, payload: ModelConfigIn, request: Request):
+    get_user(request)
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE review_model_configs
+               SET name=$1, provider=$2, endpoint_url=$3, model_id=$4,
+                   api_key = CASE WHEN $5 != '' THEN $5 ELSE api_key END,
+                   enabled=$6, is_local=$7, updated_at=now()
+               WHERE id=$8 RETURNING id""",
+            payload.name, payload.provider, payload.endpoint_url,
+            payload.model_id, payload.api_key, payload.enabled, payload.is_local, mid,
+        )
+    if not row:
+        raise HTTPException(404, "Model config not found")
+    return {"ok": True}
+
+
+@app.delete("/api/models/{mid}")
+async def delete_review_model(mid: int, request: Request):
+    get_user(request)
+    async with _pool.acquire() as conn:
+        await conn.execute("DELETE FROM review_model_configs WHERE id=$1", mid)
+    return {"ok": True}
+
+
+# ========================= ARCHITECTURAL REVIEW =========================
+
+
+@app.post("/api/arch-review")
+async def arch_review(payload: ArchReviewIn, request: Request):
+    """Stream an architectural review from a configured model.
+
+    Scope 'uc': reviews gaps for a single use case.
+    Scope 'run': cross-cutting review across all UCs in a run.
+
+    Returns text/event-stream with data: {"text": "..."} chunks,
+    a final data: [DONE], or data: {"error": "..."} on failure.
+    """
+    get_user(request)
+    from . import arch_review as _ar
+
+    async with _pool.acquire() as conn:
+        model_row = await conn.fetchrow(
+            "SELECT * FROM review_model_configs WHERE id=$1 AND enabled",
+            payload.model_config_id,
+        )
+        if not model_row:
+            raise HTTPException(404, "Model config not found or disabled")
+
+        if payload.scope == "uc":
+            if not payload.run_id or not payload.uc_uuid:
+                raise HTTPException(400, "run_id and uc_uuid required for UC scope")
+            analysis = await conn.fetchrow(
+                "SELECT * FROM uc_analyses WHERE run_id=$1 AND uc_uuid=$2",
+                payload.run_id, payload.uc_uuid,
+            )
+            if not analysis:
+                raise HTTPException(404, "Analysis not found for this run+UC combination")
+            gaps = await conn.fetch(
+                "SELECT * FROM uc_gaps WHERE analysis_id=$1 ORDER BY id",
+                analysis["id"],
+            )
+            uc = await conn.fetchrow(
+                "SELECT uuid, yaml_content FROM managed_use_cases WHERE uuid=$1",
+                payload.uc_uuid,
+            )
+            user_prompt = _ar._build_uc_prompt(
+                dict(uc) if uc else {"uuid": payload.uc_uuid},
+                dict(analysis),
+                [dict(g) for g in gaps],
+            )
+            system_prompt = _ar._UC_SYSTEM
+
+        else:  # run
+            if not payload.run_id:
+                raise HTTPException(400, "run_id required for run scope")
+            uc_rows = await conn.fetch(
+                "SELECT * FROM uc_analyses WHERE run_id=$1 ORDER BY uc_handle NULLS LAST",
+                payload.run_id,
+            )
+            uc_analyses: list[dict] = []
+            for ua in uc_rows:
+                gaps = await conn.fetch(
+                    "SELECT * FROM uc_gaps WHERE analysis_id=$1", ua["id"]
+                )
+                uc_analyses.append({**dict(ua), "gaps": [dict(g) for g in gaps]})
+            user_prompt = _ar._build_run_prompt(payload.run_id, uc_analyses)
+            system_prompt = _ar._RUN_SYSTEM
+
+    model = dict(model_row)
+
+    async def _gen():
+        try:
+            async for chunk in _ar.stream_review(
+                provider=model["provider"],
+                endpoint_url=model["endpoint_url"],
+                model_id=model["model_id"],
+                api_key=model["api_key"],
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            ):
+                yield f"data: {json.dumps({'text': chunk})}\n\n"
+        except Exception as exc:
+            log.exception("Arch review stream error")
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")

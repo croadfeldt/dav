@@ -477,6 +477,16 @@
   .section-sep { border:none; border-top:1px solid var(--border); margin:4px 0; }
   .modal-banner { background:var(--accent-bg); border:1px solid var(--accent-soft); border-radius:2px; padding:8px 12px; font-size:12px; color:var(--accent); }
 
+  /* ── Arch Review modal ── */
+  .arch-review-stream { flex:1; min-height:260px; max-height:52vh; overflow-y:auto; background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:14px 16px; font-size:13px; font-family:var(--serif); line-height:1.75; white-space:pre-wrap; word-break:break-word; color:var(--text); }
+  .arch-review-stream.streaming { border-color:var(--accent-soft); }
+  .model-manager-row { display:flex; align-items:center; gap:10px; padding:9px 16px; border-bottom:1px solid var(--border); font-size:12px; }
+  .model-manager-row:last-child { border-bottom:none; }
+  .model-pill { font-size:9px; padding:2px 7px; border-radius:10px; border:1px solid var(--border); text-transform:uppercase; letter-spacing:0.08em; }
+  .model-pill.local    { color:var(--green,#4caf50); border-color:var(--green,#4caf50); }
+  .model-pill.frontier { color:var(--accent); border-color:var(--accent-soft); }
+  .model-pill.disabled { color:var(--text-faint); border-color:var(--border); }
+
   /* ── Config / Sources ── */
   .config-layout { width:100%; padding:24px 28px; overflow-y:auto; }
   .config-grid   { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:28px; }
@@ -842,6 +852,56 @@
       Switching the <b>corpus</b> changes which use cases the review console loads. Both trigger a ~60s pod rollout.
       Switching <b>inference</b> takes effect on the next pipeline run (no rollout).
     </div>
+
+    <!-- Review Models -->
+    <div class="panel-card" id="configModelsPanel" style="margin-top:20px;">
+      <div class="panel-card-header" style="justify-content:space-between;">
+        <div>
+          <div class="pc-title">Review models</div>
+          <div class="pc-sub">Local and frontier models available for architectural review</div>
+        </div>
+        <button class="btn ghost btn-sm" id="addModelBtn">+ Add model</button>
+      </div>
+      <div id="modelList" style="min-height:40px;"></div>
+    </div>
+
+    <!-- Inline add/edit form -->
+    <div id="modelFormCard" class="panel-card" style="margin-top:12px;display:none;">
+      <div class="panel-card-header">
+        <div class="pc-title" id="modelFormTitle">Add model</div>
+      </div>
+      <div class="panel-card-body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
+          <div class="form-field"><label>Name</label>
+            <input id="mfName" placeholder="e.g. Qwen3-32B (local)" /></div>
+          <div class="form-field"><label>Provider</label>
+            <select id="mfProvider">
+              <option value="openai">OpenAI-compatible</option>
+              <option value="anthropic">Anthropic</option>
+            </select></div>
+          <div class="form-field"><label>Endpoint URL</label>
+            <input id="mfEndpoint" placeholder="https://api.anthropic.com or http://host:8080" /></div>
+          <div class="form-field"><label>Model ID</label>
+            <input id="mfModelId" placeholder="claude-opus-4-7 or qwen3-32b" /></div>
+          <div class="form-field"><label>API Key <span style="color:var(--text-faint);font-weight:400;">(blank = keep existing)</span></label>
+            <input id="mfApiKey" type="password" placeholder="sk-… or blank for local" /></div>
+          <div class="form-field" style="display:flex;flex-direction:column;gap:8px;justify-content:flex-end;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+              <input type="checkbox" id="mfLocal" /> Local / no auth
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+              <input type="checkbox" id="mfEnabled" checked /> Enabled
+            </label>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+          <button class="btn primary" id="saveModelBtn">Save</button>
+          <button class="btn ghost" id="cancelModelBtn">Cancel</button>
+          <span id="modelFormMsg" style="font-size:11px;color:var(--text-faint);"></span>
+        </div>
+      </div>
+    </div>
+
   </div>
 </section>
 
@@ -874,6 +934,7 @@
           <button class="dropdown-item" id="rdLayoutMakeDefault" style="font-size:10px;color:var(--text-faint);">set current as default</button>
         </div>
       </div>
+      <button class="btn ghost btn-sm" id="rdArchReviewBtn" title="Architectural review of this run's findings">Arch Review</button>
       <button class="btn ghost btn-icon" id="rdClose">✕</button>
     </div>
   </div>
@@ -1205,6 +1266,32 @@
     <div class="modal-footer">
       <button class="btn ghost" id="cancelImportModal">Cancel</button>
       <button class="btn primary" id="submitImportBtn">Import</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════ ARCH REVIEW MODAL ══════════════════════════ -->
+<div class="modal-overlay" id="archReviewModal">
+  <div class="modal" style="width:800px;max-height:88vh;">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title">Architectural Review</div>
+        <div id="archReviewSubtitle" style="font-size:11px;color:var(--text-dim);margin-top:2px;">—</div>
+      </div>
+      <button class="btn ghost btn-icon" id="closeArchReview">✕</button>
+    </div>
+    <div class="modal-body" style="gap:10px;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <select id="archReviewModelSel" style="flex:1;min-width:200px;"></select>
+        <select id="archReviewScopeSel" style="width:160px;">
+          <option value="uc">This use case</option>
+          <option value="run">Whole run</option>
+        </select>
+        <button class="btn primary" id="archReviewRunBtn">Generate</button>
+        <button class="btn ghost" id="archReviewCopyBtn" style="display:none;" title="Copy review text">⧉ Copy</button>
+      </div>
+      <div id="archReviewStatus" style="font-size:11px;color:var(--text-faint);display:none;"></div>
+      <div id="archReviewStream" class="arch-review-stream" style="display:none;"></div>
     </div>
   </div>
 </div>
@@ -2787,6 +2874,7 @@ function renderAnalysis(data, ucUuid) {
     <button class="btn ghost btn-sm" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(ucUuid)}'),200)" title="Open this UC in the editor">✏ Edit UC</button>
     <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')" title="Open run trigger pre-filled for re-analysis">↺ Re-analyze</button>
     <button class="btn ghost btn-sm" onclick="_copyGapReport()" title="Copy gap report as markdown">⧉ Copy report</button>
+    <button class="btn ghost btn-sm" onclick="openArchReview('uc','${esc(ucUuid)}')" title="Get an architectural review of these findings">Arch Review</button>
     <span style="flex:1"></span>
     <span style="font-size:10px;color:var(--text-faint)" title="${esc(ucUuid)}">${esc(ucUuid.slice(0,8))}…</span>
   </div>`;
@@ -2909,6 +2997,7 @@ function renderExploreAnalysis(data, ucUuid) {
   actionBar.innerHTML = `<div class="analysis-action-bar">
     <button class="btn ghost btn-sm" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(ucUuid)}'),200)">✏ Edit UC</button>
     <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')">↺ Re-analyze</button>
+    <button class="btn ghost btn-sm" onclick="openArchReview('uc','${esc(ucUuid)}')" title="Get an architectural review of these findings">Arch Review</button>
     <span style="flex:1"></span>
     <span style="font-size:10px;color:var(--text-faint)" title="${esc(ucUuid)}">${esc(ucUuid.slice(0,8))}…</span>
   </div>`;
@@ -4361,7 +4450,7 @@ document.getElementById('memberSearchInput').addEventListener('blur', () => {
 });
 
 // Close modals on overlay click
-['newRunModal','ucModal','setModal','addMemberModal','lcModal','importModal','promoteModal'].forEach(id => {
+['newRunModal','ucModal','setModal','addMemberModal','lcModal','importModal','promoteModal','archReviewModal'].forEach(id => {
   document.getElementById(id).addEventListener('click', e => {
     if (e.target===document.getElementById(id)) document.getElementById(id).classList.remove('open');
   });
@@ -4371,8 +4460,290 @@ wireSourcesPanel('spec');
 wireSourcesPanel('corpus');
 wireInferencePanel();
 
-// Highlight "All" state filter on init
-document.getElementById('lcAll').style.borderColor = 'var(--accent)';
+// ── Review Models ────────────────────────────────────────────────────────────
+
+let _reviewModels = [];   // cached from /api/models
+let _archReviewCtx = {};  // {runId, ucUuid, ucHandle}
+let _mfEditId = null;     // ID of model being edited (null = create)
+
+async function loadReviewModels() {
+  try {
+    _reviewModels = await api('/api/models');
+  } catch(e) {
+    _reviewModels = [];
+  }
+}
+
+function renderModelList() {
+  const el = document.getElementById('modelList');
+  if (!el) return;
+  if (!_reviewModels.length) {
+    el.innerHTML = '<div style="padding:14px 16px;font-size:12px;color:var(--text-faint)">No models configured. Click "+ Add model" to add one.</div>';
+    return;
+  }
+  el.innerHTML = _reviewModels.map(m => `
+    <div class="model-manager-row">
+      <span class="model-pill ${m.is_local ? 'local' : 'frontier'}">${m.is_local ? 'local' : 'frontier'}</span>
+      <span style="font-weight:500;color:var(--text);flex:1">${esc(m.name)}</span>
+      <span style="color:var(--text-faint);font-size:11px;">${esc(m.provider)} · ${esc(m.model_id)}</span>
+      ${!m.enabled ? '<span class="model-pill disabled">disabled</span>' : ''}
+      <button class="btn ghost btn-sm" onclick="editModel(${m.id})">Edit</button>
+      <button class="btn ghost btn-sm" style="color:var(--red)" onclick="deleteModel(${m.id},${JSON.stringify(m.name)})">✕</button>
+    </div>`).join('');
+}
+
+function populateModelSelector() {
+  const sel = document.getElementById('archReviewModelSel');
+  if (!sel) return;
+  const enabled = _reviewModels.filter(m => m.enabled);
+  if (!enabled.length) {
+    sel.innerHTML = '<option value="">No models configured — add one in Config</option>';
+    return;
+  }
+  const prev = sel.value;
+  sel.innerHTML = enabled.map(m =>
+    `<option value="${m.id}">${esc(m.name)} (${m.is_local ? 'local' : 'frontier'})</option>`
+  ).join('');
+  if (prev && enabled.find(m => String(m.id) === prev)) sel.value = prev;
+  else {
+    const stored = localStorage.getItem('archReviewLastModel');
+    if (stored && enabled.find(m => String(m.id) === stored)) sel.value = stored;
+  }
+}
+
+document.getElementById('addModelBtn').addEventListener('click', () => {
+  _mfEditId = null;
+  document.getElementById('modelFormTitle').textContent = 'Add model';
+  document.getElementById('mfName').value = '';
+  document.getElementById('mfProvider').value = 'openai';
+  document.getElementById('mfEndpoint').value = '';
+  document.getElementById('mfModelId').value = '';
+  document.getElementById('mfApiKey').value = '';
+  document.getElementById('mfLocal').checked = false;
+  document.getElementById('mfEnabled').checked = true;
+  document.getElementById('modelFormMsg').textContent = '';
+  document.getElementById('modelFormCard').style.display = '';
+  document.getElementById('mfName').focus();
+});
+
+document.getElementById('cancelModelBtn').addEventListener('click', () => {
+  document.getElementById('modelFormCard').style.display = 'none';
+});
+
+document.getElementById('saveModelBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('saveModelBtn');
+  const msg = document.getElementById('modelFormMsg');
+  const payload = {
+    name:         document.getElementById('mfName').value.trim(),
+    provider:     document.getElementById('mfProvider').value,
+    endpoint_url: document.getElementById('mfEndpoint').value.trim(),
+    model_id:     document.getElementById('mfModelId').value.trim(),
+    api_key:      document.getElementById('mfApiKey').value,
+    is_local:     document.getElementById('mfLocal').checked,
+    enabled:      document.getElementById('mfEnabled').checked,
+  };
+  if (!payload.name || !payload.endpoint_url || !payload.model_id) {
+    msg.style.color = 'var(--red)'; msg.textContent = 'Name, endpoint, and model ID are required.'; return;
+  }
+  btn.disabled = true; msg.style.color = 'var(--text-faint)'; msg.textContent = 'Saving…';
+  try {
+    if (_mfEditId) {
+      await api(`/api/models/${_mfEditId}`, { method:'PUT', body: JSON.stringify(payload) });
+    } else {
+      await api('/api/models', { method:'POST', body: JSON.stringify(payload) });
+    }
+    await loadReviewModels();
+    renderModelList();
+    populateModelSelector();
+    document.getElementById('modelFormCard').style.display = 'none';
+    toast(_mfEditId ? 'Model updated' : 'Model added');
+  } catch(e) {
+    msg.style.color = 'var(--red)'; msg.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function editModel(id) {
+  const m = _reviewModels.find(r => r.id === id);
+  if (!m) return;
+  _mfEditId = id;
+  document.getElementById('modelFormTitle').textContent = 'Edit model';
+  document.getElementById('mfName').value = m.name;
+  document.getElementById('mfProvider').value = m.provider;
+  document.getElementById('mfEndpoint').value = m.endpoint_url;
+  document.getElementById('mfModelId').value = m.model_id;
+  document.getElementById('mfApiKey').value = '';
+  document.getElementById('mfLocal').checked = m.is_local;
+  document.getElementById('mfEnabled').checked = m.enabled;
+  document.getElementById('modelFormMsg').textContent = '';
+  document.getElementById('modelFormCard').style.display = '';
+  document.getElementById('mfName').focus();
+}
+
+async function deleteModel(id, name) {
+  if (!confirm(`Delete model "${name}"?`)) return;
+  try {
+    await api(`/api/models/${id}`, { method:'DELETE' });
+    await loadReviewModels();
+    renderModelList();
+    populateModelSelector();
+    toast('Model deleted');
+  } catch(e) {
+    toast('Delete failed: ' + e.message);
+  }
+}
+
+// ── Arch Review modal ─────────────────────────────────────────────────────────
+
+function openArchReview(defaultScope, ucUuid) {
+  _archReviewCtx = {
+    runId:   activeRunResultId || (_rdName || null),
+    ucUuid:  ucUuid || null,
+  };
+  const ucEntry = ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid) : null;
+  const ucHandle = ucEntry?.uc_handle || ucUuid || '—';
+  const runLabel = _archReviewCtx.runId || '—';
+
+  document.getElementById('archReviewSubtitle').textContent =
+    defaultScope === 'uc'
+      ? `Use case: ${ucHandle}`
+      : `Run: ${runLabel}`;
+
+  const scopeSel = document.getElementById('archReviewScopeSel');
+  scopeSel.value = defaultScope;
+
+  // Show/hide UC option depending on context
+  scopeSel.querySelector('option[value="uc"]').disabled = !ucUuid;
+
+  const streamEl = document.getElementById('archReviewStream');
+  const statusEl = document.getElementById('archReviewStatus');
+  streamEl.style.display = 'none'; streamEl.textContent = '';
+  streamEl.classList.remove('streaming');
+  statusEl.style.display = 'none'; statusEl.textContent = '';
+  document.getElementById('archReviewCopyBtn').style.display = 'none';
+
+  populateModelSelector();
+  document.getElementById('archReviewModal').classList.add('open');
+}
+
+document.getElementById('closeArchReview').addEventListener('click', () => {
+  document.getElementById('archReviewModal').classList.remove('open');
+});
+
+document.getElementById('archReviewScopeSel').addEventListener('change', function() {
+  const subtitle = document.getElementById('archReviewSubtitle');
+  if (this.value === 'run') {
+    subtitle.textContent = `Run: ${_archReviewCtx.runId || '—'}`;
+  } else {
+    const ucEntry = _archReviewCtx.ucUuid
+      ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===_archReviewCtx.ucUuid) : null;
+    const ucHandle = ucEntry?.uc_handle || _archReviewCtx.ucUuid || '—';
+    subtitle.textContent = `Use case: ${ucHandle}`;
+  }
+});
+
+document.getElementById('archReviewRunBtn').addEventListener('click', async () => {
+  const modelId = parseInt(document.getElementById('archReviewModelSel').value, 10);
+  if (!modelId) { toast('Select a model first'); return; }
+
+  const scope   = document.getElementById('archReviewScopeSel').value;
+  const runId   = _archReviewCtx.runId;
+  const ucUuid  = _archReviewCtx.ucUuid;
+
+  if (!runId) { toast('No run selected'); return; }
+  if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
+
+  localStorage.setItem('archReviewLastModel', String(modelId));
+
+  const streamEl = document.getElementById('archReviewStream');
+  const statusEl = document.getElementById('archReviewStatus');
+  const copyBtn  = document.getElementById('archReviewCopyBtn');
+  const runBtn   = document.getElementById('archReviewRunBtn');
+
+  streamEl.textContent = '';
+  streamEl.style.display = '';
+  streamEl.classList.add('streaming');
+  statusEl.style.display = '';
+  statusEl.textContent = 'Generating review…';
+  copyBtn.style.display = 'none';
+  runBtn.disabled = true;
+
+  const body = { scope, model_config_id: modelId, run_id: runId };
+  if (scope === 'uc') body.uc_uuid = ucUuid;
+
+  try {
+    const resp = await fetch(`${API}/api/arch-review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      throw new Error(err.detail || resp.statusText);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let done = false;
+
+    while (!done) {
+      const { value, done: streamDone } = await reader.read();
+      done = streamDone;
+      if (value) buf += decoder.decode(value, { stream: true });
+
+      const lines = buf.split('\n');
+      buf = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (raw === '[DONE]') { done = true; break; }
+        try {
+          const obj = JSON.parse(raw);
+          if (obj.error) throw new Error(obj.error);
+          if (obj.text) {
+            streamEl.textContent += obj.text;
+            streamEl.scrollTop = streamEl.scrollHeight;
+          }
+        } catch(pe) {
+          if (pe.message !== 'undefined') throw pe;
+        }
+      }
+    }
+
+    statusEl.textContent = 'Review complete.';
+    streamEl.classList.remove('streaming');
+    copyBtn.style.display = '';
+  } catch(e) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = 'Error: ' + e.message;
+    streamEl.classList.remove('streaming');
+  } finally {
+    runBtn.disabled = false;
+  }
+});
+
+document.getElementById('archReviewCopyBtn').addEventListener('click', () => {
+  const text = document.getElementById('archReviewStream').textContent;
+  navigator.clipboard.writeText(text).then(() => toast('Review copied'));
+});
+
+// Show/hide run-level arch review button in the drawer header
+document.getElementById('rdArchReviewBtn').addEventListener('click', () => {
+  openArchReview('run', null);
+});
+
+// Load models when Config tab is shown
+document.querySelectorAll('nav.tabs button').forEach(b => {
+  if (b.dataset.view === 'config') {
+    b.addEventListener('click', async () => {
+      await loadReviewModels();
+      renderModelList();
+    });
+  }
+});
 
 init();
 </script>

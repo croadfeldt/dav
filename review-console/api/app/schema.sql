@@ -213,4 +213,24 @@ CREATE INDEX IF NOT EXISTS idx_uc_gaps_run    ON uc_gaps(run_id);
 CREATE INDEX IF NOT EXISTS idx_uc_gaps_uuid   ON uc_gaps(uc_uuid);
 CREATE INDEX IF NOT EXISTS idx_uc_gaps_gap_id ON uc_gaps(gap_id);
 
+-- ── Review model configs ────────────────────────────────────────────────────
+-- User-configured models for architectural review of analysis findings.
+-- Supports OpenAI-compatible and Anthropic providers.
+-- api_key stored at rest; masked ('••••••••') on GET responses.
+
+CREATE TABLE IF NOT EXISTS review_model_configs (
+  id           BIGSERIAL PRIMARY KEY,
+  name         TEXT NOT NULL,
+  provider     TEXT NOT NULL CHECK (provider IN ('openai', 'anthropic')),
+  endpoint_url TEXT NOT NULL,
+  model_id     TEXT NOT NULL,
+  api_key      TEXT NOT NULL DEFAULT '',
+  enabled      BOOLEAN NOT NULL DEFAULT true,
+  is_local     BOOLEAN NOT NULL DEFAULT false,
+  created_by   TEXT NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_review_models_name ON review_model_configs(lower(name));
+
 COMMIT;
