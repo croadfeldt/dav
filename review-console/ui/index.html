@@ -420,6 +420,29 @@
   .sev-major    { color:#e8a060; background:rgba(232,160,96,0.12); }
   .sev-critical { color:var(--red); background:rgba(217,101,58,0.12); }
 
+  /* ── Rich analysis detail panel ── */
+  .analysis-action-bar { display:flex; gap:6px; align-items:center; padding:9px 14px; border-bottom:1px solid var(--border); background:var(--bg-panel); position:sticky; top:0; z-index:5; flex-shrink:0; }
+  .analysis-notes { font-size:13px; font-family:var(--serif); line-height:1.75; color:var(--text); white-space:pre-wrap; word-break:break-word; }
+  .gap-card { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; margin-bottom:10px; }
+  .gap-card-header { display:flex; align-items:center; gap:10px; padding:7px 12px; border-bottom:1px solid var(--border); }
+  .gap-desc { padding:9px 12px; font-size:13px; color:var(--text); line-height:1.6; font-weight:500; }
+  .gap-sub { padding:3px 12px 8px; font-size:12px; color:var(--text-dim); line-height:1.55; }
+  .gap-sub + .gap-sub { border-top:1px dashed var(--border); }
+  .gap-sub-label { font-size:10px; text-transform:uppercase; letter-spacing:0.1em; color:var(--text-faint); display:block; margin-bottom:3px; }
+  .gap-recommendation { background:rgba(80,180,120,0.06); border-top:1px solid var(--border); padding:6px 12px 9px; font-size:12px; color:var(--text); line-height:1.55; }
+  .spec-ref-chip { display:inline-block; font-size:10px; padding:2px 8px; border:1px solid var(--border); border-radius:10px; cursor:pointer; color:var(--accent); background:transparent; margin:2px 3px 2px 0; }
+  .spec-ref-chip:hover { background:var(--accent-bg); }
+  .verdict-large { font-size:22px; font-family:var(--serif); font-weight:300; }
+  .collapsible-hdr { width:100%; text-align:left; padding:8px 12px; font-size:11px; text-transform:uppercase; letter-spacing:0.12em; color:var(--text-dim); background:var(--bg-raised); border:none; cursor:pointer; display:flex; align-items:center; justify-content:space-between; }
+  .collapsible-hdr:hover { color:var(--text); }
+  .collapsible-body-inner { display:none; }
+  .collapsible-body-inner.open { display:block; }
+  .comp-row { padding:8px 12px; border-top:1px solid var(--border); font-size:12px; }
+  .comp-row:first-child { border-top:none; }
+  .comp-id  { font-weight:600; color:var(--text); margin-bottom:2px; }
+  .comp-role { color:var(--text-dim); margin-bottom:4px; font-style:italic; }
+  .comp-rat { color:var(--text-faint); line-height:1.5; font-size:11px; }
+
   /* ── Lifecycle state machine ── */
   .lc-machine { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:14px 16px; margin-bottom:16px; }
   .lc-machine-row { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
@@ -640,9 +663,10 @@
           <div class="scrollable" id="ucResultList"><div class="empty">select a run</div></div>
         </div>
         <div class="split-resizer" data-rs-left="ucListPanel" data-rs-storage="rsUcsW"></div>
-        <div class="split-right" id="analysisPanel">
-          <div class="detail-pane" id="analysisDetail">
-            <div class="detail-empty">Select a run, then a use case to view its analysis.</div>
+        <div class="split-right" id="analysisPanel" style="display:flex;flex-direction:column">
+          <div id="analysisActionBar" style="display:none;flex-shrink:0;border-bottom:1px solid var(--border);background:var(--bg-panel)"></div>
+          <div id="analysisDetail" style="flex:1;overflow-y:auto">
+            <div class="detail-pane"><div class="detail-empty">Select a run, then a use case to view its analysis.</div></div>
           </div>
         </div>
       </div>
@@ -1271,6 +1295,7 @@ let allSets = [];
 let activeRunResultId = null;
 let activeRunSummary  = null;
 let activeUCResult    = null;
+let _lastAnalysisData = null;
 let activeUCId        = null;
 let editingUCId       = null;
 
@@ -2254,7 +2279,7 @@ async function selectRunResult(runId) {
   renderResultList();
   document.getElementById('ucResultList').innerHTML = '<div class="empty">loading…</div>';
   document.getElementById('ucListPanel').style.display = '';
-  document.getElementById('analysisDetail').innerHTML = '<div class="detail-empty">Select a use case.</div>';
+  _clearAnalysis('Select a use case.');
   // Show ingest button when a run is selected
   document.getElementById('ingestResultBtn').style.display = '';
   try {
@@ -2283,6 +2308,7 @@ document.getElementById('ingestResultBtn').addEventListener('click', async () =>
 
 function renderRunSummaryHeader(s) {
   const pct = s.total_ucs > 0 ? Math.round((s.successful/s.total_ucs)*100) : 0;
+  const bar = document.getElementById('analysisActionBar'); bar.innerHTML=''; bar.style.display='none';
   document.getElementById('analysisDetail').innerHTML = `<div class="detail-pane">
     <div class="detail-title">Run <em>summary</em></div>
     <div class="detail-sub">${esc(s.run_id)} · ${esc(s.mode)}</div>
@@ -2447,12 +2473,12 @@ function renderUCResultList(summary) {
 
 async function selectUCResult(ucUuid) {
   activeUCResult = ucUuid; renderUCResultList(activeRunSummary);
-  document.getElementById('analysisDetail').innerHTML = '<div class="detail-empty" style="padding-top:60px">loading…</div>';
+  _clearAnalysis('loading…');
   try {
     const data = await api(`/api/results/${encodeURIComponent(activeRunResultId)}/uc/${encodeURIComponent(ucUuid)}`);
     renderAnalysis(data, ucUuid);
   } catch (e) {
-    document.getElementById('analysisDetail').innerHTML = `<div class="detail-pane"><div style="color:var(--red)">${esc(e.message)}</div></div>`;
+    _clearAnalysis(); document.getElementById('analysisDetail').innerHTML = `<div class="detail-pane"><div style="color:var(--red);padding:20px">${esc(e.message)}</div></div>`;
   }
 }
 
@@ -2480,7 +2506,7 @@ function _exitCompareMode() {
   document.getElementById('cmpToggleBtn').style.color = '';
   if (activeRunSummary) renderUCResultList(activeRunSummary);
   else document.getElementById('ucResultList').innerHTML = '<div class="empty">select a run</div>';
-  document.getElementById('analysisDetail').innerHTML = '<div class="detail-empty">Select a use case to view its analysis.</div>';
+  _clearAnalysis();
 }
 
 document.getElementById('cmpToggleBtn').addEventListener('click', () => {
@@ -2511,7 +2537,7 @@ document.getElementById('cmpRunBtn').addEventListener('click', async () => {
   document.getElementById('cmpPickerRow').style.display = 'none';
   _enterCompareMode();
   document.getElementById('ucResultList').innerHTML = '<div class="empty">loading comparison…</div>';
-  document.getElementById('analysisDetail').innerHTML = '<div class="detail-empty">Loading…</div>';
+  _clearAnalysis('Loading…');
   try {
     compareData = await api(`/api/results/compare?a=${encodeURIComponent(activeRunResultId)}&b=${encodeURIComponent(runB)}`);
     renderCompareHeader();
@@ -2616,6 +2642,7 @@ function renderCompareList() {
 function selectCompareUC(diff) {
   activeCompareUCUuid = diff.uc_uuid;
   renderCompareList();
+  const bar = document.getElementById('analysisActionBar'); bar.innerHTML=''; bar.style.display='none';
   const el = document.getElementById('analysisDetail');
   const va = diff.verdict_a, vb = diff.verdict_b;
   const gapsAdded   = diff.gaps_added || [];
@@ -2649,11 +2676,91 @@ function selectCompareUC(diff) {
   </div>`;
 }
 
+function _clearAnalysis(msg) {
+  _lastAnalysisData = null;
+  const bar = document.getElementById('analysisActionBar');
+  bar.innerHTML = ''; bar.style.display = 'none';
+  document.getElementById('analysisDetail').innerHTML =
+    `<div class="detail-pane"><div class="detail-empty">${msg||'Select a use case to view its analysis.'}</div></div>`;
+}
+
+function _fmtSec(sec) {
+  if (!sec) return '—';
+  const s = Math.round(sec);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), r = s % 60;
+  return r ? `${m}m ${r}s` : `${m}m`;
+}
+
+function _collapsibleAnalysisSection(title, rowsHtml) {
+  if (!rowsHtml.length) return '';
+  const id = 'cb-' + Math.random().toString(36).slice(2,8);
+  return `<div class="detail-section"><div class="detail-section-title">${esc(title)} (${rowsHtml.length})</div>
+    <div class="analysis-block">
+      <button class="collapsible-hdr" onclick="document.getElementById('${id}').classList.toggle('open');this.querySelector('.chev').textContent=document.getElementById('${id}').classList.contains('open')?'▲':'▼'">
+        <span>Show ${rowsHtml.length} item${rowsHtml.length===1?'':'s'}</span><span class="chev">▼</span>
+      </button>
+      <div class="collapsible-body-inner" id="${id}">${rowsHtml.join('')}</div>
+    </div></div>`;
+}
+
+function _specRefChips(refs) {
+  return (refs||[]).map(r =>
+    `<button class="spec-ref-chip" onclick="_copySpecRef('${esc(r)}')" title="Click to copy spec ref path">${esc(r)}</button>`
+  ).join('');
+}
+
+function _copySpecRef(ref) {
+  navigator.clipboard.writeText(ref).catch(()=>{});
+  toast('Copied: ' + ref);
+}
+
+function _copyGapReport() {
+  if (!_lastAnalysisData) return;
+  const data    = _lastAnalysisData;
+  const summary = data.summary || {};
+  const gaps    = data.gaps_identified || [];
+  const ucEntry = (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===activeUCResult);
+  const handle  = ucEntry?.uc_handle || activeUCResult || '';
+  let md = `## DAV Analysis: ${handle}\n\n`;
+  md += `**Verdict:** ${(summary.verdict||'unknown').replace(/_/g,' ')}  \n`;
+  if (summary.overall_confidence) {
+    const conf = typeof summary.overall_confidence==='object' ? summary.overall_confidence.label : summary.overall_confidence;
+    md += `**Confidence:** ${conf}  \n`;
+  }
+  if (summary.notes) md += `\n**Assessment:**\n${summary.notes}\n`;
+  if (gaps.length) {
+    md += `\n### Gaps (${gaps.length})\n`;
+    gaps.forEach((g,i) => {
+      const sev = typeof g.severity==='object' ? g.severity.label : (g.severity||'unknown');
+      md += `\n#### ${i+1}. [${sev.toUpperCase()}] ${g.description}\n`;
+      if (g.rationale) md += `\n**Rationale:** ${g.rationale}\n`;
+      if (g.recommendation) md += `\n**Recommendation:** ${g.recommendation}\n`;
+      const refs = g.spec_refs_consulted||[];
+      if (refs.length) md += `\n**Spec refs:** ${refs.join(', ')}\n`;
+      if (g.spec_refs_missing) md += `\n**Missing from spec:** ${g.spec_refs_missing}\n`;
+    });
+  }
+  navigator.clipboard.writeText(md).catch(()=>{});
+  toast('Gap report copied to clipboard');
+}
+
+function _reanalyzeUC(ucUuid, ucHandle) {
+  openNewRun(`Re-analyze: ${ucHandle||ucUuid}`, null);
+}
+
 function renderAnalysis(data, ucUuid) {
+  _lastAnalysisData = data;
   const el = document.getElementById('analysisDetail');
+
+  const actionBar = document.getElementById('analysisActionBar');
   if (data._source === 'failure') {
+    actionBar.innerHTML = `<div class="analysis-action-bar">
+        <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','')">↺ Re-analyze</button>
+      </div>`;
+    actionBar.style.display = '';
     el.innerHTML = `<div class="detail-pane">
-      <div class="detail-title" style="color:var(--red)">UC <em>failed</em></div>
+      <div class="detail-title" style="color:var(--red)">Analysis <em>failed</em></div>
       <div class="detail-sub">${esc(ucUuid)}</div>
       <div class="analysis-block"><div class="analysis-block-header">Error</div>
         <div class="analysis-block-body"><pre style="white-space:pre-wrap;word-break:break-word">${esc(data.error)}</pre></div>
@@ -2661,73 +2768,195 @@ function renderAnalysis(data, ucUuid) {
   }
   if (data._source === 'explore') { renderExploreAnalysis(data, ucUuid); return; }
 
-  const verdict = data.verdict || '?';
-  const gaps = data.gaps || [], findings = data.findings || [], recs = data.recommendations || [];
-  const meta = data.analysis_metadata || {}, sa = data.sample_annotations;
+  const summary = data.summary || {};
+  const verdict = summary.verdict || '?';
+  const conf    = typeof summary.overall_confidence==='object' ? summary.overall_confidence.label : (summary.overall_confidence||'?');
+  const notes   = summary.notes || '';
+  const meta    = data.analysis_metadata || {};
+  const sa      = data.sample_annotations;
+  const gaps    = data.gaps_identified || [];
+  const comps   = data.components_required || [];
+  const dm      = data.data_model_touched || [];
+  const caps    = data.capabilities_invoked || [];
+  const pols    = data.policy_modes_required || [];
+
+  const ucEntry  = (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid);
+  const ucHandle = ucEntry?.uc_handle || ucUuid;
+
+  actionBar.innerHTML = `<div class="analysis-action-bar">
+    <button class="btn ghost btn-sm" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(ucUuid)}'),200)" title="Open this UC in the editor">✏ Edit UC</button>
+    <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')" title="Open run trigger pre-filled for re-analysis">↺ Re-analyze</button>
+    <button class="btn ghost btn-sm" onclick="_copyGapReport()" title="Copy gap report as markdown">⧉ Copy report</button>
+    <span style="flex:1"></span>
+    <span style="font-size:10px;color:var(--text-faint)" title="${esc(ucUuid)}">${esc(ucUuid.slice(0,8))}…</span>
+  </div>`;
+  actionBar.style.display = '';
 
   let html = `<div class="detail-pane">
-    <div class="detail-title">Analysis <em>result</em></div>
-    <div class="detail-sub">${esc(ucUuid)}</div>
-    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-      <span style="font-size:22px;font-family:var(--serif);font-weight:300" class="${verdictClass(verdict)}">${esc(verdict.replace(/_/g,' '))}</span>
-      ${sa ? `<span style="font-size:11px;color:var(--text-dim)">agreement: ${Math.round((sa.agreement||0)*100)}% (${sa.sample_count||'?'} samples)</span>` : ''}
-    </div>
-    <div class="detail-section">
-      <div class="detail-section-title">Overall assessment</div>
-      <div style="font-size:13px;font-family:var(--serif);line-height:1.7;color:var(--text)">${esc(data.overall_assessment||'—')}</div>
+    <div class="detail-title">${esc(ucHandle)}</div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+      <span class="verdict-large ${verdictClass(verdict)}">${esc(verdict.replace(/_/g,' '))}</span>
+      <span class="sev-label">${esc(conf)} confidence</span>
+      ${sa ? `<span style="font-size:11px;color:var(--text-dim)">${sa.sample_count} samples · ${Object.entries(sa.verdict_votes||{}).map(([k,v])=>k.replace(/_/g,' ')+': '+v).join(', ')}</span>` : ''}
     </div>`;
 
-  const blockOf = (items, title, idKey, textKey, descKey) => {
-    if (!items.length) return '';
-    let b = `<div class="detail-section"><div class="detail-section-title">${title} (${items.length})</div><div class="analysis-block">`;
-    items.forEach(f => {
-      const sev = typeof f.severity==='object' ? f.severity.label : f.severity;
-      const verdict2 = f.verdict || '';
-      b += `<div class="finding-row">
-        <div><div class="finding-id">${esc(f[idKey]||'')}</div><span class="sev-label ${sevClass(sev)}">${esc(sev||'?')}</span></div>
-        <div><div class="finding-text" style="font-weight:500;margin-bottom:3px">${esc(f.title||'')}</div>
-          <div style="font-size:11px;color:var(--text-dim);line-height:1.5">${esc(f[textKey]||f[descKey]||'')}</div></div>
-        <span class="${verdictClass(verdict2)}" style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em">${esc(verdict2.replace(/_/g,' '))}</span>
+  if (notes) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Overall assessment</div>
+      <div class="analysis-notes">${esc(notes)}</div>
+    </div>`;
+  }
+
+  // Gaps
+  if (gaps.length) {
+    html += `<div class="detail-section"><div class="detail-section-title">Gaps identified (${gaps.length})</div>`;
+    gaps.forEach(g => {
+      const sev     = typeof g.severity==='object' ? g.severity : {};
+      const sevLabel= sev.label || (typeof g.severity==='string' ? g.severity : 'minor');
+      const sevBand = sev.band ? ' · '+sev.band : '';
+      const gConf   = typeof g.confidence==='object' ? g.confidence.label : (g.confidence||'?');
+      const refs    = g.spec_refs_consulted||[];
+      html += `<div class="gap-card">
+        <div class="gap-card-header">
+          <span class="sev-label ${sevClass(sevLabel)}">${esc(sevLabel)}${esc(sevBand)}</span>
+          <span style="font-size:10px;color:var(--text-faint)">${esc(gConf)} confidence</span>
+        </div>
+        <div class="gap-desc">${esc(g.description)}</div>
+        ${g.rationale ? `<div class="gap-sub"><span class="gap-sub-label">Rationale</span>${esc(g.rationale)}</div>` : ''}
+        ${g.recommendation ? `<div class="gap-recommendation"><span class="gap-sub-label">Recommendation</span>${esc(g.recommendation)}</div>` : ''}
+        ${refs.length ? `<div class="gap-sub"><span class="gap-sub-label">Spec refs</span>${_specRefChips(refs)}</div>` : ''}
+        ${g.spec_refs_missing ? `<div class="gap-sub" style="color:var(--red)"><span class="gap-sub-label" style="color:var(--red)">Missing from spec</span>${esc(g.spec_refs_missing)}</div>` : ''}
       </div>`;
     });
-    return b + '</div></div>';
-  };
+    html += '</div>';
+  }
 
-  html += blockOf(findings, 'Findings', 'finding_id', 'text', 'text');
-  html += blockOf(gaps,     'Gaps',     'gap_id',     'description', 'description');
-  html += blockOf(recs,     'Recommendations', 'rec_id', 'text', 'text');
+  // Components (collapsible)
+  if (comps.length) {
+    html += _collapsibleAnalysisSection('Components required', comps.map(c => {
+      const cConf = typeof c.confidence==='object' ? c.confidence.label : (c.confidence||'?');
+      return `<div class="comp-row">
+        <div class="comp-id">${esc(c.id)}</div>
+        <div class="comp-role">${esc(c.role)}</div>
+        ${c.rationale ? `<div class="comp-rat">${esc(c.rationale)}</div>` : ''}
+        <div style="margin-top:5px;display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+          <span class="sev-label">${esc(cConf)}</span>${_specRefChips(c.spec_refs)}
+        </div></div>`;
+    }));
+  }
 
-  if (meta.mode || meta.endpoint_url) {
-    html += `<div class="detail-section"><div class="detail-section-title">Metadata</div><div class="kv-grid">
+  // Data model (collapsible)
+  if (dm.length) {
+    html += _collapsibleAnalysisSection('Data model touched', dm.map(d =>
+      `<div class="comp-row">
+        <div class="comp-id">${esc(d.entity)}</div>
+        <div class="comp-role">${esc((d.fields_accessed||[]).join(', '))} · ops: ${esc((d.operations||[]).join(', '))}</div>
+        ${d.rationale ? `<div class="comp-rat">${esc(d.rationale)}</div>` : ''}
+        ${(d.spec_refs||[]).length ? `<div style="margin-top:5px">${_specRefChips(d.spec_refs)}</div>` : ''}
+      </div>`
+    ));
+  }
+
+  // Capabilities (collapsible)
+  if (caps.length) {
+    html += _collapsibleAnalysisSection('Capabilities invoked', caps.map(c =>
+      `<div class="comp-row">
+        <div class="comp-id">${esc(c.id)}</div>
+        <div class="comp-role">${esc(c.usage)}</div>
+        ${c.rationale ? `<div class="comp-rat">${esc(c.rationale)}</div>` : ''}
+        ${(c.spec_refs||[]).length ? `<div style="margin-top:5px">${_specRefChips(c.spec_refs)}</div>` : ''}
+      </div>`
+    ));
+  }
+
+  // Policy modes (collapsible)
+  if (pols.length) {
+    html += _collapsibleAnalysisSection('Policy modes required', pols.map(p =>
+      `<div class="comp-row">
+        <div class="comp-id">${esc(p.mode)}</div>
+        ${p.rationale ? `<div class="comp-rat">${esc(p.rationale)}</div>` : ''}
+        ${(p.spec_refs||[]).length ? `<div style="margin-top:5px">${_specRefChips(p.spec_refs)}</div>` : ''}
+      </div>`
+    ));
+  }
+
+  // Run metadata
+  const hasMetaRow = meta.model||meta.mode||meta.sample_count||meta.tool_call_count||meta.total_tokens||meta.wall_time_seconds||meta.engine_version||meta.endpoint_url;
+  if (hasMetaRow) {
+    html += `<div class="detail-section"><div class="detail-section-title">Run metadata</div><div class="kv-grid">
       ${meta.mode          ? `<div class="kv-label">mode</div><div class="kv-val">${esc(meta.mode)}</div>` : ''}
+      ${meta.model         ? `<div class="kv-label">model</div><div class="kv-val">${esc(meta.model)}</div>` : ''}
       ${meta.sample_count  ? `<div class="kv-label">samples</div><div class="kv-val">${meta.sample_count}</div>` : ''}
-      ${meta.endpoint_url  ? `<div class="kv-label">endpoint</div><div class="kv-val">${esc(meta.endpoint_url)}</div>` : ''}
-      ${meta.analyzed_at   ? `<div class="kv-label">analyzed</div><div class="kv-val">${esc(fmtTs(meta.analyzed_at))}</div>` : ''}
+      ${meta.tool_call_count ? `<div class="kv-label">tool calls</div><div class="kv-val">${meta.tool_call_count}</div>` : ''}
+      ${meta.total_tokens  ? `<div class="kv-label">tokens</div><div class="kv-val">${(meta.total_tokens||0).toLocaleString()}</div>` : ''}
+      ${meta.wall_time_seconds ? `<div class="kv-label">wall time</div><div class="kv-val">${_fmtSec(meta.wall_time_seconds)}</div>` : ''}
       ${meta.engine_version? `<div class="kv-label">engine</div><div class="kv-val">${esc(meta.engine_version)}</div>` : ''}
+      ${meta.endpoint_url  ? `<div class="kv-label">endpoint</div><div class="kv-val" style="word-break:break-all">${esc(meta.endpoint_url)}</div>` : ''}
     </div></div>`;
   }
-  html += '</div>';
+
+  html += '</div>'; // close detail-pane
   el.innerHTML = html;
 }
 
 function renderExploreAnalysis(data, ucUuid) {
-  const samples = data.samples || [];
+  _lastAnalysisData = data;
+  const samples  = data.samples || [];
+  const ucEntry  = (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid);
+  const ucHandle = ucEntry?.uc_handle || ucUuid;
+  const actionBar = document.getElementById('analysisActionBar');
+
+  actionBar.innerHTML = `<div class="analysis-action-bar">
+    <button class="btn ghost btn-sm" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(ucUuid)}'),200)">✏ Edit UC</button>
+    <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')">↺ Re-analyze</button>
+    <span style="flex:1"></span>
+    <span style="font-size:10px;color:var(--text-faint)" title="${esc(ucUuid)}">${esc(ucUuid.slice(0,8))}…</span>
+  </div>`;
+  actionBar.style.display = '';
+
   let html = `<div class="detail-pane">
-    <div class="detail-title">Explore <em>mode</em></div>
-    <div class="detail-sub">${esc(ucUuid)} · ${samples.length} samples</div>`;
+    <div class="detail-title">${esc(ucHandle)}</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:16px">Explore mode · ${samples.length} sample${samples.length===1?'':'s'}</div>`;
+
   if (data.variance) {
+    const va = data.variance;
+    const consensusVerdict = (va.sample_annotations||{}).consensus_verdict;
+    if (consensusVerdict) {
+      html += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+        <span class="verdict-large ${verdictClass(consensusVerdict)}">${esc(consensusVerdict.replace(/_/g,' '))}</span>
+        <span style="font-size:11px;color:var(--text-dim)">consensus</span></div>`;
+    }
     html += `<div class="detail-section"><div class="detail-section-title">Variance report</div>
       <div class="analysis-block"><div class="analysis-block-body">
-        <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px">${esc(JSON.stringify(data.variance,null,2))}</pre>
+        <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;margin:0">${esc(JSON.stringify(va,null,2))}</pre>
       </div></div></div>`;
   }
+
   samples.forEach((s,i) => {
+    const sv = (s.summary||{}).verdict || s.verdict || '?';
+    const sNotes = (s.summary||{}).notes || s.overall_assessment || '';
+    const sGaps  = s.gaps_identified || [];
     html += `<div class="detail-section"><div class="detail-section-title">Sample ${i}</div>
       <div class="analysis-block">
-        <div class="analysis-block-header"><span class="${verdictClass(s.verdict)}">${esc((s.verdict||'?').replace(/_/g,' '))}</span></div>
-        <div class="analysis-block-body">${esc(s.overall_assessment||'—')}</div>
-      </div></div>`;
+        <div class="analysis-block-header">
+          <span class="${verdictClass(sv)}">${esc(sv.replace(/_/g,' '))}</span>
+          ${sGaps.length ? `<span style="font-size:10px;color:var(--text-dim)">${sGaps.length} gap${sGaps.length===1?'':'s'}</span>` : ''}
+        </div>
+        ${sNotes ? `<div class="analysis-block-body">${esc(sNotes)}</div>` : ''}
+      </div>`;
+    if (sGaps.length) {
+      sGaps.forEach(g => {
+        const sev = typeof g.severity==='object' ? g.severity.label : (g.severity||'minor');
+        html += `<div class="gap-card" style="margin-left:0">
+          <div class="gap-card-header"><span class="sev-label ${sevClass(sev)}">${esc(sev)}</span></div>
+          <div class="gap-desc">${esc(g.description)}</div>
+          ${g.recommendation ? `<div class="gap-recommendation"><span class="gap-sub-label">Recommendation</span>${esc(g.recommendation)}</div>` : ''}
+        </div>`;
+      });
+    }
+    html += '</div>';
   });
+
   document.getElementById('analysisDetail').innerHTML = html + '</div>';
 }
 
