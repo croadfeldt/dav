@@ -2259,7 +2259,7 @@ async def self_test_runs(limit: int = Query(20, ge=1, le=100)):
 @app.get("/api/models")
 async def list_review_models():
     """List configured review models; api_key is masked."""
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT id, name, provider, endpoint_url, model_id,
                       CASE WHEN api_key != '' THEN '••••••••' ELSE '' END AS api_key,
@@ -2272,7 +2272,7 @@ async def list_review_models():
 @app.post("/api/models", status_code=201)
 async def create_review_model(payload: ModelConfigIn, request: Request):
     user = get_user(request)
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         try:
             row = await conn.fetchrow(
                 """INSERT INTO review_model_configs
@@ -2292,7 +2292,7 @@ async def create_review_model(payload: ModelConfigIn, request: Request):
 @app.put("/api/models/{mid}")
 async def update_review_model(mid: int, payload: ModelConfigIn, request: Request):
     get_user(request)
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """UPDATE review_model_configs
                SET name=$1, provider=$2, endpoint_url=$3, model_id=$4,
@@ -2310,7 +2310,7 @@ async def update_review_model(mid: int, payload: ModelConfigIn, request: Request
 @app.delete("/api/models/{mid}")
 async def delete_review_model(mid: int, request: Request):
     get_user(request)
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         await conn.execute("DELETE FROM review_model_configs WHERE id=$1", mid)
     return {"ok": True}
 
@@ -2331,7 +2331,7 @@ async def arch_review(payload: ArchReviewIn, request: Request):
     get_user(request)
     from . import arch_review as _ar
 
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         model_row = await conn.fetchrow(
             "SELECT * FROM review_model_configs WHERE id=$1 AND enabled",
             payload.model_config_id,
