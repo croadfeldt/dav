@@ -329,12 +329,9 @@
 # place. force:true replaces the object wholesale, which is what we want
 # for ConfigMaps that hold generated file content.
 
-- name: Deploy review console UI HTML ConfigMap
-  kubernetes.core.k8s:
-    state: present
-    force: true
-    definition: "{{ lookup('template', 'review-console-ui-html-cm.yaml.j2') | from_yaml }}"
-  register: review_ui_html_cm
+# HTML content is baked into the dav-review-ui image (Containerfile COPY).
+# The HTML ConfigMap and its volume mount were removed; the image is the
+# sole source of truth for index.html.
 
 - name: Deploy review console UI nginx ConfigMap
   kubernetes.core.k8s:

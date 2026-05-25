@@ -36,9 +36,6 @@ spec:
             - containerPort: 8080
               name: http
           volumeMounts:
-            - name: html
-              mountPath: /opt/app-root/src
-              readOnly: true
             - name: nginx-config
               mountPath: /opt/app-root/etc/nginx.default.d
               readOnly: true
@@ -99,9 +96,6 @@ spec:
             limits:   { cpu: "100m", memory: "128Mi" }
 {% endif %}
       volumes:
-        - name: html
-          configMap:
-            name: dav-review-ui-html
         - name: nginx-config
           configMap:
             name: dav-review-ui-nginx
