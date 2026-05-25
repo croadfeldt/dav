@@ -776,9 +776,9 @@
     <nav class="config-nav" id="configNav">
       <div class="config-nav-group">
         <div class="config-nav-cat" data-target="cfgSec-pipeline">Pipeline Sources</div>
-        <a class="config-nav-link" data-target="configSpecPanel">Spec repository</a>
-        <a class="config-nav-link" data-target="configCorpusPanel">Corpus repository</a>
-        <a class="config-nav-link" data-target="configInferencePanel">Inference endpoint</a>
+        <a class="config-nav-link" data-target="configSpecPanel">Architecture spec</a>
+        <a class="config-nav-link" data-target="configCorpusPanel">Evaluation corpus</a>
+        <a class="config-nav-link" data-target="configInferencePanel">Evaluation endpoint</a>
       </div>
       <div class="config-nav-group">
         <div class="config-nav-cat" data-target="cfgSec-aimodels">AI Models</div>
@@ -796,12 +796,12 @@
 
       <div class="cfg-sec-hdr" id="cfgSec-pipeline">
         <span class="cfg-sec-title">Pipeline Sources</span>
-        <span class="cfg-sec-sub">Spec &amp; corpus repos trigger a ~60s pod rollout · Inference endpoint is read at pipeline-run trigger time, no restart needed</span>
+        <span class="cfg-sec-sub">Architecture spec &amp; evaluation corpus repos trigger a ~60s pod rollout · Evaluation endpoint is read at pipeline-run trigger time, no restart needed</span>
       </div>
 
       <div class="panel-card" id="configSpecPanel">
         <div class="panel-card-header"><div>
-          <div class="pc-title">Spec repository</div>
+          <div class="pc-title">Architecture spec</div>
           <div class="pc-sub">DCM architecture — served by MCP</div>
         </div></div>
         <div class="panel-card-body">
@@ -830,7 +830,7 @@
       </div>
       <div class="cfg-card panel-card" id="configCorpusPanel">
         <div class="panel-card-header"><div>
-          <div class="pc-title">Corpus repository</div>
+          <div class="pc-title">Evaluation corpus</div>
           <div class="pc-sub">Use cases + baselines</div>
         </div></div>
         <div class="panel-card-body">
@@ -860,7 +860,7 @@
       </div>
       <div class="cfg-card panel-card" id="configInferencePanel">
         <div class="panel-card-header"><div>
-          <div class="pc-title">Inference endpoint</div>
+          <div class="pc-title">Evaluation endpoint</div>
           <div class="pc-sub">OpenAI-compatible /v1 — read at pipeline-run trigger time</div>
         </div></div>
         <div class="panel-card-body">
