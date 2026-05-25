@@ -638,7 +638,7 @@
       <div class="panel-header">
         <div class="panel-title">Run <em>results</em></div>
         <div style="display:flex;gap:4px;flex-shrink:0;">
-          <button class="btn ghost btn-icon" id="ingestResultBtn" title="Ingest selected run into Postgres" style="font-size:10px;padding:3px 8px;display:none;">↓ Ingest</button>
+          <button class="btn ghost btn-icon" id="ingestResultBtn" title="Re-ingest analysis results into Postgres (done automatically on run selection)" style="font-size:10px;padding:3px 8px;display:none;">↓ Re-ingest</button>
           <button class="btn ghost btn-icon" id="refreshResultsBtn" title="Refresh">↻</button>
         </div>
       </div>
@@ -2494,6 +2494,9 @@ async function selectRunResult(runId) {
   _clearAnalysis('Select a use case.');
   // Show ingest button when a run is selected
   document.getElementById('ingestResultBtn').style.display = '';
+  // Auto-ingest silently so arch review is available without a manual step.
+  // Ingest is idempotent (delete+reinsert), so safe to fire on every selection.
+  api(`/api/analysis/ingest/${encodeURIComponent(runId)}`, { method: 'POST' }).catch(() => {});
   try {
     const summary = await api(`/api/results/${encodeURIComponent(runId)}`);
     activeRunSummary = summary;
