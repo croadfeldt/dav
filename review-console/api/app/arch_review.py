@@ -136,6 +136,91 @@ def _build_run_prompt(run_id: str, uc_analyses: list[dict]) -> str:
     return "\n".join(parts)
 
 
+_ENHANCEMENT_UC_SYSTEM = (
+    "You are a senior software architect documenting concrete enhancements "
+    "to address identified coverage gaps in a system.\n\n"
+    "For each gap, produce an Enhancement Specification with:\n"
+    "1. Enhancement title and objective — one sentence stating what changes and why.\n"
+    "2. Proposed change — the specific architectural component, pattern, or mechanism to add or modify.\n"
+    "3. Implementation outline — 3–5 concrete steps an engineering team would follow.\n"
+    "4. Acceptance criteria — how to verify the gap is closed, tied to the use case's success criteria.\n"
+    "5. Dependencies and risks — what must be in place first, and what could go wrong.\n\n"
+    "Key each enhancement to its gap ID. Be specific and actionable. "
+    "Write in plain prose — no markdown headers, minimal bullet points."
+)
+
+_ENHANCEMENT_RUN_SYSTEM = (
+    "You are a senior software architect documenting a prioritised enhancement roadmap "
+    "to address coverage gaps across multiple use cases.\n\n"
+    "Produce:\n"
+    "1. Systemic enhancements — gaps appearing across multiple use cases signalling shared deficiencies.\n"
+    "2. UC-specific enhancements for high-severity single-UC gaps.\n"
+    "3. For each enhancement: title, proposed change, implementation outline (3–5 steps), "
+    "acceptance criteria, dependencies and risks.\n"
+    "4. A sequenced delivery roadmap identifying which enhancements unblock others.\n\n"
+    "Reference gap IDs and UC handles. Be specific and actionable. Write in plain prose."
+)
+
+
+def _build_enhancement_prompt(uc: dict, analysis: dict, gaps: list[dict]) -> str:
+    parts: list[str] = []
+    handle = uc.get("handle") or uc.get("uuid", "unknown")
+    parts.append(f"Use Case: {handle}")
+    yaml_content = uc.get("yaml_content", "")
+    if yaml_content:
+        try:
+            parsed = _yaml.safe_load(yaml_content)
+            scenario = parsed.get("scenario") or {}
+            if scenario.get("description"):
+                parts.append(f"Description: {scenario['description']}")
+            if scenario.get("intent"):
+                parts.append(f"Intent: {scenario['intent']}")
+            criteria = scenario.get("success_criteria") or []
+            if criteria:
+                parts.append("Success criteria:\n" + "\n".join(f"  - {c}" for c in criteria))
+        except Exception:
+            pass
+    verdict = analysis.get("verdict") or "unknown"
+    parts.append(f"\nVerdict: {verdict}")
+    if gaps:
+        parts.append(f"\nGaps requiring enhancement ({len(gaps)}):")
+        for g in gaps:
+            sev = g.get("severity") or {}
+            sev_label = sev.get("label") or sev.get("band") or "unknown" if isinstance(sev, dict) else str(sev)
+            parts.append(f"\n  [{g.get('gap_id', '?')}] {g.get('title', '')} — severity: {sev_label}")
+            if g.get("description"):
+                parts.append(f"    {g['description']}")
+            if g.get("rationale"):
+                parts.append(f"    Rationale: {g['rationale']}")
+            if g.get("recommendation"):
+                parts.append(f"    Initial recommendation: {g['recommendation']}")
+    else:
+        parts.append("\nNo gaps identified.")
+    parts.append("\nPlease provide the Enhancement Specification for each gap.")
+    return "\n".join(parts)
+
+
+def _build_enhancement_run_prompt(run_id: str, uc_analyses: list[dict]) -> str:
+    parts = [f"Run: {run_id}", f"Use cases analyzed: {len(uc_analyses)}\n"]
+    total_gaps = sum(len(ua.get("gaps") or []) for ua in uc_analyses)
+    parts.append(f"Total gaps requiring enhancement: {total_gaps}\n")
+    for ua in uc_analyses:
+        handle = ua.get("uc_handle") or ua.get("uc_uuid", "?")
+        verdict = ua.get("verdict") or "unknown"
+        gaps = ua.get("gaps") or []
+        if not gaps:
+            continue
+        parts.append(f"  {handle} — {verdict}, {len(gaps)} gap(s):")
+        for g in gaps:
+            sev = g.get("severity") or {}
+            sev_label = sev.get("label") or sev.get("band") or "?" if isinstance(sev, dict) else str(sev)
+            parts.append(f"    [{g.get('gap_id','?')}] {g.get('title','')} ({sev_label})")
+            if g.get("recommendation"):
+                parts.append(f"      Recommendation: {(g.get('recommendation') or '')[:150]}")
+    parts.append("\nPlease provide the Enhancement Roadmap.")
+    return "\n".join(parts)
+
+
 async def stream_review(
     provider: str,
     endpoint_url: str,

@@ -1060,6 +1060,7 @@
         </div>
       </div>
       <button class="btn ghost btn-sm" id="rdArchReviewBtn" title="Architectural review of this run's findings">Arch Review</button>
+      <button class="btn ghost btn-sm" id="rdEnhanceBtn" title="Plan enhancements for this run's findings">Enhancements</button>
       <button class="btn ghost btn-icon" id="rdClose">✕</button>
     </div>
   </div>
@@ -1415,10 +1416,43 @@
         <button class="btn primary" id="archReviewRunBtn">Generate</button>
         <button class="btn ghost" id="archReviewCopyBtn" style="display:none;" title="Copy review text">⧉ Copy</button>
         <button class="btn ghost" id="archReviewCopyPromptBtn" title="Copy prompt to paste into Claude Code or claude.ai">⧉ Copy prompt</button>
+        <button class="btn ghost" id="archReviewReasoningBtn" style="display:none;font-size:10px;" title="Toggle model reasoning / think blocks">○ Reasoning</button>
       </div>
       <div id="archReviewPromptHint" style="display:none;font-size:10px;color:var(--green);margin-top:2px;">Prompt copied — paste into Claude Code or claude.ai chat</div>
       <div id="archReviewStatus" style="font-size:11px;color:var(--text-faint);display:none;"></div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:2px;display:none;" id="archReviewNextRow">
+        <span style="font-size:11px;color:var(--text-faint);">Review complete —</span>
+        <button class="btn ghost btn-sm" id="archReviewToEnhanceBtn">Plan enhancements →</button>
+      </div>
       <div id="archReviewStream" class="arch-review-stream" style="display:none;"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="enhanceModal">
+  <div class="modal" style="width:800px;max-height:88vh;">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title">Enhancement Planning</div>
+        <div id="enhanceSubtitle" style="font-size:11px;color:var(--text-dim);margin-top:2px;">—</div>
+      </div>
+      <button class="btn ghost btn-icon" id="closeEnhance">✕</button>
+    </div>
+    <div class="modal-body" style="gap:10px;">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <select id="enhanceModelSel" style="flex:1;min-width:200px;"></select>
+        <select id="enhanceScopeSel" style="width:160px;">
+          <option value="uc">This use case</option>
+          <option value="run">Whole run</option>
+        </select>
+        <button class="btn primary" id="enhanceRunBtn">Generate</button>
+        <button class="btn ghost" id="enhanceCopyBtn" style="display:none;" title="Copy enhancement spec text">⧉ Copy</button>
+        <button class="btn ghost" id="enhanceCopyPromptBtn" title="Copy prompt to paste into Claude Code or claude.ai">⧉ Copy prompt</button>
+        <button class="btn ghost" id="enhanceReasoningBtn" style="display:none;font-size:10px;" title="Toggle model reasoning / think blocks">○ Reasoning</button>
+      </div>
+      <div id="enhancePromptHint" style="display:none;font-size:10px;color:var(--green);margin-top:2px;">Prompt copied — paste into Claude Code or claude.ai chat</div>
+      <div id="enhanceStatus" style="font-size:11px;color:var(--text-faint);display:none;"></div>
+      <div id="enhanceStream" class="arch-review-stream" style="display:none;"></div>
     </div>
   </div>
 </div>
@@ -3008,6 +3042,7 @@ function renderAnalysis(data, ucUuid) {
     <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')" title="Open run trigger pre-filled for re-analysis">↺ Re-analyze</button>
     <button class="btn ghost btn-sm" onclick="_copyGapReport()" title="Copy gap report as markdown">⧉ Copy report</button>
     <button class="btn ghost btn-sm" onclick="openArchReview('uc','${esc(ucUuid)}')" title="Get an architectural review of these findings">Arch Review</button>
+    <button class="btn ghost btn-sm" onclick="openEnhance('uc','${esc(ucUuid)}')" title="Plan enhancements to address these findings">Enhancements</button>
     <span style="flex:1"></span>
     <span style="font-size:10px;color:var(--text-faint)" title="${esc(ucUuid)}">${esc(ucUuid.slice(0,8))}…</span>
   </div>`;
@@ -3131,6 +3166,7 @@ function renderExploreAnalysis(data, ucUuid) {
     <button class="btn ghost btn-sm" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(ucUuid)}'),200)">✏ Edit UC</button>
     <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')">↺ Re-analyze</button>
     <button class="btn ghost btn-sm" onclick="openArchReview('uc','${esc(ucUuid)}')" title="Get an architectural review of these findings">Arch Review</button>
+    <button class="btn ghost btn-sm" onclick="openEnhance('uc','${esc(ucUuid)}')" title="Plan enhancements to address these findings">Enhancements</button>
     <span style="flex:1"></span>
     <span style="font-size:10px;color:var(--text-faint)" title="${esc(ucUuid)}">${esc(ucUuid.slice(0,8))}…</span>
   </div>`;
@@ -4583,7 +4619,7 @@ document.getElementById('memberSearchInput').addEventListener('blur', () => {
 });
 
 // Close modals on overlay click
-['newRunModal','ucModal','setModal','addMemberModal','lcModal','importModal','promoteModal','archReviewModal'].forEach(id => {
+['newRunModal','ucModal','setModal','addMemberModal','lcModal','importModal','promoteModal','archReviewModal','enhanceModal'].forEach(id => {
   document.getElementById(id).addEventListener('click', e => {
     if (e.target===document.getElementById(id)) document.getElementById(id).classList.remove('open');
   });
@@ -4800,37 +4836,30 @@ document.getElementById('archReviewScopeSel').addEventListener('change', functio
   }
 });
 
-document.getElementById('archReviewRunBtn').addEventListener('click', async () => {
-  const modelId = parseInt(document.getElementById('archReviewModelSel').value, 10);
-  if (!modelId) { toast('Select a model first'); return; }
+// ── Shared think-block rendering ─────────────────────────────────────────────
+function _stripThink(raw) {
+  let s = raw.replace(/<think>[\s\S]*?<\/think>\n?/g, '');
+  const open = s.lastIndexOf('<think>');
+  if (open !== -1) s = s.substring(0, open);
+  return s.trim();
+}
 
-  const scope   = document.getElementById('archReviewScopeSel').value;
-  const runId   = _archReviewCtx.runId;
-  const ucUuid  = _archReviewCtx.ucUuid;
-
-  if (!runId) { toast('No run selected'); return; }
-  if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
-
-  localStorage.setItem('archReviewLastModel', String(modelId));
-
-  const streamEl = document.getElementById('archReviewStream');
-  const statusEl = document.getElementById('archReviewStatus');
-  const copyBtn  = document.getElementById('archReviewCopyBtn');
-  const runBtn   = document.getElementById('archReviewRunBtn');
-
+// ── Generic SSE stream runner ─────────────────────────────────────────────────
+async function _runStream({ endpoint, body, streamEl, statusEl, copyBtn, runBtn,
+                            reasoningBtn, nextRow, rawHolder, showReasoningKey }) {
   streamEl.textContent = '';
+  rawHolder.text = '';
   streamEl.style.display = '';
   streamEl.classList.add('streaming');
   statusEl.style.display = '';
-  statusEl.textContent = 'Generating review…';
-  copyBtn.style.display = 'none';
+  statusEl.textContent = 'Generating…';
+  if (copyBtn) copyBtn.style.display = 'none';
+  if (nextRow) nextRow.style.display = 'none';
+  if (reasoningBtn) reasoningBtn.style.display = 'none';
   runBtn.disabled = true;
 
-  const body = { scope, model_config_id: modelId, run_id: runId };
-  if (scope === 'uc') body.uc_uuid = ucUuid;
-
   try {
-    const resp = await fetch(`${API}/api/arch-review`, {
+    const resp = await fetch(`${API}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -4842,17 +4871,15 @@ document.getElementById('archReviewRunBtn').addEventListener('click', async () =
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
-    let buf = '';
-    let done = false;
+    let buf = '', done = false;
+    const showReasoning = () => localStorage.getItem(showReasoningKey) === '1';
 
     while (!done) {
-      const { value, done: streamDone } = await reader.read();
-      done = streamDone;
+      const { value, done: sd } = await reader.read();
+      done = sd;
       if (value) buf += decoder.decode(value, { stream: true });
-
       const lines = buf.split('\n');
       buf = lines.pop();
-
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const raw = line.slice(6).trim();
@@ -4861,18 +4888,21 @@ document.getElementById('archReviewRunBtn').addEventListener('click', async () =
           const obj = JSON.parse(raw);
           if (obj.error) throw new Error(obj.error);
           if (obj.text) {
-            streamEl.textContent += obj.text;
+            rawHolder.text += obj.text;
+            const hasThink = rawHolder.text.includes('<think>');
+            if (reasoningBtn && hasThink) reasoningBtn.style.display = '';
+            streamEl.textContent = hasThink && !showReasoning()
+              ? _stripThink(rawHolder.text) : rawHolder.text;
             streamEl.scrollTop = streamEl.scrollHeight;
           }
-        } catch(pe) {
-          if (pe.message !== 'undefined') throw pe;
-        }
+        } catch(pe) { if (pe.message !== 'undefined') throw pe; }
       }
     }
 
-    statusEl.textContent = 'Review complete.';
+    statusEl.textContent = 'Complete.';
     streamEl.classList.remove('streaming');
-    copyBtn.style.display = '';
+    if (copyBtn) copyBtn.style.display = '';
+    if (nextRow) nextRow.style.display = '';
   } catch(e) {
     statusEl.style.color = 'var(--red)';
     statusEl.textContent = 'Error: ' + e.message;
@@ -4880,16 +4910,166 @@ document.getElementById('archReviewRunBtn').addEventListener('click', async () =
   } finally {
     runBtn.disabled = false;
   }
+}
+
+// ── Arch Review ───────────────────────────────────────────────────────────────
+const _archRaw = { text: '' };
+
+document.getElementById('archReviewReasoningBtn').addEventListener('click', function() {
+  const on = localStorage.getItem('archReviewShowReasoning') === '1';
+  localStorage.setItem('archReviewShowReasoning', on ? '0' : '1');
+  this.textContent = on ? '○ Reasoning' : '● Reasoning';
+  const streamEl = document.getElementById('archReviewStream');
+  streamEl.textContent = (!on) ? _archRaw.text : _stripThink(_archRaw.text);
+  streamEl.scrollTop = streamEl.scrollHeight;
+});
+
+document.getElementById('archReviewRunBtn').addEventListener('click', async () => {
+  const modelId = parseInt(document.getElementById('archReviewModelSel').value, 10);
+  if (!modelId) { toast('Select a model first'); return; }
+  const scope  = document.getElementById('archReviewScopeSel').value;
+  const runId  = _archReviewCtx.runId;
+  const ucUuid = _archReviewCtx.ucUuid;
+  if (!runId) { toast('No run selected'); return; }
+  if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
+  localStorage.setItem('archReviewLastModel', String(modelId));
+  const body = { scope, model_config_id: modelId, run_id: runId };
+  if (scope === 'uc') body.uc_uuid = ucUuid;
+  await _runStream({
+    endpoint: '/api/arch-review', body,
+    streamEl:     document.getElementById('archReviewStream'),
+    statusEl:     document.getElementById('archReviewStatus'),
+    copyBtn:      document.getElementById('archReviewCopyBtn'),
+    runBtn:       document.getElementById('archReviewRunBtn'),
+    reasoningBtn: document.getElementById('archReviewReasoningBtn'),
+    nextRow:      document.getElementById('archReviewNextRow'),
+    rawHolder:    _archRaw,
+    showReasoningKey: 'archReviewShowReasoning',
+  });
 });
 
 document.getElementById('archReviewCopyBtn').addEventListener('click', () => {
-  const text = document.getElementById('archReviewStream').textContent;
+  const showReasoning = localStorage.getItem('archReviewShowReasoning') === '1';
+  const text = showReasoning ? _archRaw.text : _stripThink(_archRaw.text);
   navigator.clipboard.writeText(text).then(() => toast('Review copied'));
 });
 
-// Show/hide run-level arch review button in the drawer header
-document.getElementById('rdArchReviewBtn').addEventListener('click', () => {
-  openArchReview('run', null);
+document.getElementById('archReviewToEnhanceBtn').addEventListener('click', () => {
+  document.getElementById('archReviewModal').classList.remove('open');
+  openEnhance(_archReviewCtx.ucUuid ? 'uc' : 'run', _archReviewCtx.ucUuid);
+});
+
+document.getElementById('rdArchReviewBtn').addEventListener('click', () => openArchReview('run', null));
+document.getElementById('rdEnhanceBtn').addEventListener('click', () => openEnhance('run', null));
+
+// ── Enhancement Planning ──────────────────────────────────────────────────────
+let _enhanceCtx = {};
+const _enhanceRaw = { text: '' };
+
+function openEnhance(defaultScope, ucUuid) {
+  _enhanceCtx = {
+    runId:  activeRunResultId || (_rdName || null),
+    ucUuid: ucUuid || null,
+  };
+  const ucEntry = ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid) : null;
+  const ucHandle = ucEntry?.uc_handle || ucUuid || '—';
+  const runLabel = _enhanceCtx.runId || '—';
+  document.getElementById('enhanceSubtitle').textContent =
+    defaultScope === 'uc' ? `Use case: ${ucHandle}` : `Run: ${runLabel}`;
+  const scopeSel = document.getElementById('enhanceScopeSel');
+  scopeSel.value = defaultScope;
+  scopeSel.querySelector('option[value="uc"]').disabled = !ucUuid;
+
+  // Populate model selector (reuse same models as arch review)
+  const src = document.getElementById('archReviewModelSel');
+  const dst = document.getElementById('enhanceModelSel');
+  dst.innerHTML = src.innerHTML;
+  const stored = localStorage.getItem('enhanceLastModel');
+  if (stored) dst.value = stored;
+
+  const streamEl = document.getElementById('enhanceStream');
+  const statusEl = document.getElementById('enhanceStatus');
+  streamEl.style.display = 'none'; streamEl.textContent = ''; _enhanceRaw.text = '';
+  streamEl.classList.remove('streaming');
+  statusEl.style.display = 'none'; statusEl.textContent = '';
+  statusEl.style.color = '';
+  document.getElementById('enhanceCopyBtn').style.display = 'none';
+  document.getElementById('enhanceReasoningBtn').style.display = 'none';
+  document.getElementById('enhancePromptHint').style.display = 'none';
+  document.getElementById('enhanceModal').classList.add('open');
+}
+
+document.getElementById('closeEnhance').addEventListener('click', () =>
+  document.getElementById('enhanceModal').classList.remove('open'));
+
+document.getElementById('enhanceScopeSel').addEventListener('change', function() {
+  const ucEntry = _enhanceCtx.ucUuid
+    ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===_enhanceCtx.ucUuid) : null;
+  document.getElementById('enhanceSubtitle').textContent = this.value === 'run'
+    ? `Run: ${_enhanceCtx.runId || '—'}`
+    : `Use case: ${ucEntry?.uc_handle || _enhanceCtx.ucUuid || '—'}`;
+});
+
+document.getElementById('enhanceReasoningBtn').addEventListener('click', function() {
+  const on = localStorage.getItem('enhanceShowReasoning') === '1';
+  localStorage.setItem('enhanceShowReasoning', on ? '0' : '1');
+  this.textContent = on ? '○ Reasoning' : '● Reasoning';
+  const streamEl = document.getElementById('enhanceStream');
+  streamEl.textContent = (!on) ? _enhanceRaw.text : _stripThink(_enhanceRaw.text);
+  streamEl.scrollTop = streamEl.scrollHeight;
+});
+
+document.getElementById('enhanceRunBtn').addEventListener('click', async () => {
+  const modelId = parseInt(document.getElementById('enhanceModelSel').value, 10);
+  if (!modelId) { toast('Select a model first'); return; }
+  const scope  = document.getElementById('enhanceScopeSel').value;
+  const runId  = _enhanceCtx.runId;
+  const ucUuid = _enhanceCtx.ucUuid;
+  if (!runId) { toast('No run selected'); return; }
+  if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
+  localStorage.setItem('enhanceLastModel', String(modelId));
+  const body = { scope, model_config_id: modelId, run_id: runId };
+  if (scope === 'uc') body.uc_uuid = ucUuid;
+  await _runStream({
+    endpoint: '/api/enhancements', body,
+    streamEl:     document.getElementById('enhanceStream'),
+    statusEl:     document.getElementById('enhanceStatus'),
+    copyBtn:      document.getElementById('enhanceCopyBtn'),
+    runBtn:       document.getElementById('enhanceRunBtn'),
+    reasoningBtn: document.getElementById('enhanceReasoningBtn'),
+    nextRow:      null,
+    rawHolder:    _enhanceRaw,
+    showReasoningKey: 'enhanceShowReasoning',
+  });
+});
+
+document.getElementById('enhanceCopyBtn').addEventListener('click', () => {
+  const showReasoning = localStorage.getItem('enhanceShowReasoning') === '1';
+  const text = showReasoning ? _enhanceRaw.text : _stripThink(_enhanceRaw.text);
+  navigator.clipboard.writeText(text).then(() => toast('Enhancement spec copied'));
+});
+
+document.getElementById('enhanceCopyPromptBtn').addEventListener('click', async () => {
+  const scope  = document.getElementById('enhanceScopeSel').value;
+  const runId  = _enhanceCtx.runId;
+  const ucUuid = _enhanceCtx.ucUuid;
+  const hint   = document.getElementById('enhancePromptHint');
+  const btn    = document.getElementById('enhanceCopyPromptBtn');
+  if (!runId) { toast('No run selected'); return; }
+  btn.disabled = true; btn.textContent = 'Fetching…';
+  hint.style.display = 'none';
+  try {
+    let url = `/api/enhancements/prompt?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
+    if (scope === 'uc' && ucUuid) url += `&uc_uuid=${encodeURIComponent(ucUuid)}`;
+    const data = await api(url);
+    await navigator.clipboard.writeText(`${data.system_prompt}\n\n---\n\n${data.user_prompt}`);
+    hint.style.display = '';
+    setTimeout(() => { hint.style.display = 'none'; }, 4000);
+  } catch(e) {
+    toast('Copy failed: ' + e.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = '⧉ Copy prompt';
+  }
 });
 
 // ── MCP Servers ──────────────────────────────────────────────────────────────

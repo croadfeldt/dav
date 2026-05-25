@@ -907,6 +907,12 @@ class ArchReviewIn(BaseModel):
     run_id: Optional[str] = None
     uc_uuid: Optional[str] = None
 
+class EnhancementIn(BaseModel):
+    scope: str = Field(..., pattern="^(uc|run)$")
+    model_config_id: int
+    run_id: Optional[str] = None
+    uc_uuid: Optional[str] = None
+
 
 @app.get("/api/uc-assist/status")
 async def uc_assist_status():
@@ -2617,4 +2623,92 @@ async def get_arch_review_prompt(
             user_prompt = _ar._build_run_prompt(run_id, uc_analyses)
             system_prompt = _ar._RUN_SYSTEM
 
+    return {"system_prompt": system_prompt, "user_prompt": user_prompt}
+
+
+# ── Enhancement planning ──────────────────────────────────────────────────────
+
+async def _enhancement_prompts(scope: str, run_id: str, uc_uuid: Optional[str], conn):
+    """Shared DB logic for both the streaming and prompt-export endpoints."""
+    from . import arch_review as _ar
+    if scope == "uc":
+        if not uc_uuid:
+            raise HTTPException(400, "uc_uuid required for UC scope")
+        analysis = await conn.fetchrow(
+            "SELECT * FROM uc_analyses WHERE run_id=$1 AND uc_uuid=$2", run_id, uc_uuid
+        )
+        if not analysis:
+            raise HTTPException(404, "Analysis not found — select the run in Results to trigger ingest")
+        gaps = await conn.fetch("SELECT * FROM uc_gaps WHERE analysis_id=$1 ORDER BY id", analysis["id"])
+        uc = await conn.fetchrow(
+            "SELECT uuid, yaml_content FROM managed_use_cases WHERE uuid=$1", uc_uuid
+        )
+        return (
+            _ar._build_enhancement_prompt(
+                dict(uc) if uc else {"uuid": uc_uuid}, dict(analysis), [dict(g) for g in gaps]
+            ),
+            _ar._ENHANCEMENT_UC_SYSTEM,
+        )
+    else:
+        uc_rows = await conn.fetch(
+            "SELECT * FROM uc_analyses WHERE run_id=$1 ORDER BY uc_handle NULLS LAST", run_id
+        )
+        uc_analyses: list[dict] = []
+        for ua in uc_rows:
+            gaps = await conn.fetch("SELECT * FROM uc_gaps WHERE analysis_id=$1", ua["id"])
+            uc_analyses.append({**dict(ua), "gaps": [dict(g) for g in gaps]})
+        return _ar._build_enhancement_run_prompt(run_id, uc_analyses), _ar._ENHANCEMENT_RUN_SYSTEM
+
+
+@app.post("/api/enhancements")
+async def enhancements(payload: EnhancementIn, request: Request):
+    """Stream enhancement specifications from a configured model.
+
+    Same SSE protocol as /api/arch-review: data: {"text": "..."} chunks,
+    data: [DONE] on completion, data: {"error": "..."} on failure.
+    """
+    from . import arch_review as _ar
+
+    async with pool.acquire() as conn:
+        model_row = await conn.fetchrow(
+            "SELECT * FROM review_model_configs WHERE id=$1 AND enabled", payload.model_config_id
+        )
+        if not model_row:
+            raise HTTPException(404, "Model config not found or disabled")
+        if not payload.run_id:
+            raise HTTPException(400, "run_id required")
+        user_prompt, system_prompt = await _enhancement_prompts(
+            payload.scope, payload.run_id, payload.uc_uuid, conn
+        )
+
+    model = dict(model_row)
+
+    async def _gen():
+        try:
+            async for chunk in _ar.stream_review(
+                provider=model["provider"],
+                endpoint_url=model["endpoint_url"],
+                model_id=model["model_id"],
+                api_key=model["api_key"],
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            ):
+                yield f"data: {json.dumps({'text': chunk})}\n\n"
+        except Exception as exc:
+            log.exception("enhancement stream error")
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+@app.get("/api/enhancements/prompt")
+async def get_enhancement_prompt(
+    scope: str = Query(..., pattern="^(uc|run)$"),
+    run_id: str = Query(...),
+    uc_uuid: Optional[str] = Query(None),
+):
+    """Return system + user prompts for enhancement planning without calling any model."""
+    async with pool.acquire() as conn:
+        user_prompt, system_prompt = await _enhancement_prompts(scope, run_id, uc_uuid, conn)
     return {"system_prompt": system_prompt, "user_prompt": user_prompt}
