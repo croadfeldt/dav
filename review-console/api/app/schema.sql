@@ -267,6 +267,24 @@ CREATE TABLE IF NOT EXISTS uc_assist_config (
   CONSTRAINT uc_assist_single_row CHECK (id = 1)
 );
 
+-- ── Code repository configs ─────────────────────────────────────────────────
+-- User-registered git repos for branch + PR/MR creation from enhancement findings.
+-- token stored at rest; masked ('••••••••') on GET responses.
+
+CREATE TABLE IF NOT EXISTS code_repo_configs (
+  id              BIGSERIAL PRIMARY KEY,
+  name            TEXT NOT NULL,
+  provider        TEXT NOT NULL CHECK (provider IN ('github', 'gitlab')),
+  repo_url        TEXT NOT NULL,
+  default_branch  TEXT NOT NULL DEFAULT 'main',
+  token           TEXT NOT NULL DEFAULT '',
+  enabled         BOOLEAN NOT NULL DEFAULT true,
+  created_by      TEXT NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_code_repos_name ON code_repo_configs(lower(name));
+
 -- ── Seed MCP servers ───────────────────────────────────────────────────────
 -- Idempotent: ON CONFLICT DO NOTHING skips rows that already exist by name.
 INSERT INTO mcp_server_configs (name, description, sse_url, enabled, created_by) VALUES

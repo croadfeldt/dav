@@ -788,6 +788,7 @@
       <div class="config-nav-group">
         <div class="config-nav-cat" data-target="cfgSec-integrations">Integrations</div>
         <a class="config-nav-link" data-target="configMCPPanel">MCP servers</a>
+        <a class="config-nav-link" data-target="configCodeReposPanel">Code repositories</a>
       </div>
     </nav>
 
@@ -1026,6 +1027,50 @@
         </div>
       </div>
 
+      <div class="cfg-card panel-card" id="configCodeReposPanel">
+        <div class="panel-card-header" style="justify-content:space-between;">
+          <div>
+            <div class="pc-title">Code repositories</div>
+            <div class="pc-sub">Git repos for branch + PR/MR creation from enhancement findings</div>
+          </div>
+          <button class="btn ghost btn-sm" id="addCodeRepoBtn">+ Add repo</button>
+        </div>
+        <div id="codeRepoList" style="min-height:32px;"></div>
+      </div>
+
+      <div id="codeRepoFormCard" class="cfg-card panel-card" style="display:none;">
+        <div class="panel-card-header">
+          <div class="pc-title" id="codeRepoFormTitle">Add repository</div>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
+            <div class="form-field"><label>Name</label>
+              <input id="crfName" placeholder="e.g. dav-upstream" /></div>
+            <div class="form-field"><label>Provider</label>
+              <select id="crfProvider">
+                <option value="github">GitHub</option>
+                <option value="gitlab">GitLab</option>
+              </select></div>
+            <div class="form-field"><label>Repo URL</label>
+              <input id="crfUrl" placeholder="https://github.com/owner/repo" /></div>
+            <div class="form-field"><label>Default branch</label>
+              <input id="crfBranch" placeholder="main" /></div>
+            <div class="form-field"><label>Token <span style="color:var(--text-faint);font-weight:400;">(blank = keep existing)</span></label>
+              <input id="crfToken" type="password" placeholder="ghp_… or glpat-…" /></div>
+            <div class="form-field" style="display:flex;flex-direction:column;gap:8px;justify-content:flex-end;">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+                <input type="checkbox" id="crfEnabled" checked /> Enabled
+              </label>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+            <button class="btn primary" id="saveCodeRepoBtn">Save</button>
+            <button class="btn ghost" id="cancelCodeRepoBtn">Cancel</button>
+            <span id="codeRepoFormMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+        </div>
+      </div>
+
     </div><!-- /config-content -->
   </div><!-- /config-layout -->
 </section>
@@ -1033,7 +1078,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.9.3</span>
+  <span>DAV Console · v0.9.5</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -1453,6 +1498,30 @@
       <div id="enhancePromptHint" style="display:none;font-size:10px;color:var(--green);margin-top:2px;">Prompt copied — paste into Claude Code or claude.ai chat</div>
       <div id="enhanceStatus" style="font-size:11px;color:var(--text-faint);display:none;"></div>
       <div id="enhanceStream" class="arch-review-stream" style="display:none;"></div>
+      <div style="display:none;align-items:center;gap:8px;margin-top:2px;" id="enhanceNextRow">
+        <span style="font-size:11px;color:var(--text-faint);">Spec complete —</span>
+        <button class="btn ghost btn-sm" id="enhanceToPrBtn">Create PR →</button>
+      </div>
+      <div id="enhancePrPanel" style="display:none;border:1px solid var(--border);border-radius:4px;padding:12px;margin-top:4px;flex-direction:column;gap:8px;">
+        <div style="font-size:11px;font-weight:600;color:var(--text-dim);">Create pull request / merge request</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;">
+          <div class="form-field"><label style="font-size:10px;">Repository</label>
+            <select id="prRepoSel"></select></div>
+          <div class="form-field"><label style="font-size:10px;">Base branch</label>
+            <input id="prBaseBranch" placeholder="main" /></div>
+          <div class="form-field"><label style="font-size:10px;">New branch</label>
+            <input id="prBranch" /></div>
+          <div class="form-field"><label style="font-size:10px;">File path</label>
+            <input id="prFilePath" placeholder="enhancements/uc-handle.md" /></div>
+          <div class="form-field" style="grid-column:1/-1;"><label style="font-size:10px;">PR title</label>
+            <input id="prTitle" /></div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button class="btn ghost btn-sm" id="prCopyDescBtn">⧉ Copy PR description</button>
+          <button class="btn primary btn-sm" id="prCreateBtn">Push branch + open PR</button>
+          <span id="prMsg" style="font-size:11px;color:var(--text-faint);"></span>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -4996,6 +5065,9 @@ function openEnhance(defaultScope, ucUuid) {
   document.getElementById('enhanceCopyBtn').style.display = 'none';
   document.getElementById('enhanceReasoningBtn').style.display = 'none';
   document.getElementById('enhancePromptHint').style.display = 'none';
+  document.getElementById('enhanceNextRow').style.display = 'none';
+  document.getElementById('enhancePrPanel').style.display = 'none';
+  document.getElementById('prMsg').textContent = '';
   document.getElementById('enhanceModal').classList.add('open');
 }
 
@@ -5037,7 +5109,7 @@ document.getElementById('enhanceRunBtn').addEventListener('click', async () => {
     copyBtn:      document.getElementById('enhanceCopyBtn'),
     runBtn:       document.getElementById('enhanceRunBtn'),
     reasoningBtn: document.getElementById('enhanceReasoningBtn'),
-    nextRow:      null,
+    nextRow:      document.getElementById('enhanceNextRow'),
     rawHolder:    _enhanceRaw,
     showReasoningKey: 'enhanceShowReasoning',
   });
@@ -5272,11 +5344,205 @@ document.getElementById('saveUCAssistBtn').addEventListener('click', async () =>
   }
 });
 
+// ── Code Repositories ────────────────────────────────────────────────────────
+
+let _codeRepos = [];
+let _codeRepoEditId = null;
+
+async function loadCodeRepos() {
+  try { _codeRepos = await api('/api/code-repos'); } catch { _codeRepos = []; }
+  renderCodeRepoList();
+}
+
+function renderCodeRepoList() {
+  const el = document.getElementById('codeRepoList');
+  if (!el) return;
+  if (!_codeRepos.length) {
+    el.innerHTML = '<div style="padding:12px 16px;font-size:11px;color:var(--text-faint);">No repositories configured.</div>';
+    return;
+  }
+  el.innerHTML = _codeRepos.map(r => `
+    <div class="mcp-row" data-id="${r.id}">
+      <span class="mcp-name">${esc(r.name)}</span>
+      <span class="mcp-url" title="${esc(r.repo_url)}">${esc(r.repo_url)}</span>
+      <span style="font-size:10px;color:var(--text-faint);flex-shrink:0;">${esc(r.provider)} · ${esc(r.default_branch)}</span>
+      ${r.token ? '<span style="font-size:9px;color:var(--ok);border:1px solid var(--border);padding:1px 5px;border-radius:2px;">token set</span>' : '<span style="font-size:9px;color:var(--error);border:1px solid var(--border);padding:1px 5px;border-radius:2px;">no token</span>'}
+      ${!r.enabled ? '<span style="font-size:9px;color:var(--text-faint);border:1px solid var(--border);padding:1px 5px;border-radius:2px;">disabled</span>' : ''}
+      <span class="mcp-actions">
+        <button class="btn ghost btn-icon" style="font-size:10px;" onclick="openCodeRepoForm(${r.id})">Edit</button>
+        <button class="btn ghost btn-icon" style="font-size:10px;color:var(--error);" onclick="deleteCodeRepo(${r.id})">✕</button>
+      </span>
+    </div>`).join('');
+}
+
+function openCodeRepoForm(id) {
+  _codeRepoEditId = id || null;
+  const r = id ? _codeRepos.find(x => x.id === id) : null;
+  document.getElementById('codeRepoFormTitle').textContent = r ? 'Edit repository' : 'Add repository';
+  document.getElementById('crfName').value = r ? r.name : '';
+  document.getElementById('crfProvider').value = r ? r.provider : 'github';
+  document.getElementById('crfUrl').value = r ? r.repo_url : '';
+  document.getElementById('crfBranch').value = r ? r.default_branch : 'main';
+  document.getElementById('crfToken').value = '';
+  document.getElementById('crfEnabled').checked = r ? r.enabled : true;
+  document.getElementById('codeRepoFormMsg').textContent = '';
+  document.getElementById('codeRepoFormCard').style.display = '';
+  document.getElementById('crfName').focus();
+}
+
+async function deleteCodeRepo(id) {
+  const r = _codeRepos.find(x => x.id === id);
+  if (!r || !confirm(`Remove "${r.name}"?`)) return;
+  try {
+    await api(`/api/code-repos/${id}`, { method: 'DELETE' });
+    _codeRepos = _codeRepos.filter(x => x.id !== id);
+    renderCodeRepoList();
+  } catch (e) { toast('Delete failed: ' + e.message, true); }
+}
+
+document.getElementById('addCodeRepoBtn').addEventListener('click', () => openCodeRepoForm(null));
+document.getElementById('cancelCodeRepoBtn').addEventListener('click', () => {
+  document.getElementById('codeRepoFormCard').style.display = 'none';
+  _codeRepoEditId = null;
+});
+
+document.getElementById('saveCodeRepoBtn').addEventListener('click', async () => {
+  const msgEl = document.getElementById('codeRepoFormMsg');
+  const payload = {
+    name: document.getElementById('crfName').value.trim(),
+    provider: document.getElementById('crfProvider').value,
+    repo_url: document.getElementById('crfUrl').value.trim(),
+    default_branch: document.getElementById('crfBranch').value.trim() || 'main',
+    token: document.getElementById('crfToken').value,
+    enabled: document.getElementById('crfEnabled').checked,
+  };
+  if (!payload.name || !payload.repo_url) {
+    msgEl.textContent = 'Name and repo URL are required.';
+    msgEl.style.color = 'var(--error)';
+    return;
+  }
+  msgEl.textContent = 'Saving…'; msgEl.style.color = 'var(--text-faint)';
+  try {
+    if (_codeRepoEditId) {
+      const updated = await api(`/api/code-repos/${_codeRepoEditId}`, { method: 'PUT', body: JSON.stringify(payload) });
+      _codeRepos = _codeRepos.map(r => r.id === _codeRepoEditId ? updated : r);
+    } else {
+      const created = await api('/api/code-repos', { method: 'POST', body: JSON.stringify(payload) });
+      _codeRepos.push(created);
+    }
+    renderCodeRepoList();
+    document.getElementById('codeRepoFormCard').style.display = 'none';
+    _codeRepoEditId = null;
+  } catch (e) {
+    msgEl.textContent = `Save failed: ${e.message}`;
+    msgEl.style.color = 'var(--error)';
+  }
+});
+
+// ── PR / MR Creation ──────────────────────────────────────────────────────────
+
+function _prRepoChanged() {
+  const sel = document.getElementById('prRepoSel');
+  const opt = sel.selectedOptions[0];
+  if (opt && opt.dataset.branch) {
+    document.getElementById('prBaseBranch').value = opt.dataset.branch;
+  }
+}
+
+async function _openPrPanel() {
+  const panel = document.getElementById('enhancePrPanel');
+  const msgEl = document.getElementById('prMsg');
+  msgEl.textContent = '';
+
+  // Ensure repos are loaded
+  if (!_codeRepos.length) {
+    try { _codeRepos = await api('/api/code-repos'); } catch {}
+  }
+  const enabled = _codeRepos.filter(r => r.enabled);
+  const sel = document.getElementById('prRepoSel');
+  if (!enabled.length) {
+    sel.innerHTML = '<option value="">No repos configured — add one in Config</option>';
+  } else {
+    sel.innerHTML = enabled.map(r =>
+      `<option value="${r.id}" data-branch="${esc(r.default_branch)}">${esc(r.name)} (${esc(r.provider)})</option>`
+    ).join('');
+    _prRepoChanged();
+  }
+
+  const scope  = document.getElementById('enhanceScopeSel').value;
+  const runId  = _enhanceCtx.runId;
+  const ucUuid = _enhanceCtx.ucUuid;
+  try {
+    let url = `/api/pr/preview?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
+    if (scope === 'uc' && ucUuid) url += `&uc_uuid=${encodeURIComponent(ucUuid)}`;
+    const preview = await api(url);
+    document.getElementById('prBranch').value = preview.branch;
+    document.getElementById('prTitle').value = preview.title;
+    document.getElementById('prFilePath').value = preview.file_path;
+    panel._gapContext = preview.gap_context;
+  } catch (e) {
+    msgEl.textContent = 'Preview load failed: ' + e.message;
+    msgEl.style.color = 'var(--error)';
+    panel._gapContext = '';
+  }
+
+  panel.style.display = 'flex';
+}
+
+document.getElementById('enhanceToPrBtn').addEventListener('click', _openPrPanel);
+document.getElementById('prRepoSel').addEventListener('change', _prRepoChanged);
+
+document.getElementById('prCopyDescBtn').addEventListener('click', () => {
+  const panel = document.getElementById('enhancePrPanel');
+  const gapCtx = panel._gapContext || '';
+  const enhText = _stripThink(_enhanceRaw.text);
+  const branch  = document.getElementById('prBranch').value;
+  const filePath = document.getElementById('prFilePath').value;
+  let body = `**Branch:** \`${branch}\`  \n**File:** \`${filePath}\`\n\n---\n\n` + gapCtx;
+  if (enhText) body += '\n\n## Enhancement specification\n\n' + enhText;
+  body += '\n\n---\n*Generated by DAV Console*';
+  navigator.clipboard.writeText(body)
+    .then(() => toast('PR description copied'))
+    .catch(() => toast('Copy failed — check browser permissions', true));
+});
+
+document.getElementById('prCreateBtn').addEventListener('click', async () => {
+  const repoId = parseInt(document.getElementById('prRepoSel').value, 10);
+  if (!repoId) { toast('Select a repository first'); return; }
+  const msgEl = document.getElementById('prMsg');
+  const btn   = document.getElementById('prCreateBtn');
+  const payload = {
+    repo_config_id: repoId,
+    run_id:         _enhanceCtx.runId,
+    uc_uuid:        _enhanceCtx.ucUuid || null,
+    scope:          document.getElementById('enhanceScopeSel').value,
+    branch:         document.getElementById('prBranch').value.trim(),
+    title:          document.getElementById('prTitle').value.trim(),
+    base_branch:    document.getElementById('prBaseBranch').value.trim() || null,
+    file_path:      document.getElementById('prFilePath').value.trim(),
+    enhancement_text: _stripThink(_enhanceRaw.text),
+  };
+  if (!payload.branch || !payload.title) { toast('Branch and title are required'); return; }
+  btn.disabled = true;
+  msgEl.textContent = 'Creating…'; msgEl.style.color = 'var(--text-faint)';
+  try {
+    const result = await api('/api/pr/create', { method: 'POST', body: JSON.stringify(payload) });
+    msgEl.textContent = '✓ PR created';
+    msgEl.style.color = 'var(--ok)';
+    if (result.pr_url) window.open(result.pr_url, '_blank');
+  } catch (e) {
+    msgEl.textContent = 'Failed: ' + e.message;
+    msgEl.style.color = 'var(--error)';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // ── Config nav: scroll-spy + click-to-scroll ─────────────────────────────────
 let _configNavReady = false;
 const _cfgPanelIds = [
   'configSpecPanel','configCorpusPanel','configInferencePanel',
-  'configModelsPanel','configUCAssistPanel','configMCPPanel',
+  'configModelsPanel','configUCAssistPanel','configMCPPanel','configCodeReposPanel',
 ];
 
 function _updateConfigNavActive() {
@@ -5318,6 +5584,7 @@ document.querySelectorAll('nav.tabs button').forEach(b => {
       renderModelList();
       await loadUCAssistConfig();
       await loadMCPServers();
+      await loadCodeRepos();
       setupConfigNav();
     });
   }

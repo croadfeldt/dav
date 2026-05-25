@@ -189,7 +189,7 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
 
 
-app = FastAPI(title="DAV Console API", version="0.8.3", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.9.5", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -912,6 +912,25 @@ class EnhancementIn(BaseModel):
     model_config_id: int
     run_id: Optional[str] = None
     uc_uuid: Optional[str] = None
+
+class CodeRepoIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    provider: str = Field(..., pattern="^(github|gitlab)$")
+    repo_url: str = Field(..., min_length=1, max_length=512)
+    default_branch: str = Field("main", max_length=256)
+    token: str = Field("", max_length=512)
+    enabled: bool = True
+
+class PrCreateIn(BaseModel):
+    repo_config_id: int
+    run_id: str
+    uc_uuid: Optional[str] = None
+    scope: str = Field("uc", pattern="^(uc|run)$")
+    branch: str = Field(..., min_length=1, max_length=256)
+    title: str = Field(..., min_length=1, max_length=512)
+    base_branch: Optional[str] = None
+    file_path: str = Field(..., min_length=1, max_length=512)
+    enhancement_text: str = ""
 
 
 @app.get("/api/uc-assist/status")
@@ -2712,3 +2731,346 @@ async def get_enhancement_prompt(
     async with pool.acquire() as conn:
         user_prompt, system_prompt = await _enhancement_prompts(scope, run_id, uc_uuid, conn)
     return {"system_prompt": system_prompt, "user_prompt": user_prompt}
+
+
+# ========================= CODE REPOSITORIES =========================
+
+
+@app.get("/api/code-repos")
+async def list_code_repos():
+    """List configured code repos; token is masked."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, name, provider, repo_url, default_branch,
+                      CASE WHEN token != '' THEN '••••••••' ELSE '' END AS token,
+                      enabled, created_by, created_at, updated_at
+               FROM code_repo_configs ORDER BY created_at"""
+        )
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/code-repos", status_code=201)
+async def create_code_repo(payload: CodeRepoIn, request: Request):
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        try:
+            row = await conn.fetchrow(
+                """INSERT INTO code_repo_configs
+                     (name, provider, repo_url, default_branch, token, enabled, created_by)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7)
+                   RETURNING id, name, provider, repo_url, default_branch,
+                             CASE WHEN token != '' THEN '••••••••' ELSE '' END AS token,
+                             enabled, created_by, created_at""",
+                payload.name, payload.provider, payload.repo_url,
+                payload.default_branch, payload.token, payload.enabled, user,
+            )
+        except Exception as e:
+            if "unique" in str(e).lower():
+                raise HTTPException(409, f"A repo named '{payload.name}' already exists")
+            raise HTTPException(500, str(e))
+    return dict(row)
+
+
+@app.put("/api/code-repos/{rid}")
+async def update_code_repo(rid: int, payload: CodeRepoIn, request: Request):
+    get_user(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE code_repo_configs
+               SET name=$1, provider=$2, repo_url=$3, default_branch=$4,
+                   token = CASE WHEN $5 != '' THEN $5 ELSE token END,
+                   enabled=$6, updated_at=now()
+               WHERE id=$7 RETURNING id""",
+            payload.name, payload.provider, payload.repo_url,
+            payload.default_branch, payload.token, payload.enabled, rid,
+        )
+    if not row:
+        raise HTTPException(404, "Code repo not found")
+    return {"ok": True}
+
+
+@app.delete("/api/code-repos/{rid}", status_code=204)
+async def delete_code_repo(rid: int, request: Request):
+    get_user(request)
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM code_repo_configs WHERE id=$1", rid)
+    return Response(status_code=204)
+
+
+# ========================= PR / MR CREATION =========================
+
+
+def _slugify_handle(handle: str) -> str:
+    h = unicodedata.normalize("NFKD", handle)
+    h = h.encode("ascii", "ignore").decode("ascii")
+    h = re.sub(r"[^\w-]", "-", h).strip("-")
+    h = re.sub(r"-+", "-", h)
+    return h.lower() or "unknown"
+
+
+async def _pr_gap_context(scope: str, run_id: str, uc_uuid: Optional[str], conn) -> dict:
+    """Build PR metadata (title, branch, file_path, gap_context) from gap DB rows."""
+    import base64 as _b64
+
+    if scope == "uc":
+        if not uc_uuid:
+            raise HTTPException(400, "uc_uuid required for uc scope")
+        ana = await conn.fetchrow(
+            "SELECT uc_handle, verdict, overall_assessment FROM uc_analyses WHERE run_id=$1 AND uc_uuid=$2",
+            run_id, uc_uuid,
+        )
+        if not ana:
+            raise HTTPException(404, "Analysis not found for this run+UC")
+        handle = ana["uc_handle"] or uc_uuid
+        verdict = ana["verdict"] or "unknown"
+        gaps = await conn.fetch(
+            "SELECT gap_id, title, description, severity FROM uc_gaps WHERE run_id=$1 AND uc_uuid=$2 ORDER BY id",
+            run_id, uc_uuid,
+        )
+        slug = _slugify_handle(handle)
+        title = f"gap({handle}): address {len(gaps)} coverage gap(s)"
+        branch = f"gap/{slug}"
+        file_path = f"enhancements/{slug}.md"
+
+        lines = [
+            "## Context\n",
+            f"**Run:** `{run_id}`  ",
+            f"**Use case:** `{handle}`  ",
+            f"**Verdict:** {verdict}  ",
+            "",
+            "## Gaps addressed\n",
+        ]
+        for g in gaps:
+            sev = g["severity"] or ""
+            try:
+                import json as _j
+                sev_obj = _j.loads(sev) if sev.startswith("{") else {}
+                sev_label = sev_obj.get("label") or sev_obj.get("band") or sev
+            except Exception:
+                sev_label = sev
+            lines.append(f"- **[{g['gap_id'] or '?'}]** {g['title'] or ''} *(severity: {sev_label})*")
+            if g["description"]:
+                lines.append(f"  > {g['description'][:300]}")
+    else:
+        # Run scope
+        uc_rows = await conn.fetch(
+            "SELECT DISTINCT uc_uuid, uc_handle, verdict FROM uc_analyses WHERE run_id=$1 ORDER BY uc_handle",
+            run_id,
+        )
+        gap_rows = await conn.fetch(
+            "SELECT uc_uuid, gap_id, title, description, severity FROM uc_gaps WHERE run_id=$1 ORDER BY uc_uuid, id",
+            run_id,
+        )
+        title = f"gap(run/{run_id}): cross-cutting enhancements"
+        branch = f"gap/run-{_slugify_handle(run_id)}"
+        file_path = f"enhancements/run-{_slugify_handle(run_id)}.md"
+        handle = run_id
+        verdict = f"{len(uc_rows)} UCs"
+
+        lines = [
+            "## Context\n",
+            f"**Run:** `{run_id}`  ",
+            f"**Use cases:** {len(uc_rows)}  ",
+            f"**Total gaps:** {len(gap_rows)}  ",
+            "",
+            "## Gaps addressed\n",
+        ]
+        by_uc = {}
+        for g in gap_rows:
+            by_uc.setdefault(g["uc_uuid"], []).append(g)
+        for u in uc_rows:
+            uc_gaps = by_uc.get(u["uc_uuid"], [])
+            if not uc_gaps:
+                continue
+            lines.append(f"\n### {u['uc_handle'] or u['uc_uuid']} — {u['verdict'] or 'unknown'}\n")
+            for g in uc_gaps:
+                lines.append(f"- **[{g['gap_id'] or '?'}]** {g['title'] or ''}")
+
+    gap_context = "\n".join(lines)
+    return {"title": title, "branch": branch, "file_path": file_path, "gap_context": gap_context}
+
+
+@app.get("/api/pr/preview")
+async def pr_preview(
+    scope: str = Query(..., pattern="^(uc|run)$"),
+    run_id: str = Query(...),
+    uc_uuid: Optional[str] = Query(None),
+):
+    """Return PR metadata (title, branch, file_path, gap_context) without touching any remote."""
+    async with pool.acquire() as conn:
+        return await _pr_gap_context(scope, run_id, uc_uuid, conn)
+
+
+def _parse_repo_url(provider: str, repo_url: str) -> tuple[str, str]:
+    """Return (api_base, repo_path) from a GitHub/GitLab repo URL.
+
+    GitHub: https://github.com/owner/repo → ('https://api.github.com', 'owner/repo')
+    GitLab: https://gitlab.com/group/repo → ('https://gitlab.com', 'group/repo')
+            or self-hosted: https://gitlab.example.com/group/repo
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(repo_url.rstrip("/").removesuffix(".git"))
+    path = parsed.path.lstrip("/")
+    if provider == "github":
+        return "https://api.github.com", path
+    else:
+        # GitLab: API lives at same host
+        return f"{parsed.scheme}://{parsed.netloc}", path
+
+
+async def _github_create_pr(
+    token: str, repo_url: str, base_branch: str,
+    branch: str, title: str, body: str, file_path: str, file_content: str,
+    timeout: float = 30.0,
+) -> str:
+    api_base, repo_path = _parse_repo_url("github", repo_url)
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "Content-Type": "application/json",
+    }
+    import base64 as _b64
+    async with httpx.AsyncClient(timeout=timeout) as cx:
+        # 1. Get base branch SHA
+        r = await cx.get(f"{api_base}/repos/{repo_path}/git/ref/heads/{base_branch}", headers=headers)
+        if r.status_code != 200:
+            raise HTTPException(502, f"GitHub: could not read base branch '{base_branch}': {r.text[:200]}")
+        sha = r.json()["object"]["sha"]
+
+        # 2. Create branch
+        r = await cx.post(f"{api_base}/repos/{repo_path}/git/refs", headers=headers, json={
+            "ref": f"refs/heads/{branch}", "sha": sha,
+        })
+        if r.status_code not in (201, 422):  # 422 = branch already exists
+            raise HTTPException(502, f"GitHub: branch creation failed: {r.text[:200]}")
+
+        # 3. Create/update file
+        encoded = _b64.b64encode(file_content.encode()).decode()
+        r = await cx.put(
+            f"{api_base}/repos/{repo_path}/contents/{file_path}", headers=headers,
+            json={"message": title, "content": encoded, "branch": branch},
+        )
+        if r.status_code not in (200, 201):
+            raise HTTPException(502, f"GitHub: file creation failed: {r.text[:200]}")
+
+        # 4. Create PR
+        r = await cx.post(f"{api_base}/repos/{repo_path}/pulls", headers=headers, json={
+            "title": title, "body": body, "head": branch, "base": base_branch,
+        })
+        if r.status_code not in (200, 201):
+            raise HTTPException(502, f"GitHub: PR creation failed: {r.text[:200]}")
+        return r.json()["html_url"]
+
+
+async def _gitlab_create_mr(
+    token: str, repo_url: str, base_branch: str,
+    branch: str, title: str, body: str, file_path: str, file_content: str,
+    timeout: float = 30.0,
+) -> str:
+    from urllib.parse import quote
+    import base64 as _b64
+    api_base, repo_path = _parse_repo_url("gitlab", repo_url)
+    encoded_path = quote(repo_path, safe="")
+    headers = {"PRIVATE-TOKEN": token, "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=timeout) as cx:
+        # 1. Create branch
+        r = await cx.post(
+            f"{api_base}/api/v4/projects/{encoded_path}/repository/branches",
+            headers=headers,
+            params={"branch": branch, "ref": base_branch},
+        )
+        if r.status_code not in (200, 201):
+            raise HTTPException(502, f"GitLab: branch creation failed: {r.text[:200]}")
+
+        # 2. Create file
+        encoded_file = quote(file_path, safe="")
+        r = await cx.post(
+            f"{api_base}/api/v4/projects/{encoded_path}/repository/files/{encoded_file}",
+            headers=headers,
+            json={
+                "branch": branch,
+                "content": file_content,
+                "commit_message": title,
+                "encoding": "text",
+            },
+        )
+        if r.status_code not in (200, 201):
+            raise HTTPException(502, f"GitLab: file creation failed: {r.text[:200]}")
+
+        # 3. Create MR
+        r = await cx.post(
+            f"{api_base}/api/v4/projects/{encoded_path}/merge_requests",
+            headers=headers,
+            json={
+                "source_branch": branch,
+                "target_branch": base_branch,
+                "title": title,
+                "description": body,
+                "remove_source_branch": True,
+            },
+        )
+        if r.status_code not in (200, 201):
+            raise HTTPException(502, f"GitLab: MR creation failed: {r.text[:200]}")
+        return r.json()["web_url"]
+
+
+@app.post("/api/pr/create")
+async def pr_create(payload: PrCreateIn, request: Request):
+    """Push a branch with the enhancement spec and open a PR/MR."""
+    get_user(request)
+    async with pool.acquire() as conn:
+        repo_row = await conn.fetchrow(
+            "SELECT provider, repo_url, default_branch, token, enabled FROM code_repo_configs WHERE id=$1",
+            payload.repo_config_id,
+        )
+        if not repo_row:
+            raise HTTPException(404, "Code repo config not found")
+        if not repo_row["enabled"]:
+            raise HTTPException(400, "Code repo is disabled")
+        if not repo_row["token"]:
+            raise HTTPException(400, "No token configured for this repo")
+
+        ctx = await _pr_gap_context(payload.scope, payload.run_id, payload.uc_uuid, conn)
+
+    gap_context = ctx["gap_context"]
+    enh = payload.enhancement_text.strip()
+    pr_body = gap_context
+    if enh:
+        pr_body += "\n\n## Enhancement specification\n\n" + enh
+    pr_body += "\n\n---\n*Generated by DAV Console*"
+
+    file_content = f"# {payload.title}\n\n{pr_body}"
+    base_branch = payload.base_branch or repo_row["default_branch"]
+    provider = repo_row["provider"]
+
+    try:
+        if provider == "github":
+            pr_url = await _github_create_pr(
+                token=repo_row["token"],
+                repo_url=repo_row["repo_url"],
+                base_branch=base_branch,
+                branch=payload.branch,
+                title=payload.title,
+                body=pr_body,
+                file_path=payload.file_path,
+                file_content=file_content,
+            )
+        else:
+            pr_url = await _gitlab_create_mr(
+                token=repo_row["token"],
+                repo_url=repo_row["repo_url"],
+                base_branch=base_branch,
+                branch=payload.branch,
+                title=payload.title,
+                body=pr_body,
+                file_path=payload.file_path,
+                file_content=file_content,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("pr_create failed")
+        raise HTTPException(502, f"Remote API error: {e}")
+
+    return {"pr_url": pr_url}
