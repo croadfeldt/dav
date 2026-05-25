@@ -477,9 +477,19 @@
   .section-sep { border:none; border-top:1px solid var(--border); margin:4px 0; }
   .modal-banner { background:var(--accent-bg); border:1px solid var(--accent-soft); border-radius:2px; padding:8px 12px; font-size:12px; color:var(--accent); }
 
-  /* ── Arch Review modal ── */
-  .arch-review-stream { flex:1; min-height:260px; max-height:52vh; overflow-y:auto; background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:14px 16px; font-size:13px; font-family:var(--serif); line-height:1.75; white-space:pre-wrap; word-break:break-word; color:var(--text); }
+  /* ── Arch-review / enhancement stream ── */
+  .arch-review-stream { flex:1; min-height:220px; max-height:46vh; overflow-y:auto; background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:14px 16px; font-size:13px; font-family:var(--serif); line-height:1.75; white-space:pre-wrap; word-break:break-word; color:var(--text); }
   .arch-review-stream.streaming { border-color:var(--accent-soft); }
+  /* ── Drawer tab strip ── */
+  .rd-tab-strip { display:flex; border-bottom:1px solid var(--border); padding:0 20px; background:var(--bg-raised); flex-shrink:0; }
+  .rd-tab { background:none; border:none; border-bottom:2px solid transparent; padding:7px 14px; font-size:12px; color:var(--text-dim); cursor:pointer; margin-bottom:-1px; }
+  .rd-tab:hover { color:var(--text); }
+  .rd-tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+  /* ── Review & Plan drawer sections ── */
+  .rd-review-section { padding:18px 0; border-bottom:1px solid var(--border); }
+  .rd-review-section:last-child { border-bottom:none; }
+  .rd-review-section-title { font-size:13px; font-weight:600; color:var(--text); margin-bottom:4px; }
+  .rd-review-section-sub { font-size:11px; color:var(--text-dim); margin-bottom:10px; }
   .model-manager-row { display:flex; align-items:center; gap:10px; padding:9px 16px; border-bottom:1px solid var(--border); font-size:12px; }
   .model-manager-row:last-child { border-bottom:none; }
   .model-pill { font-size:9px; padding:2px 7px; border-radius:10px; border:1px solid var(--border); text-transform:uppercase; letter-spacing:0.08em; }
@@ -1078,7 +1088,7 @@
 </main>
 
 <footer>
-  <span>DAV Console · v0.9.5</span>
+  <span>DAV Console · v0.9.6</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -1104,12 +1114,14 @@
           <button class="dropdown-item" id="rdLayoutMakeDefault" style="font-size:10px;color:var(--text-faint);">set current as default</button>
         </div>
       </div>
-      <button class="btn ghost btn-sm" id="rdArchReviewBtn" title="Architectural review of this run's findings">Arch Review</button>
-      <button class="btn ghost btn-sm" id="rdEnhanceBtn" title="Plan enhancements for this run's findings">Enhancements</button>
       <button class="btn ghost btn-icon" id="rdClose">✕</button>
     </div>
   </div>
-  <div class="run-drawer-body">
+  <div class="rd-tab-strip">
+    <button class="rd-tab active" id="rdTabRun">Run</button>
+    <button class="rd-tab" id="rdTabReview">Review &amp; Plan</button>
+  </div>
+  <div class="run-drawer-body" id="rdRunBody">
     <div class="run-section" id="rdSessionSection" style="display:none;">
       <div class="run-section-title">Session</div>
       <div id="rdSession" class="kv-grid" style="font-size:11px"></div>
@@ -1168,6 +1180,81 @@
       <div id="rdParams" class="kv-grid" style="font-size:11px"></div>
     </div>
   </div>
+
+  <!-- ══ Review & Plan body ══ -->
+  <div class="run-drawer-body" id="rdReviewBody" style="display:none;">
+
+    <!-- ── Architectural Review ── -->
+    <div class="rd-review-section">
+      <div class="rd-review-section-title">Architectural Review</div>
+      <div class="rd-review-section-sub" id="rdRevSubtitle">—</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <select id="rdRevModelSel" style="flex:1;min-width:160px;"></select>
+        <select id="rdRevScopeSel" style="width:140px;">
+          <option value="uc">This use case</option>
+          <option value="run">Whole run</option>
+        </select>
+        <button class="btn primary btn-sm" id="rdRevRunBtn">Generate</button>
+        <button class="btn ghost btn-sm" id="rdRevCopyBtn" style="display:none;">⧉ Copy review</button>
+        <button class="btn ghost btn-sm" id="rdRevUseClaudeBtn">⧉ Use in Claude</button>
+        <button class="btn ghost btn-sm" id="rdRevReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
+      </div>
+      <div id="rdRevHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
+      <div id="rdRevStatus" style="font-size:11px;color:var(--text-faint);margin-top:4px;display:none;"></div>
+      <div id="rdRevStream" class="arch-review-stream" style="display:none;margin-top:8px;"></div>
+      <div id="rdRevNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
+        <span style="font-size:11px;color:var(--text-faint);">Review complete —</span>
+        <button class="btn ghost btn-sm" id="rdRevToEnhBtn">Plan enhancements →</button>
+      </div>
+    </div>
+
+    <!-- ── Enhancement Spec ── -->
+    <div class="rd-review-section" id="rdEnhSection" style="display:none;">
+      <div class="rd-review-section-title">Enhancement Spec</div>
+      <div class="rd-review-section-sub" id="rdEnhSubtitle">—</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <select id="rdEnhModelSel" style="flex:1;min-width:160px;"></select>
+        <select id="rdEnhScopeSel" style="width:140px;">
+          <option value="uc">This use case</option>
+          <option value="run">Whole run</option>
+        </select>
+        <button class="btn primary btn-sm" id="rdEnhRunBtn">Generate</button>
+        <button class="btn ghost btn-sm" id="rdEnhCopyBtn" style="display:none;">⧉ Copy spec</button>
+        <button class="btn ghost btn-sm" id="rdEnhUseClaudeBtn">⧉ Use in Claude</button>
+        <button class="btn ghost btn-sm" id="rdEnhReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
+      </div>
+      <div id="rdEnhHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
+      <div id="rdEnhStatus" style="font-size:11px;color:var(--text-faint);margin-top:4px;display:none;"></div>
+      <div id="rdEnhStream" class="arch-review-stream" style="display:none;margin-top:8px;"></div>
+      <div id="rdEnhNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
+        <span style="font-size:11px;color:var(--text-faint);">Spec complete —</span>
+        <button class="btn ghost btn-sm" id="rdEnhToPrBtn">Create PR →</button>
+      </div>
+    </div>
+
+    <!-- ── Create PR / MR ── -->
+    <div class="rd-review-section" id="rdPrSection" style="display:none;">
+      <div class="rd-review-section-title">Create pull request / merge request</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-top:10px;">
+        <div class="form-field"><label style="font-size:10px;">Repository</label>
+          <select id="rdPrRepoSel"></select></div>
+        <div class="form-field"><label style="font-size:10px;">Base branch</label>
+          <input id="rdPrBaseBranch" placeholder="main" /></div>
+        <div class="form-field"><label style="font-size:10px;">New branch</label>
+          <input id="rdPrBranch" /></div>
+        <div class="form-field"><label style="font-size:10px;">File path</label>
+          <input id="rdPrFilePath" /></div>
+        <div class="form-field" style="grid-column:1/-1;"><label style="font-size:10px;">PR title</label>
+          <input id="rdPrTitle" /></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
+        <button class="btn ghost btn-sm" id="rdPrCopyBtn">⧉ Copy PR description</button>
+        <button class="btn primary btn-sm" id="rdPrCreateBtn">Push branch + open PR</button>
+        <span id="rdPrMsg" style="font-size:11px;color:var(--text-faint);"></span>
+      </div>
+    </div>
+
+  </div><!-- /rdReviewBody -->
 </div>
 
 </div><!-- /shell -->
@@ -1442,89 +1529,6 @@
 </div>
 
 <!-- ══════════════════════════ ARCH REVIEW MODAL ══════════════════════════ -->
-<div class="modal-overlay" id="archReviewModal">
-  <div class="modal" style="width:800px;max-height:88vh;">
-    <div class="modal-header">
-      <div>
-        <div class="modal-title">Architectural Review</div>
-        <div id="archReviewSubtitle" style="font-size:11px;color:var(--text-dim);margin-top:2px;">—</div>
-      </div>
-      <button class="btn ghost btn-icon" id="closeArchReview">✕</button>
-    </div>
-    <div class="modal-body" style="gap:10px;">
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <select id="archReviewModelSel" style="flex:1;min-width:200px;"></select>
-        <select id="archReviewScopeSel" style="width:160px;">
-          <option value="uc">This use case</option>
-          <option value="run">Whole run</option>
-        </select>
-        <button class="btn primary" id="archReviewRunBtn">Generate</button>
-        <button class="btn ghost" id="archReviewCopyBtn" style="display:none;" title="Copy review text">⧉ Copy</button>
-        <button class="btn ghost" id="archReviewCopyPromptBtn" title="Copy prompt to paste into Claude Code or claude.ai">⧉ Copy prompt</button>
-        <button class="btn ghost" id="archReviewReasoningBtn" style="display:none;font-size:10px;" title="Toggle model reasoning / think blocks">○ Reasoning</button>
-      </div>
-      <div id="archReviewPromptHint" style="display:none;font-size:10px;color:var(--green);margin-top:2px;">Prompt copied — paste into Claude Code or claude.ai chat</div>
-      <div id="archReviewStatus" style="font-size:11px;color:var(--text-faint);display:none;"></div>
-      <div style="display:flex;gap:8px;align-items:center;margin-top:2px;display:none;" id="archReviewNextRow">
-        <span style="font-size:11px;color:var(--text-faint);">Review complete —</span>
-        <button class="btn ghost btn-sm" id="archReviewToEnhanceBtn">Plan enhancements →</button>
-      </div>
-      <div id="archReviewStream" class="arch-review-stream" style="display:none;"></div>
-    </div>
-  </div>
-</div>
-
-<div class="modal-overlay" id="enhanceModal">
-  <div class="modal" style="width:800px;max-height:88vh;">
-    <div class="modal-header">
-      <div>
-        <div class="modal-title">Enhancement Planning</div>
-        <div id="enhanceSubtitle" style="font-size:11px;color:var(--text-dim);margin-top:2px;">—</div>
-      </div>
-      <button class="btn ghost btn-icon" id="closeEnhance">✕</button>
-    </div>
-    <div class="modal-body" style="gap:10px;">
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <select id="enhanceModelSel" style="flex:1;min-width:200px;"></select>
-        <select id="enhanceScopeSel" style="width:160px;">
-          <option value="uc">This use case</option>
-          <option value="run">Whole run</option>
-        </select>
-        <button class="btn primary" id="enhanceRunBtn">Generate</button>
-        <button class="btn ghost" id="enhanceCopyBtn" style="display:none;" title="Copy enhancement spec text">⧉ Copy</button>
-        <button class="btn ghost" id="enhanceCopyPromptBtn" title="Copy prompt to paste into Claude Code or claude.ai">⧉ Copy prompt</button>
-        <button class="btn ghost" id="enhanceReasoningBtn" style="display:none;font-size:10px;" title="Toggle model reasoning / think blocks">○ Reasoning</button>
-      </div>
-      <div id="enhancePromptHint" style="display:none;font-size:10px;color:var(--green);margin-top:2px;">Prompt copied — paste into Claude Code or claude.ai chat</div>
-      <div id="enhanceStatus" style="font-size:11px;color:var(--text-faint);display:none;"></div>
-      <div id="enhanceStream" class="arch-review-stream" style="display:none;"></div>
-      <div style="display:none;align-items:center;gap:8px;margin-top:2px;" id="enhanceNextRow">
-        <span style="font-size:11px;color:var(--text-faint);">Spec complete —</span>
-        <button class="btn ghost btn-sm" id="enhanceToPrBtn">Create PR →</button>
-      </div>
-      <div id="enhancePrPanel" style="display:none;border:1px solid var(--border);border-radius:4px;padding:12px;margin-top:4px;flex-direction:column;gap:8px;">
-        <div style="font-size:11px;font-weight:600;color:var(--text-dim);">Create pull request / merge request</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;">
-          <div class="form-field"><label style="font-size:10px;">Repository</label>
-            <select id="prRepoSel"></select></div>
-          <div class="form-field"><label style="font-size:10px;">Base branch</label>
-            <input id="prBaseBranch" placeholder="main" /></div>
-          <div class="form-field"><label style="font-size:10px;">New branch</label>
-            <input id="prBranch" /></div>
-          <div class="form-field"><label style="font-size:10px;">File path</label>
-            <input id="prFilePath" placeholder="enhancements/uc-handle.md" /></div>
-          <div class="form-field" style="grid-column:1/-1;"><label style="font-size:10px;">PR title</label>
-            <input id="prTitle" /></div>
-        </div>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <button class="btn ghost btn-sm" id="prCopyDescBtn">⧉ Copy PR description</button>
-          <button class="btn primary btn-sm" id="prCreateBtn">Push branch + open PR</button>
-          <span id="prMsg" style="font-size:11px;color:var(--text-faint);"></span>
-        </div>
-      </div>
-    </div>
-  </div>
-</div>
 
 <div class="toast" id="toast"></div>
 
@@ -3110,8 +3114,8 @@ function renderAnalysis(data, ucUuid) {
     <button class="btn ghost btn-sm" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(ucUuid)}'),200)" title="Open this UC in the editor">✏ Edit UC</button>
     <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')" title="Open run trigger pre-filled for re-analysis">↺ Re-analyze</button>
     <button class="btn ghost btn-sm" onclick="_copyGapReport()" title="Copy gap report as markdown">⧉ Copy report</button>
-    <button class="btn ghost btn-sm" onclick="openArchReview('uc','${esc(ucUuid)}')" title="Get an architectural review of these findings">Arch Review</button>
-    <button class="btn ghost btn-sm" onclick="openEnhance('uc','${esc(ucUuid)}')" title="Plan enhancements to address these findings">Enhancements</button>
+    <button class="btn ghost btn-sm" onclick="openReviewPane('uc','${esc(ucUuid)}','review')" title="Get an architectural review of these findings">Arch Review</button>
+    <button class="btn ghost btn-sm" onclick="openReviewPane('uc','${esc(ucUuid)}','enhance')" title="Plan enhancements to address these findings">Enhancements</button>
     <span style="flex:1"></span>
     <span style="font-size:10px;color:var(--text-faint)" title="${esc(ucUuid)}">${esc(ucUuid.slice(0,8))}…</span>
   </div>`;
@@ -3234,8 +3238,8 @@ function renderExploreAnalysis(data, ucUuid) {
   actionBar.innerHTML = `<div class="analysis-action-bar">
     <button class="btn ghost btn-sm" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(ucUuid)}'),200)">✏ Edit UC</button>
     <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')">↺ Re-analyze</button>
-    <button class="btn ghost btn-sm" onclick="openArchReview('uc','${esc(ucUuid)}')" title="Get an architectural review of these findings">Arch Review</button>
-    <button class="btn ghost btn-sm" onclick="openEnhance('uc','${esc(ucUuid)}')" title="Plan enhancements to address these findings">Enhancements</button>
+    <button class="btn ghost btn-sm" onclick="openReviewPane('uc','${esc(ucUuid)}','review')" title="Get an architectural review of these findings">Arch Review</button>
+    <button class="btn ghost btn-sm" onclick="openReviewPane('uc','${esc(ucUuid)}','enhance')" title="Plan enhancements to address these findings">Enhancements</button>
     <span style="flex:1"></span>
     <span style="font-size:10px;color:var(--text-faint)" title="${esc(ucUuid)}">${esc(ucUuid.slice(0,8))}…</span>
   </div>`;
@@ -4688,7 +4692,7 @@ document.getElementById('memberSearchInput').addEventListener('blur', () => {
 });
 
 // Close modals on overlay click
-['newRunModal','ucModal','setModal','addMemberModal','lcModal','importModal','promoteModal','archReviewModal','enhanceModal'].forEach(id => {
+['newRunModal','ucModal','setModal','addMemberModal','lcModal','importModal','promoteModal'].forEach(id => {
   document.getElementById(id).addEventListener('click', e => {
     if (e.target===document.getElementById(id)) document.getElementById(id).classList.remove('open');
   });
@@ -4701,7 +4705,6 @@ wireInferencePanel();
 // ── Review Models ────────────────────────────────────────────────────────────
 
 let _reviewModels = [];   // cached from /api/models
-let _archReviewCtx = {};  // {runId, ucUuid, ucHandle}
 let _mfEditId = null;     // ID of model being edited (null = create)
 
 async function loadReviewModels() {
@@ -4730,8 +4733,8 @@ function renderModelList() {
     </div>`).join('');
 }
 
-function populateModelSelector() {
-  const sel = document.getElementById('archReviewModelSel');
+function _populateDrawerModelSel(selId, storageKey) {
+  const sel = document.getElementById(selId);
   if (!sel) return;
   const enabled = _reviewModels.filter(m => m.enabled);
   if (!enabled.length) {
@@ -4742,11 +4745,9 @@ function populateModelSelector() {
   sel.innerHTML = enabled.map(m =>
     `<option value="${m.id}">${esc(m.name)} (${m.is_local ? 'local' : 'frontier'})</option>`
   ).join('');
-  if (prev && enabled.find(m => String(m.id) === prev)) sel.value = prev;
-  else {
-    const stored = localStorage.getItem('archReviewLastModel');
-    if (stored && enabled.find(m => String(m.id) === stored)) sel.value = stored;
-  }
+  if (prev && enabled.find(m => String(m.id) === prev)) { sel.value = prev; return; }
+  const stored = localStorage.getItem(storageKey);
+  if (stored && enabled.find(m => String(m.id) === stored)) sel.value = stored;
 }
 
 document.getElementById('addModelBtn').addEventListener('click', () => {
@@ -4792,7 +4793,8 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     }
     await loadReviewModels();
     renderModelList();
-    populateModelSelector();
+    _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
+    _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
     document.getElementById('modelFormCard').style.display = 'none';
     toast(_mfEditId ? 'Model updated' : 'Model added');
   } catch(e) {
@@ -4825,84 +4827,103 @@ async function deleteModel(id, name) {
     await api(`/api/models/${id}`, { method:'DELETE' });
     await loadReviewModels();
     renderModelList();
-    populateModelSelector();
+    _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
+    _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
     toast('Model deleted');
   } catch(e) {
     toast('Delete failed: ' + e.message);
   }
 }
 
-// ── Arch Review modal ─────────────────────────────────────────────────────────
+// ── Review & Plan drawer ─────────────────────────────────────────────────────
 
-function openArchReview(defaultScope, ucUuid) {
-  _archReviewCtx = {
-    runId:   activeRunResultId || (_rdName || null),
-    ucUuid:  ucUuid || null,
-  };
-  const ucEntry = ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid) : null;
-  const ucHandle = ucEntry?.uc_handle || ucUuid || '—';
-  const runLabel = _archReviewCtx.runId || '—';
+let _reviewCtx = {};          // {runId, ucUuid}
+const _rdRevRaw = { text: '' };
+const _rdEnhRaw = { text: '' };
 
-  document.getElementById('archReviewSubtitle').textContent =
-    defaultScope === 'uc'
-      ? `Use case: ${ucHandle}`
-      : `Run: ${runLabel}`;
-
-  const scopeSel = document.getElementById('archReviewScopeSel');
-  scopeSel.value = defaultScope;
-
-  // Show/hide UC option depending on context
-  scopeSel.querySelector('option[value="uc"]').disabled = !ucUuid;
-
-  const streamEl = document.getElementById('archReviewStream');
-  const statusEl = document.getElementById('archReviewStatus');
-  streamEl.style.display = 'none'; streamEl.textContent = '';
-  streamEl.classList.remove('streaming');
-  statusEl.style.display = 'none'; statusEl.textContent = '';
-  document.getElementById('archReviewCopyBtn').style.display = 'none';
-
-  populateModelSelector();
-  document.getElementById('archReviewModal').classList.add('open');
+function rdSwitchTab(tab) {
+  const isRun = tab === 'run';
+  document.getElementById('rdRunBody').style.display    = isRun ? '' : 'none';
+  document.getElementById('rdReviewBody').style.display = isRun ? 'none' : '';
+  document.getElementById('rdTabRun').classList.toggle('active', isRun);
+  document.getElementById('rdTabReview').classList.toggle('active', !isRun);
 }
 
-document.getElementById('closeArchReview').addEventListener('click', () => {
-  document.getElementById('archReviewModal').classList.remove('open');
+function openReviewPane(scope, ucUuid, startAt = 'review') {
+  const runId = activeRunResultId || _rdName;
+  _reviewCtx = { runId, ucUuid: ucUuid || null };
+
+  const ucEntry = ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid) : null;
+  const ucHandle = ucEntry?.uc_handle || ucUuid || '—';
+  const label = scope === 'uc' ? `Use case: ${ucHandle}` : `Run: ${runId||'—'}`;
+  document.getElementById('rdRevSubtitle').textContent = label;
+  document.getElementById('rdEnhSubtitle').textContent = label;
+
+  const revSel = document.getElementById('rdRevScopeSel');
+  revSel.value = scope;
+  revSel.querySelector('option[value="uc"]').disabled = !ucUuid;
+  const enhSel = document.getElementById('rdEnhScopeSel');
+  enhSel.value = scope;
+  enhSel.querySelector('option[value="uc"]').disabled = !ucUuid;
+
+  _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
+  _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
+
+  // Reset streams on fresh open
+  ['rdRevStream','rdEnhStream'].forEach(id => {
+    const el = document.getElementById(id);
+    el.textContent = ''; el.style.display = 'none'; el.classList.remove('streaming');
+  });
+  ['rdRevStatus','rdEnhStatus'].forEach(id => {
+    const el = document.getElementById(id);
+    el.textContent = ''; el.style.display = 'none'; el.style.color = '';
+  });
+  document.getElementById('rdRevCopyBtn').style.display = 'none';
+  document.getElementById('rdEnhCopyBtn').style.display = 'none';
+  document.getElementById('rdRevReasoningBtn').style.display = 'none';
+  document.getElementById('rdEnhReasoningBtn').style.display = 'none';
+  document.getElementById('rdRevNextRow').style.display = 'none';
+  document.getElementById('rdEnhNextRow').style.display = 'none';
+  document.getElementById('rdRevHint').style.display = 'none';
+  document.getElementById('rdEnhHint').style.display = 'none';
+  _rdRevRaw.text = ''; _rdEnhRaw.text = '';
+
+  // Show sections based on startAt
+  document.getElementById('rdEnhSection').style.display = startAt === 'enhance' ? '' : 'none';
+  document.getElementById('rdPrSection').style.display = 'none';
+
+  // Open drawer if closed
+  if (!document.getElementById('runDrawer').classList.contains('open')) {
+    if (runId) openRunDrawer(runId);
+    else document.getElementById('runDrawer').classList.add('open');
+  }
+
+  rdSwitchTab('review');
+
+  if (startAt === 'enhance') {
+    setTimeout(() => document.getElementById('rdEnhSection').scrollIntoView({ behavior:'smooth', block:'start' }), 50);
+  }
+}
+
+document.getElementById('rdTabRun').addEventListener('click', () => rdSwitchTab('run'));
+document.getElementById('rdTabReview').addEventListener('click', () => {
+  if (!_reviewCtx.runId && !activeRunResultId && !_rdName) { toast('Select a run first'); return; }
+  if (!_reviewCtx.runId) openReviewPane('run', null);
+  else rdSwitchTab('review');
 });
 
-document.getElementById('archReviewCopyPromptBtn').addEventListener('click', async () => {
-  const scope  = document.getElementById('archReviewScopeSel').value;
-  const runId  = _archReviewCtx.runId;
-  const ucUuid = _archReviewCtx.ucUuid;
-  const hint   = document.getElementById('archReviewPromptHint');
-  const btn    = document.getElementById('archReviewCopyPromptBtn');
-  if (!runId) { toast('No run selected'); return; }
-  btn.disabled = true; btn.textContent = 'Fetching…';
-  hint.style.display = 'none';
-  try {
-    let url = `/api/arch-review/prompt?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
-    if (scope === 'uc' && ucUuid) url += `&uc_uuid=${encodeURIComponent(ucUuid)}`;
-    const data = await api(url);
-    const text = `${data.system_prompt}\n\n---\n\n${data.user_prompt}`;
-    await navigator.clipboard.writeText(text);
-    hint.style.display = '';
-    setTimeout(() => { hint.style.display = 'none'; }, 4000);
-  } catch(e) {
-    toast('Copy failed: ' + e.message, true);
-  } finally {
-    btn.disabled = false; btn.textContent = '⧉ Copy prompt';
-  }
+document.getElementById('rdRevScopeSel').addEventListener('change', function() {
+  const ucEntry = _reviewCtx.ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===_reviewCtx.ucUuid) : null;
+  document.getElementById('rdRevSubtitle').textContent = this.value === 'run'
+    ? `Run: ${_reviewCtx.runId||'—'}`
+    : `Use case: ${ucEntry?.uc_handle||_reviewCtx.ucUuid||'—'}`;
 });
 
-document.getElementById('archReviewScopeSel').addEventListener('change', function() {
-  const subtitle = document.getElementById('archReviewSubtitle');
-  if (this.value === 'run') {
-    subtitle.textContent = `Run: ${_archReviewCtx.runId || '—'}`;
-  } else {
-    const ucEntry = _archReviewCtx.ucUuid
-      ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===_archReviewCtx.ucUuid) : null;
-    const ucHandle = ucEntry?.uc_handle || _archReviewCtx.ucUuid || '—';
-    subtitle.textContent = `Use case: ${ucHandle}`;
-  }
+document.getElementById('rdEnhScopeSel').addEventListener('change', function() {
+  const ucEntry = _reviewCtx.ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===_reviewCtx.ucUuid) : null;
+  document.getElementById('rdEnhSubtitle').textContent = this.value === 'run'
+    ? `Run: ${_reviewCtx.runId||'—'}`
+    : `Use case: ${ucEntry?.uc_handle||_reviewCtx.ucUuid||'—'}`;
 });
 
 // ── Shared think-block rendering ─────────────────────────────────────────────
@@ -4981,122 +5002,94 @@ async function _runStream({ endpoint, body, streamEl, statusEl, copyBtn, runBtn,
   }
 }
 
-// ── Arch Review ───────────────────────────────────────────────────────────────
-const _archRaw = { text: '' };
+// ── Arch Review stream ────────────────────────────────────────────────────────
 
-document.getElementById('archReviewReasoningBtn').addEventListener('click', function() {
-  const on = localStorage.getItem('archReviewShowReasoning') === '1';
-  localStorage.setItem('archReviewShowReasoning', on ? '0' : '1');
+document.getElementById('rdRevReasoningBtn').addEventListener('click', function() {
+  const on = localStorage.getItem('rdRevShowReasoning') === '1';
+  localStorage.setItem('rdRevShowReasoning', on ? '0' : '1');
   this.textContent = on ? '○ Reasoning' : '● Reasoning';
-  const streamEl = document.getElementById('archReviewStream');
-  streamEl.textContent = (!on) ? _archRaw.text : _stripThink(_archRaw.text);
-  streamEl.scrollTop = streamEl.scrollHeight;
+  const el = document.getElementById('rdRevStream');
+  el.textContent = (!on) ? _rdRevRaw.text : _stripThink(_rdRevRaw.text);
+  el.scrollTop = el.scrollHeight;
 });
 
-document.getElementById('archReviewRunBtn').addEventListener('click', async () => {
-  const modelId = parseInt(document.getElementById('archReviewModelSel').value, 10);
+document.getElementById('rdRevRunBtn').addEventListener('click', async () => {
+  const modelId = parseInt(document.getElementById('rdRevModelSel').value, 10);
   if (!modelId) { toast('Select a model first'); return; }
-  const scope  = document.getElementById('archReviewScopeSel').value;
-  const runId  = _archReviewCtx.runId;
-  const ucUuid = _archReviewCtx.ucUuid;
+  const scope  = document.getElementById('rdRevScopeSel').value;
+  const { runId, ucUuid } = _reviewCtx;
   if (!runId) { toast('No run selected'); return; }
   if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
-  localStorage.setItem('archReviewLastModel', String(modelId));
+  localStorage.setItem('reviewLastModel', String(modelId));
   const body = { scope, model_config_id: modelId, run_id: runId };
   if (scope === 'uc') body.uc_uuid = ucUuid;
   await _runStream({
     endpoint: '/api/arch-review', body,
-    streamEl:     document.getElementById('archReviewStream'),
-    statusEl:     document.getElementById('archReviewStatus'),
-    copyBtn:      document.getElementById('archReviewCopyBtn'),
-    runBtn:       document.getElementById('archReviewRunBtn'),
-    reasoningBtn: document.getElementById('archReviewReasoningBtn'),
-    nextRow:      document.getElementById('archReviewNextRow'),
-    rawHolder:    _archRaw,
-    showReasoningKey: 'archReviewShowReasoning',
+    streamEl:     document.getElementById('rdRevStream'),
+    statusEl:     document.getElementById('rdRevStatus'),
+    copyBtn:      document.getElementById('rdRevCopyBtn'),
+    runBtn:       document.getElementById('rdRevRunBtn'),
+    reasoningBtn: document.getElementById('rdRevReasoningBtn'),
+    nextRow:      document.getElementById('rdRevNextRow'),
+    rawHolder:    _rdRevRaw,
+    showReasoningKey: 'rdRevShowReasoning',
   });
 });
 
-document.getElementById('archReviewCopyBtn').addEventListener('click', () => {
-  const showReasoning = localStorage.getItem('archReviewShowReasoning') === '1';
-  const text = showReasoning ? _archRaw.text : _stripThink(_archRaw.text);
+document.getElementById('rdRevCopyBtn').addEventListener('click', () => {
+  const text = localStorage.getItem('rdRevShowReasoning') === '1' ? _rdRevRaw.text : _stripThink(_rdRevRaw.text);
   navigator.clipboard.writeText(text).then(() => toast('Review copied'));
 });
 
-document.getElementById('archReviewToEnhanceBtn').addEventListener('click', () => {
-  document.getElementById('archReviewModal').classList.remove('open');
-  openEnhance(_archReviewCtx.ucUuid ? 'uc' : 'run', _archReviewCtx.ucUuid);
-});
-
-document.getElementById('rdArchReviewBtn').addEventListener('click', () => openArchReview('run', null));
-document.getElementById('rdEnhanceBtn').addEventListener('click', () => openEnhance('run', null));
-
-// ── Enhancement Planning ──────────────────────────────────────────────────────
-let _enhanceCtx = {};
-const _enhanceRaw = { text: '' };
-
-function openEnhance(defaultScope, ucUuid) {
-  _enhanceCtx = {
-    runId:  activeRunResultId || (_rdName || null),
-    ucUuid: ucUuid || null,
-  };
-  const ucEntry = ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid) : null;
-  const ucHandle = ucEntry?.uc_handle || ucUuid || '—';
-  const runLabel = _enhanceCtx.runId || '—';
-  document.getElementById('enhanceSubtitle').textContent =
-    defaultScope === 'uc' ? `Use case: ${ucHandle}` : `Run: ${runLabel}`;
-  const scopeSel = document.getElementById('enhanceScopeSel');
-  scopeSel.value = defaultScope;
-  scopeSel.querySelector('option[value="uc"]').disabled = !ucUuid;
-
-  // Populate model selector (reuse same models as arch review)
-  const src = document.getElementById('archReviewModelSel');
-  const dst = document.getElementById('enhanceModelSel');
-  dst.innerHTML = src.innerHTML;
-  const stored = localStorage.getItem('enhanceLastModel');
-  if (stored) dst.value = stored;
-
-  const streamEl = document.getElementById('enhanceStream');
-  const statusEl = document.getElementById('enhanceStatus');
-  streamEl.style.display = 'none'; streamEl.textContent = ''; _enhanceRaw.text = '';
-  streamEl.classList.remove('streaming');
-  statusEl.style.display = 'none'; statusEl.textContent = '';
-  statusEl.style.color = '';
-  document.getElementById('enhanceCopyBtn').style.display = 'none';
-  document.getElementById('enhanceReasoningBtn').style.display = 'none';
-  document.getElementById('enhancePromptHint').style.display = 'none';
-  document.getElementById('enhanceNextRow').style.display = 'none';
-  document.getElementById('enhancePrPanel').style.display = 'none';
-  document.getElementById('prMsg').textContent = '';
-  document.getElementById('enhanceModal').classList.add('open');
+async function _useInClaude(promptEndpoint, scope, runId, ucUuid, hintEl, btn) {
+  if (!runId) { toast('No run selected'); return; }
+  const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Fetching…';
+  hintEl.style.display = 'none';
+  try {
+    let url = `${promptEndpoint}?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
+    if (scope === 'uc' && ucUuid) url += `&uc_uuid=${encodeURIComponent(ucUuid)}`;
+    const data = await api(url);
+    await navigator.clipboard.writeText(`${data.system_prompt}\n\n---\n\n${data.user_prompt}`);
+    hintEl.style.display = '';
+    setTimeout(() => { hintEl.style.display = 'none'; }, 4000);
+  } catch(e) { toast('Copy failed: ' + e.message, true); }
+  finally { btn.disabled = false; btn.textContent = prev; }
 }
 
-document.getElementById('closeEnhance').addEventListener('click', () =>
-  document.getElementById('enhanceModal').classList.remove('open'));
+document.getElementById('rdRevUseClaudeBtn').addEventListener('click', () =>
+  _useInClaude('/api/arch-review/prompt',
+    document.getElementById('rdRevScopeSel').value,
+    _reviewCtx.runId, _reviewCtx.ucUuid,
+    document.getElementById('rdRevHint'),
+    document.getElementById('rdRevUseClaudeBtn')));
 
-document.getElementById('enhanceScopeSel').addEventListener('change', function() {
-  const ucEntry = _enhanceCtx.ucUuid
-    ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===_enhanceCtx.ucUuid) : null;
-  document.getElementById('enhanceSubtitle').textContent = this.value === 'run'
-    ? `Run: ${_enhanceCtx.runId || '—'}`
-    : `Use case: ${ucEntry?.uc_handle || _enhanceCtx.ucUuid || '—'}`;
+document.getElementById('rdRevToEnhBtn').addEventListener('click', () => {
+  const enhSec = document.getElementById('rdEnhSection');
+  enhSec.style.display = '';
+  // Sync scope + model from arch review
+  document.getElementById('rdEnhScopeSel').value = document.getElementById('rdRevScopeSel').value;
+  const revModel = document.getElementById('rdRevModelSel').value;
+  if (revModel) document.getElementById('rdEnhModelSel').value = revModel;
+  setTimeout(() => enhSec.scrollIntoView({ behavior:'smooth', block:'start' }), 30);
 });
 
-document.getElementById('enhanceReasoningBtn').addEventListener('click', function() {
-  const on = localStorage.getItem('enhanceShowReasoning') === '1';
-  localStorage.setItem('enhanceShowReasoning', on ? '0' : '1');
+// ── Enhancement stream ────────────────────────────────────────────────────────
+
+document.getElementById('rdEnhReasoningBtn').addEventListener('click', function() {
+  const on = localStorage.getItem('rdEnhShowReasoning') === '1';
+  localStorage.setItem('rdEnhShowReasoning', on ? '0' : '1');
   this.textContent = on ? '○ Reasoning' : '● Reasoning';
-  const streamEl = document.getElementById('enhanceStream');
-  streamEl.textContent = (!on) ? _enhanceRaw.text : _stripThink(_enhanceRaw.text);
-  streamEl.scrollTop = streamEl.scrollHeight;
+  const el = document.getElementById('rdEnhStream');
+  el.textContent = (!on) ? _rdEnhRaw.text : _stripThink(_rdEnhRaw.text);
+  el.scrollTop = el.scrollHeight;
 });
 
-document.getElementById('enhanceRunBtn').addEventListener('click', async () => {
-  const modelId = parseInt(document.getElementById('enhanceModelSel').value, 10);
+document.getElementById('rdEnhRunBtn').addEventListener('click', async () => {
+  const modelId = parseInt(document.getElementById('rdEnhModelSel').value, 10);
   if (!modelId) { toast('Select a model first'); return; }
-  const scope  = document.getElementById('enhanceScopeSel').value;
-  const runId  = _enhanceCtx.runId;
-  const ucUuid = _enhanceCtx.ucUuid;
+  const scope  = document.getElementById('rdEnhScopeSel').value;
+  const { runId, ucUuid } = _reviewCtx;
   if (!runId) { toast('No run selected'); return; }
   if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
   localStorage.setItem('enhanceLastModel', String(modelId));
@@ -5104,44 +5097,111 @@ document.getElementById('enhanceRunBtn').addEventListener('click', async () => {
   if (scope === 'uc') body.uc_uuid = ucUuid;
   await _runStream({
     endpoint: '/api/enhancements', body,
-    streamEl:     document.getElementById('enhanceStream'),
-    statusEl:     document.getElementById('enhanceStatus'),
-    copyBtn:      document.getElementById('enhanceCopyBtn'),
-    runBtn:       document.getElementById('enhanceRunBtn'),
-    reasoningBtn: document.getElementById('enhanceReasoningBtn'),
-    nextRow:      document.getElementById('enhanceNextRow'),
-    rawHolder:    _enhanceRaw,
-    showReasoningKey: 'enhanceShowReasoning',
+    streamEl:     document.getElementById('rdEnhStream'),
+    statusEl:     document.getElementById('rdEnhStatus'),
+    copyBtn:      document.getElementById('rdEnhCopyBtn'),
+    runBtn:       document.getElementById('rdEnhRunBtn'),
+    reasoningBtn: document.getElementById('rdEnhReasoningBtn'),
+    nextRow:      document.getElementById('rdEnhNextRow'),
+    rawHolder:    _rdEnhRaw,
+    showReasoningKey: 'rdEnhShowReasoning',
   });
 });
 
-document.getElementById('enhanceCopyBtn').addEventListener('click', () => {
-  const showReasoning = localStorage.getItem('enhanceShowReasoning') === '1';
-  const text = showReasoning ? _enhanceRaw.text : _stripThink(_enhanceRaw.text);
+document.getElementById('rdEnhCopyBtn').addEventListener('click', () => {
+  const text = localStorage.getItem('rdEnhShowReasoning') === '1' ? _rdEnhRaw.text : _stripThink(_rdEnhRaw.text);
   navigator.clipboard.writeText(text).then(() => toast('Enhancement spec copied'));
 });
 
-document.getElementById('enhanceCopyPromptBtn').addEventListener('click', async () => {
-  const scope  = document.getElementById('enhanceScopeSel').value;
-  const runId  = _enhanceCtx.runId;
-  const ucUuid = _enhanceCtx.ucUuid;
-  const hint   = document.getElementById('enhancePromptHint');
-  const btn    = document.getElementById('enhanceCopyPromptBtn');
-  if (!runId) { toast('No run selected'); return; }
-  btn.disabled = true; btn.textContent = 'Fetching…';
-  hint.style.display = 'none';
+document.getElementById('rdEnhUseClaudeBtn').addEventListener('click', () =>
+  _useInClaude('/api/enhancements/prompt',
+    document.getElementById('rdEnhScopeSel').value,
+    _reviewCtx.runId, _reviewCtx.ucUuid,
+    document.getElementById('rdEnhHint'),
+    document.getElementById('rdEnhUseClaudeBtn')));
+
+// ── PR creation ────────────────────────────────────────────────────────────────
+
+function _rdPrRepoChanged() {
+  const opt = document.getElementById('rdPrRepoSel').selectedOptions[0];
+  if (opt && opt.dataset.branch) document.getElementById('rdPrBaseBranch').value = opt.dataset.branch;
+}
+
+document.getElementById('rdEnhToPrBtn').addEventListener('click', async () => {
+  const panel  = document.getElementById('rdPrSection');
+  const msgEl  = document.getElementById('rdPrMsg');
+  msgEl.textContent = '';
+
+  if (!_codeRepos.length) { try { _codeRepos = await api('/api/code-repos'); } catch {} }
+  const enabled = _codeRepos.filter(r => r.enabled);
+  const sel = document.getElementById('rdPrRepoSel');
+  sel.innerHTML = enabled.length
+    ? enabled.map(r => `<option value="${r.id}" data-branch="${esc(r.default_branch)}">${esc(r.name)} (${esc(r.provider)})</option>`).join('')
+    : '<option value="">No repos configured — add one in Config</option>';
+  if (enabled.length) _rdPrRepoChanged();
+
+  const scope  = document.getElementById('rdEnhScopeSel').value;
+  const { runId, ucUuid } = _reviewCtx;
   try {
-    let url = `/api/enhancements/prompt?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
+    let url = `/api/pr/preview?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
     if (scope === 'uc' && ucUuid) url += `&uc_uuid=${encodeURIComponent(ucUuid)}`;
-    const data = await api(url);
-    await navigator.clipboard.writeText(`${data.system_prompt}\n\n---\n\n${data.user_prompt}`);
-    hint.style.display = '';
-    setTimeout(() => { hint.style.display = 'none'; }, 4000);
+    const preview = await api(url);
+    document.getElementById('rdPrBranch').value   = preview.branch;
+    document.getElementById('rdPrTitle').value    = preview.title;
+    document.getElementById('rdPrFilePath').value = preview.file_path;
+    panel._gapContext = preview.gap_context;
   } catch(e) {
-    toast('Copy failed: ' + e.message, true);
-  } finally {
-    btn.disabled = false; btn.textContent = '⧉ Copy prompt';
+    msgEl.textContent = 'Preview load failed: ' + e.message;
+    msgEl.style.color = 'var(--error)';
+    panel._gapContext = '';
   }
+
+  panel.style.display = '';
+  setTimeout(() => panel.scrollIntoView({ behavior:'smooth', block:'start' }), 30);
+});
+
+document.getElementById('rdPrRepoSel').addEventListener('change', _rdPrRepoChanged);
+
+document.getElementById('rdPrCopyBtn').addEventListener('click', () => {
+  const panel   = document.getElementById('rdPrSection');
+  const gapCtx  = panel._gapContext || '';
+  const enhText = _stripThink(_rdEnhRaw.text);
+  const branch  = document.getElementById('rdPrBranch').value;
+  const file    = document.getElementById('rdPrFilePath').value;
+  let body = `**Branch:** \`${branch}\`  \n**File:** \`${file}\`\n\n---\n\n` + gapCtx;
+  if (enhText) body += '\n\n## Enhancement specification\n\n' + enhText;
+  body += '\n\n---\n*Generated by DAV Console*';
+  navigator.clipboard.writeText(body)
+    .then(() => toast('PR description copied'))
+    .catch(() => toast('Copy failed', true));
+});
+
+document.getElementById('rdPrCreateBtn').addEventListener('click', async () => {
+  const repoId = parseInt(document.getElementById('rdPrRepoSel').value, 10);
+  if (!repoId) { toast('Select a repository first'); return; }
+  const msgEl = document.getElementById('rdPrMsg');
+  const btn   = document.getElementById('rdPrCreateBtn');
+  const payload = {
+    repo_config_id: repoId,
+    run_id:  _reviewCtx.runId,
+    uc_uuid: _reviewCtx.ucUuid || null,
+    scope:       document.getElementById('rdEnhScopeSel').value,
+    branch:      document.getElementById('rdPrBranch').value.trim(),
+    title:       document.getElementById('rdPrTitle').value.trim(),
+    base_branch: document.getElementById('rdPrBaseBranch').value.trim() || null,
+    file_path:   document.getElementById('rdPrFilePath').value.trim(),
+    enhancement_text: _stripThink(_rdEnhRaw.text),
+  };
+  if (!payload.branch || !payload.title) { toast('Branch and title required'); return; }
+  btn.disabled = true;
+  msgEl.textContent = 'Creating…'; msgEl.style.color = 'var(--text-faint)';
+  try {
+    const result = await api('/api/pr/create', { method:'POST', body: JSON.stringify(payload) });
+    msgEl.textContent = '✓ PR created'; msgEl.style.color = 'var(--ok)';
+    if (result.pr_url) window.open(result.pr_url, '_blank');
+  } catch(e) {
+    msgEl.textContent = 'Failed: ' + e.message; msgEl.style.color = 'var(--error)';
+  } finally { btn.disabled = false; }
 });
 
 // ── MCP Servers ──────────────────────────────────────────────────────────────
@@ -5439,104 +5499,6 @@ document.getElementById('saveCodeRepoBtn').addEventListener('click', async () =>
   }
 });
 
-// ── PR / MR Creation ──────────────────────────────────────────────────────────
-
-function _prRepoChanged() {
-  const sel = document.getElementById('prRepoSel');
-  const opt = sel.selectedOptions[0];
-  if (opt && opt.dataset.branch) {
-    document.getElementById('prBaseBranch').value = opt.dataset.branch;
-  }
-}
-
-async function _openPrPanel() {
-  const panel = document.getElementById('enhancePrPanel');
-  const msgEl = document.getElementById('prMsg');
-  msgEl.textContent = '';
-
-  // Ensure repos are loaded
-  if (!_codeRepos.length) {
-    try { _codeRepos = await api('/api/code-repos'); } catch {}
-  }
-  const enabled = _codeRepos.filter(r => r.enabled);
-  const sel = document.getElementById('prRepoSel');
-  if (!enabled.length) {
-    sel.innerHTML = '<option value="">No repos configured — add one in Config</option>';
-  } else {
-    sel.innerHTML = enabled.map(r =>
-      `<option value="${r.id}" data-branch="${esc(r.default_branch)}">${esc(r.name)} (${esc(r.provider)})</option>`
-    ).join('');
-    _prRepoChanged();
-  }
-
-  const scope  = document.getElementById('enhanceScopeSel').value;
-  const runId  = _enhanceCtx.runId;
-  const ucUuid = _enhanceCtx.ucUuid;
-  try {
-    let url = `/api/pr/preview?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
-    if (scope === 'uc' && ucUuid) url += `&uc_uuid=${encodeURIComponent(ucUuid)}`;
-    const preview = await api(url);
-    document.getElementById('prBranch').value = preview.branch;
-    document.getElementById('prTitle').value = preview.title;
-    document.getElementById('prFilePath').value = preview.file_path;
-    panel._gapContext = preview.gap_context;
-  } catch (e) {
-    msgEl.textContent = 'Preview load failed: ' + e.message;
-    msgEl.style.color = 'var(--error)';
-    panel._gapContext = '';
-  }
-
-  panel.style.display = 'flex';
-}
-
-document.getElementById('enhanceToPrBtn').addEventListener('click', _openPrPanel);
-document.getElementById('prRepoSel').addEventListener('change', _prRepoChanged);
-
-document.getElementById('prCopyDescBtn').addEventListener('click', () => {
-  const panel = document.getElementById('enhancePrPanel');
-  const gapCtx = panel._gapContext || '';
-  const enhText = _stripThink(_enhanceRaw.text);
-  const branch  = document.getElementById('prBranch').value;
-  const filePath = document.getElementById('prFilePath').value;
-  let body = `**Branch:** \`${branch}\`  \n**File:** \`${filePath}\`\n\n---\n\n` + gapCtx;
-  if (enhText) body += '\n\n## Enhancement specification\n\n' + enhText;
-  body += '\n\n---\n*Generated by DAV Console*';
-  navigator.clipboard.writeText(body)
-    .then(() => toast('PR description copied'))
-    .catch(() => toast('Copy failed — check browser permissions', true));
-});
-
-document.getElementById('prCreateBtn').addEventListener('click', async () => {
-  const repoId = parseInt(document.getElementById('prRepoSel').value, 10);
-  if (!repoId) { toast('Select a repository first'); return; }
-  const msgEl = document.getElementById('prMsg');
-  const btn   = document.getElementById('prCreateBtn');
-  const payload = {
-    repo_config_id: repoId,
-    run_id:         _enhanceCtx.runId,
-    uc_uuid:        _enhanceCtx.ucUuid || null,
-    scope:          document.getElementById('enhanceScopeSel').value,
-    branch:         document.getElementById('prBranch').value.trim(),
-    title:          document.getElementById('prTitle').value.trim(),
-    base_branch:    document.getElementById('prBaseBranch').value.trim() || null,
-    file_path:      document.getElementById('prFilePath').value.trim(),
-    enhancement_text: _stripThink(_enhanceRaw.text),
-  };
-  if (!payload.branch || !payload.title) { toast('Branch and title are required'); return; }
-  btn.disabled = true;
-  msgEl.textContent = 'Creating…'; msgEl.style.color = 'var(--text-faint)';
-  try {
-    const result = await api('/api/pr/create', { method: 'POST', body: JSON.stringify(payload) });
-    msgEl.textContent = '✓ PR created';
-    msgEl.style.color = 'var(--ok)';
-    if (result.pr_url) window.open(result.pr_url, '_blank');
-  } catch (e) {
-    msgEl.textContent = 'Failed: ' + e.message;
-    msgEl.style.color = 'var(--error)';
-  } finally {
-    btn.disabled = false;
-  }
-});
 
 // ── Config nav: scroll-spy + click-to-scroll ─────────────────────────────────
 let _configNavReady = false;
