@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dav.core.use_case_schema import UseCase
 
-STAGE2_PROMPT_VERSION = "1.4"  # ε.1 — consumer-templated
+STAGE2_PROMPT_VERSION = "1.5"  # ε.2 — gap title, spec_refs_missing as list
 
 # /no_think directive at the top is a Qwen3 chat template token that disables
 # the model's thinking-mode output (<think>...</think> blocks). We strip
@@ -99,11 +99,12 @@ When you have gathered enough information, emit a final analysis as a single JSO
   ],
   "gaps_identified": [
     {{
+      "title": "<3-7 word phrase naming this gap type>",
       "severity": "critical|major|moderate|minor|advisory",
       "description": "<what's missing or ambiguous>",
       "rationale": "<why this is a gap>",
       "spec_refs_consulted": ["<what I looked at>"],
-      "spec_refs_missing": "<what should exist>",
+      "spec_refs_missing": ["<doc-handle/section-title>"],
       "recommendation": "<what the spec should say>",
       "confidence": "high|medium|low"
     }}
@@ -120,6 +121,7 @@ Rules for the final output:
 - Every array field is required; use [] if nothing applies.
 - Every rationale field must be non-empty if its list has entries.
 - spec_refs values should look like "doc-handle" or "doc-handle/section-name".
+- spec_refs_missing entries must use "doc-handle" or "doc-handle/section-title" format — not prose.
 """
 
 def build_stage2_system_prompt(consumer_profile=None) -> str:

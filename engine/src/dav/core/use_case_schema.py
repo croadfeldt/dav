@@ -615,21 +615,38 @@ class GapIdentified:
     rationale: str
     recommendation: str
     spec_refs_consulted: list[str]
-    spec_refs_missing: str | None
+    spec_refs_missing: list[str] = field(default_factory=list)
+    title: str = ""
+
+    def __post_init__(self):
+        # Accept shorthand strings at construction time, same as from_dict does.
+        if not isinstance(self.severity, SeverityDescriptor):
+            self.severity = normalize_severity(self.severity)
+        if not isinstance(self.confidence, ConfidenceDescriptor):
+            self.confidence = normalize_confidence(self.confidence)
+        # Coerce None to empty list (backward compat with call-sites that pass None).
+        if self.spec_refs_missing is None:
+            self.spec_refs_missing = []
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "title": self.title,
             "description": self.description,
             "severity": self.severity.to_dict(),
             "confidence": self.confidence.to_dict(),
             "rationale": self.rationale,
             "recommendation": self.recommendation,
             "spec_refs_consulted": list(self.spec_refs_consulted),
-            "spec_refs_missing": self.spec_refs_missing,
+            "spec_refs_missing": list(self.spec_refs_missing),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GapIdentified":
+        raw = data.get("spec_refs_missing") or []
+        if isinstance(raw, str):
+            spec_refs_missing = [raw] if raw.strip() else []
+        else:
+            spec_refs_missing = list(raw)
         return cls(
             description=data.get("description", ""),
             severity=normalize_severity(data.get("severity", "minor")),
@@ -637,7 +654,8 @@ class GapIdentified:
             rationale=data.get("rationale", ""),
             recommendation=data.get("recommendation", ""),
             spec_refs_consulted=list(data.get("spec_refs_consulted", [])),
-            spec_refs_missing=data.get("spec_refs_missing"),
+            spec_refs_missing=spec_refs_missing,
+            title=data.get("title", ""),
         )
 
 @dataclass
@@ -1018,16 +1036,17 @@ def build_analysis_json_schema(consumer_profile=None) -> dict[str, Any]:
                 "type": "array",
                 "items": {
                     "type": "object",
-                    "required": ["severity", "description", "rationale",
+                    "required": ["title", "severity", "description", "rationale",
                                  "spec_refs_consulted", "spec_refs_missing",
                                  "recommendation", "confidence"],
                     "properties": {
+                        "title": {"type": "string"},
                         # Five-label severity enum — MODERATE added.
                         "severity": {"enum": [s.value for s in Severity]},
                         "description": {"type": "string"},
                         "rationale": {"type": "string"},
                         "spec_refs_consulted": {"type": "array", "items": {"type": "string"}},
-                        "spec_refs_missing": {"type": "string"},
+                        "spec_refs_missing": {"type": "array", "items": {"type": "string"}},
                         "recommendation": {"type": "string"},
                         "confidence": {"enum": [c.value for c in Confidence]},
                     },

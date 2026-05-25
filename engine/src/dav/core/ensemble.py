@@ -308,7 +308,7 @@ def _consolidate_gaps(
     groups: dict[str, list[GapIdentified]] = {}
     for analysis in samples:
         for gap in analysis.gaps_identified or []:
-            key = canonicalize(gap.description)
+            key = canonicalize(gap.title) if gap.title else canonicalize(gap.description[:80])
             if not key:
                 continue
             groups.setdefault(key, []).append(gap)
@@ -321,14 +321,23 @@ def _consolidate_gaps(
         highest_sev = _highest_severity([it.severity for it in items])
         # Confidence: lowest (most conservative) among samples
         lowest_conf = _lowest_confidence([it.confidence for it in items])
+        # Union spec_refs_missing across all samples, deduped in first-seen order
+        all_missing: list[str] = []
+        seen: set[str] = set()
+        for it in items:
+            for ref in (it.spec_refs_missing or []):
+                if ref not in seen:
+                    seen.add(ref)
+                    all_missing.append(ref)
         merged.append(GapIdentified(
+            title=first.title,
             description=first.description,
             severity=highest_sev,
             confidence=lowest_conf,
             rationale=first.rationale,
             recommendation=first.recommendation,
             spec_refs_consulted=list(first.spec_refs_consulted),
-            spec_refs_missing=first.spec_refs_missing,
+            spec_refs_missing=all_missing,
         ))
         consensus[key] = f"{len(items)}/{n_samples}"
     return merged, consensus
@@ -498,19 +507,45 @@ def merge_analyses(
         gap_consensus=gap_consensus,
     )
 
+    # --- Verdict gate: downgrade supported→partially_supported on major/critical gaps ---
+    _BLOCKING_SEVERITIES = {"major", "critical"}
+    _verdict_gated = False
+    if (merged_verdict == Verdict.SUPPORTED.value and
+            any(g.severity.label in _BLOCKING_SEVERITIES for g in gaps_merged)):
+        merged_verdict = Verdict.PARTIALLY_SUPPORTED.value
+        _verdict_gated = True
+
     # --- Build summary ---
-    # Notes: brief description of consensus state; reviewer-readable.
+    # Notes: use the representative sample's LLM-generated notes as the base,
+    # then append provenance suffix so reviewers know it's a merged result.
+    provenance = f"[Verification: {n} samples, votes: {vote_distribution}"
     if tied:
-        notes = (
-            f"Verification merge of {n} samples; tied verdict resolved "
-            f"conservatively to {merged_verdict} (votes: {vote_distribution}); "
-            f"overall_confidence capped at medium due to tie."
-        )
+        provenance += ", tied"
+    provenance += "]"
+
+    rep_sample = next(
+        (s for s in samples if s.summary.verdict == merged_verdict),
+        samples[0],
+    )
+    base_notes = rep_sample.summary.notes.strip() if rep_sample.summary.notes else ""
+    if not base_notes:
+        if tied:
+            base_notes = (
+                f"Verification merge of {n} samples; tied verdict resolved "
+                f"conservatively to {merged_verdict} (votes: {vote_distribution}); "
+                f"overall_confidence capped at medium due to tie."
+            )
+        else:
+            base_notes = (
+                f"Verification merge of {n} samples; verdict {merged_verdict} "
+                f"by majority (votes: {vote_distribution})."
+            )
+        notes = base_notes
     else:
-        notes = (
-            f"Verification merge of {n} samples; verdict {merged_verdict} "
-            f"by majority (votes: {vote_distribution})."
-        )
+        notes = f"{base_notes} {provenance}"
+
+    if _verdict_gated:
+        notes += " Verdict downgraded from supported: major/critical gap(s) present."
 
     summary = AnalysisSummary(
         verdict=merged_verdict,
