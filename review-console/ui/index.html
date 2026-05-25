@@ -4850,7 +4850,11 @@ function rdSwitchTab(tab) {
 }
 
 function openReviewPane(scope, ucUuid, startAt = 'review') {
-  const runId = activeRunResultId || _rdName;
+  const runId = activeRunResultId;
+  if (!runId) {
+    toast('Select an analysis run in the Results tab first');
+    return;
+  }
   _reviewCtx = { runId, ucUuid: ucUuid || null };
 
   const ucEntry = ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid) : null;
@@ -4892,9 +4896,9 @@ function openReviewPane(scope, ucUuid, startAt = 'review') {
   document.getElementById('rdEnhSection').style.display = startAt === 'enhance' ? '' : 'none';
   document.getElementById('rdPrSection').style.display = 'none';
 
-  // Open drawer if closed
+  // Open drawer if closed — drawer uses Tekton name (_rdName), not analysis run_id
   if (!document.getElementById('runDrawer').classList.contains('open')) {
-    if (runId) openRunDrawer(runId);
+    if (_rdName) openRunDrawer(_rdName);
     else document.getElementById('runDrawer').classList.add('open');
   }
 
@@ -4907,7 +4911,7 @@ function openReviewPane(scope, ucUuid, startAt = 'review') {
 
 document.getElementById('rdTabRun').addEventListener('click', () => rdSwitchTab('run'));
 document.getElementById('rdTabReview').addEventListener('click', () => {
-  if (!_reviewCtx.runId && !activeRunResultId && !_rdName) { toast('Select a run first'); return; }
+  if (!_reviewCtx.runId && !activeRunResultId) { toast('Select an analysis run in the Results tab first'); return; }
   if (!_reviewCtx.runId) openReviewPane('run', null);
   else rdSwitchTab('review');
 });
