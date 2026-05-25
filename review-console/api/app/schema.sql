@@ -265,4 +265,17 @@ CREATE TABLE IF NOT EXISTS uc_assist_config (
   CONSTRAINT uc_assist_single_row CHECK (id = 1)
 );
 
+-- ── Seed MCP servers ───────────────────────────────────────────────────────
+-- Idempotent: ON CONFLICT DO NOTHING skips rows that already exist by name.
+INSERT INTO mcp_server_configs (name, description, sse_url, enabled, created_by) VALUES
+  ('openshift-mcp',
+   'OpenShift cluster tools — list pods, logs, events, nodes, inference services',
+   'https://openshift-mcp-mcp-servers.apps.ocp.roadfeldt.com/sse',
+   true, 'seed'),
+  ('frc-scheduler-mcp',
+   'FRC scheduler — events, teams, schedules, TBA lookup',
+   'https://frc-scheduler-mcp-mcp-servers.apps.ocp.roadfeldt.com/sse',
+   true, 'seed')
+ON CONFLICT DO NOTHING;
+
 COMMIT;

@@ -487,18 +487,27 @@
   .model-pill.frontier { color:var(--accent); border-color:var(--accent-soft); }
   .model-pill.disabled { color:var(--text-faint); border-color:var(--border); }
 
-  /* ── Config / Sources ── */
-  .config-layout { width:100%; padding:24px 28px; overflow-y:auto; }
-  .config-grid   { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:16px; }
+  /* ── Config two-pane layout ── */
+  .config-layout  { display:flex; width:100%; height:100%; overflow:hidden; }
+  .config-nav     { width:192px; flex-shrink:0; overflow-y:auto; border-right:1px solid var(--border); padding:18px 0 32px; background:var(--bg-panel); }
+  .config-nav-group { padding:0 14px 22px; }
+  .config-nav-cat { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--text-faint); padding:4px 0 6px; cursor:pointer; }
+  .config-nav-cat:hover { color:var(--text); }
+  .config-nav-link { display:block; font-size:12px; color:var(--text-dim); padding:3px 0 3px 10px; cursor:pointer; border-left:2px solid transparent; transition:color .15s,border-color .15s; line-height:1.5; }
+  .config-nav-link:hover { color:var(--text); }
+  .config-nav-link.active { color:var(--accent); border-left-color:var(--accent); }
+  .config-content { flex:1; overflow-y:auto; padding:24px 28px 48px; }
+  .cfg-sec-hdr   { margin:36px 0 14px; padding-bottom:9px; border-bottom:1px solid var(--border); }
+  .cfg-sec-hdr:first-child { margin-top:0; }
+  .cfg-sec-title { display:block; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--text-faint); }
+  .cfg-sec-sub   { display:block; font-size:10px; color:var(--text-faint); margin-top:3px; line-height:1.5; }
+  .cfg-card      { margin-top:12px; }
+  /* shared panel styles */
   .panel-card    { background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; overflow:hidden; }
   .panel-card-header { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px; }
   .panel-card-header .pc-title { font-size:13px; color:var(--text); }
   .panel-card-header .pc-sub   { font-size:10px; color:var(--text-faint); }
   .panel-card-body { padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
-  .config-section { display:flex; align-items:center; gap:12px; margin:28px 0 14px; }
-  .config-section::after { content:''; flex:1; height:1px; background:var(--border); }
-  .config-section-label { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--text-faint); white-space:nowrap; }
-  .config-section-sub { font-size:10px; color:var(--text-faint); white-space:nowrap; }
   .mcp-row { display:flex; align-items:center; gap:10px; padding:9px 16px; border-bottom:1px solid var(--border); font-size:12px; }
   .mcp-row:last-child { border-bottom:none; }
   .mcp-row .mcp-name { font-weight:500; min-width:140px; }
@@ -762,15 +771,34 @@
 <!-- ══════════════════════════ CONFIG ══════════════════════════ -->
 <section class="view" id="view-config">
   <div class="config-layout">
-    <div class="detail-title">Console <em>configuration</em></div>
-    <div class="detail-sub">Pipeline sources · AI models · MCP integrations</div>
 
-    <div class="config-section">
-      <span class="config-section-label">Pipeline Sources</span>
-      <span class="config-section-sub">Spec &amp; corpus repos trigger pod rollouts · Inference endpoint is read at run time</span>
-    </div>
+    <!-- ── Left nav ── -->
+    <nav class="config-nav" id="configNav">
+      <div class="config-nav-group">
+        <div class="config-nav-cat" data-target="cfgSec-pipeline">Pipeline Sources</div>
+        <a class="config-nav-link" data-target="configSpecPanel">Spec repository</a>
+        <a class="config-nav-link" data-target="configCorpusPanel">Corpus repository</a>
+        <a class="config-nav-link" data-target="configInferencePanel">Inference endpoint</a>
+      </div>
+      <div class="config-nav-group">
+        <div class="config-nav-cat" data-target="cfgSec-aimodels">AI Models</div>
+        <a class="config-nav-link" data-target="configModelsPanel">Review models</a>
+        <a class="config-nav-link" data-target="configUCAssistPanel">UC Assist</a>
+      </div>
+      <div class="config-nav-group">
+        <div class="config-nav-cat" data-target="cfgSec-integrations">Integrations</div>
+        <a class="config-nav-link" data-target="configMCPPanel">MCP servers</a>
+      </div>
+    </nav>
 
-    <div class="config-grid">
+    <!-- ── Right content ── -->
+    <div class="config-content" id="configContent">
+
+      <div class="cfg-sec-hdr" id="cfgSec-pipeline">
+        <span class="cfg-sec-title">Pipeline Sources</span>
+        <span class="cfg-sec-sub">Spec &amp; corpus repos trigger a ~60s pod rollout · Inference endpoint is read at pipeline-run trigger time, no restart needed</span>
+      </div>
+
       <div class="panel-card" id="configSpecPanel">
         <div class="panel-card-header"><div>
           <div class="pc-title">Spec repository</div>
@@ -800,7 +828,7 @@
           </div>
         </div>
       </div>
-      <div class="panel-card" id="configCorpusPanel">
+      <div class="cfg-card panel-card" id="configCorpusPanel">
         <div class="panel-card-header"><div>
           <div class="pc-title">Corpus repository</div>
           <div class="pc-sub">Use cases + baselines</div>
@@ -830,7 +858,7 @@
           </div>
         </div>
       </div>
-      <div class="panel-card" id="configInferencePanel">
+      <div class="cfg-card panel-card" id="configInferencePanel">
         <div class="panel-card-header"><div>
           <div class="pc-title">Inference endpoint</div>
           <div class="pc-sub">OpenAI-compatible /v1 — read at pipeline-run trigger time</div>
@@ -861,160 +889,151 @@
           <div class="form-hint" style="margin-top:6px;">Test probes <code>/models</code> on the endpoint. Apply runs Test first; failure offers "Apply anyway". No pod restart — next pipeline run picks up the new values.</div>
         </div>
       </div>
-    </div>
-    <div style="font-size:11px; color:var(--text-faint); line-height:1.7;">
-      Switching the <b>spec</b> retargets the MCP that Stage 2 calls — affects every in-flight or subsequent analysis.
-      Switching the <b>corpus</b> changes which use cases the review console loads. Both trigger a ~60s pod rollout.
-      Switching <b>inference</b> takes effect on the next pipeline run (no rollout).
-    </div>
 
-    <div class="config-section">
-      <span class="config-section-label">AI Models</span>
-      <span class="config-section-sub">Architectural review models · UC authoring assistant</span>
-    </div>
 
-    <!-- Review Models -->
-    <div class="panel-card" id="configModelsPanel">
-      <div class="panel-card-header" style="justify-content:space-between;">
-        <div>
-          <div class="pc-title">Review models</div>
-          <div class="pc-sub">Local and frontier models available for architectural review</div>
+      <div class="cfg-sec-hdr" id="cfgSec-aimodels">
+        <span class="cfg-sec-title">AI Models</span>
+        <span class="cfg-sec-sub">Architectural review models and the UC authoring assistant</span>
+      </div>
+
+      <div class="panel-card" id="configModelsPanel">
+        <div class="panel-card-header" style="justify-content:space-between;">
+          <div>
+            <div class="pc-title">Review models</div>
+            <div class="pc-sub">Local and frontier models available for architectural review</div>
+          </div>
+          <button class="btn ghost btn-sm" id="addModelBtn">+ Add model</button>
         </div>
-        <button class="btn ghost btn-sm" id="addModelBtn">+ Add model</button>
+        <div id="modelList" style="min-height:40px;"></div>
       </div>
-      <div id="modelList" style="min-height:40px;"></div>
-    </div>
 
-    <!-- Inline add/edit form -->
-    <div id="modelFormCard" class="panel-card" style="margin-top:12px;display:none;">
-      <div class="panel-card-header">
-        <div class="pc-title" id="modelFormTitle">Add model</div>
-      </div>
-      <div class="panel-card-body">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
-          <div class="form-field"><label>Name</label>
-            <input id="mfName" placeholder="e.g. Qwen3-32B (local)" /></div>
-          <div class="form-field"><label>Provider</label>
-            <select id="mfProvider">
-              <option value="openai">OpenAI-compatible</option>
-              <option value="anthropic">Anthropic</option>
-            </select></div>
-          <div class="form-field"><label>Endpoint URL</label>
-            <input id="mfEndpoint" placeholder="https://api.anthropic.com or http://host:8080" /></div>
-          <div class="form-field"><label>Model ID</label>
-            <input id="mfModelId" placeholder="claude-opus-4-7 or qwen3-32b" /></div>
-          <div class="form-field"><label>API Key <span style="color:var(--text-faint);font-weight:400;">(blank = keep existing)</span></label>
-            <input id="mfApiKey" type="password" placeholder="sk-… or blank for local" /></div>
-          <div class="form-field" style="display:flex;flex-direction:column;gap:8px;justify-content:flex-end;">
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
-              <input type="checkbox" id="mfLocal" /> Local / no auth
-            </label>
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
-              <input type="checkbox" id="mfEnabled" checked /> Enabled
-            </label>
+      <div id="modelFormCard" class="cfg-card panel-card" style="display:none;">
+        <div class="panel-card-header">
+          <div class="pc-title" id="modelFormTitle">Add model</div>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
+            <div class="form-field"><label>Name</label>
+              <input id="mfName" placeholder="e.g. Qwen3-32B (local)" /></div>
+            <div class="form-field"><label>Provider</label>
+              <select id="mfProvider">
+                <option value="openai">OpenAI-compatible</option>
+                <option value="anthropic">Anthropic</option>
+              </select></div>
+            <div class="form-field"><label>Endpoint URL</label>
+              <input id="mfEndpoint" placeholder="https://api.anthropic.com or http://host:8080" /></div>
+            <div class="form-field"><label>Model ID</label>
+              <input id="mfModelId" placeholder="claude-opus-4-7 or qwen3-32b" /></div>
+            <div class="form-field"><label>API Key <span style="color:var(--text-faint);font-weight:400;">(blank = keep existing)</span></label>
+              <input id="mfApiKey" type="password" placeholder="sk-… or blank for local" /></div>
+            <div class="form-field" style="display:flex;flex-direction:column;gap:8px;justify-content:flex-end;">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+                <input type="checkbox" id="mfLocal" /> Local / no auth
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+                <input type="checkbox" id="mfEnabled" checked /> Enabled
+              </label>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+            <button class="btn primary" id="saveModelBtn">Save</button>
+            <button class="btn ghost" id="cancelModelBtn">Cancel</button>
+            <span id="modelFormMsg" style="font-size:11px;color:var(--text-faint);"></span>
           </div>
         </div>
-        <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
-          <button class="btn primary" id="saveModelBtn">Save</button>
-          <button class="btn ghost" id="cancelModelBtn">Cancel</button>
-          <span id="modelFormMsg" style="font-size:11px;color:var(--text-faint);"></span>
-        </div>
       </div>
-    </div>
 
-    <!-- UC Assist -->
-    <div class="panel-card" id="configUCAssistPanel" style="margin-top:12px;">
-      <div class="panel-card-header">
-        <div>
-          <div class="pc-title">UC Assist</div>
-          <div class="pc-sub">LLM endpoint used for NL-assisted use case authoring (✦ Assist in the UC editor)</div>
+      <div class="cfg-card panel-card" id="configUCAssistPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">UC Assist</div>
+            <div class="pc-sub">LLM endpoint for NL-assisted use case authoring (✦ Assist in the UC editor)</div>
+          </div>
+          <span id="ucAssistCfgStatus" style="font-size:10px;color:var(--text-faint);"></span>
         </div>
-        <span id="ucAssistCfgStatus" style="font-size:10px;color:var(--text-faint);"></span>
+        <div class="panel-card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
+            <div class="form-field"><label>Provider</label>
+              <select id="uacProvider">
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI-compatible</option>
+              </select></div>
+            <div class="form-field"><label>Model ID</label>
+              <input id="uacModelId" placeholder="claude-opus-4-7-20251001 or qwen3-32b" /></div>
+            <div class="form-field"><label>Endpoint URL</label>
+              <input id="uacEndpoint" placeholder="https://api.anthropic.com or http://host:8080" /></div>
+            <div class="form-field"><label>API Key <span style="color:var(--text-faint);font-weight:400;">(blank = keep existing)</span></label>
+              <input id="uacApiKey" type="password" placeholder="sk-ant-… or blank to keep" /></div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;cursor:pointer;">
+            <input type="checkbox" id="uacEnabled" checked /> Enabled
+          </label>
+          <div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
+            <button class="btn primary" id="saveUCAssistBtn">Save</button>
+            <span id="uacMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+        </div>
       </div>
-      <div class="panel-card-body">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
-          <div class="form-field"><label>Provider</label>
-            <select id="uacProvider">
-              <option value="anthropic">Anthropic</option>
-              <option value="openai">OpenAI-compatible</option>
-            </select></div>
-          <div class="form-field"><label>Model ID</label>
-            <input id="uacModelId" placeholder="claude-opus-4-7-20251001 or qwen3-32b" /></div>
-          <div class="form-field"><label>Endpoint URL</label>
-            <input id="uacEndpoint" placeholder="https://api.anthropic.com or http://host:8080" /></div>
-          <div class="form-field"><label>API Key <span style="color:var(--text-faint);font-weight:400;">(blank = keep existing)</span></label>
-            <input id="uacApiKey" type="password" placeholder="sk-ant-… or blank to keep" /></div>
-        </div>
-        <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;cursor:pointer;">
-          <input type="checkbox" id="uacEnabled" checked /> Enabled
-        </label>
-        <div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
-          <button class="btn primary" id="saveUCAssistBtn">Save</button>
-          <span id="uacMsg" style="font-size:11px;color:var(--text-faint);"></span>
-        </div>
-      </div>
-    </div>
 
-    <div class="config-section">
-      <span class="config-section-label">Integrations</span>
-      <span class="config-section-sub">MCP servers · tool connections for Claude Code and other agents</span>
-    </div>
+      <div class="cfg-sec-hdr" id="cfgSec-integrations">
+        <span class="cfg-sec-title">Integrations</span>
+        <span class="cfg-sec-sub">MCP servers — SSE tool connections for Claude Code and other agents</span>
+      </div>
 
-    <!-- MCP Servers -->
-    <div class="panel-card" id="configMCPPanel">
-      <div class="panel-card-header" style="justify-content:space-between;">
-        <div>
-          <div class="pc-title">MCP servers</div>
-          <div class="pc-sub">SSE endpoints exposed to Claude Code, Cursor, and other MCP-compatible tools</div>
+      <div class="panel-card" id="configMCPPanel">
+        <div class="panel-card-header" style="justify-content:space-between;">
+          <div>
+            <div class="pc-title">MCP servers</div>
+            <div class="pc-sub">SSE endpoints exposed to Claude Code, Cursor, and other MCP-compatible tools</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span id="mcpHealthSummary" style="font-size:10px;color:var(--text-faint);"></span>
+            <button class="btn ghost btn-sm" id="addMCPBtn">+ Add server</button>
+          </div>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;">
-          <span id="mcpHealthSummary" style="font-size:10px;color:var(--text-faint);"></span>
-          <button class="btn ghost btn-sm" id="addMCPBtn">+ Add server</button>
+        <div id="mcpServerList" style="min-height:32px;"></div>
+        <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:10px;">
+          <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);">Connect tools</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn ghost btn-sm" id="copyClaudeCodeBtn" title="Copy mcpServers block for ~/.claude.json">Copy Claude Code config</button>
+            <button class="btn ghost btn-sm" id="copyCursorBtn" title="Copy mcpServers block for Cursor / Windsurf settings">Copy Cursor / Windsurf config</button>
+          </div>
+          <div class="form-hint">Paste into <code>~/.claude.json</code> (Claude Code) or <code>.cursor/mcp.json</code> / <code>.windsurf/mcp_config.json</code> (Cursor / Windsurf). Only enabled servers are included.</div>
         </div>
       </div>
-      <div id="mcpServerList" style="min-height:32px;"></div>
-      <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:10px;">
-        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);">Connect tools</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn ghost btn-sm" id="copyClaudeCodeBtn" title="Copy mcpServers block for ~/.claude.json">Copy Claude Code config</button>
-          <button class="btn ghost btn-sm" id="copyCursorBtn" title="Copy mcpServers block for Cursor / Windsurf settings">Copy Cursor / Windsurf config</button>
-        </div>
-        <div class="form-hint">Paste into <code>~/.claude.json</code> (Claude Code) or <code>.cursor/mcp.json</code> / <code>.windsurf/mcp_config.json</code> (Cursor / Windsurf). Only enabled servers are included.</div>
-      </div>
-    </div>
 
-    <!-- MCP add/edit form -->
-    <div id="mcpFormCard" class="panel-card" style="margin-top:12px;display:none;">
-      <div class="panel-card-header">
-        <div class="pc-title" id="mcpFormTitle">Add MCP server</div>
-      </div>
-      <div class="panel-card-body">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
-          <div class="form-field"><label>Name</label>
-            <input id="mcpfName" placeholder="e.g. openshift-mcp" /></div>
-          <div class="form-field"><label>SSE URL</label>
-            <input id="mcpfUrl" placeholder="https://…/sse" /></div>
-          <div class="form-field" style="grid-column:1/-1;"><label>Description <span style="color:var(--text-faint);font-weight:400;">(optional)</span></label>
-            <input id="mcpfDesc" placeholder="e.g. OpenShift cluster tools — list pods, logs, events" /></div>
+      <div id="mcpFormCard" class="cfg-card panel-card" style="display:none;">
+        <div class="panel-card-header">
+          <div class="pc-title" id="mcpFormTitle">Add MCP server</div>
         </div>
-        <label style="display:flex;align-items:center;gap:8px;margin-top:4px;font-size:12px;cursor:pointer;">
-          <input type="checkbox" id="mcpfEnabled" checked /> Enabled
-        </label>
-        <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
-          <button class="btn primary" id="saveMCPBtn">Save</button>
-          <button class="btn ghost" id="cancelMCPBtn">Cancel</button>
-          <span id="mcpFormMsg" style="font-size:11px;color:var(--text-faint);"></span>
+        <div class="panel-card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
+            <div class="form-field"><label>Name</label>
+              <input id="mcpfName" placeholder="e.g. openshift-mcp" /></div>
+            <div class="form-field"><label>SSE URL</label>
+              <input id="mcpfUrl" placeholder="https://…/sse" /></div>
+            <div class="form-field" style="grid-column:1/-1;"><label>Description <span style="color:var(--text-faint);font-weight:400;">(optional)</span></label>
+              <input id="mcpfDesc" placeholder="e.g. OpenShift cluster tools — list pods, logs, events" /></div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:4px;font-size:12px;cursor:pointer;">
+            <input type="checkbox" id="mcpfEnabled" checked /> Enabled
+          </label>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+            <button class="btn primary" id="saveMCPBtn">Save</button>
+            <button class="btn ghost" id="cancelMCPBtn">Cancel</button>
+            <span id="mcpFormMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
         </div>
       </div>
-    </div>
 
-  </div>
+    </div><!-- /config-content -->
+  </div><!-- /config-layout -->
 </section>
 
 </main>
 
 <footer>
-  <span>DAV Console · v0.9.2</span>
+  <span>DAV Console · v0.9.3</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -5041,6 +5060,44 @@ document.getElementById('saveUCAssistBtn').addEventListener('click', async () =>
   }
 });
 
+// ── Config nav: scroll-spy + click-to-scroll ─────────────────────────────────
+let _configNavReady = false;
+const _cfgPanelIds = [
+  'configSpecPanel','configCorpusPanel','configInferencePanel',
+  'configModelsPanel','configUCAssistPanel','configMCPPanel',
+];
+
+function _updateConfigNavActive() {
+  const content = document.getElementById('configContent');
+  if (!content) return;
+  const cTop = content.getBoundingClientRect().top;
+  let activeId = _cfgPanelIds[0];
+  for (const id of _cfgPanelIds) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    if (el.getBoundingClientRect().top - cTop <= 40) activeId = id;
+  }
+  document.querySelectorAll('#configNav .config-nav-link').forEach(l => {
+    l.classList.toggle('active', l.dataset.target === activeId);
+  });
+}
+
+function setupConfigNav() {
+  _updateConfigNavActive();
+  if (_configNavReady) return;
+  _configNavReady = true;
+  const content = document.getElementById('configContent');
+  document.querySelectorAll('#configNav [data-target]').forEach(el => {
+    el.addEventListener('click', () => {
+      const target = document.getElementById(el.dataset.target);
+      if (!target) return;
+      const offset = target.getBoundingClientRect().top - content.getBoundingClientRect().top;
+      content.scrollBy({ top: offset - 8, behavior: 'smooth' });
+    });
+  });
+  content.addEventListener('scroll', _updateConfigNavActive, { passive: true });
+}
+
 // Load all Config tab data when shown
 document.querySelectorAll('nav.tabs button').forEach(b => {
   if (b.dataset.view === 'config') {
@@ -5049,6 +5106,7 @@ document.querySelectorAll('nav.tabs button').forEach(b => {
       renderModelList();
       await loadUCAssistConfig();
       await loadMCPServers();
+      setupConfigNav();
     });
   }
 });
