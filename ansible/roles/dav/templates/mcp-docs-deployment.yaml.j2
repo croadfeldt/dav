@@ -114,3 +114,18 @@ spec:
     - port: 8080
       targetPort: 8080
       name: http
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: dav-docs-mcp
+  namespace: {{ dav_namespace }}
+spec:
+  to:
+    kind: Service
+    name: dav-docs-mcp
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

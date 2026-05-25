@@ -277,6 +277,10 @@ INSERT INTO mcp_server_configs (name, description, sse_url, enabled, created_by)
   ('frc-scheduler-mcp',
    'FRC scheduler — events, teams, schedules, TBA lookup',
    'https://frc-scheduler-mcp-mcp-servers.apps.ocp.roadfeldt.com/sse',
+   true, 'seed'),
+  ('dav-docs-mcp',
+   'DCM architecture spec — served via MCP for use with Claude Code and agents',
+   'https://dav-docs-mcp-dav.apps.ocp.roadfeldt.com/sse',
    true, 'seed')
 ON CONFLICT DO NOTHING;
 

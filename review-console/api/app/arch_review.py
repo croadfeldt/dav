@@ -166,7 +166,12 @@ async def _stream_openai(
     user_prompt: str,
     timeout: float,
 ) -> AsyncIterator[str]:
-    url = f"{endpoint_url}/v1/chat/completions"
+    # Strip /v1 suffix if the user included it in the stored endpoint URL,
+    # then always append the full path, avoiding double /v1/v1/... 404s.
+    base = endpoint_url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    url = f"{base}/v1/chat/completions"
     headers: dict[str, str] = {"content-type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"

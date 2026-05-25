@@ -1529,6 +1529,9 @@ async function init() {
   initTheme();
   try { await Promise.all([loadMe(), loadRunStatus()]); setApiStatus(true); }
   catch (e) { console.error(e); setApiStatus(false, e.message); }
+  // Pre-load review models so the arch review selector is ready on any tab,
+  // not only after visiting Config.
+  loadReviewModels().catch(() => {});
   switchView('runs');
 }
 

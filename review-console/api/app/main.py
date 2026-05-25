@@ -1971,6 +1971,12 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             return None
 
     async with conn.transaction():
+        # Serialize concurrent ingest requests for the same run (auto-ingest on
+        # selection can race with a manual Re-ingest click). Lock key is a
+        # stable 63-bit hash of the run_id so it never collides with schema.sql.
+        import hashlib as _hashlib
+        _lock_key = int(_hashlib.md5(f"ingest:{run_id}".encode()).hexdigest()[:15], 16)
+        await conn.execute(f"SELECT pg_advisory_xact_lock({_lock_key})")
         # Clear existing ingestion for this run so re-ingestion is safe
         await conn.execute("DELETE FROM analysis_runs WHERE run_id=$1", run_id)
 
