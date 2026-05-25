@@ -1,20 +1,19 @@
 """NL-assisted UC authoring.
 
-Calls an Anthropic-compatible chat API to help the user draft or refine
-use case YAML. Reads configuration from environment variables:
+Configuration priority (highest wins):
+  1. DB row in uc_assist_config (managed via Config → UC Assist in the UI)
+  2. Environment variables:
+       DAV_UC_ASSIST_ENDPOINT  — base URL (default: https://api.anthropic.com)
+       DAV_UC_ASSIST_API_KEY   — API key
+       DAV_UC_ASSIST_MODEL     — model ID (default: claude-opus-4-7-20251001)
 
-  DAV_UC_ASSIST_ENDPOINT  — base URL of the API (default: Anthropic)
-  DAV_UC_ASSIST_API_KEY   — API key
-  DAV_UC_ASSIST_MODEL     — model ID (default: claude-opus-4-7-20251001)
-
-All three must be set for the endpoint to be enabled.
+Pass the asyncpg pool to chat() so it can resolve DB config at call time.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -75,11 +74,34 @@ If the user's request is ambiguous, make reasonable assumptions and note them in
 
 
 def is_available() -> bool:
+    """True when the env-var fallback is usable (no DB pool available)."""
     return bool(ASSIST_API_KEY and ASSIST_ENDPOINT)
 
 
-def _is_anthropic() -> bool:
-    return "anthropic.com" in ASSIST_ENDPOINT
+async def get_db_config(pool) -> Optional[dict]:
+    """Return the DB-stored config dict, or None if absent/disabled."""
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM uc_assist_config WHERE id=1")
+        if row and row["enabled"] and row["api_key"]:
+            return dict(row)
+    except Exception:
+        log.exception("Failed to read uc_assist_config from DB")
+    return None
+
+
+def _resolve_config(db_cfg: Optional[dict]) -> Optional[dict]:
+    """Return the effective config (DB preferred, env-var fallback)."""
+    if db_cfg:
+        return db_cfg
+    if ASSIST_API_KEY and ASSIST_ENDPOINT:
+        return {
+            "provider": "anthropic" if "anthropic.com" in ASSIST_ENDPOINT else "openai",
+            "endpoint_url": ASSIST_ENDPOINT,
+            "model_id": ASSIST_MODEL,
+            "api_key": ASSIST_API_KEY,
+        }
+    return None
 
 
 async def chat(
@@ -87,14 +109,17 @@ async def chat(
     current_yaml: Optional[str] = None,
     context: Optional[str] = None,
     timeout: float = 60.0,
+    pool: Any = None,
 ) -> dict:
     """Call the assist model with the user's message and optional existing YAML.
 
     Returns {"explanation": str, "yaml_suggestion": str | None, "raw": str}.
     On error returns {"error": str}.
     """
-    if not is_available():
-        return {"error": "UC assist not configured (DAV_UC_ASSIST_API_KEY and DAV_UC_ASSIST_ENDPOINT required)"}
+    db_cfg = await get_db_config(pool) if pool is not None else None
+    cfg = _resolve_config(db_cfg)
+    if not cfg:
+        return {"error": "UC assist not configured — add credentials in Config → UC Assist"}
 
     parts = []
     if current_yaml and current_yaml.strip():
@@ -105,10 +130,10 @@ async def chat(
     full_user = "\n".join(parts)
 
     try:
-        if _is_anthropic():
-            result = await _call_anthropic(full_user, timeout)
+        if cfg.get("provider") == "anthropic":
+            result = await _call_anthropic(full_user, timeout, cfg)
         else:
-            result = await _call_openai_compat(full_user, timeout)
+            result = await _call_openai_compat(full_user, timeout, cfg)
     except Exception as e:
         log.exception("UC assist API call failed")
         return {"error": str(e)}
@@ -116,15 +141,15 @@ async def chat(
     return _parse_response(result)
 
 
-async def _call_anthropic(user_message: str, timeout: float) -> str:
-    url = f"{ASSIST_ENDPOINT}/v1/messages"
+async def _call_anthropic(user_message: str, timeout: float, cfg: dict) -> str:
+    url = f"{cfg['endpoint_url'].rstrip('/')}/v1/messages"
     headers = {
-        "x-api-key": ASSIST_API_KEY,
+        "x-api-key": cfg["api_key"],
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
     body = {
-        "model": ASSIST_MODEL,
+        "model": cfg["model_id"],
         "max_tokens": 4096,
         "system": _SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": user_message}],
@@ -138,14 +163,14 @@ async def _call_anthropic(user_message: str, timeout: float) -> str:
     return "".join(c.get("text", "") for c in content if c.get("type") == "text")
 
 
-async def _call_openai_compat(user_message: str, timeout: float) -> str:
-    url = f"{ASSIST_ENDPOINT}/v1/chat/completions"
+async def _call_openai_compat(user_message: str, timeout: float, cfg: dict) -> str:
+    url = f"{cfg['endpoint_url'].rstrip('/')}/v1/chat/completions"
     headers = {
-        "Authorization": f"Bearer {ASSIST_API_KEY}",
+        "Authorization": f"Bearer {cfg['api_key']}",
         "content-type": "application/json",
     }
     body = {
-        "model": ASSIST_MODEL,
+        "model": cfg["model_id"],
         "max_tokens": 4096,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},

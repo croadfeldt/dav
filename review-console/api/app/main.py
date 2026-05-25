@@ -873,6 +873,14 @@ class UCAssistIn(BaseModel):
     context: Optional[str] = Field(None, max_length=2000)
 
 
+class UCAssistConfigIn(BaseModel):
+    provider: str = Field(..., pattern="^(openai|anthropic)$")
+    endpoint_url: str = Field(..., min_length=1, max_length=512)
+    model_id: str = Field(..., min_length=1, max_length=256)
+    api_key: str = Field("", max_length=512)
+    enabled: bool = True
+
+
 class ModelConfigIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     provider: str = Field(..., pattern="^(openai|anthropic)$")
@@ -892,12 +900,62 @@ class ArchReviewIn(BaseModel):
 
 @app.get("/api/uc-assist/status")
 async def uc_assist_status():
-    """Check whether the UC assist endpoint is configured."""
+    """Check whether the UC assist endpoint is configured (DB preferred, env fallback)."""
+    db_cfg = await uc_assist.get_db_config(pool) if pool is not None else None
+    cfg = uc_assist._resolve_config(db_cfg)
     return {
-        "available": uc_assist.is_available(),
-        "model": uc_assist.ASSIST_MODEL,
-        "endpoint": uc_assist.ASSIST_ENDPOINT if uc_assist.is_available() else None,
+        "available": cfg is not None,
+        "source": "db" if db_cfg else ("env" if cfg else "none"),
+        "model": cfg["model_id"] if cfg else None,
+        "endpoint": cfg["endpoint_url"] if cfg else None,
     }
+
+
+@app.get("/api/uc-assist/config")
+async def get_uc_assist_config():
+    """Return current UC assist config (api_key masked)."""
+    if pool is None:
+        raise HTTPException(503, "pool not initialized")
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT * FROM uc_assist_config WHERE id=1")
+    if not row:
+        return {"configured": False}
+    return {
+        "configured": True,
+        "provider": row["provider"],
+        "endpoint_url": row["endpoint_url"],
+        "model_id": row["model_id"],
+        "api_key": "••••••••" if row["api_key"] else "",
+        "enabled": row["enabled"],
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+    }
+
+
+@app.put("/api/uc-assist/config")
+async def put_uc_assist_config(payload: UCAssistConfigIn, request: Request):
+    """Upsert the single-row UC assist config."""
+    get_user(request)
+    if pool is None:
+        raise HTTPException(503, "pool not initialized")
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            "SELECT api_key FROM uc_assist_config WHERE id=1"
+        )
+        effective_key = (
+            payload.api_key if payload.api_key
+            else (existing["api_key"] if existing else "")
+        )
+        await conn.execute(
+            """INSERT INTO uc_assist_config (id, provider, endpoint_url, model_id, api_key, enabled, updated_at)
+               VALUES (1, $1, $2, $3, $4, $5, now())
+               ON CONFLICT (id) DO UPDATE SET
+                 provider=EXCLUDED.provider, endpoint_url=EXCLUDED.endpoint_url,
+                 model_id=EXCLUDED.model_id, api_key=EXCLUDED.api_key,
+                 enabled=EXCLUDED.enabled, updated_at=now()""",
+            payload.provider, payload.endpoint_url.rstrip("/"),
+            payload.model_id, effective_key, payload.enabled,
+        )
+    return {"ok": True}
 
 
 @app.post("/api/uc-assist")
@@ -912,6 +970,7 @@ async def uc_assist_chat(payload: UCAssistIn, request: Request):
         user_message=payload.message,
         current_yaml=payload.current_yaml,
         context=payload.context,
+        pool=pool,
     )
     if "error" in result and not result.get("explanation"):
         raise HTTPException(503, result["error"])

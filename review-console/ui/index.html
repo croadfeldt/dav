@@ -902,13 +902,46 @@
       </div>
     </div>
 
+    <!-- UC Assist -->
+    <div class="panel-card" id="configUCAssistPanel" style="margin-top:20px;">
+      <div class="panel-card-header">
+        <div>
+          <div class="pc-title">UC Assist</div>
+          <div class="pc-sub">LLM endpoint used for NL-assisted use case authoring (✦ Assist in the UC editor)</div>
+        </div>
+        <span id="ucAssistCfgStatus" style="font-size:10px;color:var(--text-faint);"></span>
+      </div>
+      <div class="panel-card-body">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
+          <div class="form-field"><label>Provider</label>
+            <select id="uacProvider">
+              <option value="anthropic">Anthropic</option>
+              <option value="openai">OpenAI-compatible</option>
+            </select></div>
+          <div class="form-field"><label>Model ID</label>
+            <input id="uacModelId" placeholder="claude-opus-4-7-20251001 or qwen3-32b" /></div>
+          <div class="form-field"><label>Endpoint URL</label>
+            <input id="uacEndpoint" placeholder="https://api.anthropic.com or http://host:8080" /></div>
+          <div class="form-field"><label>API Key <span style="color:var(--text-faint);font-weight:400;">(blank = keep existing)</span></label>
+            <input id="uacApiKey" type="password" placeholder="sk-ant-… or blank to keep" /></div>
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;cursor:pointer;">
+          <input type="checkbox" id="uacEnabled" checked /> Enabled
+        </label>
+        <div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
+          <button class="btn primary" id="saveUCAssistBtn">Save</button>
+          <span id="uacMsg" style="font-size:11px;color:var(--text-faint);"></span>
+        </div>
+      </div>
+    </div>
+
   </div>
 </section>
 
 </main>
 
 <footer>
-  <span>DAV Console · v0.8.4</span>
+  <span>DAV Console · v0.9.1</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
     <span id="apiStatusText">connecting…</span>
@@ -3417,7 +3450,7 @@ async function _ucAssistSend() {
   if (!msg) return;
   const avail = await _ucAssistCheckAvail();
   if (!avail) {
-    _ucAssistAppendMessage('assistant', 'UC Assist is not configured. Set DAV_UC_ASSIST_API_KEY and DAV_UC_ASSIST_ENDPOINT on the API pod.', null, true);
+    _ucAssistAppendMessage('assistant', 'UC Assist is not configured. Add credentials in Config → UC Assist.', null, true);
     return;
   }
   _ucAssistAppendMessage('user', msg);
@@ -4735,12 +4768,73 @@ document.getElementById('rdArchReviewBtn').addEventListener('click', () => {
   openArchReview('run', null);
 });
 
+// ── UC Assist config ─────────────────────────────────────────────────────────
+
+async function loadUCAssistConfig() {
+  const statusEl = document.getElementById('ucAssistCfgStatus');
+  const msgEl = document.getElementById('uacMsg');
+  try {
+    const cfg = await api('/api/uc-assist/config');
+    if (!cfg.configured) {
+      statusEl.textContent = 'not configured';
+      return;
+    }
+    document.getElementById('uacProvider').value = cfg.provider || 'anthropic';
+    document.getElementById('uacEndpoint').value = cfg.endpoint_url || '';
+    document.getElementById('uacModelId').value = cfg.model_id || '';
+    document.getElementById('uacApiKey').value = '';  // never pre-fill key
+    document.getElementById('uacApiKey').placeholder = cfg.api_key ? '••••••••  (set — blank to keep)' : 'sk-ant-… or blank to keep';
+    document.getElementById('uacEnabled').checked = cfg.enabled;
+    statusEl.textContent = cfg.enabled ? '✓ configured' : 'disabled';
+    statusEl.style.color = cfg.enabled ? 'var(--ok)' : 'var(--text-faint)';
+  } catch (e) {
+    if (msgEl) msgEl.textContent = `Load failed: ${e.message}`;
+  }
+}
+
+document.getElementById('saveUCAssistBtn').addEventListener('click', async () => {
+  const msgEl = document.getElementById('uacMsg');
+  const statusEl = document.getElementById('ucAssistCfgStatus');
+  const btn = document.getElementById('saveUCAssistBtn');
+  const payload = {
+    provider: document.getElementById('uacProvider').value,
+    endpoint_url: document.getElementById('uacEndpoint').value.trim(),
+    model_id: document.getElementById('uacModelId').value.trim(),
+    api_key: document.getElementById('uacApiKey').value,
+    enabled: document.getElementById('uacEnabled').checked,
+  };
+  if (!payload.endpoint_url || !payload.model_id) {
+    msgEl.textContent = 'Endpoint URL and Model ID are required.';
+    msgEl.style.color = 'var(--error)';
+    return;
+  }
+  btn.disabled = true;
+  msgEl.textContent = 'Saving…';
+  msgEl.style.color = 'var(--text-faint)';
+  try {
+    await api('/api/uc-assist/config', { method: 'PUT', body: JSON.stringify(payload) });
+    msgEl.textContent = 'Saved.';
+    msgEl.style.color = 'var(--ok)';
+    statusEl.textContent = payload.enabled ? '✓ configured' : 'disabled';
+    statusEl.style.color = payload.enabled ? 'var(--ok)' : 'var(--text-faint)';
+    document.getElementById('uacApiKey').value = '';
+    document.getElementById('uacApiKey').placeholder = '••••••••  (set — blank to keep)';
+    _ucAssistAvailable = null;  // invalidate cache so status re-checks on next use
+  } catch (e) {
+    msgEl.textContent = `Save failed: ${e.message}`;
+    msgEl.style.color = 'var(--error)';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // Load models when Config tab is shown
 document.querySelectorAll('nav.tabs button').forEach(b => {
   if (b.dataset.view === 'config') {
     b.addEventListener('click', async () => {
       await loadReviewModels();
       renderModelList();
+      await loadUCAssistConfig();
     });
   }
 });

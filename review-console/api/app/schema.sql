@@ -233,4 +233,20 @@ CREATE TABLE IF NOT EXISTS review_model_configs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_review_models_name ON review_model_configs(lower(name));
 
+-- ── UC Assist config ────────────────────────────────────────────────────────
+-- Single-row config for NL-assisted UC authoring.
+-- Falls back to DAV_UC_ASSIST_* env vars when no row is present or enabled=false.
+-- api_key stored at rest; masked on GET responses.
+
+CREATE TABLE IF NOT EXISTS uc_assist_config (
+  id           INT PRIMARY KEY DEFAULT 1,
+  provider     TEXT NOT NULL CHECK (provider IN ('openai', 'anthropic')) DEFAULT 'anthropic',
+  endpoint_url TEXT NOT NULL DEFAULT 'https://api.anthropic.com',
+  model_id     TEXT NOT NULL DEFAULT 'claude-opus-4-7-20251001',
+  api_key      TEXT NOT NULL DEFAULT '',
+  enabled      BOOLEAN NOT NULL DEFAULT true,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT uc_assist_single_row CHECK (id = 1)
+);
+
 COMMIT;
