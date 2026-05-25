@@ -209,6 +209,8 @@ CREATE TABLE IF NOT EXISTS uc_gaps (
   severity         TEXT,
   ingested_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE uc_gaps ADD COLUMN IF NOT EXISTS recommendation TEXT;
+ALTER TABLE uc_gaps ADD COLUMN IF NOT EXISTS rationale TEXT;
 CREATE INDEX IF NOT EXISTS idx_uc_gaps_run    ON uc_gaps(run_id);
 CREATE INDEX IF NOT EXISTS idx_uc_gaps_uuid   ON uc_gaps(uc_uuid);
 CREATE INDEX IF NOT EXISTS idx_uc_gaps_gap_id ON uc_gaps(gap_id);

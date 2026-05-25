@@ -2049,21 +2049,25 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             analysis_id = row["id"]
             ingested_ucs += 1
 
-            for gap in gaps:
+            for gap_idx, gap in enumerate(gaps, 1):
                 if not isinstance(gap, dict):
                     continue
                 sev = gap.get("severity")
                 if isinstance(sev, dict):
                     sev = sev.get("label")
+                # Engine schema has no gap_id/title fields; auto-generate them.
+                gap_id = gap.get("gap_id") or f"GAP-{gap_idx:03d}"
+                desc = gap.get("description") or ""
+                title = gap.get("title") or (desc[:80] + ("…" if len(desc) > 80 else ""))
                 await conn.execute(
                     """INSERT INTO uc_gaps
-                       (analysis_id, run_id, uc_uuid, gap_id, title, description, severity)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7)""",
+                       (analysis_id, run_id, uc_uuid, gap_id, title,
+                        description, severity, recommendation, rationale)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)""",
                     analysis_id, run_id, uc_uuid,
-                    gap.get("gap_id"),
-                    gap.get("title"),
-                    gap.get("description"),
-                    sev,
+                    gap_id, title, desc, sev,
+                    gap.get("recommendation"),
+                    gap.get("rationale"),
                 )
                 ingested_gaps += 1
 

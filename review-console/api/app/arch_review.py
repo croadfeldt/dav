@@ -86,6 +86,8 @@ def _build_uc_prompt(uc: dict, analysis: dict, gaps: list[dict]) -> str:
             )
             if g.get("description"):
                 parts.append(f"    {g['description']}")
+            if g.get("rationale"):
+                parts.append(f"    Rationale: {g['rationale']}")
             if g.get("recommendation"):
                 parts.append(f"    Recommendation: {g['recommendation']}")
     else:
