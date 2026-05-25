@@ -118,14 +118,7 @@
   .reviewer-chip.anon { color:var(--text-faint); }
   .reviewer-chip::before { content:'◉'; color:var(--accent); margin-right:6px; font-size:9px; }
 
-  nav.tabs { display:flex; background:var(--bg-raised); border-bottom:1px solid var(--border); padding:0 20px; flex-shrink:0; }
-  nav.tabs button { padding:10px 18px; font-size:11px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-dim); border-bottom:2px solid transparent; transition:color .15s,border-color .15s; }
-  nav.tabs button:hover { color:var(--text); }
-  nav.tabs button.active { color:var(--accent); border-bottom-color:var(--accent); }
-  nav.tabs button .badge { margin-left:6px; font-size:9px; background:var(--border); color:var(--text-dim); padding:1px 5px; border-radius:2px; }
-
-  .shell { display:flex; flex-direction:column; height:100vh; }
-  main { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+  /* Legacy .view rules — kept for any inner layout divs that still use .view */
   .view { flex:1; display:none; overflow:hidden; }
   .view.active { display:flex; }
 
@@ -139,18 +132,7 @@
   .dropdown-item.active::before { content:'●'; margin-right:6px; font-size:8px; }
   .dropdown-item:not(.active)::before { content:'○'; margin-right:6px; font-size:8px; color:var(--text-faint); }
 
-  /* ── Run-detail drawer ── */
-  .run-drawer { position:fixed; top:52px; right:-960px; bottom:36px; width:960px; max-width:95vw;
-                background:var(--bg-panel); border-left:1px solid var(--border-bright);
-                z-index:90; transition:right .25s ease; overflow:hidden; display:flex; flex-direction:column;
-                box-shadow:-8px 0 24px rgba(0,0,0,0.25); }
-  .run-drawer.open { right:0; }
-  /* Layout picker chip in the drawer header */
-  .rd-layout-picker { display:inline-block; position:relative; margin-right:8px; }
-  .rd-layout-btn { padding:3px 8px; background:var(--bg-input); border:1px solid var(--border); border-radius:2px; font-size:10px; color:var(--text-dim); cursor:pointer; text-transform:uppercase; letter-spacing:0.1em; }
-  .rd-layout-btn:hover { color:var(--text); border-color:var(--border-bright); }
-  .rd-layout-menu { display:none; position:absolute; right:0; top:calc(100% + 4px); background:var(--bg-panel); border:1px solid var(--border-bright); border-radius:2px; min-width:180px; padding:4px 0; z-index:120; box-shadow:0 4px 16px rgba(0,0,0,0.35); }
-  .rd-layout-menu.open { display:block; }
+  /* ── Run-detail panel (dynamically injected into rdRunBody) ── */
   /* Tail panels — collapsible + fixed-height + auto-scrolling */
   .rd-tail-section { margin-bottom:18px; }
   .rd-tail-header { display:flex; align-items:center; justify-content:space-between; padding:6px 8px; background:var(--bg-raised); border:1px solid var(--border); border-radius:2px 2px 0 0; cursor:pointer; user-select:none; }
@@ -178,30 +160,8 @@
   .turn-rec .kind.tool { background:var(--accent-bg); color:var(--accent); }
   .turn-rec .body { color:var(--text); white-space:pre-wrap; word-break:break-word; }
   .turn-rec .body .sub { color:var(--text-dim); font-size:10px; }
-  /* Layout-mode-specific overrides — set on .run-drawer via data-rd-layout */
-  /* Detailed: full original layout — tiles shown, no scroll constraints, no compact row */
-  .run-drawer[data-rd-layout="detailed"] #rdCompactStats   { display:none !important; }
-  .run-drawer[data-rd-layout="detailed"] .rd-tail-section .rd-tail-body { max-height:none; overflow-y:visible; }
-  /* Stacked + tail panels: compact row + scrollable tails */
-  .run-drawer[data-rd-layout="stacked-tails"] #rdCompactStats { display:flex !important; }
-  .run-drawer[data-rd-layout="stacked-tails"] #rdGpusSection, .run-drawer[data-rd-layout="stacked-tails"] #rdVllmSection { display:none; }
-  .run-drawer[data-rd-layout="stacked-tails"] .rd-tail-body  { max-height:240px; }
-  /* Side-by-side: same hide-tiles + 2-col arrangement for tasks/prompts */
-  .run-drawer[data-rd-layout="side-by-side"] #rdCompactStats { display:flex !important; }
-  .run-drawer[data-rd-layout="side-by-side"] #rdGpusSection, .run-drawer[data-rd-layout="side-by-side"] #rdVllmSection { display:none; }
-  .run-drawer[data-rd-layout="side-by-side"] .rd-twocol  { display:grid !important; grid-template-columns:1fr 1fr; gap:10px; }
-  .run-drawer[data-rd-layout="side-by-side"] .rd-tail-body { max-height:280px; }
-  /* Prompts dominant: thin top stats, hide tiles, prompts panel takes the most */
-  .run-drawer[data-rd-layout="prompts-dominant"] #rdCompactStats { display:flex !important; }
-  .run-drawer[data-rd-layout="prompts-dominant"] #rdGpusSection, .run-drawer[data-rd-layout="prompts-dominant"] #rdVllmSection { display:none; }
-  .run-drawer[data-rd-layout="prompts-dominant"] #rdTasksSection .rd-tail-body  { max-height:140px; }
-  .run-drawer[data-rd-layout="prompts-dominant"] #rdPromptsSection .rd-tail-body { max-height:560px; }
-  /* twocol-grid host is a passthrough unless the side-by-side rule overrides */
+  /* twocol-grid passthrough (used in tasks+prompts two-column arrangement) */
   .rd-twocol { display:contents; }
-  .run-drawer-header { padding:14px 20px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; flex-shrink:0; background:var(--bg-raised); }
-  .run-drawer-title { font-family:var(--serif); font-size:18px; font-weight:400; }
-  .run-drawer-sub { font-size:11px; color:var(--text-dim); margin-top:2px; }
-  .run-drawer-body { flex:1; overflow-y:auto; padding:16px 20px; }
   .run-section { margin-bottom:22px; }
   .run-section-title { font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px; }
   .task-row { display:grid; grid-template-columns:18px 1fr 90px 80px; gap:10px; align-items:center; padding:6px 0; border-bottom:1px solid var(--border); font-size:12px; }
@@ -568,19 +528,148 @@
   .uc-dropdown-item:hover { background:var(--accent-bg); }
   .uc-dropdown-item .uid  { flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .uc-dropdown-item .uhandle { font-size:10px; color:var(--text-faint); white-space:nowrap; }
+
+  /* ══ PatternFly-inspired sidebar layout ══ */
+
+  /* Shell: full-height flex column */
+  .pf-shell { display:flex; flex-direction:column; height:100vh; overflow:hidden; }
+
+  /* Masthead */
+  .pf-masthead {
+    display:flex; align-items:center; gap:12px;
+    padding:0 16px; height:52px; flex-shrink:0;
+    background:var(--bg-raised); border-bottom:1px solid var(--border);
+    z-index:50;
+  }
+  .pf-masthead-toggle {
+    width:32px; height:32px; display:flex; align-items:center; justify-content:center;
+    border:none; background:none; color:var(--text-dim); font-size:16px; cursor:pointer;
+    border-radius:2px; flex-shrink:0;
+  }
+  .pf-masthead-toggle:hover { background:var(--bg-input); color:var(--text); }
+  .pf-masthead-brand { display:flex; align-items:baseline; gap:10px; text-decoration:none; color:inherit; }
+  .pf-masthead-brand .brand-mark { font-family:var(--serif); font-size:18px; font-weight:400; letter-spacing:0.01em; }
+  .pf-masthead-brand .brand-mark em { color:var(--accent); font-style:italic; font-weight:300; }
+  .pf-masthead-right { margin-left:auto; display:flex; align-items:center; gap:12px; font-size:11px; }
+
+  /* Active run chip in masthead (OpenShift project-selector pattern) */
+  .run-context-chip {
+    display:none; align-items:center; gap:6px;
+    padding:4px 10px; background:var(--bg-input); border:1px solid var(--border);
+    border-radius:2px; font-size:11px; cursor:pointer; color:var(--text-dim);
+    transition:color .15s, border-color .15s;
+  }
+  .run-context-chip.active { display:flex; }
+  .run-context-chip:hover { color:var(--text); border-color:var(--accent-soft); }
+  .run-context-chip .rcc-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); animation:pulse 1.6s infinite; flex-shrink:0; }
+  .run-context-chip .rcc-dot.done { background:var(--green); animation:none; }
+  .run-context-chip .rcc-name { font-family:var(--mono); font-size:10px; color:var(--text); }
+
+  /* Body row: sidebar + content */
+  .pf-body { display:flex; flex:1; overflow:hidden; }
+
+  /* Sidebar nav */
+  .pf-nav {
+    width:220px; flex-shrink:0;
+    background:var(--bg-input); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; overflow:hidden;
+    transition:width .2s ease;
+  }
+  .pf-nav.collapsed { width:48px; }
+  .pf-nav-items { flex:1; overflow-y:auto; padding:8px 0; }
+  .pf-nav-item {
+    display:flex; align-items:center; gap:12px;
+    padding:9px 14px; font-size:12px; color:var(--text-dim);
+    cursor:pointer; border-left:3px solid transparent;
+    transition:background .1s, color .1s, border-color .1s;
+    white-space:nowrap; overflow:hidden; text-decoration:none;
+  }
+  .pf-nav-item:hover { background:var(--accent-bg); color:var(--text); }
+  .pf-nav-item.active { background:var(--accent-bg); color:var(--accent); border-left-color:var(--accent); }
+  .pf-nav-item .nav-icon { font-size:14px; flex-shrink:0; width:20px; text-align:center; line-height:1; }
+  .pf-nav-item .nav-label { flex:1; overflow:hidden; text-overflow:ellipsis; }
+  .pf-nav.collapsed .nav-label { display:none; }
+  .pf-nav-footer { padding:8px 0; border-top:1px solid var(--border); }
+
+  /* Content area */
+  .pf-content { flex:1; overflow:hidden; display:flex; flex-direction:column; }
+  .pf-view { display:none; flex:1; overflow:hidden; flex-direction:column; }
+  .pf-view.active { display:flex; }
+
+  /* Runs tab: list-left + detail-right */
+  .runs-split { display:flex; width:100%; height:100%; overflow:hidden; }
+  .runs-list-panel {
+    width:380px; min-width:240px; flex-shrink:0;
+    display:flex; flex-direction:column;
+    border-right:1px solid var(--border); background:var(--bg-raised);
+    overflow:hidden;
+  }
+  .runs-detail-panel {
+    flex:1; display:flex; flex-direction:column; overflow:hidden;
+  }
+  .runs-detail-body { flex:1; overflow-y:auto; padding:16px 20px; }
+
+  /* Run list rows (replacing old table) */
+  .run-list-item {
+    display:flex; align-items:center; gap:8px;
+    padding:9px 14px; font-size:12px; color:var(--text-dim);
+    cursor:pointer; border-left:3px solid transparent;
+    border-bottom:1px solid var(--border); transition:background .1s;
+  }
+  .run-list-item:hover { background:var(--accent-bg); }
+  .run-list-item.active { background:var(--accent-bg); border-left-color:var(--accent); }
+  .run-list-item .rli-main { flex:1; min-width:0; }
+  .run-list-item .rli-name { font-size:12px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:500; }
+  .run-list-item .rli-sub { font-size:10px; color:var(--text-faint); margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .run-list-item .rli-right { flex-shrink:0; text-align:right; font-size:10px; color:var(--text-faint); }
+
+  /* Run detail panel sections (moved from drawer) */
+  .rd-panel-header {
+    padding:12px 20px; border-bottom:1px solid var(--border);
+    display:flex; justify-content:space-between; align-items:center;
+    flex-shrink:0; background:var(--bg-raised);
+  }
+  .rd-panel-title { font-family:var(--serif); font-size:18px; font-weight:400; }
+  .rd-panel-sub { font-size:11px; color:var(--text-dim); margin-top:2px; }
+  .rd-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-faint); font-family:var(--serif); font-style:italic; font-size:15px; }
+
+  /* Review & Plan tab */
+  .rp-split { display:flex; width:100%; height:100%; overflow:hidden; }
+  .rp-controls {
+    width:280px; min-width:200px; flex-shrink:0;
+    background:var(--bg-raised); border-right:1px solid var(--border);
+    overflow-y:auto; padding:16px;
+    display:flex; flex-direction:column; gap:12px;
+  }
+  .rp-controls label { font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-dim); display:block; margin-bottom:4px; }
+  .rp-controls select, .rp-controls input { width:100%; font-size:11px; }
+  .rp-output { flex:1; overflow-y:auto; padding:16px 20px; display:flex; flex-direction:column; gap:16px; }
+  .rp-section-title { font-size:11px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px; display:flex; align-items:center; gap:8px; }
+  .rp-section-title::before { content:''; display:inline-block; width:16px; height:1px; background:var(--accent); }
+  .rp-stream-wrap { display:flex; flex-direction:column; gap:6px; }
+
+  /* Footer */
+  .pf-footer { height:32px; background:var(--bg-raised); border-top:1px solid var(--border); padding:0 16px; display:flex; align-items:center; justify-content:space-between; font-size:10px; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.14em; flex-shrink:0; }
 </style>
 </head>
 <body>
 
-<div class="shell">
+<div class="pf-shell">
 
-<header>
-  <div class="brand">
+<!-- ══ Masthead ══ -->
+<header class="pf-masthead">
+  <button class="pf-masthead-toggle" id="navToggleBtn" title="Toggle sidebar">☰</button>
+  <div class="pf-masthead-brand">
     <div class="brand-mark">DAV <em>Console</em></div>
-    <div class="brand-sub">Architecture Validation · Operations</div>
   </div>
-  <div class="header-right">
-    <span id="triggerStatus" style="color:var(--text-faint)"></span>
+  <!-- Active run chip -->
+  <div class="run-context-chip" id="runContextChip" title="Click to go to Runs tab">
+    <span class="rcc-dot" id="rccDot"></span>
+    <span class="rcc-name" id="rccName">—</span>
+    <span style="color:var(--text-faint);font-size:9px;margin-left:2px;">✕</span>
+  </div>
+  <div class="pf-masthead-right">
+    <span id="triggerStatus" style="color:var(--text-faint);font-size:10px;"></span>
     <div class="theme-chip">
       <button class="theme-chip-btn" id="themeChipBtn"><span id="themeChipLabel">Auto · Amber</span></button>
       <div class="theme-menu" id="themeMenu">
@@ -599,51 +688,155 @@
   </div>
 </header>
 
-<nav class="tabs" id="tabs">
-  <button data-view="runs" class="active">Runs <span class="badge" id="badgeRuns">…</span></button>
-  <button data-view="results">Results <span class="badge" id="badgeResults">…</span></button>
-  <button data-view="usecases">Use Cases <span class="badge" id="badgeUC">…</span></button>
-  <button data-view="sets">Sets <span class="badge" id="badgeSets">…</span></button>
-  <button data-view="config">Config</button>
-</nav>
+<!-- ══ Body row ══ -->
+<div class="pf-body">
 
-<main>
-
-<!-- ══════════════════════════ RUNS ══════════════════════════ -->
-<section class="view active" id="view-runs">
-  <div style="display:flex; flex-direction:column; width:100%; height:100%; overflow:hidden;">
-    <div style="padding:14px 20px; border-bottom:1px solid var(--border); display:flex; gap:10px; align-items:center; flex-shrink:0;">
-      <button class="btn primary" id="newRunBtn">+ New Run</button>
-      <button class="btn ghost" id="refreshRunsBtn">Refresh</button>
-      <span id="runsNote" style="font-size:11px; color:var(--text-faint); margin-left:4px;"></span>
-      <span id="kwhChip" title="Cluster-wide GPU energy across all finalized runs"
-            style="margin-left:auto; padding:4px 10px; background:var(--bg-input); border:1px solid var(--border); border-radius:2px; font-size:11px; color:var(--text-dim); display:none;">
+  <!-- ── Left sidebar nav ── -->
+  <nav class="pf-nav" id="pfNav">
+    <div class="pf-nav-items">
+      <a class="pf-nav-item active" data-view="runs" href="javascript:void(0)">
+        <span class="nav-icon">▶</span><span class="nav-label">Runs <span class="badge" id="badgeRuns" style="font-size:9px;"></span></span>
+      </a>
+      <a class="pf-nav-item" data-view="results" href="javascript:void(0)">
+        <span class="nav-icon">≡</span><span class="nav-label">Results <span class="badge" id="badgeResults" style="font-size:9px;"></span></span>
+      </a>
+      <a class="pf-nav-item" data-view="usecases" href="javascript:void(0)">
+        <span class="nav-icon">✎</span><span class="nav-label">Use Cases <span class="badge" id="badgeUC" style="font-size:9px;"></span></span>
+      </a>
+      <a class="pf-nav-item" data-view="sets" href="javascript:void(0)">
+        <span class="nav-icon">⊞</span><span class="nav-label">Sets <span class="badge" id="badgeSets" style="font-size:9px;"></span></span>
+      </a>
+      <a class="pf-nav-item" data-view="review" href="javascript:void(0)">
+        <span class="nav-icon">✦</span><span class="nav-label">Review &amp; Plan</span>
+      </a>
+      <a class="pf-nav-item" data-view="config" href="javascript:void(0)">
+        <span class="nav-icon">⚙</span><span class="nav-label">Config</span>
+      </a>
+    </div>
+    <div class="pf-nav-footer" style="padding:8px 14px;font-size:10px;color:var(--text-faint);">
+      <span id="kwhChip" title="Cluster-wide GPU energy" style="display:none;">
         <span style="color:var(--accent);">⚡</span>
         <span id="kwhValue">—</span>
-        <span style="color:var(--text-faint); margin-left:6px;" id="kwhBreakdown"></span>
       </span>
     </div>
-    <div style="flex:1; overflow-y:auto;">
-      <table class="runs-table" id="runsTable">
-        <thead><tr>
-          <th style="width:220px">Run</th>
-          <th style="width:90px">Phase</th>
-          <th style="width:100px">Category</th>
-          <th style="width:90px">Mode</th>
-          <th style="width:120px">Triggered by</th>
-          <th style="width:130px">Started</th>
-          <th style="width:80px">Duration</th>
-          <th>Notes / params</th>
-        </tr></thead>
-        <tbody id="runsBody"><tr><td colspan="8" class="empty">loading…</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-</section>
+  </nav>
 
-<!-- ══════════════════════════ RESULTS ══════════════════════════ -->
-<section class="view" id="view-results">
-  <div class="split">
+  <!-- ── Content area ── -->
+  <div class="pf-content">
+
+    <!-- ══════════════ RUNS ══════════════ -->
+    <section class="pf-view active" id="view-runs">
+      <div class="runs-split">
+        <!-- Left: run list -->
+        <div class="runs-list-panel" id="runsListPanel">
+          <div class="panel-header" style="flex-shrink:0;">
+            <div class="panel-title">Runs</div>
+            <div style="display:flex;gap:6px;">
+              <button class="btn primary" style="font-size:10px;padding:4px 10px;" id="newRunBtn">+ New Run</button>
+              <button class="btn ghost btn-icon" id="refreshRunsBtn" title="Refresh">↻</button>
+            </div>
+          </div>
+          <div style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:10px;color:var(--text-faint);flex-shrink:0;" id="runsNote"></div>
+          <div class="scrollable" id="runsList"><div class="empty">loading…</div></div>
+        </div>
+        <div class="split-resizer" data-rs-left="runsListPanel" data-rs-storage="rsRunsListW"></div>
+        <!-- Right: run detail -->
+        <div class="runs-detail-panel" id="runsDetailPanel">
+          <div id="rdPanelHeader" class="rd-panel-header" style="display:none;">
+            <div>
+              <div class="rd-panel-title" id="rdTitle">—</div>
+              <div class="rd-panel-sub" id="rdSub"></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <button class="btn ghost btn-sm" id="rdViewResultsBtn" style="display:none;font-size:10px;">View Results →</button>
+            </div>
+          </div>
+          <!-- Tab strip inside run detail -->
+          <div id="rdTabStrip" class="rd-tab-strip" style="display:none;">
+            <button class="rd-tab active" id="rdTabRun">Run</button>
+            <button class="rd-tab" id="rdTabReview">Review &amp; Plan</button>
+          </div>
+          <!-- Run body -->
+          <div class="runs-detail-body" id="rdRunBody">
+            <div class="rd-empty">Select a run from the list</div>
+          </div>
+          <!-- Review body (hidden until tab clicked) -->
+          <div class="runs-detail-body" id="rdReviewBody" style="display:none;">
+            <!-- ── Architectural Review ── -->
+            <div class="rd-review-section">
+              <div class="rd-review-section-title">Architectural Review</div>
+              <div class="rd-review-section-sub" id="rdRevSubtitle">—</div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <select id="rdRevModelSel" style="flex:1;min-width:160px;"></select>
+                <select id="rdRevScopeSel" style="width:140px;">
+                  <option value="uc">This use case</option>
+                  <option value="run">Whole run</option>
+                </select>
+                <button class="btn primary btn-sm" id="rdRevRunBtn">Generate</button>
+                <button class="btn ghost btn-sm" id="rdRevCopyBtn" style="display:none;">⧉ Copy review</button>
+                <button class="btn ghost btn-sm" id="rdRevUseClaudeBtn">⧉ Use in Claude</button>
+                <button class="btn ghost btn-sm" id="rdRevReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
+              </div>
+              <div id="rdRevHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
+              <div id="rdRevStatus" style="font-size:11px;color:var(--text-faint);margin-top:4px;display:none;"></div>
+              <div id="rdRevStream" class="arch-review-stream" style="display:none;margin-top:8px;"></div>
+              <div id="rdRevNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
+                <span style="font-size:11px;color:var(--text-faint);">Review complete —</span>
+                <button class="btn ghost btn-sm" id="rdRevToEnhBtn">Plan enhancements →</button>
+              </div>
+            </div>
+            <!-- ── Enhancement Spec ── -->
+            <div class="rd-review-section" id="rdEnhSection" style="display:none;">
+              <div class="rd-review-section-title">Enhancement Spec</div>
+              <div class="rd-review-section-sub" id="rdEnhSubtitle">—</div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <select id="rdEnhModelSel" style="flex:1;min-width:160px;"></select>
+                <select id="rdEnhScopeSel" style="width:140px;">
+                  <option value="uc">This use case</option>
+                  <option value="run">Whole run</option>
+                </select>
+                <button class="btn primary btn-sm" id="rdEnhRunBtn">Generate</button>
+                <button class="btn ghost btn-sm" id="rdEnhCopyBtn" style="display:none;">⧉ Copy spec</button>
+                <button class="btn ghost btn-sm" id="rdEnhUseClaudeBtn">⧉ Use in Claude</button>
+                <button class="btn ghost btn-sm" id="rdEnhReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
+              </div>
+              <div id="rdEnhHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
+              <div id="rdEnhStatus" style="font-size:11px;color:var(--text-faint);margin-top:4px;display:none;"></div>
+              <div id="rdEnhStream" class="arch-review-stream" style="display:none;margin-top:8px;"></div>
+              <div id="rdEnhNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
+                <span style="font-size:11px;color:var(--text-faint);">Spec complete —</span>
+                <button class="btn ghost btn-sm" id="rdEnhToPrBtn">Create PR →</button>
+              </div>
+            </div>
+            <!-- ── Create PR / MR ── -->
+            <div class="rd-review-section" id="rdPrSection" style="display:none;">
+              <div class="rd-review-section-title">Create pull request / merge request</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-top:10px;">
+                <div class="form-field"><label style="font-size:10px;">Repository</label>
+                  <select id="rdPrRepoSel"></select></div>
+                <div class="form-field"><label style="font-size:10px;">Base branch</label>
+                  <input id="rdPrBaseBranch" placeholder="main" /></div>
+                <div class="form-field"><label style="font-size:10px;">New branch</label>
+                  <input id="rdPrBranch" /></div>
+                <div class="form-field"><label style="font-size:10px;">File path</label>
+                  <input id="rdPrFilePath" /></div>
+                <div class="form-field" style="grid-column:1/-1;"><label style="font-size:10px;">PR title</label>
+                  <input id="rdPrTitle" /></div>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
+                <button class="btn ghost btn-sm" id="rdPrCopyBtn">⧉ Copy PR description</button>
+                <button class="btn primary btn-sm" id="rdPrCreateBtn">Push branch + open PR</button>
+                <span id="rdPrMsg" style="font-size:11px;color:var(--text-faint);"></span>
+              </div>
+            </div>
+          </div><!-- /rdReviewBody -->
+        </div><!-- /runs-detail-panel -->
+      </div><!-- /runs-split -->
+    </section>
+
+    <!-- ══════════════ RESULTS ══════════════ -->
+    <section class="pf-view" id="view-results">
+      <div class="split">
     <div class="split-left" id="resultsRunsPanel" style="width:320px; min-width:200px;">
       <div class="panel-header">
         <div class="panel-title">Run <em>results</em></div>
@@ -709,12 +902,12 @@
         </div>
       </div>
     </div>
-  </div>
-</section>
+      </div>
+    </section>
 
-<!-- ══════════════════════════ USE CASES ══════════════════════════ -->
-<section class="view" id="view-usecases">
-  <div class="split">
+    <!-- ══════════════ USE CASES ══════════════ -->
+    <section class="pf-view" id="view-usecases">
+      <div class="split">
     <div class="split-left" style="width:340px; min-width:260px;">
       <div class="panel-header">
         <div class="panel-title">Use <em>cases</em></div>
@@ -754,12 +947,12 @@
         <div class="detail-pane"><div class="detail-empty">Select a use case or create a new one.</div></div>
       </div>
     </div>
-  </div>
-</section>
+      </div>
+    </section>
 
-<!-- ══════════════════════════ SETS ══════════════════════════ -->
-<section class="view" id="view-sets">
-  <div class="split">
+    <!-- ══════════════ SETS ══════════════ -->
+    <section class="pf-view" id="view-sets">
+      <div class="split">
     <div class="split-left" style="width:300px; min-width:220px;">
       <div class="panel-header">
         <div class="panel-title">UC <em>sets</em></div>
@@ -775,11 +968,101 @@
         <div class="detail-pane"><div class="detail-empty">Select a set or create a new one.</div></div>
       </div>
     </div>
-  </div>
-</section>
+      </div>
+    </section>
 
-<!-- ══════════════════════════ CONFIG ══════════════════════════ -->
-<section class="view" id="view-config">
+    <!-- ══════════════ REVIEW & PLAN (top-level tab) ══════════════ -->
+    <section class="pf-view" id="view-review">
+      <div class="rp-split">
+        <!-- Controls panel -->
+        <div class="rp-controls" id="rpControls">
+          <div>
+            <label>Run</label>
+            <select id="rpRunSel" style="width:100%;font-size:11px;">
+              <option value="">— select a run —</option>
+            </select>
+          </div>
+          <div>
+            <label>Scope</label>
+            <div style="display:flex;flex-direction:column;gap:6px;">
+              <label style="display:flex;align-items:center;gap:6px;font-size:11px;text-transform:none;letter-spacing:0;cursor:pointer;">
+                <input type="radio" name="rpScope" value="run" id="rpScopeRun" checked style="width:auto;height:auto;accent-color:var(--accent);border:none;background:none;" />
+                Full run
+              </label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:11px;text-transform:none;letter-spacing:0;cursor:pointer;">
+                <input type="radio" name="rpScope" value="uc" id="rpScopeUC" style="width:auto;height:auto;accent-color:var(--accent);border:none;background:none;" />
+                This UC:
+              </label>
+              <select id="rpUCSel" style="width:100%;font-size:11px;" disabled>
+                <option value="">— select run first —</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label>Model</label>
+            <select id="rpModelSel" style="width:100%;font-size:11px;">
+              <option value="">— no models —</option>
+            </select>
+          </div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
+          <button class="btn primary" id="rpRevRunBtn" style="width:100%;">▶ Run Review</button>
+          <button class="btn ghost" id="rpEnhRunBtn" style="width:100%;margin-top:4px;">▶ Run Enhancement Plan</button>
+          <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
+          <div id="rpUCLink" style="display:none;font-size:11px;color:var(--text-faint);">
+            Pre-selected from Results tab
+          </div>
+        </div>
+        <!-- Output area -->
+        <div class="rp-output" id="rpOutput">
+          <div>
+            <div class="rp-section-title">Architectural Review</div>
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+              <button class="btn ghost btn-sm" id="rpRevCopyBtn" style="display:none;">⧉ Copy</button>
+              <button class="btn ghost btn-sm" id="rpRevUseClaudeBtn">⧉ Use in Claude</button>
+              <button class="btn ghost btn-sm" id="rpRevReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
+              <span id="rpRevStatus" style="font-size:11px;color:var(--text-faint);display:none;"></span>
+            </div>
+            <div id="rpRevStream" class="arch-review-stream" style="display:none;"></div>
+            <div id="rpRevHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
+          </div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:0;">
+          <div>
+            <div class="rp-section-title">Enhancement Plan</div>
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+              <button class="btn ghost btn-sm" id="rpEnhCopyBtn" style="display:none;">⧉ Copy</button>
+              <button class="btn ghost btn-sm" id="rpEnhUseClaudeBtn">⧉ Use in Claude</button>
+              <button class="btn ghost btn-sm" id="rpEnhReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
+              <span id="rpEnhStatus" style="font-size:11px;color:var(--text-faint);display:none;"></span>
+            </div>
+            <div id="rpEnhStream" class="arch-review-stream" style="display:none;"></div>
+            <div id="rpEnhHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
+            <div id="rpEnhNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
+              <span style="font-size:11px;color:var(--text-faint);">Plan complete —</span>
+              <button class="btn ghost btn-sm" id="rpEnhToPrBtn">Create PR →</button>
+            </div>
+          </div>
+          <!-- PR section for top-level review tab -->
+          <div id="rpPrSection" style="display:none;">
+            <div class="rp-section-title">Create Pull Request</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;">
+              <div class="form-field"><label style="font-size:10px;">Repository</label><select id="rpPrRepoSel"></select></div>
+              <div class="form-field"><label style="font-size:10px;">Base branch</label><input id="rpPrBaseBranch" placeholder="main" /></div>
+              <div class="form-field"><label style="font-size:10px;">New branch</label><input id="rpPrBranch" /></div>
+              <div class="form-field"><label style="font-size:10px;">File path</label><input id="rpPrFilePath" /></div>
+              <div class="form-field" style="grid-column:1/-1;"><label style="font-size:10px;">PR title</label><input id="rpPrTitle" /></div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
+              <button class="btn ghost btn-sm" id="rpPrCopyBtn">⧉ Copy PR description</button>
+              <button class="btn primary btn-sm" id="rpPrCreateBtn">Push branch + open PR</button>
+              <span id="rpPrMsg" style="font-size:11px;color:var(--text-faint);"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ CONFIG ══════════════ -->
+    <section class="pf-view" id="view-config">
   <div class="config-layout">
 
     <!-- ── Left nav ── -->
@@ -1083,11 +1366,13 @@
 
     </div><!-- /config-content -->
   </div><!-- /config-layout -->
-</section>
+    </section>
 
-</main>
+  </div><!-- /pf-content -->
 
-<footer>
+</div><!-- /pf-body -->
+
+<footer class="pf-footer">
   <span>DAV Console · v0.9.6</span>
   <div id="apiStatusEl" style="display:flex; align-items:center;">
     <span class="api-dot"></span>
@@ -1095,169 +1380,7 @@
   </div>
 </footer>
 
-<!-- ══════════════════════════ RUN DETAIL DRAWER ══════════════════════════ -->
-<div class="run-drawer" id="runDrawer" data-rd-layout="detailed">
-  <div class="run-drawer-header">
-    <div>
-      <div class="run-drawer-title" id="rdTitle">Run detail</div>
-      <div class="run-drawer-sub" id="rdSub">—</div>
-    </div>
-    <div style="display:flex;align-items:center;gap:8px;">
-      <div class="rd-layout-picker">
-        <button class="rd-layout-btn" id="rdLayoutBtn">layout: <span id="rdLayoutLabel">detailed</span></button>
-        <div class="rd-layout-menu" id="rdLayoutMenu">
-          <button class="dropdown-item" data-rdl="detailed">Detailed (full tiles)</button>
-          <button class="dropdown-item" data-rdl="stacked-tails">Stacked + tail panels</button>
-          <button class="dropdown-item" data-rdl="side-by-side">Side-by-side dense</button>
-          <button class="dropdown-item" data-rdl="prompts-dominant">Prompts dominant</button>
-          <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
-          <button class="dropdown-item" id="rdLayoutMakeDefault" style="font-size:10px;color:var(--text-faint);">set current as default</button>
-        </div>
-      </div>
-      <button class="btn ghost btn-icon" id="rdClose">✕</button>
-    </div>
-  </div>
-  <div class="rd-tab-strip">
-    <button class="rd-tab active" id="rdTabRun">Run</button>
-    <button class="rd-tab" id="rdTabReview">Review &amp; Plan</button>
-  </div>
-  <div class="run-drawer-body" id="rdRunBody">
-    <div class="run-section" id="rdSessionSection" style="display:none;">
-      <div class="run-section-title">Session</div>
-      <div id="rdSession" class="kv-grid" style="font-size:11px"></div>
-    </div>
-    <div class="run-section" id="rdProgressSection" style="display:none;">
-      <div class="run-section-title">UC progress (live)</div>
-      <div id="rdProgress"></div>
-    </div>
-
-    <!-- Compact one-row stats; shown in stacked-tails / side-by-side / prompts-dominant -->
-    <div id="rdCompactStats" class="rd-compact-row" style="display:none;"></div>
-
-    <!-- Side-by-side host: when layout=side-by-side, the two children below render as a 2-col grid. Other layouts ignore .rd-twocol (display:contents). -->
-    <div class="rd-twocol">
-      <div class="rd-tail-section" id="rdTasksSection">
-        <div class="rd-tail-header" data-toggle="rdTasksSection">
-          <span class="lbl">Pipeline tasks <span id="rdTasksCount" style="text-transform:none;letter-spacing:0;color:var(--text-faint)"></span></span>
-          <span class="ctl">auto-scroll · click to collapse</span>
-        </div>
-        <div class="rd-tail-body" id="rdTasks"><div class="empty" style="font-size:11px">loading…</div></div>
-      </div>
-
-      <div class="rd-tail-section" id="rdPromptsSection">
-        <div class="rd-tail-header" data-toggle="rdPromptsSection">
-          <span class="lbl">Prompts &amp; responses (live) <span id="rdPromptsCount" style="text-transform:none;letter-spacing:0;color:var(--text-faint)"></span></span>
-          <span class="ctl">
-            <button id="rdPromptsExpandBtn" title="default mode for new + reset records">expand all</button>
-            <button id="rdPromptsAutoBtn" title="toggle auto-scroll">⤓ auto</button>
-            <button id="rdPromptsClearBtn" title="clear visible buffer">clear</button>
-          </span>
-        </div>
-        <div class="rd-tail-body" id="rdPrompts"><div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet · written after engine rebuild ships</div></div>
-      </div>
-    </div>
-
-    <!-- Detailed tiles; hidden in non-detailed layouts -->
-    <div class="run-section" id="rdGpusSection">
-      <div class="run-section-title">
-        GPUs (live)<span id="rdGpuFresh" class="freshness-chip"></span>
-      </div>
-      <div id="rdGpus"><div class="empty" style="font-size:11px">loading metrics…</div></div>
-      <div style="font-size:10px;color:var(--text-faint);margin-top:6px;line-height:1.6;">
-        Note: <b>VRAM</b> stays near 100% because vLLM allocates it upfront (model + KV cache pool).
-        AMD <b>GFX activity</b> on RDNA4 latches at 100% under light load — use <b>power</b> (warm-idle ~90 W per R9700; under load 200–300 W) and the vLLM <b>KV cache %</b> tile below as the real "GPU busy?" signal.
-      </div>
-    </div>
-    <div class="run-section" id="rdVllmSection">
-      <div class="run-section-title">
-        Inference (vLLM, live)<span id="rdVllmFresh" class="freshness-chip"></span>
-      </div>
-      <div id="rdVllm" class="vllm-grid"></div>
-    </div>
-
-    <div class="run-section">
-      <div class="run-section-title">Params</div>
-      <div id="rdParams" class="kv-grid" style="font-size:11px"></div>
-    </div>
-  </div>
-
-  <!-- ══ Review & Plan body ══ -->
-  <div class="run-drawer-body" id="rdReviewBody" style="display:none;">
-
-    <!-- ── Architectural Review ── -->
-    <div class="rd-review-section">
-      <div class="rd-review-section-title">Architectural Review</div>
-      <div class="rd-review-section-sub" id="rdRevSubtitle">—</div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <select id="rdRevModelSel" style="flex:1;min-width:160px;"></select>
-        <select id="rdRevScopeSel" style="width:140px;">
-          <option value="uc">This use case</option>
-          <option value="run">Whole run</option>
-        </select>
-        <button class="btn primary btn-sm" id="rdRevRunBtn">Generate</button>
-        <button class="btn ghost btn-sm" id="rdRevCopyBtn" style="display:none;">⧉ Copy review</button>
-        <button class="btn ghost btn-sm" id="rdRevUseClaudeBtn">⧉ Use in Claude</button>
-        <button class="btn ghost btn-sm" id="rdRevReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
-      </div>
-      <div id="rdRevHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
-      <div id="rdRevStatus" style="font-size:11px;color:var(--text-faint);margin-top:4px;display:none;"></div>
-      <div id="rdRevStream" class="arch-review-stream" style="display:none;margin-top:8px;"></div>
-      <div id="rdRevNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
-        <span style="font-size:11px;color:var(--text-faint);">Review complete —</span>
-        <button class="btn ghost btn-sm" id="rdRevToEnhBtn">Plan enhancements →</button>
-      </div>
-    </div>
-
-    <!-- ── Enhancement Spec ── -->
-    <div class="rd-review-section" id="rdEnhSection" style="display:none;">
-      <div class="rd-review-section-title">Enhancement Spec</div>
-      <div class="rd-review-section-sub" id="rdEnhSubtitle">—</div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <select id="rdEnhModelSel" style="flex:1;min-width:160px;"></select>
-        <select id="rdEnhScopeSel" style="width:140px;">
-          <option value="uc">This use case</option>
-          <option value="run">Whole run</option>
-        </select>
-        <button class="btn primary btn-sm" id="rdEnhRunBtn">Generate</button>
-        <button class="btn ghost btn-sm" id="rdEnhCopyBtn" style="display:none;">⧉ Copy spec</button>
-        <button class="btn ghost btn-sm" id="rdEnhUseClaudeBtn">⧉ Use in Claude</button>
-        <button class="btn ghost btn-sm" id="rdEnhReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
-      </div>
-      <div id="rdEnhHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
-      <div id="rdEnhStatus" style="font-size:11px;color:var(--text-faint);margin-top:4px;display:none;"></div>
-      <div id="rdEnhStream" class="arch-review-stream" style="display:none;margin-top:8px;"></div>
-      <div id="rdEnhNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
-        <span style="font-size:11px;color:var(--text-faint);">Spec complete —</span>
-        <button class="btn ghost btn-sm" id="rdEnhToPrBtn">Create PR →</button>
-      </div>
-    </div>
-
-    <!-- ── Create PR / MR ── -->
-    <div class="rd-review-section" id="rdPrSection" style="display:none;">
-      <div class="rd-review-section-title">Create pull request / merge request</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-top:10px;">
-        <div class="form-field"><label style="font-size:10px;">Repository</label>
-          <select id="rdPrRepoSel"></select></div>
-        <div class="form-field"><label style="font-size:10px;">Base branch</label>
-          <input id="rdPrBaseBranch" placeholder="main" /></div>
-        <div class="form-field"><label style="font-size:10px;">New branch</label>
-          <input id="rdPrBranch" /></div>
-        <div class="form-field"><label style="font-size:10px;">File path</label>
-          <input id="rdPrFilePath" /></div>
-        <div class="form-field" style="grid-column:1/-1;"><label style="font-size:10px;">PR title</label>
-          <input id="rdPrTitle" /></div>
-      </div>
-      <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
-        <button class="btn ghost btn-sm" id="rdPrCopyBtn">⧉ Copy PR description</button>
-        <button class="btn primary btn-sm" id="rdPrCreateBtn">Push branch + open PR</button>
-        <span id="rdPrMsg" style="font-size:11px;color:var(--text-faint);"></span>
-      </div>
-    </div>
-
-  </div><!-- /rdReviewBody -->
-</div>
-
-</div><!-- /shell -->
+</div><!-- /pf-shell -->
 
 <!-- ══════════════════════════ NEW RUN MODAL ══════════════════════════ -->
 <div class="modal-overlay" id="newRunModal">
@@ -1634,6 +1757,7 @@ let ucStateFilter = '';
 // ── Init ─────────────────────────────────────────────────────
 async function init() {
   initTheme();
+  initNavCollapse();
   try { await Promise.all([loadMe(), loadRunStatus()]); setApiStatus(true); }
   catch (e) { console.error(e); setApiStatus(false, e.message); }
   // Pre-load review models so the arch review selector is ready on any tab,
@@ -1664,17 +1788,51 @@ function setApiStatus(ok, msg) {
   txt.textContent = ok ? 'api ok' : ('error: ' + (msg || 'offline'));
 }
 
+// ── Sidebar nav state ────────────────────────────────────────
+let _navCollapsed = false;
+
+function initNavCollapse() {
+  try { _navCollapsed = localStorage.getItem('davNavCollapsed') === '1'; } catch(e) {}
+  const nav = document.getElementById('pfNav');
+  if (_navCollapsed) nav.classList.add('collapsed');
+}
+
+function toggleNav() {
+  _navCollapsed = !_navCollapsed;
+  document.getElementById('pfNav').classList.toggle('collapsed', _navCollapsed);
+  try { localStorage.setItem('davNavCollapsed', _navCollapsed ? '1' : '0'); } catch(e) {}
+}
+
 // ── Tab routing ──────────────────────────────────────────────
 function switchView(name) {
-  document.querySelectorAll('nav.tabs button').forEach(b =>
+  document.querySelectorAll('.pf-nav-item').forEach(b =>
     b.classList.toggle('active', b.dataset.view === name));
-  document.querySelectorAll('.view').forEach(v =>
+  document.querySelectorAll('.pf-view').forEach(v =>
     v.classList.toggle('active', v.id === 'view-' + name));
   if (name === 'runs')     loadRuns();
   if (name === 'results')  loadResults();
   if (name === 'usecases') loadUCs();
   if (name === 'sets')     loadSets();
+  if (name === 'review')   loadReviewTab();
   if (name === 'config')   loadConfig();
+}
+
+// ── Active run chip (masthead) ───────────────────────────────
+function updateRunChip(name, phase) {
+  const chip = document.getElementById('runContextChip');
+  const dot  = document.getElementById('rccDot');
+  const nm   = document.getElementById('rccName');
+  if (!name) { chip.classList.remove('active'); return; }
+  nm.textContent = name;
+  const terminal = ['Succeeded','Failed','Cancelled','TimedOut'].includes(phase);
+  dot.classList.toggle('done', terminal);
+  chip.classList.add('active');
+}
+
+function clearRunChip() {
+  document.getElementById('runContextChip').classList.remove('active');
+  _rdName = null;
+  stopRunPolling();
 }
 
 // ══════════════════════════ RUNS ══════════════════════════
@@ -1694,66 +1852,47 @@ async function loadRunsStats() {
 }
 
 async function loadRuns() {
-  document.getElementById('runsBody').innerHTML = '<tr><td colspan="7" class="empty">loading…</td></tr>';
+  document.getElementById('runsList').innerHTML = '<div class="empty">loading…</div>';
   try {
     const resp = await api('/api/runs?limit=100');
     allRuns = resp.runs || [];
     document.getElementById('badgeRuns').textContent = allRuns.length;
-    renderRunsTable();
-    if (!resp.enabled) document.getElementById('runsNote').textContent = 'Pipeline trigger not available.';
-    // Update the cluster-wide kWh chip alongside the list refresh
+    renderRunsList();
+    const noteEl = document.getElementById('runsNote');
+    noteEl.textContent = resp.enabled ? '' : 'Pipeline trigger not available.';
+    noteEl.style.display = noteEl.textContent ? '' : 'none';
     loadRunsStats();
   } catch (e) {
-    document.getElementById('runsBody').innerHTML = `<tr><td colspan="7" class="empty" style="color:var(--red)">${esc(e.message)}</td></tr>`;
+    document.getElementById('runsList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
   }
 }
 
-function renderRunsTable() {
-  const body = document.getElementById('runsBody');
+function renderRunsList() {
+  const el = document.getElementById('runsList');
   if (!allRuns.length) {
-    body.innerHTML = '<tr><td colspan="8" class="empty">No runs found. Trigger one with + New Run.</td></tr>'; return;
+    el.innerHTML = '<div class="empty">No runs found. Use + New Run to trigger one.</div>'; return;
   }
-  body.innerHTML = '';
+  el.innerHTML = '';
   allRuns.forEach(r => {
-    const tr = document.createElement('tr');
+    const item = document.createElement('div');
+    item.className = 'run-list-item' + (_rdName === r.name ? ' active' : '');
+    const friendly = r.session_name || r.name || '?';
     const params = r.params || {};
-    const paramParts = Object.entries(params)
-      .filter(([k]) => !['git-branch','commit-sha','consumer-spec-repo-url','consumer-corpus-repo-url'].includes(k))
-      .map(([k,v]) => `${k}=${v}`).join(' · ');
-    const friendly = r.session_name || '';
-    const cat = r.category || '';
-    tr.innerHTML = `
-      <td>
-        ${friendly ? `<div style="font-weight:500">${esc(friendly)}</div>` : ''}
-        <div style="font-size:${friendly?'10px':'11px'};color:var(--text-faint);font-family:var(--mono)">${esc(r.name||'?')}</div>
-      </td>
-      <td>${phaseHtml(r.phase)}</td>
-      <td>${cat ? `<span class="src-badge" style="background:var(--accent-bg);color:var(--accent);text-transform:none;letter-spacing:0">${esc(cat)}</span>` : '<span style="color:var(--text-faint);font-size:10px">—</span>'}</td>
-      <td style="color:var(--text-dim);font-size:11px">${esc(params.mode||'verification')}</td>
-      <td style="font-size:11px">${esc(r.triggered_by||r.trigger_source||'—')}</td>
-      <td style="font-size:11px;color:var(--text-faint)">${fmtTs(r.started_at||r.created_at)}</td>
-      <td style="font-size:11px;color:var(--text-faint)">${fmtDuration(r.started_at||r.created_at,r.completed_at)}</td>
-      <td style="font-size:10px;color:var(--text-faint)">${esc(paramParts)||'—'}</td>
-    `;
-    tr.style.cursor = 'pointer';
-    tr.addEventListener('click', () => {
-      document.querySelectorAll('#runsTable tr.active').forEach(t => t.classList.remove('active'));
-      tr.classList.add('active');
-      openRunDrawer(r.name);
-    });
-    body.appendChild(tr);
+    item.innerHTML = `
+      <div class="rli-main">
+        <div class="rli-name">${esc(friendly)}</div>
+        <div class="rli-sub">${esc(r.name||'')} · ${esc(params.mode||'verification')}</div>
+      </div>
+      <div class="rli-right">
+        ${phaseHtml(r.phase)}<br>
+        <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
+      </div>`;
+    item.addEventListener('click', () => selectRun(r.name));
+    el.appendChild(item);
   });
 }
 
-// ── Run detail drawer ─────────────────────────────────────────
-const RD_LAYOUTS = ['detailed','stacked-tails','side-by-side','prompts-dominant'];
-const RD_LAYOUT_LABEL = {
-  'detailed':'detailed',
-  'stacked-tails':'stacked + tails',
-  'side-by-side':'side-by-side',
-  'prompts-dominant':'prompts',
-};
-let _rdLayout = 'detailed';
+// ── Run detail panel ──────────────────────────────────────────
 let _rdName = null;
 let _rdPollTimer = null;
 // Prompts/responses tail state — keyed by file (each UC × sample has its own)
@@ -1788,32 +1927,6 @@ let _rdTokenBaseline  = {gen: null, prompt: null};
 let _rdSparklines     = null;
 let _rdSparkTimer     = null;  // periodic re-fetch for in-flight runs
 
-function rdApplyLayout(layout) {
-  if (!RD_LAYOUTS.includes(layout)) layout = 'detailed';
-  _rdLayout = layout;
-  document.getElementById('runDrawer').setAttribute('data-rd-layout', layout);
-  document.getElementById('rdLayoutLabel').textContent = RD_LAYOUT_LABEL[layout];
-  // Active marker in the menu
-  document.querySelectorAll('#rdLayoutMenu [data-rdl]').forEach(b =>
-    b.classList.toggle('active', b.dataset.rdl === layout));
-  try { localStorage.setItem('davDrawerLayoutLast', layout); } catch(e) {}
-}
-
-function rdSetDefaultLayout() {
-  try { localStorage.setItem('davDrawerLayoutDefault', _rdLayout); } catch(e) {}
-  const m = document.getElementById('rdLayoutMakeDefault');
-  m.textContent = `default: ${RD_LAYOUT_LABEL[_rdLayout]} ✓`;
-  setTimeout(() => { m.textContent = 'set current as default'; }, 1800);
-}
-
-function rdInitialLayout() {
-  // Preference order: last-used (sticky) → user default → "detailed"
-  try {
-    return localStorage.getItem('davDrawerLayoutLast')
-        || localStorage.getItem('davDrawerLayoutDefault')
-        || 'detailed';
-  } catch(e) { return 'detailed'; }
-}
 
 function rdRenderCompactStats(snap, vlive) {
   // Single dense row for stacked/side/prompts layouts. snap is the metrics
@@ -1957,48 +2070,141 @@ function rdRenderPrompts() {
   if (_rdPromptsState.autoScroll) el.scrollTop = el.scrollHeight;
 }
 
-function openRunDrawer(name) {
+function selectRun(name) {
   _rdName = name;
+  // Highlight in list
+  document.querySelectorAll('.run-list-item').forEach(el =>
+    el.classList.toggle('active', el.querySelector('.rli-main .rli-name') &&
+      allRuns.find(r => r.name === name)?.session_name === el.querySelector('.rli-name')?.textContent ||
+      el.querySelector('.rli-sub')?.textContent?.startsWith(name)));
+  renderRunsList(); // re-render to show active state
+  // Show detail panel header + tabs
+  document.getElementById('rdPanelHeader').style.display = '';
+  document.getElementById('rdTabStrip').style.display = '';
   document.getElementById('rdTitle').textContent = name;
   document.getElementById('rdSub').textContent = 'loading…';
-  document.getElementById('rdTasks').innerHTML = '<div class="empty" style="font-size:11px">loading…</div>';
-  document.getElementById('rdGpus').innerHTML = '<div class="empty" style="font-size:11px">loading metrics…</div>';
-  document.getElementById('rdVllm').innerHTML = '';
-  document.getElementById('rdParams').innerHTML = '';
-  document.getElementById('rdGpuFresh').textContent = '';
-  document.getElementById('rdVllmFresh').textContent = '';
-  document.getElementById('rdPromptsCount').textContent = '';
-  document.getElementById('rdPrompts').innerHTML = '<div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet</div>';
-  // Reset value history so the first render isn't a "change"
+  // Reset run body
+  const runBody = document.getElementById('rdRunBody');
+  runBody.innerHTML = `
+    <div class="run-section" id="rdSessionSection" style="display:none;">
+      <div class="run-section-title">Session</div>
+      <div id="rdSession" class="kv-grid" style="font-size:11px"></div>
+    </div>
+    <div class="run-section" id="rdProgressSection" style="display:none;">
+      <div class="run-section-title">UC progress (live)</div>
+      <div id="rdProgress"></div>
+    </div>
+    <div class="rd-tail-section" id="rdTasksSection">
+      <div class="rd-tail-header" data-toggle="rdTasksSection" style="cursor:pointer;user-select:none;">
+        <span class="lbl">Pipeline tasks <span id="rdTasksCount" style="text-transform:none;letter-spacing:0;color:var(--text-faint)"></span></span>
+        <span class="ctl">click to collapse</span>
+      </div>
+      <div class="rd-tail-body" id="rdTasks"><div class="empty" style="font-size:11px">loading…</div></div>
+    </div>
+    <div class="rd-tail-section" id="rdPromptsSection">
+      <div class="rd-tail-header" data-toggle="rdPromptsSection" style="cursor:pointer;user-select:none;">
+        <span class="lbl">Prompts &amp; responses (live) <span id="rdPromptsCount" style="text-transform:none;letter-spacing:0;color:var(--text-faint)"></span></span>
+        <span class="ctl">
+          <button id="rdPromptsExpandBtn" title="default mode for new + reset records">expand all</button>
+          <button id="rdPromptsAutoBtn" title="toggle auto-scroll">⤓ auto</button>
+          <button id="rdPromptsClearBtn" title="clear visible buffer">clear</button>
+        </span>
+      </div>
+      <div class="rd-tail-body" id="rdPrompts"><div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet</div></div>
+    </div>
+    <div class="run-section" id="rdGpusSection">
+      <div class="run-section-title">GPUs (live)<span id="rdGpuFresh" class="freshness-chip"></span></div>
+      <div id="rdGpus"><div class="empty" style="font-size:11px">loading metrics…</div></div>
+      <div style="font-size:10px;color:var(--text-faint);margin-top:6px;line-height:1.6;">
+        <b>VRAM</b> stays near 100% (vLLM pre-allocates). AMD <b>GFX activity</b> on RDNA4 latches at 100% under light load — use <b>power</b> and <b>KV cache %</b> as the real busy signal.
+      </div>
+    </div>
+    <div class="run-section" id="rdVllmSection">
+      <div class="run-section-title">Inference (vLLM, live)<span id="rdVllmFresh" class="freshness-chip"></span></div>
+      <div id="rdVllm" class="vllm-grid"></div>
+    </div>
+    <div class="run-section">
+      <div class="run-section-title">Params</div>
+      <div id="rdParams" class="kv-grid" style="font-size:11px"></div>
+    </div>`;
+  // Wire up re-created tail section toggles + prompt buttons
+  runBody.querySelectorAll('.rd-tail-header[data-toggle]').forEach(h => {
+    h.addEventListener('click', () => document.getElementById(h.dataset.toggle).classList.toggle('collapsed'));
+  });
+  _wirePromptButtons();
+
+  // Switch to run tab
+  rdSwitchTab('run');
+
+  // Reset state
   _rdLastGpuValues = {}; _rdLastVllmValues = {};
   _rdGpuLastChange = 0;  _rdVllmLastChange = 0;
   _rdTokenBaseline = {gen: null, prompt: null};
   _rdSparklines    = null;
   if (_rdSparkTimer) { clearInterval(_rdSparkTimer); _rdSparkTimer = null; }
-  _rdPromptsState = {filesKnown:[], perFile:{}, autoScroll:true, pollTimer:null};
-  // Apply the last-used (or default) layout
-  rdApplyLayout(rdInitialLayout());
-  document.getElementById('runDrawer').classList.add('open');
+  _rdPromptsState = {
+    filesKnown:[], perFile:{}, autoScroll:true, pollTimer:null,
+    expanded: new Set(),
+    defaultMode: (() => { try { return localStorage.getItem('davPromptsDefaultMode') || 'collapsed'; } catch(e) { return 'collapsed'; } })(),
+  };
+  // Initialize expand btn label
+  const expBtn = document.getElementById('rdPromptsExpandBtn');
+  if (expBtn) expBtn.textContent = _rdPromptsState.defaultMode === 'expanded' ? 'collapse all' : 'expand all';
+
+  // Update masthead chip
+  const run = allRuns.find(r => r.name === name);
+  updateRunChip(run?.session_name || name, run?.phase);
+
+  // Show "View Results" if results exist for this run
+  const resultBtn = document.getElementById('rdViewResultsBtn');
+  const hasResult = allResults.find(r => r.run_id === name);
+  resultBtn.style.display = hasResult ? '' : 'none';
+
+  // Start polling
+  stopRunPolling();
   refreshRunDrawer();
-  if (_rdPollTimer) clearInterval(_rdPollTimer);
   _rdPollTimer = setInterval(refreshRunDrawer, 3000);
-  // Prompts panel polls slightly less aggressively (turns can be small +
-  // frequent or huge; 5s is a reasonable compromise vs 3s for metrics)
   rdRefreshPrompts();
   _rdPromptsState.pollTimer = setInterval(rdRefreshPrompts, 5000);
-  // Update the "Xs since change" label every 1s so it counts in real time
   if (_rdFreshTimer) clearInterval(_rdFreshTimer);
   _rdFreshTimer = setInterval(updateFreshnessLabels, 1000);
 }
 
-function closeRunDrawer() {
-  document.getElementById('runDrawer').classList.remove('open');
-  _rdName = null;
+function stopRunPolling() {
   if (_rdPollTimer)  { clearInterval(_rdPollTimer);  _rdPollTimer  = null; }
   if (_rdFreshTimer) { clearInterval(_rdFreshTimer); _rdFreshTimer = null; }
   if (_rdSparkTimer) { clearInterval(_rdSparkTimer); _rdSparkTimer = null; }
-  if (_rdPromptsState.pollTimer) { clearInterval(_rdPromptsState.pollTimer); _rdPromptsState.pollTimer = null; }
+  if (_rdPromptsState?.pollTimer) { clearInterval(_rdPromptsState.pollTimer); _rdPromptsState.pollTimer = null; }
 }
+
+function _wirePromptButtons() {
+  const autoBtn = document.getElementById('rdPromptsAutoBtn');
+  if (autoBtn) autoBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    _rdPromptsState.autoScroll = !_rdPromptsState.autoScroll;
+    e.target.style.color = _rdPromptsState.autoScroll ? 'var(--accent)' : 'var(--text-faint)';
+  });
+  const clearBtn = document.getElementById('rdPromptsClearBtn');
+  if (clearBtn) clearBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    for (const f of Object.keys(_rdPromptsState.perFile)) _rdPromptsState.perFile[f].records = [];
+    _rdPromptsState.expanded = new Set();
+    rdRenderPrompts();
+  });
+  const expBtn = document.getElementById('rdPromptsExpandBtn');
+  if (expBtn) expBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    _rdPromptsState.defaultMode = (_rdPromptsState.defaultMode === 'expanded') ? 'collapsed' : 'expanded';
+    _rdPromptsState.expanded = new Set();
+    try { localStorage.setItem('davPromptsDefaultMode', _rdPromptsState.defaultMode); } catch(err) {}
+    e.target.textContent = _rdPromptsState.defaultMode === 'expanded' ? 'collapse all' : 'expand all';
+    rdRenderPrompts();
+  });
+}
+
+// Keep openRunDrawer as an alias used by openReviewPane / other callers
+function openRunDrawer(name) { selectRun(name); }
+function closeRunDrawer() { stopRunPolling(); }
 
 function _freshnessLabel(lastChangeEpoch) {
   if (!lastChangeEpoch) return {text: '', cls: ''};
@@ -2187,14 +2393,16 @@ function _fmtEnergy(j) {
 
 function renderRunDrawerDetail(d) {
   const s = d.session || null;
-  // Title: prefer human-friendly name, fall back to Tekton name
-  const titleText = (s && s.name) ? s.name : d.name;
   const titleEl = document.getElementById('rdTitle');
-  if (s && s.name) {
-    titleEl.innerHTML = `${esc(s.name)} <span style="font-family:var(--mono);font-size:10px;color:var(--text-faint);margin-left:8px">${esc(d.name)}</span>`;
-  } else {
-    titleEl.textContent = d.name;
+  if (titleEl) {
+    if (s && s.name) {
+      titleEl.innerHTML = `${esc(s.name)} <span style="font-family:var(--mono);font-size:10px;color:var(--text-faint);margin-left:8px">${esc(d.name)}</span>`;
+    } else {
+      titleEl.textContent = d.name;
+    }
   }
+  // Update masthead chip with current phase
+  updateRunChip(s?.name || d.name, d.phase);
 
   document.getElementById('rdSub').innerHTML =
     `${phaseHtml(d.phase)} · started ${esc(fmtTs(d.started_at||d.created_at))} · ${esc(fmtDuration(d.started_at||d.created_at, d.completed_at))}`
@@ -4190,6 +4398,13 @@ const SOURCE_UI = {
 };
 
 async function loadConfig() {
+  // Load review models, MCP, code repos, UC assist, and setup config nav
+  await loadReviewModels();
+  renderModelList();
+  await loadUCAssistConfig();
+  await loadMCPServers();
+  await loadCodeRepos();
+  setupConfigNav();
   try {
     const resp = await api('/api/sources');
     const data = resp.sources || {};
@@ -4507,8 +4722,26 @@ function wireSourcesPanel(kind) {
 }
 
 // ── Wire-up ──────────────────────────────────────────────────
-document.querySelectorAll('nav.tabs button').forEach(b =>
+
+// Sidebar nav: .pf-nav-item clicks drive switchView
+document.querySelectorAll('.pf-nav-item').forEach(b =>
   b.addEventListener('click', () => switchView(b.dataset.view)));
+
+// Masthead hamburger toggle
+document.getElementById('navToggleBtn').addEventListener('click', toggleNav);
+
+// Masthead run chip → return to Runs tab
+document.getElementById('runContextChip').addEventListener('click', () => switchView('runs'));
+
+// View Results button in run detail header
+document.getElementById('rdViewResultsBtn')?.addEventListener('click', () => {
+  if (activeRunResultId) {
+    switchView('results');
+    // loadResults will auto-select the active run
+  } else {
+    switchView('results');
+  }
+});
 
 document.getElementById('newRunBtn').addEventListener('click', () => openNewRun());
 document.getElementById('closeNewRun').addEventListener('click', closeNewRun);
@@ -4516,66 +4749,6 @@ document.getElementById('cancelNewRun').addEventListener('click', closeNewRun);
 document.getElementById('submitNewRun').addEventListener('click', submitNewRun);
 document.getElementById('nrReloadDefaults').addEventListener('click', () => loadNewRunDefaults());
 document.getElementById('refreshRunsBtn').addEventListener('click', loadRuns);
-document.getElementById('rdClose').addEventListener('click', closeRunDrawer);
-
-// Layout picker
-document.getElementById('rdLayoutBtn').addEventListener('click', e => {
-  e.stopPropagation();
-  document.getElementById('rdLayoutMenu').classList.toggle('open');
-});
-document.querySelectorAll('#rdLayoutMenu [data-rdl]').forEach(b => {
-  b.addEventListener('click', () => {
-    rdApplyLayout(b.dataset.rdl);
-    document.getElementById('rdLayoutMenu').classList.remove('open');
-  });
-});
-document.getElementById('rdLayoutMakeDefault').addEventListener('click', e => {
-  e.stopPropagation();
-  rdSetDefaultLayout();
-});
-document.addEventListener('click', e => {
-  const m = document.getElementById('rdLayoutMenu');
-  if (m && !m.contains(e.target) && e.target.id !== 'rdLayoutBtn' && !e.target.closest('#rdLayoutBtn'))
-    m.classList.remove('open');
-});
-
-// Collapse/expand tail sections by clicking their header
-document.querySelectorAll('#runDrawer .rd-tail-header[data-toggle]').forEach(h => {
-  h.addEventListener('click', () => {
-    const id = h.dataset.toggle;
-    document.getElementById(id).classList.toggle('collapsed');
-  });
-});
-
-// Prompts panel auto-scroll + clear + global expand/collapse default
-document.getElementById('rdPromptsAutoBtn').addEventListener('click', e => {
-  e.stopPropagation();
-  _rdPromptsState.autoScroll = !_rdPromptsState.autoScroll;
-  e.target.style.color = _rdPromptsState.autoScroll ? 'var(--accent)' : 'var(--text-faint)';
-});
-document.getElementById('rdPromptsClearBtn').addEventListener('click', e => {
-  e.stopPropagation();
-  // Clear visible buffer but keep next_offset cursors so we don't re-read
-  for (const f of Object.keys(_rdPromptsState.perFile))
-    _rdPromptsState.perFile[f].records = [];
-  _rdPromptsState.expanded = new Set();
-  rdRenderPrompts();
-});
-document.getElementById('rdPromptsExpandBtn').addEventListener('click', e => {
-  e.stopPropagation();
-  // Toggle the global default + reset per-record overrides so the new
-  // default applies uniformly. Persisted for future drawer-opens.
-  _rdPromptsState.defaultMode = (_rdPromptsState.defaultMode === 'expanded') ? 'collapsed' : 'expanded';
-  _rdPromptsState.expanded = new Set();
-  try { localStorage.setItem('davPromptsDefaultMode', _rdPromptsState.defaultMode); } catch(err) {}
-  e.target.textContent = _rdPromptsState.defaultMode === 'expanded' ? 'collapse all' : 'expand all';
-  rdRenderPrompts();
-});
-// Initialize button label from persisted default
-(function(){
-  const btn = document.getElementById('rdPromptsExpandBtn');
-  if (btn) btn.textContent = _rdPromptsState.defaultMode === 'expanded' ? 'collapse all' : 'expand all';
-})();
 
 document.getElementById('refreshResultsBtn').addEventListener('click', loadResults);
 document.getElementById('resultFilter').addEventListener('input', renderResultList);
@@ -4843,76 +5016,326 @@ const _rdEnhRaw = { text: '' };
 
 function rdSwitchTab(tab) {
   const isRun = tab === 'run';
-  document.getElementById('rdRunBody').style.display    = isRun ? '' : 'none';
-  document.getElementById('rdReviewBody').style.display = isRun ? 'none' : '';
-  document.getElementById('rdTabRun').classList.toggle('active', isRun);
-  document.getElementById('rdTabReview').classList.toggle('active', !isRun);
+  const runBody = document.getElementById('rdRunBody');
+  const revBody = document.getElementById('rdReviewBody');
+  if (runBody) runBody.style.display    = isRun ? '' : 'none';
+  if (revBody) revBody.style.display    = isRun ? 'none' : '';
+  const tabRun = document.getElementById('rdTabRun');
+  const tabRev = document.getElementById('rdTabReview');
+  if (tabRun) tabRun.classList.toggle('active', isRun);
+  if (tabRev) tabRev.classList.toggle('active', !isRun);
 }
 
 function openReviewPane(scope, ucUuid, startAt = 'review') {
+  // Navigate to top-level Review & Plan tab
   const runId = activeRunResultId;
-  if (!runId) {
-    toast('Select an analysis run in the Results tab first');
-    return;
-  }
+  if (!runId) { toast('Select an analysis run in the Results tab first'); return; }
+
+  // Pre-populate the Review & Plan tab
+  _reviewCtx = { runId, ucUuid: ucUuid || null };
+  switchView('review');
+
+  // Give the tab a moment to render, then set up
+  setTimeout(() => {
+    // Select run in the dropdown
+    const rpRunSel = document.getElementById('rpRunSel');
+    if (rpRunSel) {
+      rpRunSel.value = runId;
+      if (!rpRunSel.value) {
+        // Option not present yet — try populating
+        loadReviewTab().then(() => { rpRunSel.value = runId; _rpPopulateUCs(runId); });
+      } else {
+        _rpPopulateUCs(runId);
+      }
+    }
+    // Set scope and UC
+    if (ucUuid) {
+      const scopeUC = document.getElementById('rpScopeUC');
+      if (scopeUC) { scopeUC.checked = true; }
+      const rpUCSel = document.getElementById('rpUCSel');
+      if (rpUCSel) { rpUCSel.disabled = false; rpUCSel.value = ucUuid; }
+      // Show a note
+      const link = document.getElementById('rpUCLink');
+      const ucEntry = (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid);
+      if (link) { link.textContent = `UC: ${ucEntry?.uc_handle||ucUuid}`; link.style.display = ''; }
+    }
+    _populateDrawerModelSel('rpModelSel', 'reviewLastModel');
+  }, 50);
+}
+
+// Keep rdRevSubtitle etc. for the inline run-detail review panel
+function openRunDetailReview(scope, ucUuid, startAt = 'review') {
+  const runId = activeRunResultId;
+  if (!runId) { toast('Select an analysis run in the Results tab first'); return; }
   _reviewCtx = { runId, ucUuid: ucUuid || null };
 
   const ucEntry = ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid) : null;
   const ucHandle = ucEntry?.uc_handle || ucUuid || '—';
   const label = scope === 'uc' ? `Use case: ${ucHandle}` : `Run: ${runId||'—'}`;
-  document.getElementById('rdRevSubtitle').textContent = label;
-  document.getElementById('rdEnhSubtitle').textContent = label;
+  const revSub = document.getElementById('rdRevSubtitle');
+  const enhSub = document.getElementById('rdEnhSubtitle');
+  if (revSub) revSub.textContent = label;
+  if (enhSub) enhSub.textContent = label;
 
   const revSel = document.getElementById('rdRevScopeSel');
-  revSel.value = scope;
-  revSel.querySelector('option[value="uc"]').disabled = !ucUuid;
+  if (revSel) { revSel.value = scope; revSel.querySelector('option[value="uc"]').disabled = !ucUuid; }
   const enhSel = document.getElementById('rdEnhScopeSel');
-  enhSel.value = scope;
-  enhSel.querySelector('option[value="uc"]').disabled = !ucUuid;
+  if (enhSel) { enhSel.value = scope; enhSel.querySelector('option[value="uc"]').disabled = !ucUuid; }
 
   _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
   _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
 
-  // Reset streams on fresh open
   ['rdRevStream','rdEnhStream'].forEach(id => {
-    const el = document.getElementById(id);
+    const el = document.getElementById(id); if (!el) return;
     el.textContent = ''; el.style.display = 'none'; el.classList.remove('streaming');
   });
-  ['rdRevStatus','rdEnhStatus'].forEach(id => {
-    const el = document.getElementById(id);
-    el.textContent = ''; el.style.display = 'none'; el.style.color = '';
+  ['rdRevStatus','rdEnhStatus','rdRevCopyBtn','rdEnhCopyBtn','rdRevReasoningBtn','rdEnhReasoningBtn','rdRevNextRow','rdEnhNextRow','rdRevHint','rdEnhHint'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.style.display = 'none';
   });
-  document.getElementById('rdRevCopyBtn').style.display = 'none';
-  document.getElementById('rdEnhCopyBtn').style.display = 'none';
-  document.getElementById('rdRevReasoningBtn').style.display = 'none';
-  document.getElementById('rdEnhReasoningBtn').style.display = 'none';
-  document.getElementById('rdRevNextRow').style.display = 'none';
-  document.getElementById('rdEnhNextRow').style.display = 'none';
-  document.getElementById('rdRevHint').style.display = 'none';
-  document.getElementById('rdEnhHint').style.display = 'none';
   _rdRevRaw.text = ''; _rdEnhRaw.text = '';
 
-  // Show sections based on startAt
-  document.getElementById('rdEnhSection').style.display = startAt === 'enhance' ? '' : 'none';
-  document.getElementById('rdPrSection').style.display = 'none';
+  const enhSec = document.getElementById('rdEnhSection');
+  if (enhSec) enhSec.style.display = startAt === 'enhance' ? '' : 'none';
+  const prSec = document.getElementById('rdPrSection');
+  if (prSec) prSec.style.display = 'none';
 
-  // Open drawer if closed — drawer uses Tekton name (_rdName), not analysis run_id
-  if (!document.getElementById('runDrawer').classList.contains('open')) {
-    if (_rdName) openRunDrawer(_rdName);
-    else document.getElementById('runDrawer').classList.add('open');
-  }
-
+  if (_rdName) switchView('runs');
   rdSwitchTab('review');
 
   if (startAt === 'enhance') {
-    setTimeout(() => document.getElementById('rdEnhSection').scrollIntoView({ behavior:'smooth', block:'start' }), 50);
+    setTimeout(() => { const el = document.getElementById('rdEnhSection'); if (el) el.scrollIntoView({ behavior:'smooth', block:'start' }); }, 50);
   }
 }
 
-document.getElementById('rdTabRun').addEventListener('click', () => rdSwitchTab('run'));
-document.getElementById('rdTabReview').addEventListener('click', () => {
+// ══════════════ REVIEW & PLAN TAB ════════════════════════════
+
+const _rpRevRaw = { text: '' };
+const _rpEnhRaw = { text: '' };
+
+async function loadReviewTab() {
+  // Populate run dropdown from allResults
+  const sel = document.getElementById('rpRunSel');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— select a run —</option>';
+  allResults.forEach(r => {
+    const o = document.createElement('option');
+    o.value = r.run_id; o.textContent = r.run_id;
+    sel.appendChild(o);
+  });
+  if (prev) sel.value = prev;
+  // Populate model selector
+  _populateDrawerModelSel('rpModelSel', 'reviewLastModel');
+  // If results not yet loaded, load them
+  if (!allResults.length) {
+    try {
+      const resp = await api('/api/results');
+      allResults = resp.results || [];
+      loadReviewTab(); // re-run
+    } catch(e) {}
+  }
+}
+
+async function _rpPopulateUCs(runId) {
+  const sel = document.getElementById('rpUCSel');
+  if (!sel) return;
+  if (!runId) { sel.innerHTML = '<option value="">— select run first —</option>'; sel.disabled = true; return; }
+  const summary = activeRunSummary?.run_id === runId ? activeRunSummary : null;
+  if (summary) {
+    sel.innerHTML = '<option value="">— full run —</option>';
+    (summary.ucs||[]).forEach(u => {
+      const o = document.createElement('option');
+      o.value = u.uc_uuid; o.textContent = u.uc_handle || u.uc_uuid;
+      sel.appendChild(o);
+    });
+    sel.disabled = false;
+    return;
+  }
+  try {
+    const s = await api(`/api/results/${encodeURIComponent(runId)}`);
+    activeRunSummary = s;
+    sel.innerHTML = '<option value="">— full run —</option>';
+    (s.ucs||[]).forEach(u => {
+      const o = document.createElement('option');
+      o.value = u.uc_uuid; o.textContent = u.uc_handle || u.uc_uuid;
+      sel.appendChild(o);
+    });
+    sel.disabled = false;
+  } catch(e) { sel.innerHTML = `<option value="">(${esc(e.message)})</option>`; }
+}
+
+function _rpGetContext() {
+  const runId  = document.getElementById('rpRunSel')?.value;
+  const scope  = document.getElementById('rpScopeUC')?.checked ? 'uc' : 'run';
+  const ucUuid = scope === 'uc' ? (document.getElementById('rpUCSel')?.value || null) : null;
+  const modelId= parseInt(document.getElementById('rpModelSel')?.value, 10) || null;
+  return { runId, scope, ucUuid, modelId };
+}
+
+document.getElementById('rpRunSel')?.addEventListener('change', function() {
+  activeRunResultId = this.value;
+  _rpPopulateUCs(this.value);
+});
+
+document.getElementById('rpScopeRun')?.addEventListener('change', () => {
+  const sel = document.getElementById('rpUCSel');
+  if (sel) sel.disabled = true;
+});
+document.getElementById('rpScopeUC')?.addEventListener('change', () => {
+  const runId = document.getElementById('rpRunSel')?.value;
+  const sel = document.getElementById('rpUCSel');
+  if (sel) { sel.disabled = false; _rpPopulateUCs(runId); }
+});
+
+document.getElementById('rpRevRunBtn')?.addEventListener('click', async () => {
+  const { runId, scope, ucUuid, modelId } = _rpGetContext();
+  if (!runId) { toast('Select a run first'); return; }
+  if (!modelId) { toast('Select a model first'); return; }
+  if (scope === 'uc' && !ucUuid) { toast('Select a use case or switch to Full run'); return; }
+  localStorage.setItem('reviewLastModel', String(modelId));
+  const body = { scope, model_config_id: modelId, run_id: runId };
+  if (scope === 'uc') body.uc_uuid = ucUuid;
+  _reviewCtx = { runId, ucUuid };
+  await _runStream({
+    endpoint: '/api/arch-review', body,
+    streamEl:     document.getElementById('rpRevStream'),
+    statusEl:     document.getElementById('rpRevStatus'),
+    copyBtn:      document.getElementById('rpRevCopyBtn'),
+    runBtn:       document.getElementById('rpRevRunBtn'),
+    reasoningBtn: document.getElementById('rpRevReasoningBtn'),
+    nextRow:      null,
+    rawHolder:    _rpRevRaw,
+    showReasoningKey: 'rpRevShowReasoning',
+  });
+});
+
+document.getElementById('rpEnhRunBtn')?.addEventListener('click', async () => {
+  const { runId, scope, ucUuid, modelId } = _rpGetContext();
+  if (!runId) { toast('Select a run first'); return; }
+  if (!modelId) { toast('Select a model first'); return; }
+  if (scope === 'uc' && !ucUuid) { toast('Select a use case or switch to Full run'); return; }
+  localStorage.setItem('enhanceLastModel', String(modelId));
+  const body = { scope, model_config_id: modelId, run_id: runId };
+  if (scope === 'uc') body.uc_uuid = ucUuid;
+  _reviewCtx = { runId, ucUuid };
+  await _runStream({
+    endpoint: '/api/enhancements', body,
+    streamEl:     document.getElementById('rpEnhStream'),
+    statusEl:     document.getElementById('rpEnhStatus'),
+    copyBtn:      document.getElementById('rpEnhCopyBtn'),
+    runBtn:       document.getElementById('rpEnhRunBtn'),
+    reasoningBtn: document.getElementById('rpEnhReasoningBtn'),
+    nextRow:      document.getElementById('rpEnhNextRow'),
+    rawHolder:    _rpEnhRaw,
+    showReasoningKey: 'rpEnhShowReasoning',
+  });
+});
+
+document.getElementById('rpRevCopyBtn')?.addEventListener('click', () => {
+  const text = localStorage.getItem('rpRevShowReasoning') === '1' ? _rpRevRaw.text : _stripThink(_rpRevRaw.text);
+  navigator.clipboard.writeText(text).then(() => toast('Review copied'));
+});
+document.getElementById('rpEnhCopyBtn')?.addEventListener('click', () => {
+  const text = localStorage.getItem('rpEnhShowReasoning') === '1' ? _rpEnhRaw.text : _stripThink(_rpEnhRaw.text);
+  navigator.clipboard.writeText(text).then(() => toast('Enhancement plan copied'));
+});
+
+document.getElementById('rpRevReasoningBtn')?.addEventListener('click', function() {
+  const on = localStorage.getItem('rpRevShowReasoning') === '1';
+  localStorage.setItem('rpRevShowReasoning', on ? '0' : '1');
+  this.textContent = on ? '○ Reasoning' : '● Reasoning';
+  const el = document.getElementById('rpRevStream');
+  if (el) el.textContent = (!on) ? _rpRevRaw.text : _stripThink(_rpRevRaw.text);
+});
+document.getElementById('rpEnhReasoningBtn')?.addEventListener('click', function() {
+  const on = localStorage.getItem('rpEnhShowReasoning') === '1';
+  localStorage.setItem('rpEnhShowReasoning', on ? '0' : '1');
+  this.textContent = on ? '○ Reasoning' : '● Reasoning';
+  const el = document.getElementById('rpEnhStream');
+  if (el) el.textContent = (!on) ? _rpEnhRaw.text : _stripThink(_rpEnhRaw.text);
+});
+
+document.getElementById('rpRevUseClaudeBtn')?.addEventListener('click', () => {
+  const { runId, scope, ucUuid } = _rpGetContext();
+  _useInClaude('/api/arch-review/prompt', scope, runId, ucUuid,
+    document.getElementById('rpRevHint'), document.getElementById('rpRevUseClaudeBtn'));
+});
+document.getElementById('rpEnhUseClaudeBtn')?.addEventListener('click', () => {
+  const { runId, scope, ucUuid } = _rpGetContext();
+  _useInClaude('/api/enhancements/prompt', scope, runId, ucUuid,
+    document.getElementById('rpEnhHint'), document.getElementById('rpEnhUseClaudeBtn'));
+});
+
+document.getElementById('rpEnhNextRow') && document.getElementById('rpEnhToPrBtn')?.addEventListener('click', async () => {
+  const panel  = document.getElementById('rpPrSection');
+  const msgEl  = document.getElementById('rpPrMsg');
+  msgEl.textContent = '';
+  if (!_codeRepos.length) { try { _codeRepos = await api('/api/code-repos'); } catch {} }
+  const enabled = _codeRepos.filter(r => r.enabled);
+  const sel = document.getElementById('rpPrRepoSel');
+  sel.innerHTML = enabled.length
+    ? enabled.map(r => `<option value="${r.id}" data-branch="${esc(r.default_branch)}">${esc(r.name)} (${esc(r.provider)})</option>`).join('')
+    : '<option value="">No repos — add in Config</option>';
+  if (enabled.length) {
+    const opt = sel.selectedOptions[0];
+    if (opt?.dataset.branch) document.getElementById('rpPrBaseBranch').value = opt.dataset.branch;
+  }
+  const { runId, scope, ucUuid } = _rpGetContext();
+  try {
+    let url = `/api/pr/preview?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
+    if (scope === 'uc' && ucUuid) url += `&uc_uuid=${encodeURIComponent(ucUuid)}`;
+    const preview = await api(url);
+    document.getElementById('rpPrBranch').value   = preview.branch;
+    document.getElementById('rpPrTitle').value    = preview.title;
+    document.getElementById('rpPrFilePath').value = preview.file_path;
+    panel._gapContext = preview.gap_context;
+  } catch(e) {
+    msgEl.textContent = 'Preview load failed: ' + e.message;
+    panel._gapContext = '';
+  }
+  panel.style.display = '';
+});
+
+document.getElementById('rpPrRepoSel')?.addEventListener('change', function() {
+  const opt = this.selectedOptions[0];
+  if (opt?.dataset.branch) document.getElementById('rpPrBaseBranch').value = opt.dataset.branch;
+});
+
+document.getElementById('rpPrCopyBtn')?.addEventListener('click', () => {
+  const panel = document.getElementById('rpPrSection');
+  const body = `**Branch:** \`${document.getElementById('rpPrBranch').value}\`\n**File:** \`${document.getElementById('rpPrFilePath').value}\`\n\n---\n\n${panel._gapContext||''}\n\n## Enhancement plan\n\n${_stripThink(_rpEnhRaw.text)}\n\n---\n*Generated by DAV Console*`;
+  navigator.clipboard.writeText(body).then(() => toast('PR description copied')).catch(() => toast('Copy failed', true));
+});
+
+document.getElementById('rpPrCreateBtn')?.addEventListener('click', async () => {
+  const repoId = parseInt(document.getElementById('rpPrRepoSel').value, 10);
+  if (!repoId) { toast('Select a repository first'); return; }
+  const { runId, scope, ucUuid } = _rpGetContext();
+  const msgEl = document.getElementById('rpPrMsg');
+  const btn   = document.getElementById('rpPrCreateBtn');
+  const payload = {
+    repo_config_id: repoId, run_id: runId, uc_uuid: ucUuid || null, scope,
+    branch:      document.getElementById('rpPrBranch').value.trim(),
+    title:       document.getElementById('rpPrTitle').value.trim(),
+    base_branch: document.getElementById('rpPrBaseBranch').value.trim() || null,
+    file_path:   document.getElementById('rpPrFilePath').value.trim(),
+    enhancement_text: _stripThink(_rpEnhRaw.text),
+  };
+  if (!payload.branch || !payload.title) { toast('Branch and title required'); return; }
+  btn.disabled = true; msgEl.textContent = 'Creating…'; msgEl.style.color = 'var(--text-faint)';
+  try {
+    const result = await api('/api/pr/create', { method:'POST', body: JSON.stringify(payload) });
+    msgEl.textContent = '✓ PR created'; msgEl.style.color = 'var(--ok)';
+    if (result.pr_url) window.open(result.pr_url, '_blank');
+  } catch(e) { msgEl.textContent = 'Failed: ' + e.message; msgEl.style.color = 'var(--error)'; }
+  finally { btn.disabled = false; }
+});
+
+// ── Run detail tab buttons ────────────────────────────────────
+document.getElementById('rdTabRun')?.addEventListener('click', () => rdSwitchTab('run'));
+document.getElementById('rdTabReview')?.addEventListener('click', () => {
   if (!_reviewCtx.runId && !activeRunResultId) { toast('Select an analysis run in the Results tab first'); return; }
-  if (!_reviewCtx.runId) openReviewPane('run', null);
+  if (!_reviewCtx.runId) openRunDetailReview('run', null);
   else rdSwitchTab('review');
 });
 
@@ -5542,19 +5965,7 @@ function setupConfigNav() {
   content.addEventListener('scroll', _updateConfigNavActive, { passive: true });
 }
 
-// Load all Config tab data when shown
-document.querySelectorAll('nav.tabs button').forEach(b => {
-  if (b.dataset.view === 'config') {
-    b.addEventListener('click', async () => {
-      await loadReviewModels();
-      renderModelList();
-      await loadUCAssistConfig();
-      await loadMCPServers();
-      await loadCodeRepos();
-      setupConfigNav();
-    });
-  }
-});
+// Config tab data is loaded via loadConfig() called from switchView('config').
 
 init();
 </script>
