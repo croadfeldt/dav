@@ -6,6 +6,7 @@ X-Forwarded-User / X-Forwarded-Email headers.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -13,6 +14,7 @@ import logging
 import os
 import re
 import tarfile
+import time
 import unicodedata
 import zipfile
 from contextlib import asynccontextmanager
@@ -20,6 +22,7 @@ from pathlib import Path
 from typing import Optional
 
 import asyncpg
+import httpx
 import yaml as _yaml
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -878,6 +881,13 @@ class UCAssistConfigIn(BaseModel):
     endpoint_url: str = Field(..., min_length=1, max_length=512)
     model_id: str = Field(..., min_length=1, max_length=256)
     api_key: str = Field("", max_length=512)
+    enabled: bool = True
+
+
+class MCPServerIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    sse_url: str = Field(..., min_length=1, max_length=512)
+    description: str = Field("", max_length=512)
     enabled: bool = True
 
 
@@ -2310,6 +2320,94 @@ async def self_test_runs(limit: int = Query(20, ge=1, le=100)):
     except Exception as e:
         log.exception("list self-test runs failed")
         raise HTTPException(500, f"list failed: {e}")
+
+
+# ========================= MCP SERVERS =========================
+
+
+@app.get("/api/mcp-servers")
+async def list_mcp_servers():
+    if pool is None:
+        raise HTTPException(503, "pool not initialized")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM mcp_server_configs ORDER BY name"
+        )
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/mcp-servers", status_code=201)
+async def create_mcp_server(payload: MCPServerIn, request: Request):
+    user = get_user(request)
+    if pool is None:
+        raise HTTPException(503, "pool not initialized")
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """INSERT INTO mcp_server_configs (name, sse_url, description, enabled, created_by)
+               VALUES ($1, $2, $3, $4, $5) RETURNING *""",
+            payload.name, payload.sse_url.rstrip("/"),
+            payload.description, payload.enabled, user,
+        )
+    return dict(row)
+
+
+@app.put("/api/mcp-servers/{mid}")
+async def update_mcp_server(mid: int, payload: MCPServerIn, request: Request):
+    get_user(request)
+    if pool is None:
+        raise HTTPException(503, "pool not initialized")
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE mcp_server_configs
+               SET name=$1, sse_url=$2, description=$3, enabled=$4, updated_at=now()
+               WHERE id=$5 RETURNING *""",
+            payload.name, payload.sse_url.rstrip("/"),
+            payload.description, payload.enabled, mid,
+        )
+    if not row:
+        raise HTTPException(404, "MCP server not found")
+    return dict(row)
+
+
+@app.delete("/api/mcp-servers/{mid}", status_code=204)
+async def delete_mcp_server(mid: int, request: Request):
+    get_user(request)
+    if pool is None:
+        raise HTTPException(503, "pool not initialized")
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM mcp_server_configs WHERE id=$1", mid)
+
+
+@app.get("/api/mcp-servers/health")
+async def mcp_servers_health():
+    """Poll /health on each registered MCP server; returns per-server status."""
+    if pool is None:
+        raise HTTPException(503, "pool not initialized")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, name, sse_url, enabled FROM mcp_server_configs ORDER BY name"
+        )
+
+    async def check(row):
+        if not row["enabled"]:
+            return {"id": row["id"], "name": row["name"], "enabled": False, "healthy": False}
+        base = row["sse_url"].rsplit("/sse", 1)[0]
+        health_url = f"{base}/health"
+        t0 = time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=5.0, verify=False) as cx:
+                resp = await cx.get(health_url)
+            latency = int((time.monotonic() - t0) * 1000)
+            healthy = resp.status_code == 200
+            return {"id": row["id"], "name": row["name"], "enabled": True,
+                    "healthy": healthy, "latency_ms": latency,
+                    "status_code": resp.status_code}
+        except Exception as e:
+            return {"id": row["id"], "name": row["name"], "enabled": True,
+                    "healthy": False, "error": str(e)}
+
+    results = await asyncio.gather(*[check(r) for r in rows])
+    return list(results)
 
 
 # ========================= REVIEW MODELS =========================

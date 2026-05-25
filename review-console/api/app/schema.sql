@@ -233,6 +233,22 @@ CREATE TABLE IF NOT EXISTS review_model_configs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_review_models_name ON review_model_configs(lower(name));
 
+-- ── MCP server registry ─────────────────────────────────────────────────────
+-- User-registered MCP servers (SSE transport) shown in the Integrations panel.
+-- Health is polled on demand; no credentials stored here.
+
+CREATE TABLE IF NOT EXISTS mcp_server_configs (
+  id           BIGSERIAL PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  sse_url      TEXT NOT NULL,
+  enabled      BOOLEAN NOT NULL DEFAULT true,
+  created_by   TEXT NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_server_configs(lower(name));
+
 -- ── UC Assist config ────────────────────────────────────────────────────────
 -- Single-row config for NL-assisted UC authoring.
 -- Falls back to DAV_UC_ASSIST_* env vars when no row is present or enabled=false.
