@@ -127,7 +127,7 @@ def _build_run_prompt(run_id: str, uc_analyses: list[dict]) -> str:
                 sev_label = sev.get("label") or sev.get("band") or "?"
             else:
                 sev_label = str(sev)
-            desc = (g.get("description") or "")[:120]
+            desc = (g.get("description") or "")[:400]
             parts.append(
                 f"    [{g.get('gap_id','?')}] {g.get('title','')} ({sev_label}): {desc}"
             )
@@ -216,7 +216,7 @@ def _build_enhancement_run_prompt(run_id: str, uc_analyses: list[dict]) -> str:
             sev_label = sev.get("label") or sev.get("band") or "?" if isinstance(sev, dict) else str(sev)
             parts.append(f"    [{g.get('gap_id','?')}] {g.get('title','')} ({sev_label})")
             if g.get("recommendation"):
-                parts.append(f"      Recommendation: {(g.get('recommendation') or '')[:150]}")
+                parts.append(f"      Recommendation: {(g.get('recommendation') or '')[:400]}")
     parts.append("\nPlease provide the Enhancement Roadmap.")
     return "\n".join(parts)
 
