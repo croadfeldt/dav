@@ -1414,7 +1414,9 @@
         </select>
         <button class="btn primary" id="archReviewRunBtn">Generate</button>
         <button class="btn ghost" id="archReviewCopyBtn" style="display:none;" title="Copy review text">⧉ Copy</button>
+        <button class="btn ghost" id="archReviewCopyPromptBtn" title="Copy prompt to paste into Claude Code or claude.ai">⧉ Copy prompt</button>
       </div>
+      <div id="archReviewPromptHint" style="display:none;font-size:10px;color:var(--green);margin-top:2px;">Prompt copied — paste into Claude Code or claude.ai chat</div>
       <div id="archReviewStatus" style="font-size:11px;color:var(--text-faint);display:none;"></div>
       <div id="archReviewStream" class="arch-review-stream" style="display:none;"></div>
     </div>
@@ -4757,6 +4759,30 @@ function openArchReview(defaultScope, ucUuid) {
 
 document.getElementById('closeArchReview').addEventListener('click', () => {
   document.getElementById('archReviewModal').classList.remove('open');
+});
+
+document.getElementById('archReviewCopyPromptBtn').addEventListener('click', async () => {
+  const scope  = document.getElementById('archReviewScopeSel').value;
+  const runId  = _archReviewCtx.runId;
+  const ucUuid = _archReviewCtx.ucUuid;
+  const hint   = document.getElementById('archReviewPromptHint');
+  const btn    = document.getElementById('archReviewCopyPromptBtn');
+  if (!runId) { toast('No run selected'); return; }
+  btn.disabled = true; btn.textContent = 'Fetching…';
+  hint.style.display = 'none';
+  try {
+    let url = `/api/arch-review/prompt?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
+    if (scope === 'uc' && ucUuid) url += `&uc_uuid=${encodeURIComponent(ucUuid)}`;
+    const data = await api(url);
+    const text = `${data.system_prompt}\n\n---\n\n${data.user_prompt}`;
+    await navigator.clipboard.writeText(text);
+    hint.style.display = '';
+    setTimeout(() => { hint.style.display = 'none'; }, 4000);
+  } catch(e) {
+    toast('Copy failed: ' + e.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = '⧉ Copy prompt';
+  }
 });
 
 document.getElementById('archReviewScopeSel').addEventListener('change', function() {

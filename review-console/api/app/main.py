@@ -2555,3 +2555,56 @@ async def arch_review(payload: ArchReviewIn, request: Request):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+@app.get("/api/arch-review/prompt")
+async def get_arch_review_prompt(
+    scope: str = Query(..., pattern="^(uc|run)$"),
+    run_id: str = Query(...),
+    uc_uuid: Optional[str] = Query(None),
+):
+    """Return system + user prompts for an arch review without calling any model.
+
+    Intended for copy-to-clipboard so users can paste into Claude Code or chat.
+    """
+    from . import arch_review as _ar
+
+    async with pool.acquire() as conn:
+        if scope == "uc":
+            if not uc_uuid:
+                raise HTTPException(400, "uc_uuid required for UC scope")
+            analysis = await conn.fetchrow(
+                "SELECT * FROM uc_analyses WHERE run_id=$1 AND uc_uuid=$2",
+                run_id, uc_uuid,
+            )
+            if not analysis:
+                raise HTTPException(404, "Analysis not found — select the run in Results to trigger ingest")
+            gaps = await conn.fetch(
+                "SELECT * FROM uc_gaps WHERE analysis_id=$1 ORDER BY id",
+                analysis["id"],
+            )
+            uc = await conn.fetchrow(
+                "SELECT uuid, yaml_content FROM managed_use_cases WHERE uuid=$1",
+                uc_uuid,
+            )
+            user_prompt = _ar._build_uc_prompt(
+                dict(uc) if uc else {"uuid": uc_uuid},
+                dict(analysis),
+                [dict(g) for g in gaps],
+            )
+            system_prompt = _ar._UC_SYSTEM
+        else:
+            uc_rows = await conn.fetch(
+                "SELECT * FROM uc_analyses WHERE run_id=$1 ORDER BY uc_handle NULLS LAST",
+                run_id,
+            )
+            uc_analyses: list[dict] = []
+            for ua in uc_rows:
+                gaps = await conn.fetch(
+                    "SELECT * FROM uc_gaps WHERE analysis_id=$1", ua["id"]
+                )
+                uc_analyses.append({**dict(ua), "gaps": [dict(g) for g in gaps]})
+            user_prompt = _ar._build_run_prompt(run_id, uc_analyses)
+            system_prompt = _ar._RUN_SYSTEM
+
+    return {"system_prompt": system_prompt, "user_prompt": user_prompt}
