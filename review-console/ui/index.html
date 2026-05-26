@@ -1193,14 +1193,10 @@
             <div class="kv-label">applied by</div><div class="kv-val" id="srcInfWho">—</div>
           </div>
           <hr class="section-sep" style="margin:8px 0;">
-          <div class="form-field"><label>New endpoint</label>
-            <input id="srcInfEndpointInput" placeholder="http://your-inference-host:8000/v1" /></div>
-          <div class="form-field"><label>New model</label>
-            <div style="display:flex; gap:6px;">
-              <select id="srcInfModelSelect" style="flex:1"><option value="">(enter endpoint, then ↻ to load)</option></select>
-              <input id="srcInfModelInput" placeholder="or type model name" style="flex:1;" />
-              <button class="btn ghost btn-icon" id="srcInfRefreshModels" title="reload model list from endpoint">↻</button>
-            </div>
+          <div class="form-field"><label>Model endpoint</label>
+            <select id="srcInfModelSel" style="width:100%;">
+              <option value="">— select a model —</option>
+            </select>
           </div>
           <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
             <button class="btn ghost" id="srcInfTestBtn">Test</button>
@@ -1466,11 +1462,10 @@
       </div>
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Inference</div>
-      <div class="form-row">
-        <div class="form-field"><label>Endpoint</label>
-          <input id="nrEndpoint" placeholder="(loading…)" /></div>
-        <div class="form-field"><label>Model</label>
-          <input id="nrModel" placeholder="(loading…)" /></div>
+      <div class="form-field"><label>Model</label>
+        <select id="nrModelSel" style="width:100%;">
+          <option value="">— select a model —</option>
+        </select>
       </div>
       <hr class="section-sep">
       <div class="form-field">
@@ -1787,6 +1782,8 @@ async function init() {
   loadReviewModels().then(() => {
     _populateModelSel('rdRevModelSel', 'reviewLastModel');
     _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
+    _populateModelSel('srcInfModelSel', 'inferenceLastModel');
+    _populateModelSel('nrModelSel', 'nrLastModel');
     _populateUCAssistModelSel();
   }).catch(() => {});
   switchView('runs');
@@ -2708,8 +2705,11 @@ async function loadNewRunDefaults(forcedSubpath) {
     document.getElementById('nrSpecBranch').value  = spec.repo_branch   || '';
     document.getElementById('nrCorpusRepo').value  = corpus.repo_url    || '';
     document.getElementById('nrCorpusBranch').value= corpus.repo_branch || '';
-    document.getElementById('nrEndpoint').value    = inf.endpoint       || '';
-    document.getElementById('nrModel').value       = inf.model          || '';
+    const nrSel = document.getElementById('nrModelSel');
+    if (nrSel && !nrSel.value) {
+      const matched = _reviewModels.find(m => m.enabled && m.endpoint_url === inf.endpoint && m.model_id === inf.model);
+      if (matched) nrSel.value = String(matched.id);
+    }
 
     if (forcedSubpath !== undefined) {
       document.getElementById('nrCorpusSubpath').value = forcedSubpath || '';
@@ -2766,6 +2766,8 @@ async function submitNewRun() {
   const btn = document.getElementById('submitNewRun'), status = document.getElementById('nrStatus');
   btn.disabled = true; status.textContent = 'submitting…';
   const sc = document.getElementById('nrSampleCount').value.trim();
+  const nrSelId = document.getElementById('nrModelSel').value;
+  const nrModel = _reviewModels.find(r => String(r.id) === nrSelId);
   const payload = {
     mode:               document.getElementById('nrMode').value,
     sample_count:       sc ? parseInt(sc) : null,
@@ -2774,8 +2776,8 @@ async function submitNewRun() {
     corpus_repo_branch: document.getElementById('nrCorpusBranch').value.trim() || null,
     spec_repo_url:      document.getElementById('nrSpecRepo').value.trim() || null,
     spec_repo_branch:   document.getElementById('nrSpecBranch').value.trim() || null,
-    inference_endpoint: document.getElementById('nrEndpoint').value.trim() || null,
-    inference_model:    document.getElementById('nrModel').value.trim() || null,
+    inference_endpoint: nrModel ? nrModel.endpoint_url : null,
+    inference_model:    nrModel ? nrModel.model_id     : null,
     halt_on_error:      document.getElementById('nrHaltOnError').checked,
     name:               document.getElementById('nrSessionName').value.trim(),
     description:        document.getElementById('nrDescription').value.trim(),
@@ -4429,6 +4431,8 @@ async function loadConfig() {
   renderModelList();
   _populateModelSel('rdRevModelSel', 'reviewLastModel');
   _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
+  _populateModelSel('srcInfModelSel', 'inferenceLastModel');
+  _populateModelSel('nrModelSel', 'nrLastModel');
   await loadUCAssistConfig();  // populates ucAssistModelSel from _reviewModels
   await loadMCPServers();
   await loadCodeRepos();
@@ -4461,60 +4465,23 @@ function renderInferencePanel() {
   document.getElementById('srcInfModel').textContent    = s.model    || '—';
   document.getElementById('srcInfWhen').textContent     = fmtTs(s.last_applied_at);
   document.getElementById('srcInfWho').textContent      = s.last_applied_by || '—';
-  const eIn = document.getElementById('srcInfEndpointInput');
-  const mIn = document.getElementById('srcInfModelInput');
-  if (!eIn.value && !eIn.dataset.userEdited) {
-    eIn.value = s.endpoint || '';
-    if (s.endpoint) loadInferenceModels(s.endpoint, s.model);
-  }
-  if (!mIn.value && !mIn.dataset.userEdited) mIn.value = '';
-}
-
-// Pull the model value the user means: free-text takes precedence (override),
-// otherwise the selected option.
-function _resolveInferenceModel() {
-  const t = document.getElementById('srcInfModelInput').value.trim();
-  if (t) return t;
-  return document.getElementById('srcInfModelSelect').value.trim();
-}
-
-async function loadInferenceModels(endpointArg, preselect) {
-  const endpoint = (endpointArg ?? document.getElementById('srcInfEndpointInput').value).trim();
-  const sel = document.getElementById('srcInfModelSelect');
-  if (!endpoint) { sel.innerHTML = '<option value="">(enter endpoint, then ↻ to load)</option>'; return; }
-  sel.innerHTML = '<option value="">(loading…)</option>';
-  try {
-    const resp = await api('/api/sources/inference/models?endpoint=' + encodeURIComponent(endpoint));
-    if (!resp.reachable || !(resp.models||[]).length) {
-      sel.innerHTML = `<option value="">(${resp.reachable ? 'no models listed' : 'endpoint unreachable'} — use free-text)</option>`;
-      return;
-    }
-    sel.innerHTML = '<option value="">(select a model)</option>';
-    resp.models.forEach(m => {
-      const o = document.createElement('option');
-      o.value = m; o.textContent = m;
-      sel.appendChild(o);
-    });
-    // If a preselect was supplied and is in the list, pick it
-    const target = preselect || sourcesState.inference?.model;
-    if (target) {
-      for (const opt of sel.options) {
-        if (opt.value === target) { sel.value = target; break; }
-      }
-    }
-  } catch (e) {
-    sel.innerHTML = '<option value="">(list-models failed — use free-text)</option>';
+  // Pre-select the selector to the row matching the applied endpoint+model
+  const sel = document.getElementById('srcInfModelSel');
+  if (sel && !sel.dataset.userEdited) {
+    const matched = _reviewModels.find(m => m.enabled && m.endpoint_url === s.endpoint && m.model_id === s.model);
+    if (matched) sel.value = String(matched.id);
   }
 }
 
-function renderInferenceValidation(v) {
+
+function renderInferenceValidation(v, modelName) {
   // v: {reachable, status_code, models, model_found, error, latency_ms, url}
   const el = document.getElementById('srcInfValidation');
   el.style.display = '';
   const lat = v.latency_ms !== null && v.latency_ms !== undefined ? `${v.latency_ms} ms` : '—';
   if (v.reachable && v.model_found) {
     el.style.background = 'var(--green-bg)'; el.style.color = 'var(--green)';
-    el.innerHTML = `✓ Reachable · model <b>${esc(v.models[v.models.indexOf(document.getElementById('srcInfModelInput').value.trim())] || '')}</b> found in ${v.models.length} listed · ${lat}`;
+    el.innerHTML = `✓ Reachable · model <b>${esc(modelName || '')}</b> found in ${v.models.length} listed · ${lat}`;
   } else if (v.reachable && !v.model_found) {
     el.style.background = 'var(--accent-bg)'; el.style.color = 'var(--accent)';
     const list = v.models.length ? v.models.slice(0, 8).join(', ') + (v.models.length > 8 ? ` +${v.models.length-8} more` : '') : '(none reported)';
@@ -4540,17 +4507,16 @@ async function _runValidation(endpoint, model) {
 }
 
 async function testInference() {
-  const endpoint = document.getElementById('srcInfEndpointInput').value.trim();
-  const model    = _resolveInferenceModel();
+  const selId = document.getElementById('srcInfModelSel').value;
+  const m = _reviewModels.find(r => String(r.id) === selId);
   const msg = document.getElementById('srcInfMsg'), btn = document.getElementById('srcInfTestBtn');
-  if (!endpoint) { msg.innerHTML = '<span style="color:var(--red)">endpoint required</span>'; return null; }
-  if (!model)    { msg.innerHTML = '<span style="color:var(--red)">model required (select or type)</span>'; return null; }
+  if (!selId || !m) { msg.innerHTML = '<span style="color:var(--red)">select a model first</span>'; return null; }
+  const endpoint = m.endpoint_url, model = m.model_id;
   btn.disabled = true; msg.innerHTML = '<span style="color:var(--blue)">testing…</span>';
   try {
-    // Force a fresh probe on explicit Test click — clear cache first
     _lastValidation = null;
     const v = await _runValidation(endpoint, model);
-    renderInferenceValidation(v);
+    renderInferenceValidation(v, model);
     msg.innerHTML = v.reachable && v.model_found
       ? '<span style="color:var(--green)">✓ validated (endpoint reachable, model found)</span>'
       : v.reachable
@@ -4565,24 +4531,23 @@ async function testInference() {
 
 let _infApplyArmed = false;
 async function applyInference() {
-  const endpoint = document.getElementById('srcInfEndpointInput').value.trim();
-  const model    = _resolveInferenceModel();
+  const selId = document.getElementById('srcInfModelSel').value;
+  const m = _reviewModels.find(r => String(r.id) === selId);
   const msg = document.getElementById('srcInfMsg'), btn = document.getElementById('srcInfApplyBtn');
-  if (!endpoint) { msg.innerHTML = '<span style="color:var(--red)">endpoint required</span>'; return; }
-  if (!model)    { msg.innerHTML = '<span style="color:var(--red)">model required (select or type)</span>'; return; }
+  if (!selId || !m) { msg.innerHTML = '<span style="color:var(--red)">select a model first</span>'; return; }
+  const endpoint = m.endpoint_url, model = m.model_id;
   const cur = sourcesState.inference;
   if (cur && cur.endpoint === endpoint && cur.model === model) {
     msg.innerHTML = '<span style="color:var(--text-faint)">same as current — nothing to do</span>'; return;
   }
-  // Apply always validates first. If a recent Test already validated this
-  // exact endpoint+model, reuse the cached result instead of re-probing.
-  // If validation fails, arm the override; a second Apply click saves anyway.
+  // Apply always validates first; reuse cached result if Test was already run.
+  // If validation fails, arm the override — a second Apply click saves anyway.
   const wasOverride = _infApplyArmed;
   if (!_infApplyArmed) {
     let v;
     try { v = await _runValidation(endpoint, model); }
     catch (e) { msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; return; }
-    renderInferenceValidation(v);
+    renderInferenceValidation(v, model);
     if (!v.reachable || !v.model_found) {
       btn.textContent = 'Apply anyway'; btn.classList.add('danger');
       _infApplyArmed = true;
@@ -4601,6 +4566,7 @@ async function applyInference() {
   try {
     const resp = await api('/api/sources/inference', {method:'POST', body:JSON.stringify({endpoint, model})});
     sourcesState.inference = resp.state; renderInferencePanel();
+    localStorage.setItem('inferenceLastModel', selId);
     if (wasOverride) {
       msg.innerHTML = '<span style="color:var(--accent)">applied with override · validation warning was ignored · effective on next run</span>';
       toast(`inference: ${endpoint} · ${model} (override applied)`);
@@ -4608,8 +4574,6 @@ async function applyInference() {
       msg.innerHTML = '<span style="color:var(--green)">✓ validated and applied · effective on next run</span>';
       toast(`inference: ${endpoint} · ${model}`);
     }
-    document.getElementById('srcInfEndpointInput').dataset.userEdited = '';
-    document.getElementById('srcInfModelInput').dataset.userEdited = '';
   } catch (e) {
     msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
     toast('Apply failed: '+e.message, true);
@@ -4617,12 +4581,6 @@ async function applyInference() {
 }
 
 function wireInferencePanel() {
-  const endpointEl = document.getElementById('srcInfEndpointInput');
-  const modelInput = document.getElementById('srcInfModelInput');
-  const modelSelect = document.getElementById('srcInfModelSelect');
-
-  // Editing any input resets the "armed" override, clears the cached
-  // validation result, and hides any prior validation chip.
   const resetOverride = () => {
     _infApplyArmed = false;
     _lastValidation = null;
@@ -4630,23 +4588,11 @@ function wireInferencePanel() {
     b.textContent = 'Apply'; b.classList.remove('danger');
     document.getElementById('srcInfValidation').style.display = 'none';
   };
-  endpointEl.addEventListener('input', e => { e.target.dataset.userEdited = '1'; resetOverride(); });
-  modelInput.addEventListener('input',  e => { e.target.dataset.userEdited = '1'; resetOverride(); });
-
-  // Endpoint change (blur after edit) auto-reloads the model list
-  endpointEl.addEventListener('change', () => loadInferenceModels(endpointEl.value.trim()));
-
-  // Mutual exclusion: select <-> free-text input (matches branch picker UX)
-  modelSelect.addEventListener('change', () => {
-    if (modelSelect.value) { modelInput.value = ''; }
+  document.getElementById('srcInfModelSel').addEventListener('change', e => {
+    e.target.dataset.userEdited = '1';
+    localStorage.setItem('inferenceLastModel', e.target.value);
     resetOverride();
   });
-  modelInput.addEventListener('input', () => {
-    if (modelInput.value) { modelSelect.value = ''; }
-  });
-
-  document.getElementById('srcInfRefreshModels').addEventListener('click',
-    () => loadInferenceModels(endpointEl.value.trim()));
   document.getElementById('srcInfTestBtn').addEventListener('click', testInference);
   document.getElementById('srcInfApplyBtn').addEventListener('click', applyInference);
 }
@@ -4992,6 +4938,8 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     renderModelList();
     _populateModelSel('rdRevModelSel', 'reviewLastModel');
     _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
+    _populateModelSel('srcInfModelSel', 'inferenceLastModel');
+    _populateModelSel('nrModelSel', 'nrLastModel');
     _populateUCAssistModelSel();
     document.getElementById('modelFormCard').style.display = 'none';
     toast(_mfEditId ? 'Model updated' : 'Model added');
@@ -5027,6 +4975,8 @@ async function deleteModel(id, name) {
     renderModelList();
     _populateModelSel('rdRevModelSel', 'reviewLastModel');
     _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
+    _populateModelSel('srcInfModelSel', 'inferenceLastModel');
+    _populateModelSel('nrModelSel', 'nrLastModel');
     _populateUCAssistModelSel();
     toast('Model deleted');
   } catch(e) {
