@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.15  
+**Current version:** v0.9.16  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -297,6 +297,50 @@ Overlay background uses `var(--bg-panel)` — `var(--surface)` is not a defined 
 
 ---
 
+## Planned design: UC review pipeline (2026-05-26)
+
+Today the UC lifecycle states (`draft → ready → in_review → approved → deprecated`) exist in the schema but are just labels — they don't gate anything. The plan is to make them load-bearing so authoring, testing, reviewing, and shipping a UC become one coherent pipeline instead of four disconnected features.
+
+### State semantics (planned)
+
+| State | Who acts | What's allowed | What's gated |
+|---|---|---|---|
+| `draft` | author | free editing, repeated UC Assist iterations, no test runs required | cannot be added to a default Set; cannot be pushed to corpus |
+| `ready` | author signals "please review" | edits locked or warned | enables the **Run test evaluation** button on the UC |
+| `in_review` | reviewer | triggers test runs (single UC or multi-select queue); attached run results render inline on the UC | edits require state-back-to-draft |
+| `approved` | reviewer | UC is shippable | requires ≥1 passing run attached + a reviewer note; **enables Push to corpus** |
+| `deprecated` | anyone | UC is excluded from default Sets but kept for history | — |
+
+The gate at `approved` is intentional: nothing leaves the console for the corpus repo without a passing run on record. Mitigation for trivial UCs — keep the gate soft (warn + override with a reason) rather than hard.
+
+### Sets as the partitioning mechanism
+
+Sets are the natural unit of "what gets run together," and they replace any need for private UC repos.
+
+- **Default Set** — a new `is_default` boolean on `use_case_sets` (max one default per consumer). The New Run modal pre-populates from the default Set; runs scheduled outside the UI pull from the default Set when no explicit Set is named.
+- **Edge-case Sets** — named Sets (`edge-case-fringe`, `regression-2026-rev2`, etc.) that only run when explicitly selected. Edge-case UCs can stay managed-only (never pushed to corpus) or be pushed into a corpus subpath — orthogonal axis.
+- **Approval bar tightened** — once `is_default` exists, "approved" should require a passing run **on the default Set's profile**, not just any run anywhere. That's the meaningful bar.
+
+### Test-from-UC flow (consolidates the open requests)
+
+This pipeline absorbs the per-feature asks from 2026-05-25 and 2026-05-26 into one design:
+
+- **Run test evaluation from the UC** (single or multi-selected) — only enabled when state is `ready` or `in_review`. Triggers the same backend pipeline as a Sets-based run but with an ad-hoc UC list. Result attaches to each UC's history.
+- **See results inline on the UC** — reviewer reads verdict / gaps / findings without leaving the UC tab. The Run tab still exists for full-run views; the UC tab gets a focused per-UC slice.
+- **Reorder top-level tabs: Use Cases + Sets first** — matches the actual workflow (UC → Set → Run → Result), and makes the review pipeline discoverable as the primary path.
+- **Human-readable Name field on UCs** — a prerequisite: reviewers and authors need to identify UCs by name, not UUID. Maps to `scenario.description` or a new top-level `title:` field; UC Assist responses populate it explicitly.
+- **Push to corpus as commit / PR** — appears only when state is `approved`. Creates a branch + commit + PR; records `synced_at` + `synced_commit_sha` + `corpus_pr_url` on the managed row.
+
+### Why this shape (vs. private UC repos)
+
+Private repos were considered and rejected. The "edge cases shouldn't run as part of the standard suite" need is solved by Sets, not by visibility. The "drafts shouldn't be acted on" need is solved by the lifecycle state machine, not by visibility. Adding privacy on top would compound RBAC + UI complexity without solving a real problem in the current single-operator / homelab usage; revisit if the console becomes multi-tenant.
+
+### Migration
+
+Existing managed UCs are all currently in `draft` (or whatever lifecycle was last set). They keep their state. The pipeline only activates new gating going forward — no retroactive enforcement. Existing Sets keep working; the new `is_default` flag defaults to `false` everywhere until someone picks one.
+
+---
+
 ## Known limitations / future work
 
 - **CLI-triggered runs** are not visible in the Runs tab (no `run_sessions` row). Turns files are written but unreachable from the UI.
@@ -305,10 +349,8 @@ Overlay background uses `var(--bg-panel)` — `var(--surface)` is not a defined 
 - **Multi-consumer** — one console instance = one consumer. Switching requires redeploy.
 - **Engine image rebuild** — the `dav-engine:latest` image must be rebuilt and redeployed after engine code changes. Console-triggered runs always use `dav-engine:latest` from the OCP image registry.
 - **DCM / data model rework (planned)** — next major design effort. Scope to be defined in the next session (2026-05-26). Will revisit the underlying DAV domain capability model and the schemas / contracts it implies between engine, console, and consumer corpora.
-- **Kick off evaluation of a new UC from the editor (planned, requested 2026-05-25)** — currently a new UC can be drafted but evaluating it requires switching to the New Run modal and selecting the UC by handle. There should be a "Run evaluation" action directly on the UC editor (or in the UC detail pane) that triggers a single-UC run against the current consumer using the project default evaluation model.
-- **Push managed UCs back to the corpus as commit / PR (planned, requested 2026-05-25)** — managed UCs live only in Postgres today (noted in this section already). The new ask is an explicit "Push to corpus" action that creates a branch + commit + PR in the consumer's corpus repo (the URL/branch already configured per consumer in Config → Sources). Needs: a writeable token for the corpus repo, a path layout convention (dav/use-cases/ or use-cases/, auto-detected today on read), commit/PR metadata derived from the UC's `handle`, and probably a per-UC `synced_at` marker on the managed row.
-- **Reorder top-level tabs: Use Cases + Sets first (planned, requested 2026-05-25)** — Use Cases and Sets are the *starting point* of the DAV workflow (you draft a UC → group into a Set → trigger a Run against the Set → review Results). Today the tab order is Runs / Results / Use Cases / Sets / Review & Plan / Config. Reorder to put Use Cases and Sets first so the IA reflects the actual workflow.
-- **Human-readable name for UCs (planned, requested 2026-05-26)** — today the UC editor shows a YAML template where `scenario.description` is the only "title-ish" field, and the UC detail pane shows the UUID as the visible sub-heading. Users can't easily name a UC at create time. Surface an explicit **Name** input at the top of the UC editor (mapped to `scenario.description` or a new top-level `title:` field in the YAML), display the name prominently in the UC list and detail header, and demote the UUID to a smaller "ID" line. Applies to both hand-authored UCs and UC Assist–generated ones (the assist response should populate the Name field, not just the YAML body).
+- **UC review pipeline (planned, 2026-05-25 / 2026-05-26)** — full design captured above in **Planned design: UC review pipeline**. Bundles five previously per-feature requests into one coherent lifecycle: (1) human-readable Name field, (2) Run test evaluation from UC editor/detail with inline results, (3) multi-select UC list → batch test run, (4) Default Set + `is_default` flag for partitioning, (5) Push to corpus as commit/PR gated on `approved` state with a passing run attached. Replaces the need for private UC repos — Sets do the partitioning, lifecycle state does the gating.
+- **Reorder top-level tabs: Use Cases + Sets first (planned, requested 2026-05-25)** — Use Cases and Sets are the *starting point* of the DAV workflow (UC → Set → Run → Result). Today the tab order is Runs / Results / Use Cases / Sets / Review & Plan / Config. Reorder to put Use Cases and Sets first so the IA reflects the actual workflow and makes the review pipeline discoverable as the primary path.
 
 ---
 

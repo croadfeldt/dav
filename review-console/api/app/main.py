@@ -1090,6 +1090,14 @@ async def get_use_case(uuid: str):
             d["source"] = "managed"
             d["created_at"] = d["created_at"].isoformat()
             d["updated_at"] = d["updated_at"].isoformat()
+            # Parse the YAML so the UI can render scenario/dimensions/intent
+            # (renderUCDetail expects `parsed` like the corpus path returns)
+            try:
+                d["parsed"] = _yaml.safe_load(d.get("yaml_content") or "") or {}
+                if not isinstance(d["parsed"], dict):
+                    d["parsed"] = {}
+            except Exception:
+                d["parsed"] = {}
             # Fetch set memberships
             set_rows = await conn.fetch(
                 """SELECT s.id, s.name FROM use_case_sets s
