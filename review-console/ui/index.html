@@ -1221,8 +1221,8 @@
       <div class="panel-card" id="configModelsPanel">
         <div class="panel-card-header" style="justify-content:space-between;">
           <div>
-            <div class="pc-title">Review models</div>
-            <div class="pc-sub">Local and frontier models available for architectural review</div>
+            <div class="pc-title">Model endpoints</div>
+            <div class="pc-sub">Registered LLM endpoints — use flags control which DAV features each model is available in</div>
           </div>
           <button class="btn ghost btn-sm" id="addModelBtn">+ Add model</button>
         </div>
@@ -1231,7 +1231,7 @@
 
       <div id="modelFormCard" class="cfg-card panel-card" style="display:none;">
         <div class="panel-card-header">
-          <div class="pc-title" id="modelFormTitle">Add model</div>
+          <div class="pc-title" id="modelFormTitle">Add model endpoint</div>
         </div>
         <div class="panel-card-body">
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
@@ -1257,6 +1257,17 @@
               </label>
             </div>
           </div>
+          <div style="margin-top:10px;padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:6px;">Available for</div>
+            <div style="display:flex;gap:18px;flex-wrap:wrap;">
+              <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;">
+                <input type="checkbox" id="mfUseArchReview" checked /> Arch review &amp; enhancements
+              </label>
+              <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;">
+                <input type="checkbox" id="mfUseUCAssist" /> UC assist
+              </label>
+            </div>
+          </div>
           <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
             <button class="btn primary" id="saveModelBtn">Save</button>
             <button class="btn ghost" id="cancelModelBtn">Cancel</button>
@@ -1268,32 +1279,19 @@
       <div class="cfg-card panel-card" id="configUCAssistPanel">
         <div class="panel-card-header">
           <div>
-            <div class="pc-title">UC Assist</div>
-            <div class="pc-sub">LLM endpoint for NL-assisted use case authoring (✦ Assist in the UC editor)</div>
+            <div class="pc-title">UC Assist model</div>
+            <div class="pc-sub">Select which model to use for NL-assisted use case authoring (✦ Assist in the UC editor). Enable "UC assist" on a model endpoint above to add it here.</div>
           </div>
           <span id="ucAssistCfgStatus" style="font-size:10px;color:var(--text-faint);"></span>
         </div>
         <div class="panel-card-body">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
-            <div class="form-field"><label>Provider</label>
-              <select id="uacProvider">
-                <option value="anthropic">Anthropic</option>
-                <option value="openai">OpenAI-compatible</option>
-              </select></div>
-            <div class="form-field"><label>Model ID</label>
-              <input id="uacModelId" placeholder="claude-opus-4-7-20251001 or qwen3-32b" /></div>
-            <div class="form-field"><label>Endpoint URL</label>
-              <input id="uacEndpoint" placeholder="https://api.anthropic.com or http://host:8080" /></div>
-            <div class="form-field"><label>API Key <span style="color:var(--text-faint);font-weight:400;">(blank = keep existing)</span></label>
-              <input id="uacApiKey" type="password" placeholder="sk-ant-… or blank to keep" /></div>
-          </div>
-          <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:12px;cursor:pointer;">
-            <input type="checkbox" id="uacEnabled" checked /> Enabled
-          </label>
-          <div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
-            <button class="btn primary" id="saveUCAssistBtn">Save</button>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <select id="ucAssistModelSel" style="min-width:260px;">
+              <option value="">— no models with UC assist enabled —</option>
+            </select>
             <span id="uacMsg" style="font-size:11px;color:var(--text-faint);"></span>
           </div>
+          <div class="form-hint" style="margin-top:8px;">Selected model is stored locally and passed with each UC assist request. Add endpoints with the "UC assist" flag above.</div>
         </div>
       </div>
 
@@ -1337,7 +1335,15 @@
             <div class="form-field" style="grid-column:1/-1;"><label>Description <span style="color:var(--text-faint);font-weight:400;">(optional)</span></label>
               <input id="mcpfDesc" placeholder="e.g. OpenShift cluster tools — list pods, logs, events" /></div>
           </div>
-          <label style="display:flex;align-items:center;gap:8px;margin-top:4px;font-size:12px;cursor:pointer;">
+          <div style="margin-top:8px;padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:6px;">Available for</div>
+            <div style="display:flex;gap:18px;flex-wrap:wrap;">
+              <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;">
+                <input type="checkbox" id="mcpfUseUCAssist" /> UC assist tools
+              </label>
+            </div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;cursor:pointer;">
             <input type="checkbox" id="mcpfEnabled" checked /> Enabled
           </label>
           <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
@@ -1788,9 +1794,12 @@ async function init() {
   initNavCollapse();
   try { await Promise.all([loadMe(), loadRunStatus()]); setApiStatus(true); }
   catch (e) { console.error(e); setApiStatus(false, e.message); }
-  // Pre-load review models so the arch review selector is ready on any tab,
-  // not only after visiting Config.
-  loadReviewModels().catch(() => {});
+  // Pre-load models so arch review + UC assist selectors are ready on any tab.
+  loadReviewModels().then(() => {
+    _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
+    _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
+    _populateUCAssistModelSel();
+  }).catch(() => {});
   switchView('runs');
 }
 
@@ -3834,17 +3843,16 @@ function closeUCModal() {
 
 let _ucAssistAvailable = null;  // null=unknown, true/false
 
-async function _ucAssistCheckAvail() {
-  if (_ucAssistAvailable !== null) return _ucAssistAvailable;
-  try {
-    const s = await api('/api/uc-assist/status');
-    _ucAssistAvailable = s.available;
-    const statusEl = document.getElementById('ucAssistStatus');
-    if (statusEl) statusEl.textContent = s.available ? s.model : 'not configured';
-  } catch(e) {
-    _ucAssistAvailable = false;
+function _ucAssistCheckAvail() {
+  if (_ucAssistAvailable !== null) return Promise.resolve(_ucAssistAvailable);
+  const sel = document.getElementById('ucAssistModelSel');
+  _ucAssistAvailable = !!(sel && sel.value);
+  const statusEl = document.getElementById('ucAssistStatus');
+  if (statusEl) {
+    const m = _reviewModels.find(r => String(r.id) === String(sel && sel.value));
+    statusEl.textContent = _ucAssistAvailable ? (m ? m.name : 'configured') : 'not configured';
   }
-  return _ucAssistAvailable;
+  return Promise.resolve(_ucAssistAvailable);
 }
 
 function _ucAssistOpen() {
@@ -3895,9 +3903,10 @@ async function _ucAssistSend() {
   if (!msg) return;
   const avail = await _ucAssistCheckAvail();
   if (!avail) {
-    _ucAssistAppendMessage('assistant', 'UC Assist is not configured. Add credentials in Config → UC Assist.', null, true);
+    _ucAssistAppendMessage('assistant', 'UC Assist is not configured. Enable "UC assist" on a model endpoint in Config → Models.', null, true);
     return;
   }
+  const modelId = parseInt(document.getElementById('ucAssistModelSel').value, 10);
   _ucAssistAppendMessage('user', msg);
   input.value = '';
   const btn = document.getElementById('ucAssistSendBtn');
@@ -3906,7 +3915,7 @@ async function _ucAssistSend() {
   try {
     const resp = await api('/api/uc-assist', {
       method: 'POST',
-      body: JSON.stringify({ message: msg, current_yaml: currentYaml }),
+      body: JSON.stringify({ message: msg, current_yaml: currentYaml, model_config_id: modelId }),
     });
     const explanation = resp.explanation || (resp.error ? `Error: ${resp.error}` : '(no response)');
     _ucAssistAppendMessage('assistant', explanation, resp.yaml_suggestion || null, !!resp.error);
@@ -4429,7 +4438,9 @@ async function loadConfig() {
   // Load review models, MCP, code repos, UC assist, and setup config nav
   await loadReviewModels();
   renderModelList();
-  await loadUCAssistConfig();
+  _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
+  _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
+  await loadUCAssistConfig();  // populates ucAssistModelSel from _reviewModels
   await loadMCPServers();
   await loadCodeRepos();
   setupConfigNav();
@@ -4923,23 +4934,30 @@ function renderModelList() {
     el.innerHTML = '<div style="padding:14px 16px;font-size:12px;color:var(--text-faint)">No models configured. Click "+ Add model" to add one.</div>';
     return;
   }
-  el.innerHTML = _reviewModels.map(m => `
+  el.innerHTML = _reviewModels.map(m => {
+    const uses = [];
+    if (m.use_arch_review) uses.push('arch review');
+    if (m.use_uc_assist)   uses.push('UC assist');
+    const useStr = uses.length ? uses.join(', ') : 'no uses enabled';
+    return `
     <div class="model-manager-row">
       <span class="model-pill ${m.is_local ? 'local' : 'frontier'}">${m.is_local ? 'local' : 'frontier'}</span>
       <span style="font-weight:500;color:var(--text);flex:1">${esc(m.name)}</span>
       <span style="color:var(--text-faint);font-size:11px;">${esc(m.provider)} · ${esc(m.model_id)}</span>
+      <span style="color:var(--text-faint);font-size:10px;font-style:italic;">${esc(useStr)}</span>
       ${!m.enabled ? '<span class="model-pill disabled">disabled</span>' : ''}
       <button class="btn ghost btn-sm" onclick="editModel(${m.id})">Edit</button>
       <button class="btn ghost btn-sm" style="color:var(--red)" onclick="deleteModel(${m.id},${JSON.stringify(m.name)})">✕</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 function _populateDrawerModelSel(selId, storageKey) {
   const sel = document.getElementById(selId);
   if (!sel) return;
-  const enabled = _reviewModels.filter(m => m.enabled);
+  const enabled = _reviewModels.filter(m => m.enabled && m.use_arch_review);
   if (!enabled.length) {
-    sel.innerHTML = '<option value="">No models configured — add one in Config</option>';
+    sel.innerHTML = '<option value="">No arch-review models — add one in Config</option>';
     return;
   }
   const prev = sel.value;
@@ -4953,7 +4971,7 @@ function _populateDrawerModelSel(selId, storageKey) {
 
 document.getElementById('addModelBtn').addEventListener('click', () => {
   _mfEditId = null;
-  document.getElementById('modelFormTitle').textContent = 'Add model';
+  document.getElementById('modelFormTitle').textContent = 'Add model endpoint';
   document.getElementById('mfName').value = '';
   document.getElementById('mfProvider').value = 'openai';
   document.getElementById('mfEndpoint').value = '';
@@ -4961,6 +4979,8 @@ document.getElementById('addModelBtn').addEventListener('click', () => {
   document.getElementById('mfApiKey').value = '';
   document.getElementById('mfLocal').checked = false;
   document.getElementById('mfEnabled').checked = true;
+  document.getElementById('mfUseArchReview').checked = true;
+  document.getElementById('mfUseUCAssist').checked = false;
   document.getElementById('modelFormMsg').textContent = '';
   document.getElementById('modelFormCard').style.display = '';
   document.getElementById('mfName').focus();
@@ -4974,13 +4994,15 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
   const btn = document.getElementById('saveModelBtn');
   const msg = document.getElementById('modelFormMsg');
   const payload = {
-    name:         document.getElementById('mfName').value.trim(),
-    provider:     document.getElementById('mfProvider').value,
-    endpoint_url: document.getElementById('mfEndpoint').value.trim(),
-    model_id:     document.getElementById('mfModelId').value.trim(),
-    api_key:      document.getElementById('mfApiKey').value,
-    is_local:     document.getElementById('mfLocal').checked,
-    enabled:      document.getElementById('mfEnabled').checked,
+    name:            document.getElementById('mfName').value.trim(),
+    provider:        document.getElementById('mfProvider').value,
+    endpoint_url:    document.getElementById('mfEndpoint').value.trim(),
+    model_id:        document.getElementById('mfModelId').value.trim(),
+    api_key:         document.getElementById('mfApiKey').value,
+    is_local:        document.getElementById('mfLocal').checked,
+    enabled:         document.getElementById('mfEnabled').checked,
+    use_arch_review: document.getElementById('mfUseArchReview').checked,
+    use_uc_assist:   document.getElementById('mfUseUCAssist').checked,
   };
   if (!payload.name || !payload.endpoint_url || !payload.model_id) {
     msg.style.color = 'var(--red)'; msg.textContent = 'Name, endpoint, and model ID are required.'; return;
@@ -4996,6 +5018,7 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     renderModelList();
     _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
     _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
+    _populateUCAssistModelSel();
     document.getElementById('modelFormCard').style.display = 'none';
     toast(_mfEditId ? 'Model updated' : 'Model added');
   } catch(e) {
@@ -5009,7 +5032,7 @@ function editModel(id) {
   const m = _reviewModels.find(r => r.id === id);
   if (!m) return;
   _mfEditId = id;
-  document.getElementById('modelFormTitle').textContent = 'Edit model';
+  document.getElementById('modelFormTitle').textContent = 'Edit model endpoint';
   document.getElementById('mfName').value = m.name;
   document.getElementById('mfProvider').value = m.provider;
   document.getElementById('mfEndpoint').value = m.endpoint_url;
@@ -5017,6 +5040,8 @@ function editModel(id) {
   document.getElementById('mfApiKey').value = '';
   document.getElementById('mfLocal').checked = m.is_local;
   document.getElementById('mfEnabled').checked = m.enabled;
+  document.getElementById('mfUseArchReview').checked = m.use_arch_review;
+  document.getElementById('mfUseUCAssist').checked = m.use_uc_assist;
   document.getElementById('modelFormMsg').textContent = '';
   document.getElementById('modelFormCard').style.display = '';
   document.getElementById('mfName').focus();
@@ -5030,6 +5055,7 @@ async function deleteModel(id, name) {
     renderModelList();
     _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
     _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
+    _populateUCAssistModelSel();
     toast('Model deleted');
   } catch(e) {
     toast('Delete failed: ' + e.message);
@@ -5702,7 +5728,8 @@ function renderMCPList() {
       <span class="status-dot" id="mcpDot-${m.id}" style="flex-shrink:0;background:var(--text-faint);"></span>
       <span class="mcp-name">${esc(m.name)}</span>
       <span class="mcp-url" title="${esc(m.sse_url)}">${esc(m.sse_url)}</span>
-      ${m.description ? `<span style="font-size:10px;color:var(--text-faint);flex-shrink:0;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(m.description)}">${esc(m.description)}</span>` : ''}
+      ${m.description ? `<span style="font-size:10px;color:var(--text-faint);flex-shrink:0;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(m.description)}">${esc(m.description)}</span>` : ''}
+      ${m.use_uc_assist ? '<span style="font-size:9px;color:var(--accent);border:1px solid var(--accent-soft);padding:1px 5px;border-radius:2px;flex-shrink:0;">UC assist</span>' : ''}
       ${!m.enabled ? '<span style="font-size:9px;color:var(--text-faint);border:1px solid var(--border);padding:1px 5px;border-radius:2px;">disabled</span>' : ''}
       <span class="mcp-actions">
         <button class="btn ghost btn-icon" style="font-size:10px;" onclick="openMCPForm(${m.id})">Edit</button>
@@ -5754,6 +5781,7 @@ function openMCPForm(id) {
   document.getElementById('mcpfUrl').value = m ? m.sse_url : '';
   document.getElementById('mcpfDesc').value = m ? (m.description || '') : '';
   document.getElementById('mcpfEnabled').checked = m ? m.enabled : true;
+  document.getElementById('mcpfUseUCAssist').checked = m ? !!m.use_uc_assist : false;
   document.getElementById('mcpFormMsg').textContent = '';
   document.getElementById('mcpFormCard').style.display = '';
   document.getElementById('mcpfName').focus();
@@ -5782,6 +5810,7 @@ document.getElementById('saveMCPBtn').addEventListener('click', async () => {
     sse_url: document.getElementById('mcpfUrl').value.trim(),
     description: document.getElementById('mcpfDesc').value.trim(),
     enabled: document.getElementById('mcpfEnabled').checked,
+    use_uc_assist: document.getElementById('mcpfUseUCAssist').checked,
   };
   if (!payload.name || !payload.sse_url) {
     msgEl.textContent = 'Name and SSE URL are required.';
@@ -5821,62 +5850,36 @@ document.getElementById('copyCursorBtn').addEventListener('click', () => {
 
 // ── UC Assist config ─────────────────────────────────────────────────────────
 
-async function loadUCAssistConfig() {
-  const statusEl = document.getElementById('ucAssistCfgStatus');
-  const msgEl = document.getElementById('uacMsg');
-  try {
-    const cfg = await api('/api/uc-assist/config');
-    if (!cfg.configured) {
-      statusEl.textContent = 'not configured';
-      return;
-    }
-    document.getElementById('uacProvider').value = cfg.provider || 'anthropic';
-    document.getElementById('uacEndpoint').value = cfg.endpoint_url || '';
-    document.getElementById('uacModelId').value = cfg.model_id || '';
-    document.getElementById('uacApiKey').value = '';  // never pre-fill key
-    document.getElementById('uacApiKey').placeholder = cfg.api_key ? '••••••••  (set — blank to keep)' : 'sk-ant-… or blank to keep';
-    document.getElementById('uacEnabled').checked = cfg.enabled;
-    statusEl.textContent = cfg.enabled ? '✓ configured' : 'disabled';
-    statusEl.style.color = cfg.enabled ? 'var(--ok)' : 'var(--text-faint)';
-  } catch (e) {
-    if (msgEl) msgEl.textContent = `Load failed: ${e.message}`;
-  }
-}
+const _ucAssistModelKey = 'ucAssistModelId';
 
-document.getElementById('saveUCAssistBtn').addEventListener('click', async () => {
-  const msgEl = document.getElementById('uacMsg');
+function _populateUCAssistModelSel() {
+  const sel = document.getElementById('ucAssistModelSel');
   const statusEl = document.getElementById('ucAssistCfgStatus');
-  const btn = document.getElementById('saveUCAssistBtn');
-  const payload = {
-    provider: document.getElementById('uacProvider').value,
-    endpoint_url: document.getElementById('uacEndpoint').value.trim(),
-    model_id: document.getElementById('uacModelId').value.trim(),
-    api_key: document.getElementById('uacApiKey').value,
-    enabled: document.getElementById('uacEnabled').checked,
-  };
-  if (!payload.endpoint_url || !payload.model_id) {
-    msgEl.textContent = 'Endpoint URL and Model ID are required.';
-    msgEl.style.color = 'var(--error)';
+  if (!sel) return;
+  const eligible = _reviewModels.filter(m => m.enabled && m.use_uc_assist);
+  if (!eligible.length) {
+    sel.innerHTML = '<option value="">— no models with UC assist enabled —</option>';
+    if (statusEl) { statusEl.textContent = 'not configured'; statusEl.style.color = 'var(--text-faint)'; }
+    _ucAssistAvailable = false;
     return;
   }
-  btn.disabled = true;
-  msgEl.textContent = 'Saving…';
-  msgEl.style.color = 'var(--text-faint)';
-  try {
-    await api('/api/uc-assist/config', { method: 'PUT', body: JSON.stringify(payload) });
-    msgEl.textContent = 'Saved.';
-    msgEl.style.color = 'var(--ok)';
-    statusEl.textContent = payload.enabled ? '✓ configured' : 'disabled';
-    statusEl.style.color = payload.enabled ? 'var(--ok)' : 'var(--text-faint)';
-    document.getElementById('uacApiKey').value = '';
-    document.getElementById('uacApiKey').placeholder = '••••••••  (set — blank to keep)';
-    _ucAssistAvailable = null;  // invalidate cache so status re-checks on next use
-  } catch (e) {
-    msgEl.textContent = `Save failed: ${e.message}`;
-    msgEl.style.color = 'var(--error)';
-  } finally {
-    btn.disabled = false;
-  }
+  const stored = localStorage.getItem(_ucAssistModelKey);
+  sel.innerHTML = eligible.map(m =>
+    `<option value="${m.id}">${esc(m.name)} (${m.is_local ? 'local' : 'frontier'})</option>`
+  ).join('');
+  if (stored && eligible.find(m => String(m.id) === stored)) sel.value = stored;
+  if (statusEl) { statusEl.textContent = '✓ configured'; statusEl.style.color = 'var(--ok)'; }
+  _ucAssistAvailable = true;
+}
+
+async function loadUCAssistConfig() {
+  // Models already loaded by loadReviewModels(); just populate the selector.
+  _populateUCAssistModelSel();
+}
+
+document.getElementById('ucAssistModelSel').addEventListener('change', function() {
+  localStorage.setItem(_ucAssistModelKey, this.value);
+  _ucAssistAvailable = !!this.value;
 });
 
 // ── Code Repositories ────────────────────────────────────────────────────────

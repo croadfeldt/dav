@@ -124,10 +124,10 @@ Two-pane layout: left nav (category list), right content (selected category).
 
 **Categories:**
 - **Sources** — spec repo URL/branch, corpus repo URL/branch. Updates `dav-source-spec` ConfigMap + rolls `dav-docs-mcp` deployment.
-- **Review Models** — configurable LLM endpoints for arch review. Stored in `review_model_configs` table. `api_key` masked on GET.
-- **MCP Integrations** — registered MCP servers (`mcp_server_configs` table). Health polled on demand. Seeded with `openshift-mcp`, `frc-scheduler-mcp`, `dav-docs-mcp`.
+- **Model Endpoints** — all LLM endpoints in one `model_configs` table with per-endpoint use-flags: `use_arch_review` (default true) and `use_uc_assist` (default false). `api_key` masked on GET. Arch review / enhancement dropdowns filter to `use_arch_review=true`; UC assist selector filters to `use_uc_assist=true`.
+- **UC Assist model** — selector panel (no longer a separate config form); shows models flagged `use_uc_assist=true`. Selected model stored in localStorage; `model_config_id` sent with each `/api/uc-assist` request.
+- **MCP Integrations** — registered MCP servers (`mcp_server_configs` table) with `use_uc_assist` flag. Health polled on demand. Servers flagged `use_uc_assist` displayed with amber badge.
 - **Code Repositories** — git repos for branch/PR creation from enhancement findings (`code_repo_configs` table). Supports GitHub + GitLab.
-- **UC Assist** — single-row config (`uc_assist_config` table) for NL UC authoring model.
 
 ---
 
@@ -236,9 +236,8 @@ Current: `"1.5"` — gap title field added, `spec_refs_missing` as list.
 | `analysis_runs` | Ingested run index |
 | `uc_analyses` | Per-UC analysis results |
 | `uc_gaps` | Per-gap records |
-| `review_model_configs` | Configurable LLM endpoints for arch review |
-| `mcp_server_configs` | MCP server registry |
-| `uc_assist_config` | UC Assist model config (single-row) |
+| `model_configs` | Centralized LLM endpoint registry; use-flags `use_arch_review`, `use_uc_assist` per row |
+| `mcp_server_configs` | MCP server registry; `use_uc_assist` flag per server |
 | `code_repo_configs` | Git repos for PR creation |
 
 ---

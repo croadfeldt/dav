@@ -215,57 +215,45 @@ CREATE INDEX IF NOT EXISTS idx_uc_gaps_run    ON uc_gaps(run_id);
 CREATE INDEX IF NOT EXISTS idx_uc_gaps_uuid   ON uc_gaps(uc_uuid);
 CREATE INDEX IF NOT EXISTS idx_uc_gaps_gap_id ON uc_gaps(gap_id);
 
--- ── Review model configs ────────────────────────────────────────────────────
--- User-configured models for architectural review of analysis findings.
--- Supports OpenAI-compatible and Anthropic providers.
+-- ── Centralized model configs ────────────────────────────────────────────────
+-- All LLM endpoint registrations live here.  Per-endpoint use-flags control
+-- which DAV features each model may be selected for.
 -- api_key stored at rest; masked ('••••••••') on GET responses.
 
-CREATE TABLE IF NOT EXISTS review_model_configs (
-  id           BIGSERIAL PRIMARY KEY,
-  name         TEXT NOT NULL,
-  provider     TEXT NOT NULL CHECK (provider IN ('openai', 'anthropic')),
-  endpoint_url TEXT NOT NULL,
-  model_id     TEXT NOT NULL,
-  api_key      TEXT NOT NULL DEFAULT '',
-  enabled      BOOLEAN NOT NULL DEFAULT true,
-  is_local     BOOLEAN NOT NULL DEFAULT false,
-  created_by   TEXT NOT NULL,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS model_configs (
+  id              BIGSERIAL PRIMARY KEY,
+  name            TEXT NOT NULL,
+  provider        TEXT NOT NULL CHECK (provider IN ('openai', 'anthropic')),
+  endpoint_url    TEXT NOT NULL,
+  model_id        TEXT NOT NULL,
+  api_key         TEXT NOT NULL DEFAULT '',
+  enabled         BOOLEAN NOT NULL DEFAULT true,
+  is_local        BOOLEAN NOT NULL DEFAULT false,
+  use_arch_review BOOLEAN NOT NULL DEFAULT true,
+  use_uc_assist   BOOLEAN NOT NULL DEFAULT false,
+  created_by      TEXT NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_review_models_name ON review_model_configs(lower(name));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_model_configs_name ON model_configs(lower(name));
 
 -- ── MCP server registry ─────────────────────────────────────────────────────
 -- User-registered MCP servers (SSE transport) shown in the Integrations panel.
+-- use_uc_assist controls whether this server's tools are surfaced in UC assist.
 -- Health is polled on demand; no credentials stored here.
 
 CREATE TABLE IF NOT EXISTS mcp_server_configs (
-  id           BIGSERIAL PRIMARY KEY,
-  name         TEXT NOT NULL,
-  description  TEXT NOT NULL DEFAULT '',
-  sse_url      TEXT NOT NULL,
-  enabled      BOOLEAN NOT NULL DEFAULT true,
-  created_by   TEXT NOT NULL,
-  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+  id              BIGSERIAL PRIMARY KEY,
+  name            TEXT NOT NULL,
+  description     TEXT NOT NULL DEFAULT '',
+  sse_url         TEXT NOT NULL,
+  enabled         BOOLEAN NOT NULL DEFAULT true,
+  use_uc_assist   BOOLEAN NOT NULL DEFAULT false,
+  created_by      TEXT NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_server_configs(lower(name));
-
--- ── UC Assist config ────────────────────────────────────────────────────────
--- Single-row config for NL-assisted UC authoring.
--- Falls back to DAV_UC_ASSIST_* env vars when no row is present or enabled=false.
--- api_key stored at rest; masked on GET responses.
-
-CREATE TABLE IF NOT EXISTS uc_assist_config (
-  id           INT PRIMARY KEY DEFAULT 1,
-  provider     TEXT NOT NULL CHECK (provider IN ('openai', 'anthropic')) DEFAULT 'anthropic',
-  endpoint_url TEXT NOT NULL DEFAULT 'https://api.anthropic.com',
-  model_id     TEXT NOT NULL DEFAULT 'claude-opus-4-7-20251001',
-  api_key      TEXT NOT NULL DEFAULT '',
-  enabled      BOOLEAN NOT NULL DEFAULT true,
-  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT uc_assist_single_row CHECK (id = 1)
-);
 
 -- ── Code repository configs ─────────────────────────────────────────────────
 -- User-registered git repos for branch + PR/MR creation from enhancement findings.

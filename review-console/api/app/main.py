@@ -46,6 +46,7 @@ CORPUS_PATH = os.environ.get("CORPUS_PATH", "/etc/dav-review/corpus.json")
 CORPUS_INCLUDE = parse_patterns(os.environ.get("CORPUS_INCLUDE"))
 CORPUS_EXCLUDE = parse_patterns(os.environ.get("CORPUS_EXCLUDE"))
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+MIGRATE_002_PATH = Path(__file__).parent / "migrate_002_model_configs.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -128,6 +129,8 @@ async def lifespan(app: FastAPI):
     log.info("Connecting to Postgres...")
     pool = await asyncpg.create_pool(DB_DSN, min_size=1, max_size=8, command_timeout=30)
     async with pool.acquire() as conn:
+        log.info("Applying migration 002 (model_configs consolidation)...")
+        await conn.execute(MIGRATE_002_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -874,14 +877,7 @@ class UCAssistIn(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
     current_yaml: Optional[str] = Field(None, max_length=64000)
     context: Optional[str] = Field(None, max_length=2000)
-
-
-class UCAssistConfigIn(BaseModel):
-    provider: str = Field(..., pattern="^(openai|anthropic)$")
-    endpoint_url: str = Field(..., min_length=1, max_length=512)
-    model_id: str = Field(..., min_length=1, max_length=256)
-    api_key: str = Field("", max_length=512)
-    enabled: bool = True
+    model_config_id: Optional[int] = None
 
 
 class MCPServerIn(BaseModel):
@@ -889,6 +885,7 @@ class MCPServerIn(BaseModel):
     sse_url: str = Field(..., min_length=1, max_length=512)
     description: str = Field("", max_length=512)
     enabled: bool = True
+    use_uc_assist: bool = False
 
 
 class ModelConfigIn(BaseModel):
@@ -899,6 +896,8 @@ class ModelConfigIn(BaseModel):
     api_key: str = Field("", max_length=512)
     enabled: bool = True
     is_local: bool = False
+    use_arch_review: bool = True
+    use_uc_assist: bool = False
 
 
 class ArchReviewIn(BaseModel):
@@ -933,78 +932,53 @@ class PrCreateIn(BaseModel):
     enhancement_text: str = ""
 
 
-@app.get("/api/uc-assist/status")
-async def uc_assist_status():
-    """Check whether the UC assist endpoint is configured (DB preferred, env fallback)."""
-    db_cfg = await uc_assist.get_db_config(pool) if pool is not None else None
-    cfg = uc_assist._resolve_config(db_cfg)
-    return {
-        "available": cfg is not None,
-        "source": "db" if db_cfg else ("env" if cfg else "none"),
-        "model": cfg["model_id"] if cfg else None,
-        "endpoint": cfg["endpoint_url"] if cfg else None,
-    }
-
-
-@app.get("/api/uc-assist/config")
-async def get_uc_assist_config():
-    """Return current UC assist config (api_key masked)."""
+@app.get("/api/uc-assist/models")
+async def list_uc_assist_models():
+    """List model configs flagged for UC assist (api_key masked)."""
     if pool is None:
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
-        row = await conn.fetchrow("SELECT * FROM uc_assist_config WHERE id=1")
-    if not row:
-        return {"configured": False}
-    return {
-        "configured": True,
-        "provider": row["provider"],
-        "endpoint_url": row["endpoint_url"],
-        "model_id": row["model_id"],
-        "api_key": "••••••••" if row["api_key"] else "",
-        "enabled": row["enabled"],
-        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
-    }
-
-
-@app.put("/api/uc-assist/config")
-async def put_uc_assist_config(payload: UCAssistConfigIn, request: Request):
-    """Upsert the single-row UC assist config."""
-    get_user(request)
-    if pool is None:
-        raise HTTPException(503, "pool not initialized")
-    async with pool.acquire() as conn:
-        existing = await conn.fetchrow(
-            "SELECT api_key FROM uc_assist_config WHERE id=1"
+        rows = await conn.fetch(
+            """SELECT id, name, provider, endpoint_url, model_id,
+                      CASE WHEN api_key != '' THEN '••••••••' ELSE '' END AS api_key,
+                      enabled, is_local, use_arch_review, use_uc_assist,
+                      created_by, created_at, updated_at
+               FROM model_configs
+               WHERE use_uc_assist AND enabled
+               ORDER BY name"""
         )
-        effective_key = (
-            payload.api_key if payload.api_key
-            else (existing["api_key"] if existing else "")
-        )
-        await conn.execute(
-            """INSERT INTO uc_assist_config (id, provider, endpoint_url, model_id, api_key, enabled, updated_at)
-               VALUES (1, $1, $2, $3, $4, $5, now())
-               ON CONFLICT (id) DO UPDATE SET
-                 provider=EXCLUDED.provider, endpoint_url=EXCLUDED.endpoint_url,
-                 model_id=EXCLUDED.model_id, api_key=EXCLUDED.api_key,
-                 enabled=EXCLUDED.enabled, updated_at=now()""",
-            payload.provider, payload.endpoint_url.rstrip("/"),
-            payload.model_id, effective_key, payload.enabled,
-        )
-    return {"ok": True}
+    return [dict(r) for r in rows]
 
 
 @app.post("/api/uc-assist")
 async def uc_assist_chat(payload: UCAssistIn, request: Request):
     """NL-assisted UC authoring — ask the model to draft or refine a UC.
 
+    model_config_id selects which model_configs row to use (must have
+    use_uc_assist=true).  Falls back to env-var config when omitted and
+    no DB row is available.
+
     Returns {"explanation": str, "yaml_suggestion": str|null} on success,
     or {"error": str} if the assist endpoint is misconfigured or unreachable.
     """
-    get_user(request)  # auth check — require authenticated caller
+    get_user(request)
+    cfg: Optional[dict] = None
+    if payload.model_config_id is not None:
+        if pool is None:
+            raise HTTPException(503, "pool not initialized")
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM model_configs WHERE id=$1 AND enabled AND use_uc_assist",
+                payload.model_config_id,
+            )
+        if not row:
+            raise HTTPException(404, "Model config not found, disabled, or not flagged for UC assist")
+        cfg = dict(row)
     result = await uc_assist.chat(
         user_message=payload.message,
         current_yaml=payload.current_yaml,
         context=payload.context,
+        cfg=cfg,
         pool=pool,
     )
     if "error" in result and not result.get("explanation"):
@@ -2378,10 +2352,11 @@ async def create_mcp_server(payload: MCPServerIn, request: Request):
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """INSERT INTO mcp_server_configs (name, sse_url, description, enabled, created_by)
-               VALUES ($1, $2, $3, $4, $5) RETURNING *""",
+            """INSERT INTO mcp_server_configs
+                 (name, sse_url, description, enabled, use_uc_assist, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6) RETURNING *""",
             payload.name, payload.sse_url.rstrip("/"),
-            payload.description, payload.enabled, user,
+            payload.description, payload.enabled, payload.use_uc_assist, user,
         )
     return dict(row)
 
@@ -2394,10 +2369,11 @@ async def update_mcp_server(mid: int, payload: MCPServerIn, request: Request):
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """UPDATE mcp_server_configs
-               SET name=$1, sse_url=$2, description=$3, enabled=$4, updated_at=now()
-               WHERE id=$5 RETURNING *""",
+               SET name=$1, sse_url=$2, description=$3, enabled=$4,
+                   use_uc_assist=$5, updated_at=now()
+               WHERE id=$6 RETURNING *""",
             payload.name, payload.sse_url.rstrip("/"),
-            payload.description, payload.enabled, mid,
+            payload.description, payload.enabled, payload.use_uc_assist, mid,
         )
     if not row:
         raise HTTPException(404, "MCP server not found")
@@ -2450,13 +2426,14 @@ async def mcp_servers_health():
 
 @app.get("/api/models")
 async def list_review_models():
-    """List configured review models; api_key is masked."""
+    """List all configured model endpoints; api_key is masked."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT id, name, provider, endpoint_url, model_id,
                       CASE WHEN api_key != '' THEN '••••••••' ELSE '' END AS api_key,
-                      enabled, is_local, created_by, created_at, updated_at
-               FROM review_model_configs ORDER BY created_at"""
+                      enabled, is_local, use_arch_review, use_uc_assist,
+                      created_by, created_at, updated_at
+               FROM model_configs ORDER BY created_at"""
         )
     return [dict(r) for r in rows]
 
@@ -2467,12 +2444,15 @@ async def create_review_model(payload: ModelConfigIn, request: Request):
     async with pool.acquire() as conn:
         try:
             row = await conn.fetchrow(
-                """INSERT INTO review_model_configs
-                     (name, provider, endpoint_url, model_id, api_key, enabled, is_local, created_by)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                   RETURNING id, name, provider, endpoint_url, model_id, enabled, is_local, created_at""",
+                """INSERT INTO model_configs
+                     (name, provider, endpoint_url, model_id, api_key, enabled,
+                      is_local, use_arch_review, use_uc_assist, created_by)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                   RETURNING id, name, provider, endpoint_url, model_id, enabled,
+                             is_local, use_arch_review, use_uc_assist, created_at""",
                 payload.name, payload.provider, payload.endpoint_url,
-                payload.model_id, payload.api_key, payload.enabled, payload.is_local, user,
+                payload.model_id, payload.api_key, payload.enabled,
+                payload.is_local, payload.use_arch_review, payload.use_uc_assist, user,
             )
         except Exception as e:
             if "unique" in str(e).lower():
@@ -2486,13 +2466,15 @@ async def update_review_model(mid: int, payload: ModelConfigIn, request: Request
     get_user(request)
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            """UPDATE review_model_configs
+            """UPDATE model_configs
                SET name=$1, provider=$2, endpoint_url=$3, model_id=$4,
                    api_key = CASE WHEN $5 != '' THEN $5 ELSE api_key END,
-                   enabled=$6, is_local=$7, updated_at=now()
-               WHERE id=$8 RETURNING id""",
+                   enabled=$6, is_local=$7, use_arch_review=$8, use_uc_assist=$9,
+                   updated_at=now()
+               WHERE id=$10 RETURNING id""",
             payload.name, payload.provider, payload.endpoint_url,
-            payload.model_id, payload.api_key, payload.enabled, payload.is_local, mid,
+            payload.model_id, payload.api_key, payload.enabled,
+            payload.is_local, payload.use_arch_review, payload.use_uc_assist, mid,
         )
     if not row:
         raise HTTPException(404, "Model config not found")
@@ -2503,7 +2485,7 @@ async def update_review_model(mid: int, payload: ModelConfigIn, request: Request
 async def delete_review_model(mid: int, request: Request):
     get_user(request)
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM review_model_configs WHERE id=$1", mid)
+        await conn.execute("DELETE FROM model_configs WHERE id=$1", mid)
     return {"ok": True}
 
 
@@ -2525,11 +2507,11 @@ async def arch_review(payload: ArchReviewIn, request: Request):
 
     async with pool.acquire() as conn:
         model_row = await conn.fetchrow(
-            "SELECT * FROM review_model_configs WHERE id=$1 AND enabled",
+            "SELECT * FROM model_configs WHERE id=$1 AND enabled AND use_arch_review",
             payload.model_config_id,
         )
         if not model_row:
-            raise HTTPException(404, "Model config not found or disabled")
+            raise HTTPException(404, "Model config not found, disabled, or not flagged for arch review")
 
         if payload.scope == "uc":
             if not payload.run_id or not payload.uc_uuid:
@@ -2690,7 +2672,7 @@ async def enhancements(payload: EnhancementIn, request: Request):
 
     async with pool.acquire() as conn:
         model_row = await conn.fetchrow(
-            "SELECT * FROM review_model_configs WHERE id=$1 AND enabled", payload.model_config_id
+            "SELECT * FROM model_configs WHERE id=$1 AND enabled AND use_arch_review", payload.model_config_id
         )
         if not model_row:
             raise HTTPException(404, "Model config not found or disabled")

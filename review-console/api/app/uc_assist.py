@@ -1,13 +1,11 @@
 """NL-assisted UC authoring.
 
-Configuration priority (highest wins):
-  1. DB row in uc_assist_config (managed via Config → UC Assist in the UI)
-  2. Environment variables:
+Configuration resolution (highest priority wins):
+  1. Explicit cfg dict passed by the caller (a model_configs row with use_uc_assist=true)
+  2. Environment variables (DAV_UC_ASSIST_* — fallback for installs without DB rows):
        DAV_UC_ASSIST_ENDPOINT  — base URL (default: https://api.anthropic.com)
        DAV_UC_ASSIST_API_KEY   — API key
        DAV_UC_ASSIST_MODEL     — model ID (default: claude-opus-4-7-20251001)
-
-Pass the asyncpg pool to chat() so it can resolve DB config at call time.
 """
 from __future__ import annotations
 
@@ -78,22 +76,8 @@ def is_available() -> bool:
     return bool(ASSIST_API_KEY and ASSIST_ENDPOINT)
 
 
-async def get_db_config(pool) -> Optional[dict]:
-    """Return the DB-stored config dict, or None if absent/disabled."""
-    try:
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow("SELECT * FROM uc_assist_config WHERE id=1")
-        if row and row["enabled"] and row["api_key"]:
-            return dict(row)
-    except Exception:
-        log.exception("Failed to read uc_assist_config from DB")
-    return None
-
-
-def _resolve_config(db_cfg: Optional[dict]) -> Optional[dict]:
-    """Return the effective config (DB preferred, env-var fallback)."""
-    if db_cfg:
-        return db_cfg
+def _env_fallback_config() -> Optional[dict]:
+    """Return a config dict built from env vars, or None if unconfigured."""
     if ASSIST_API_KEY and ASSIST_ENDPOINT:
         return {
             "provider": "anthropic" if "anthropic.com" in ASSIST_ENDPOINT else "openai",
@@ -109,17 +93,21 @@ async def chat(
     current_yaml: Optional[str] = None,
     context: Optional[str] = None,
     timeout: float = 60.0,
+    cfg: Optional[dict] = None,
     pool: Any = None,
 ) -> dict:
     """Call the assist model with the user's message and optional existing YAML.
 
+    cfg — a model_configs row dict (use_uc_assist=true).  When None,
+          falls back to env-var config.  pool is kept for backward compat
+          but is no longer used for config lookup.
+
     Returns {"explanation": str, "yaml_suggestion": str | None, "raw": str}.
     On error returns {"error": str}.
     """
-    db_cfg = await get_db_config(pool) if pool is not None else None
-    cfg = _resolve_config(db_cfg)
-    if not cfg:
-        return {"error": "UC assist not configured — add credentials in Config → UC Assist"}
+    effective_cfg = cfg or _env_fallback_config()
+    if not effective_cfg:
+        return {"error": "UC assist not configured — add a model endpoint with UC assist enabled in Config → Models"}
 
     parts = []
     if current_yaml and current_yaml.strip():
@@ -130,10 +118,10 @@ async def chat(
     full_user = "\n".join(parts)
 
     try:
-        if cfg.get("provider") == "anthropic":
-            result = await _call_anthropic(full_user, timeout, cfg)
+        if effective_cfg.get("provider") == "anthropic":
+            result = await _call_anthropic(full_user, timeout, effective_cfg)
         else:
-            result = await _call_openai_compat(full_user, timeout, cfg)
+            result = await _call_openai_compat(full_user, timeout, effective_cfg)
     except Exception as e:
         log.exception("UC assist API call failed")
         return {"error": str(e)}
