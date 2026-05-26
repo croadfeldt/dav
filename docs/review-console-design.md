@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.26  
+**Current version:** v0.9.27  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -373,6 +373,11 @@ Why this is soft (override available) rather than hard: the design note from 202
 - **★ Add to Set…** — popover lists every Set; clicking one adds all selected UCs to it. Reports `N added · M already in set · K failed` in a single toast.
 - **× Clear** — uncheck everything.
 - Checkbox state lives in `_selectedUCs` (a module-level `Set` of UUIDs); `renderUCList` honors it across re-renders, and stale UUIDs (no longer in `allUCs`) are pruned automatically. The toolbar's "Test selected" button auto-disables when the selection contains zero corpus UCs.
+
+**Push-then-test chain + Set-filtered list × (v0.9.27):** Two related affordances:
+
+1. **Push & test (managed UCs)** — new `↑↦▶ Push & test` button on managed UCs that haven't been pushed. Single click does both: opens a PR on a side branch (using the override path so it doesn't trip the approval gate, since this loop exists precisely to validate UCs *before* approval), then immediately opens the New Run modal scoped to the resulting PR branch + the UC's handle. After push, the regular **▶ Test evaluation** button on the same UC stays enabled and re-tests on the same branch — useful for iteration. Implementation: `pushAndTestUC` → `POST /push-to-corpus` with `override:true` → re-fetch UC → call `testRunUC(uuid, path, title, branchOverride)`. `openNewRun` accepts an optional `branchOverride` that pre-fills `nrCorpusBranch` after `loadNewRunDefaults` populates the form.
+2. **Per-row × on the UC list when filtered to a Set** — when `activeSetId` is a number, each UC row shows a small red × at the right edge. Click removes the UC from *that* set in-place without leaving the list (calls the existing `_removeUCFromSet`, which also refreshes the rail counts and the Manage modal). Click is `stopPropagation`'d so it doesn't also trigger row select. Hidden when "All UCs" or "(No set)" is the active filter.
 
 ---
 

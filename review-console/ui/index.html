@@ -2818,7 +2818,7 @@ async function loadNewRunDefaults(forcedSubpath) {
 let _pendingRunFilter = null;   // { handles: string[], uuids: string[] }
 const _selectedUCs = new Set(); // UUIDs of UCs checked in the list for batch ops
 
-async function openNewRun(banner, subpath, ucFilter) {
+async function openNewRun(banner, subpath, ucFilter, branchOverride) {
   document.getElementById('newRunModal').classList.add('open');
   document.getElementById('nrStatus').textContent = '';
   document.getElementById('submitNewRun').disabled = false;
@@ -2854,7 +2854,13 @@ async function openNewRun(banner, subpath, ucFilter) {
 
   if (effectiveBanner) { bannerEl.textContent = effectiveBanner; bannerEl.style.display = ''; }
   else bannerEl.style.display = 'none';
-  loadNewRunDefaults(effectiveSubpath);
+  await loadNewRunDefaults(effectiveSubpath);
+  // If a caller wants to test against a specific corpus branch (e.g. a push-PR
+  // branch from "Push & test"), override the field AFTER defaults load.
+  if (branchOverride) {
+    const br = document.getElementById('nrCorpusBranch');
+    if (br) br.value = branchOverride;
+  }
   loadRunCategories();
 }
 
@@ -3748,6 +3754,14 @@ function renderUCList() {
       const titleText = u.title || u.handle || u.uuid || '?';
       const subText = (u.handle && u.handle !== titleText) ? u.handle : u.uuid;
       const isChecked = _selectedUCs.has(u.uuid);
+      // When the list is filtered to a single Set, show a small × to remove
+      // this UC from THAT set in-place (no need to leave the list).
+      const setRemoveBtn = (typeof activeSetId === 'number')
+        ? `<button class="li-set-remove" title="Remove from this Set"
+                   style="background:none;border:none;color:var(--red);font-size:14px;line-height:1;padding:0 4px;cursor:pointer;opacity:0.6;align-self:flex-start;margin-top:1px;"
+                   onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'"
+           >×</button>`
+        : '';
       item.innerHTML = `
         <input type="checkbox" class="uc-sel-cb" ${isChecked ? 'checked' : ''}
                style="margin:2px 6px 0 0;width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;align-self:flex-start;cursor:pointer;"
@@ -3757,7 +3771,8 @@ function renderUCList() {
           <div class="li-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.7;">${esc(subText || '')}</div>
           ${tags ? `<div style="margin-top:3px">${tags}</div>` : ''}
         </div>
-        ${u.lifecycle_state ? lcHtml(u.lifecycle_state) : `<span class="src-badge src-${u.source}">${u.source}</span>`}`;
+        ${u.lifecycle_state ? lcHtml(u.lifecycle_state) : `<span class="src-badge src-${u.source}">${u.source}</span>`}
+        ${setRemoveBtn}`;
       // Row click selects/opens the UC; checkbox toggles batch selection
       // (checkbox click stops propagation so it doesn't also open the UC)
       const cb = item.querySelector('input.uc-sel-cb');
@@ -3767,6 +3782,14 @@ function renderUCList() {
         else _selectedUCs.delete(u.uuid);
         _renderUCSelectionToolbar();
       });
+      const removeBtn = item.querySelector('button.li-set-remove');
+      if (removeBtn) {
+        removeBtn.addEventListener('click', e => {
+          e.stopPropagation();   // don't trigger row select
+          const setName = (allSets.find(s => s.id === activeSetId) || {}).name || '';
+          _removeUCFromSet(activeSetId, u.uuid, setName);
+        });
+      }
       item.addEventListener('click', () => selectUC(u.uuid));
       item.addEventListener('dragstart', e => {
         e.dataTransfer.effectAllowed = 'copy';
@@ -3948,7 +3971,7 @@ function renderUCDetail(data, lifecycle) {
       <div style="display:flex;gap:6px;flex-shrink:0;margin-top:4px">
         ${isManaged
           ? `${_renderPushToCorpusBtn(data)}
-             <button class="btn primary" title="Managed UCs aren't in the corpus repo the engine reads from — push to corpus first, then re-open this UC and the button will be active" disabled style="opacity:0.55;cursor:not-allowed;">▶ Test evaluation</button>
+             ${_renderManagedTestBtn(data, titleText)}
              <button class="btn ghost" onclick="editUC('${esc(uuid)}')">Edit</button>
              <button class="btn danger" onclick="deleteUC('${esc(uuid)}',this)">Delete</button>`
           : `<button class="btn primary" onclick="testRunUC('${esc(uuid)}', ${JSON.stringify(data.path||'')}, ${JSON.stringify(titleText)})">▶ Test evaluation</button>
@@ -4169,7 +4192,7 @@ function _narrowestSubpath(ucPaths) {
   return common;
 }
 
-async function testRunUC(uuid, ucPath, title) {
+async function testRunUC(uuid, ucPath, title, branchOverride) {
   if (!ucPath) {
     toast('No corpus path on this UC — cannot scope a test run.', true);
     return;
@@ -4180,11 +4203,40 @@ async function testRunUC(uuid, ucPath, title) {
   const filter = (uc && uc.handle)
     ? {handles: [uc.handle], uuids: []}
     : {handles: [], uuids: [uuid]};
-  const banner = `Test evaluation: ${title} · scope ${subpath || '/'} (engine-filtered to this UC only)`;
-  await openNewRun(banner, subpath, filter);
+  const branchSuffix = branchOverride ? ` · branch '${branchOverride}'` : '';
+  const banner = `Test evaluation: ${title} · scope ${subpath || '/'} (engine-filtered to this UC only)${branchSuffix}`;
+  await openNewRun(banner, subpath, filter, branchOverride);
   // Pre-fill session name so it's clear what this run is for
   const sn = document.getElementById('nrSessionName');
   if (sn && !sn.value) sn.value = `test: ${title}`.slice(0, 120);
+}
+
+// Push a managed UC to the corpus repo, then immediately open a Test
+// evaluation scoped to the resulting PR branch. Unblocks "test before merge"
+// for managed UCs without requiring two round-trips.
+async function pushAndTestUC(uuid) {
+  if (!confirm('Push this UC to the corpus repo and then test it on the PR branch?')) return;
+  toast('Pushing…');
+  let pushResult;
+  try {
+    pushResult = await api(`/api/use-cases/${encodeURIComponent(uuid)}/push-to-corpus`, {
+      method: 'POST',
+      body: JSON.stringify({override: true}),  // bypass lifecycle gate for the test loop
+    });
+  } catch (e) {
+    toast('Push failed: ' + e.message, true);
+    return;
+  }
+  toast(`Push ${pushResult.action} — branch ${pushResult.branch}. Opening Test Run modal…`);
+  // Re-fetch the UC to get the canonical corpus_synced_path / corpus_branch
+  // (push response already has these but reloading the UC re-renders the detail).
+  let data;
+  try { data = await api(`/api/use-cases/${encodeURIComponent(uuid)}`); }
+  catch (e) { toast('Reload failed: ' + e.message, true); return; }
+  const titleText = data.parsed?.title || data.title || data.parsed?.handle || uuid;
+  await testRunUC(uuid, pushResult.path, titleText, pushResult.branch);
+  // Re-render UC detail in the background so the PR badge appears
+  if (activeUCId === uuid) selectUC(uuid);
 }
 
 function toggleRaw(el) {
@@ -4619,6 +4671,29 @@ let _corpusPushStatus = null;  // {configured, corpus_url, host, env_var}
 async function _loadCorpusPushStatus() {
   try { _corpusPushStatus = await api('/api/corpus-push/status'); }
   catch { _corpusPushStatus = null; }
+}
+
+function _renderManagedTestBtn(data, titleText) {
+  // Three states for managed UCs:
+  //  1. Already pushed (has corpus_synced_path + corpus_branch) → enable
+  //     Test evaluation, scoped to the PR branch.
+  //  2. Never pushed → offer ↑↦▶ Push & test (single click: push then test
+  //     on the resulting PR branch).
+  //  3. Push not configured (no token / unsupported host) → disabled, with
+  //     the same tooltip the push button surfaces.
+  const uuid = data.uuid;
+  if (data.corpus_synced_path && data.corpus_branch) {
+    const tip = `Test on the push branch '${data.corpus_branch}' — engine clones the corpus at that branch and runs only this UC`;
+    return `<button class="btn primary" title="${esc(tip)}" onclick="testRunUC('${esc(uuid)}', ${JSON.stringify(data.corpus_synced_path)}, ${JSON.stringify(titleText)}, ${JSON.stringify(data.corpus_branch)})">▶ Test evaluation</button>`;
+  }
+  // Not pushed yet — gate the push-and-test chain on the same conditions as
+  // the standalone Push button.
+  const st = _corpusPushStatus || {configured:false, host:'unknown'};
+  let disabled = '', tip = 'Push this UC to the corpus repo and immediately test the PR branch';
+  if (st.host === 'none')        { disabled = 'disabled'; tip = 'No corpus repo URL configured (Config → Sources)'; }
+  else if (st.host === 'unsupported') { disabled = 'disabled'; tip = `Corpus host ${st.corpus_url} not supported yet (only GitHub today)`; }
+  else if (!st.configured)       { disabled = 'disabled'; tip = `Push token not set — add ${st.env_var || 'DAV_CORPUS_PUSH_TOKEN'} to the consumer Secret`; }
+  return `<button class="btn primary" title="${esc(tip)}" ${disabled} style="${disabled?'opacity:0.55;cursor:not-allowed;':''}" onclick="${disabled?'':`pushAndTestUC('${esc(uuid)}')`}">↑↦▶ Push & test</button>`;
 }
 
 function _renderPushToCorpusBtn(data) {
