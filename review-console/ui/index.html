@@ -1099,7 +1099,6 @@
         <div class="config-nav-cat" data-target="cfgSec-pipeline">Pipeline Sources</div>
         <a class="config-nav-link" data-target="configSpecPanel">Architecture spec</a>
         <a class="config-nav-link" data-target="configCorpusPanel">Evaluation corpus</a>
-        <a class="config-nav-link" data-target="configInferencePanel">Evaluation endpoint</a>
       </div>
       <div class="config-nav-group">
         <div class="config-nav-cat" data-target="cfgSec-aimodels">AI Models</div>
@@ -1118,7 +1117,7 @@
 
       <div class="cfg-sec-hdr" id="cfgSec-pipeline">
         <span class="cfg-sec-title">Pipeline Sources</span>
-        <span class="cfg-sec-sub">Architecture spec &amp; evaluation corpus repos trigger a ~60s pod rollout · Evaluation endpoint is read at pipeline-run trigger time, no restart needed</span>
+        <span class="cfg-sec-sub">Architecture spec &amp; evaluation corpus repos trigger a ~60s pod rollout</span>
       </div>
 
       <div class="panel-card" id="configSpecPanel">
@@ -1178,33 +1177,6 @@
             <button class="btn primary" id="srcCorpusApplyBtn">Apply &amp; redeploy</button>
             <span id="srcCorpusMsg" style="font-size:11px; color:var(--text-faint);"></span>
           </div>
-        </div>
-      </div>
-      <div class="cfg-card panel-card" id="configInferencePanel">
-        <div class="panel-card-header"><div>
-          <div class="pc-title">Evaluation endpoint</div>
-          <div class="pc-sub">OpenAI-compatible /v1 — read at pipeline-run trigger time</div>
-        </div></div>
-        <div class="panel-card-body">
-          <div class="kv-grid">
-            <div class="kv-label">current endpoint</div><div class="kv-val" id="srcInfEndpoint">—</div>
-            <div class="kv-label">current model</div><div class="kv-val" id="srcInfModel" style="color:var(--accent)">—</div>
-            <div class="kv-label">last applied</div><div class="kv-val" id="srcInfWhen">—</div>
-            <div class="kv-label">applied by</div><div class="kv-val" id="srcInfWho">—</div>
-          </div>
-          <hr class="section-sep" style="margin:8px 0;">
-          <div class="form-field"><label>Model endpoint</label>
-            <select id="srcInfModelSel" style="width:100%;">
-              <option value="">— select a model —</option>
-            </select>
-          </div>
-          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
-            <button class="btn ghost" id="srcInfTestBtn">Test</button>
-            <button class="btn primary" id="srcInfApplyBtn">Apply</button>
-            <span id="srcInfMsg" style="font-size:11px; color:var(--text-faint);"></span>
-          </div>
-          <div id="srcInfValidation" style="display:none; margin-top:8px; padding:8px 10px; border-radius:2px; font-size:11px; line-height:1.6;"></div>
-          <div class="form-hint" style="margin-top:6px;">Test probes <code>/models</code> on the endpoint. Apply runs Test first; failure offers "Apply anyway". No pod restart — next pipeline run picks up the new values.</div>
         </div>
       </div>
 
@@ -1782,7 +1754,6 @@ async function init() {
   loadReviewModels().then(() => {
     _populateModelSel('rdRevModelSel', 'reviewLastModel');
     _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
-    _populateModelSel('srcInfModelSel', 'inferenceLastModel');
     _populateModelSel('nrModelSel', 'nrLastModel');
     _populateUCAssistModelSel();
   }).catch(() => {});
@@ -4436,7 +4407,6 @@ async function loadConfig() {
   renderModelList();
   _populateModelSel('rdRevModelSel', 'reviewLastModel');
   _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
-  _populateModelSel('srcInfModelSel', 'inferenceLastModel');
   _populateModelSel('nrModelSel', 'nrLastModel');
   await loadUCAssistConfig();  // populates ucAssistModelSel from _reviewModels
   await loadMCPServers();
@@ -4446,7 +4416,6 @@ async function loadConfig() {
     const resp = await api('/api/sources');
     const data = resp.sources || {};
     for (const kind of ['spec','corpus']) { sourcesState[kind] = data[kind]||null; renderSourcePanel(kind); }
-    if (data.inference) { sourcesState.inference = data.inference; renderInferencePanel(); }
   } catch (e) {
     for (const kind of ['spec','corpus'])
       document.getElementById(SOURCE_UI[kind].msg).innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
@@ -4464,143 +4433,6 @@ async function loadConfig() {
   } catch {}
 }
 
-function renderInferencePanel() {
-  const s = sourcesState.inference; if (!s) return;
-  document.getElementById('srcInfEndpoint').textContent = s.endpoint || '—';
-  document.getElementById('srcInfModel').textContent    = s.model    || '—';
-  document.getElementById('srcInfWhen').textContent     = fmtTs(s.last_applied_at);
-  document.getElementById('srcInfWho').textContent      = s.last_applied_by || '—';
-  // Pre-select the selector to the row matching the applied endpoint+model
-  const sel = document.getElementById('srcInfModelSel');
-  if (sel && !sel.dataset.userEdited) {
-    const matched = _reviewModels.find(m => m.enabled && m.endpoint_url === s.endpoint && m.model_id === s.model);
-    if (matched) sel.value = String(matched.id);
-  }
-}
-
-
-function renderInferenceValidation(v, modelName) {
-  // v: {reachable, status_code, models, model_found, error, latency_ms, url}
-  const el = document.getElementById('srcInfValidation');
-  el.style.display = '';
-  const lat = v.latency_ms !== null && v.latency_ms !== undefined ? `${v.latency_ms} ms` : '—';
-  if (v.reachable && v.model_found) {
-    el.style.background = 'var(--green-bg)'; el.style.color = 'var(--green)';
-    el.innerHTML = `✓ Reachable · model <b>${esc(modelName || '')}</b> found in ${v.models.length} listed · ${lat}`;
-  } else if (v.reachable && !v.model_found) {
-    el.style.background = 'var(--accent-bg)'; el.style.color = 'var(--accent)';
-    const list = v.models.length ? v.models.slice(0, 8).join(', ') + (v.models.length > 8 ? ` +${v.models.length-8} more` : '') : '(none reported)';
-    el.innerHTML = `⚠ Reachable but model not in /models list. Server reports: <span style="color:var(--text-dim)">${esc(list)}</span> · ${lat}`;
-  } else {
-    el.style.background = 'rgba(217,101,58,0.10)'; el.style.color = 'var(--red)';
-    el.innerHTML = `✗ Unreachable: ${esc(v.error || 'unknown error')} · ${lat}${v.url ? ` · <span style="color:var(--text-faint)">${esc(v.url)}</span>` : ''}`;
-  }
-}
-
-// Last validation result, cached across Test → Apply so Apply doesn't re-probe
-// if the user already ran Test on the same endpoint+model. Cleared on edits.
-let _lastValidation = null;   // {endpoint, model, result}
-
-async function _runValidation(endpoint, model) {
-  // Use cached result if it matches current inputs, else hit the API
-  if (_lastValidation && _lastValidation.endpoint === endpoint && _lastValidation.model === model) {
-    return _lastValidation.result;
-  }
-  const v = await api('/api/sources/inference/validate', {method:'POST', body:JSON.stringify({endpoint, model})});
-  _lastValidation = {endpoint, model, result: v};
-  return v;
-}
-
-async function testInference() {
-  const selId = document.getElementById('srcInfModelSel').value;
-  const m = _reviewModels.find(r => String(r.id) === selId);
-  const msg = document.getElementById('srcInfMsg'), btn = document.getElementById('srcInfTestBtn');
-  if (!selId || !m) { msg.innerHTML = '<span style="color:var(--red)">select a model first</span>'; return null; }
-  const endpoint = m.endpoint_url, model = m.model_id;
-  btn.disabled = true; msg.innerHTML = '<span style="color:var(--blue)">testing…</span>';
-  try {
-    _lastValidation = null;
-    const v = await _runValidation(endpoint, model);
-    renderInferenceValidation(v, model);
-    msg.innerHTML = v.reachable && v.model_found
-      ? '<span style="color:var(--green)">✓ validated (endpoint reachable, model found)</span>'
-      : v.reachable
-        ? '<span style="color:var(--accent)">⚠ reachable, but model not in /models list</span>'
-        : '<span style="color:var(--red)">✗ unreachable: ' + esc(v.error || '') + '</span>';
-    return v;
-  } catch (e) {
-    msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
-    return null;
-  } finally { btn.disabled = false; }
-}
-
-let _infApplyArmed = false;
-async function applyInference() {
-  const selId = document.getElementById('srcInfModelSel').value;
-  const m = _reviewModels.find(r => String(r.id) === selId);
-  const msg = document.getElementById('srcInfMsg'), btn = document.getElementById('srcInfApplyBtn');
-  if (!selId || !m) { msg.innerHTML = '<span style="color:var(--red)">select a model first</span>'; return; }
-  const endpoint = m.endpoint_url, model = m.model_id;
-  const cur = sourcesState.inference;
-  if (cur && cur.endpoint === endpoint && cur.model === model) {
-    msg.innerHTML = '<span style="color:var(--text-faint)">same as current — nothing to do</span>'; return;
-  }
-  // Apply always validates first; reuse cached result if Test was already run.
-  // If validation fails, arm the override — a second Apply click saves anyway.
-  const wasOverride = _infApplyArmed;
-  if (!_infApplyArmed) {
-    let v;
-    try { v = await _runValidation(endpoint, model); }
-    catch (e) { msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; return; }
-    renderInferenceValidation(v, model);
-    if (!v.reachable || !v.model_found) {
-      btn.textContent = 'Apply anyway'; btn.classList.add('danger');
-      _infApplyArmed = true;
-      const why = !v.reachable
-        ? 'endpoint did not respond'
-        : `model "${esc(model)}" is not in the server's /models list`;
-      msg.innerHTML = `<span style="color:var(--accent)">⚠ ${why}. Click <b>Apply anyway</b> to save despite the warning.</span>`;
-      return;
-    }
-  }
-  _infApplyArmed = false; btn.textContent = 'Apply'; btn.classList.remove('danger');
-  btn.disabled = true;
-  msg.innerHTML = wasOverride
-    ? '<span style="color:var(--blue)">applying (override)…</span>'
-    : '<span style="color:var(--blue)">applying…</span>';
-  try {
-    const resp = await api('/api/sources/inference', {method:'POST', body:JSON.stringify({endpoint, model})});
-    sourcesState.inference = resp.state; renderInferencePanel();
-    localStorage.setItem('inferenceLastModel', selId);
-    if (wasOverride) {
-      msg.innerHTML = '<span style="color:var(--accent)">applied with override · validation warning was ignored · effective on next run</span>';
-      toast(`inference: ${endpoint} · ${model} (override applied)`);
-    } else {
-      msg.innerHTML = '<span style="color:var(--green)">✓ validated and applied · effective on next run</span>';
-      toast(`inference: ${endpoint} · ${model}`);
-    }
-  } catch (e) {
-    msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
-    toast('Apply failed: '+e.message, true);
-  } finally { btn.disabled = false; }
-}
-
-function wireInferencePanel() {
-  const resetOverride = () => {
-    _infApplyArmed = false;
-    _lastValidation = null;
-    const b = document.getElementById('srcInfApplyBtn');
-    b.textContent = 'Apply'; b.classList.remove('danger');
-    document.getElementById('srcInfValidation').style.display = 'none';
-  };
-  document.getElementById('srcInfModelSel').addEventListener('change', e => {
-    e.target.dataset.userEdited = '1';
-    localStorage.setItem('inferenceLastModel', e.target.value);
-    resetOverride();
-  });
-  document.getElementById('srcInfTestBtn').addEventListener('click', testInference);
-  document.getElementById('srcInfApplyBtn').addEventListener('click', applyInference);
-}
 
 function renderSourcePanel(kind) {
   const ui = SOURCE_UI[kind], s = sourcesState[kind]; if (!s) return;
@@ -4727,6 +4559,7 @@ document.getElementById('closeNewRun').addEventListener('click', closeNewRun);
 document.getElementById('cancelNewRun').addEventListener('click', closeNewRun);
 document.getElementById('submitNewRun').addEventListener('click', submitNewRun);
 document.getElementById('nrReloadDefaults').addEventListener('click', () => loadNewRunDefaults());
+document.getElementById('nrModelSel').addEventListener('change', e => localStorage.setItem('nrLastModel', e.target.value));
 document.getElementById('refreshRunsBtn').addEventListener('click', loadRuns);
 
 document.getElementById('refreshResultsBtn').addEventListener('click', loadResults);
@@ -4852,7 +4685,6 @@ document.getElementById('memberSearchInput').addEventListener('blur', () => {
 
 wireSourcesPanel('spec');
 wireSourcesPanel('corpus');
-wireInferencePanel();
 
 // ── Review Models ────────────────────────────────────────────────────────────
 
@@ -4860,12 +4692,12 @@ let _reviewModels = [];   // cached from /api/models
 let _mfEditId = null;     // ID of model being edited (null = create)
 
 // Two-click arm/confirm for delete buttons (replaces confirm() which is
-// suppressed by the OCP OAuth proxy). First click: shows "Sure?" + outline.
-// Second click within the same button: fires action(). Click outside: resets.
+// suppressed by the OCP OAuth proxy). First click: shows "Sure?" + red outline.
+// Second click on the same button fires action(). Auto-resets after 4 s.
 function _armDeleteBtn(btn, action) {
   if (btn.dataset.armed) {
     delete btn.dataset.armed;
-    btn.textContent = btn.dataset.origText || btn.textContent;
+    btn.textContent = btn.dataset.origText;
     btn.style.outline = '';
     action();
     return;
@@ -4874,14 +4706,13 @@ function _armDeleteBtn(btn, action) {
   btn.dataset.armed = '1';
   btn.textContent = 'Sure?';
   btn.style.outline = '1px solid var(--red)';
-  const reset = () => {
-    delete btn.dataset.armed;
-    btn.textContent = btn.dataset.origText;
-    btn.style.outline = '';
-    document.removeEventListener('click', outside, true);
-  };
-  const outside = e => { if (!btn.contains(e.target)) reset(); };
-  setTimeout(() => document.addEventListener('click', outside, true), 0);
+  setTimeout(() => {
+    if (btn.dataset.armed) {
+      delete btn.dataset.armed;
+      btn.textContent = btn.dataset.origText;
+      btn.style.outline = '';
+    }
+  }, 4000);
 }
 
 async function loadReviewModels() {
@@ -4906,7 +4737,7 @@ function renderModelList() {
       <span style="color:var(--text-faint);font-size:11px;">${esc(m.provider)} · ${esc(m.model_id)}</span>
       ${!m.enabled ? '<span class="model-pill disabled">disabled</span>' : ''}
       <button class="btn ghost btn-sm" onclick="editModel(${m.id})">Edit</button>
-      <button class="btn ghost btn-sm" style="color:var(--red)" onclick="deleteModel(${m.id},${JSON.stringify(m.name)},this)">✕</button>
+      <button class="btn ghost btn-sm" style="color:var(--red)" onclick="deleteModel(${m.id},this)">✕</button>
     </div>`).join('');
 }
 
@@ -4968,7 +4799,6 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     renderModelList();
     _populateModelSel('rdRevModelSel', 'reviewLastModel');
     _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
-    _populateModelSel('srcInfModelSel', 'inferenceLastModel');
     _populateModelSel('nrModelSel', 'nrLastModel');
     _populateUCAssistModelSel();
     document.getElementById('modelFormCard').style.display = 'none';
@@ -4997,7 +4827,7 @@ function editModel(id) {
   document.getElementById('mfName').focus();
 }
 
-async function deleteModel(id, name, btn) {
+async function deleteModel(id, btn) {
   if (!btn) return;
   _armDeleteBtn(btn, async () => {
     try {
@@ -5006,7 +4836,6 @@ async function deleteModel(id, name, btn) {
       renderModelList();
       _populateModelSel('rdRevModelSel', 'reviewLastModel');
       _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
-      _populateModelSel('srcInfModelSel', 'inferenceLastModel');
       _populateModelSel('nrModelSel', 'nrLastModel');
       _populateUCAssistModelSel();
       toast('Model deleted');
