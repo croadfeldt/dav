@@ -776,6 +776,7 @@
               <div class="rd-review-section-sub" id="rdRevSubtitle">—</div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                 <select id="rdRevModelSel" style="flex:1;min-width:160px;"></select>
+                <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('rdRevModelSel','reviewLastModel')">Browse…</button>
                 <select id="rdRevScopeSel" style="width:140px;">
                   <option value="uc">This use case</option>
                   <option value="run">Whole run</option>
@@ -809,6 +810,7 @@
               <div class="rd-review-section-sub" id="rdEnhSubtitle">—</div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                 <select id="rdEnhModelSel" style="flex:1;min-width:160px;"></select>
+                <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('rdEnhModelSel','enhanceLastModel')">Browse…</button>
                 <select id="rdEnhScopeSel" style="width:140px;">
                   <option value="uc">This use case</option>
                   <option value="run">Whole run</option>
@@ -1031,6 +1033,7 @@
             <select id="rpModelSel" style="width:100%;font-size:11px;">
               <option value="">— no models —</option>
             </select>
+            <button class="btn ghost btn-sm" type="button" style="width:100%;margin-top:4px;" onclick="_openModelBrowser('rpModelSel','reviewLastModel')">Browse…</button>
           </div>
           <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
           <button class="btn primary" id="rpRevRunBtn" style="width:100%;">▶ Run Review</button>
@@ -1246,6 +1249,7 @@
             <select id="ucAssistModelSel" style="min-width:260px;">
               <option value="">— select a model —</option>
             </select>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('ucAssistModelSel',_ucAssistModelKey)">Browse…</button>
             <span id="uacMsg" style="font-size:11px;color:var(--text-faint);"></span>
           </div>
           <div class="form-hint" style="margin-top:8px;">Selected model is stored locally and passed with each request. Add endpoints in the Model Endpoints panel above.</div>
@@ -1435,9 +1439,12 @@
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Inference</div>
       <div class="form-field"><label>Model</label>
-        <select id="nrModelSel" style="width:100%;">
-          <option value="">— select a model —</option>
-        </select>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <select id="nrModelSel" style="flex:1;">
+            <option value="">— select a model —</option>
+          </select>
+          <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('nrModelSel','nrLastModel')">Browse…</button>
+        </div>
       </div>
       <hr class="section-sep">
       <div class="form-field">
@@ -1642,6 +1649,40 @@
 </div>
 
 <!-- ══════════════════════════ ARCH REVIEW MODAL ══════════════════════════ -->
+
+<!-- ══════════════════════════ MODEL BROWSER OVERLAY ══════════════════════════ -->
+<div id="modelBrowserOverlay" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.72);align-items:center;justify-content:center;">
+  <div style="background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:4px;padding:24px;width:500px;max-width:95vw;max-height:88vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+    <div style="font-size:15px;font-weight:600;margin-bottom:16px;">Browse model endpoint</div>
+    <div class="form-field">
+      <label>Endpoint</label>
+      <select id="mbEndpointSel" style="width:100%;"></select>
+    </div>
+    <div class="form-field" id="mbCustomEpRow" style="display:none;">
+      <label>Custom endpoint URL</label>
+      <input id="mbCustomEp" placeholder="https://my-vllm:8000" style="width:100%;" />
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;">
+      <button class="btn ghost btn-sm" id="mbProbeBtn">Probe for models</button>
+      <span id="mbProbeStatus" style="font-size:11px;color:var(--text-faint);"></span>
+    </div>
+    <div class="form-field" id="mbModelSelRow">
+      <label>Available models</label>
+      <select id="mbModelSel" style="width:100%;">
+        <option value="">— probe to list models —</option>
+      </select>
+    </div>
+    <div class="form-field">
+      <label>Or enter model ID manually</label>
+      <input id="mbManualModel" placeholder="e.g. Qwen/Qwen3-32B" style="width:100%;" />
+      <div class="form-hint">Selecting from the list above fills this field. Either way, this value is what gets used.</div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+      <button class="btn ghost" id="mbCancelBtn">Cancel</button>
+      <button class="btn primary" id="mbUseBtn">Use this model</button>
+    </div>
+  </div>
+</div>
 
 <div class="toast" id="toast"></div>
 
@@ -2737,8 +2778,17 @@ async function submitNewRun() {
   const btn = document.getElementById('submitNewRun'), status = document.getElementById('nrStatus');
   btn.disabled = true; status.textContent = 'submitting…';
   const sc = document.getElementById('nrSampleCount').value.trim();
-  const nrSelId = document.getElementById('nrModelSel').value;
-  const nrModel = _reviewModels.find(r => String(r.id) === nrSelId);
+  const nrResolved = _resolveEndpointModel('nrModelSel', 'nrLastModel');
+  let nrEndpoint = null, nrModelId = null;
+  if (nrResolved) {
+    if (nrResolved.model_config_id) {
+      const nrM = _reviewModels.find(r => r.id === nrResolved.model_config_id);
+      if (nrM) { nrEndpoint = nrM.endpoint_url; nrModelId = nrM.model_id; }
+    } else {
+      nrEndpoint = nrResolved.endpoint_url;
+      nrModelId = nrResolved.model_id;
+    }
+  }
   const payload = {
     mode:               document.getElementById('nrMode').value,
     sample_count:       sc ? parseInt(sc) : null,
@@ -2747,8 +2797,8 @@ async function submitNewRun() {
     corpus_repo_branch: document.getElementById('nrCorpusBranch').value.trim() || null,
     spec_repo_url:      document.getElementById('nrSpecRepo').value.trim() || null,
     spec_repo_branch:   document.getElementById('nrSpecBranch').value.trim() || null,
-    inference_endpoint: nrModel ? nrModel.endpoint_url : null,
-    inference_model:    nrModel ? nrModel.model_id     : null,
+    inference_endpoint: nrEndpoint,
+    inference_model:    nrModelId,
     halt_on_error:      document.getElementById('nrHaltOnError').checked,
     name:               document.getElementById('nrSessionName').value.trim(),
     description:        document.getElementById('nrDescription').value.trim(),
@@ -3870,16 +3920,18 @@ async function _ucAssistSend() {
     _ucAssistAppendMessage('assistant', 'UC Assist is not configured. Enable "UC assist" on a model endpoint in Config → Models.', null, true);
     return;
   }
-  const modelId = parseInt(document.getElementById('ucAssistModelSel').value, 10);
+  const ucResolved = _resolveEndpointModel('ucAssistModelSel', _ucAssistModelKey);
   _ucAssistAppendMessage('user', msg);
   input.value = '';
   const btn = document.getElementById('ucAssistSendBtn');
   btn.disabled = true; btn.textContent = '…';
   const currentYaml = document.getElementById('ucYamlEditor').value || '';
   try {
+    const ucPayload = { message: msg, current_yaml: currentYaml };
+    if (ucResolved) Object.assign(ucPayload, ucResolved);
     const resp = await api('/api/uc-assist', {
       method: 'POST',
-      body: JSON.stringify({ message: msg, current_yaml: currentYaml, model_config_id: modelId }),
+      body: JSON.stringify(ucPayload),
     });
     const explanation = resp.explanation || (resp.error ? `Error: ${resp.error}` : '(no response)');
     _ucAssistAppendMessage('assistant', explanation, resp.yaml_suggestion || null, !!resp.error);
@@ -4750,9 +4802,172 @@ function _populateModelSel(selId, storageKey) {
       `<option value="${m.id}">${esc(m.name)} (${m.is_local ? 'local' : 'frontier'})</option>`
     ).join('');
   const stored = localStorage.getItem(storageKey);
-  if (stored && enabled.find(m => String(m.id) === stored)) sel.value = stored;
-  // else stays at "" (none)
+  if (stored === '__custom__') {
+    const ep = localStorage.getItem(storageKey + '_ep');
+    const mi = localStorage.getItem(storageKey + '_mi');
+    if (ep && mi) {
+      // If a newly registered model now covers this custom selection, switch to it
+      const match = enabled.find(m => m.endpoint_url === ep && m.model_id === mi);
+      if (match) {
+        sel.value = String(match.id);
+        localStorage.setItem(storageKey, String(match.id));
+      } else {
+        const opt = document.createElement('option');
+        opt.value = '__custom__';
+        opt.textContent = `Custom: ${mi}`;
+        sel.appendChild(opt);
+        sel.value = '__custom__';
+      }
+    }
+  } else if (stored && enabled.find(m => String(m.id) === stored)) {
+    sel.value = stored;
+  }
 }
+
+function _resolveEndpointModel(selId, storageKey) {
+  const sel = document.getElementById(selId);
+  if (!sel || !sel.value) return null;
+  if (sel.value === '__custom__') {
+    const ep = localStorage.getItem(storageKey + '_ep');
+    const mi = localStorage.getItem(storageKey + '_mi');
+    if (!ep || !mi) return null;
+    return { endpoint_url: ep, model_id: mi };
+  }
+  const id = parseInt(sel.value, 10);
+  if (!id) return null;
+  return { model_config_id: id };
+}
+
+// ── Model Browser ─────────────────────────────────────────────────────────────
+
+let _mbContext = null; // { selId, storageKey }
+
+function _uniqueEndpoints() {
+  const seen = new Set();
+  return _reviewModels.filter(m => m.enabled && m.endpoint_url).filter(m => {
+    if (seen.has(m.endpoint_url)) return false;
+    seen.add(m.endpoint_url); return true;
+  });
+}
+
+function _openModelBrowser(selId, storageKey) {
+  _mbContext = { selId, storageKey };
+  const epSel = document.getElementById('mbEndpointSel');
+  const eps = _uniqueEndpoints();
+  epSel.innerHTML = eps.map(m => `<option value="${esc(m.endpoint_url)}">${esc(m.endpoint_url)}</option>`).join('')
+    + '<option value="__custom__">Custom…</option>';
+  // Pre-select endpoint based on current selector value
+  const sel = document.getElementById(selId);
+  if (sel && sel.value === '__custom__') {
+    const ep = localStorage.getItem(storageKey + '_ep') || '';
+    const matched = eps.find(e => e.endpoint_url === ep);
+    epSel.value = matched ? ep : '__custom__';
+    if (!matched) document.getElementById('mbCustomEp').value = ep;
+  } else if (sel && sel.value && sel.value !== '') {
+    const m = _reviewModels.find(r => String(r.id) === sel.value);
+    if (m && m.endpoint_url && eps.find(e => e.endpoint_url === m.endpoint_url)) epSel.value = m.endpoint_url;
+  }
+  _mbUpdateCustomEpRow();
+  document.getElementById('mbModelSel').innerHTML = '<option value="">— probe to list models —</option>';
+  document.getElementById('mbManualModel').value = localStorage.getItem(storageKey + '_mi') || '';
+  document.getElementById('mbProbeStatus').textContent = '';
+  const overlay = document.getElementById('modelBrowserOverlay');
+  overlay.style.display = 'flex';
+  _mbProbe();
+}
+
+function _mbUpdateCustomEpRow() {
+  const isCustom = document.getElementById('mbEndpointSel').value === '__custom__';
+  document.getElementById('mbCustomEpRow').style.display = isCustom ? '' : 'none';
+}
+
+function _mbGetEndpoint() {
+  const epSel = document.getElementById('mbEndpointSel');
+  return epSel.value === '__custom__'
+    ? document.getElementById('mbCustomEp').value.trim()
+    : epSel.value;
+}
+
+async function _mbProbe() {
+  const ep = _mbGetEndpoint();
+  const statusEl = document.getElementById('mbProbeStatus');
+  const btn = document.getElementById('mbProbeBtn');
+  const modelSel = document.getElementById('mbModelSel');
+  if (!ep) {
+    modelSel.innerHTML = '<option value="">— probe to list models —</option>';
+    statusEl.textContent = '';
+    return;
+  }
+  btn.disabled = true; statusEl.textContent = 'Probing…';
+  try {
+    const result = await api(`/api/sources/inference/models?endpoint=${encodeURIComponent(ep)}`);
+    const models = result.models || [];
+    if (result.error && !result.reachable) {
+      modelSel.innerHTML = '<option value="">— probe failed —</option>';
+      statusEl.textContent = result.error;
+    } else if (!models.length) {
+      modelSel.innerHTML = '<option value="">— no models returned —</option>';
+      statusEl.textContent = result.error || 'No models found at this endpoint';
+    } else {
+      modelSel.innerHTML = '<option value="">— select —</option>' +
+        models.map(id => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
+      statusEl.textContent = `${models.length} model${models.length === 1 ? '' : 's'} found`;
+    }
+  } catch(e) {
+    statusEl.textContent = 'Probe failed: ' + e.message;
+  }
+  btn.disabled = false;
+}
+
+document.getElementById('mbEndpointSel').addEventListener('change', () => {
+  _mbUpdateCustomEpRow();
+  _mbProbe();
+});
+
+document.getElementById('mbProbeBtn').addEventListener('click', _mbProbe);
+
+document.getElementById('mbModelSel').addEventListener('change', function() {
+  if (this.value) document.getElementById('mbManualModel').value = this.value;
+});
+
+document.getElementById('mbUseBtn').addEventListener('click', () => {
+  const ep = _mbGetEndpoint();
+  const statusEl = document.getElementById('mbProbeStatus');
+  if (!ep) { statusEl.textContent = 'Enter an endpoint URL'; return; }
+  const modelId = document.getElementById('mbManualModel').value.trim()
+               || document.getElementById('mbModelSel').value;
+  if (!modelId) { statusEl.textContent = 'Select or enter a model ID'; return; }
+  const { selId, storageKey } = _mbContext;
+  // Check if a registered model_config already covers this endpoint+model
+  const match = _reviewModels.find(m => m.enabled && m.endpoint_url === ep && m.model_id === modelId);
+  const sel = document.getElementById(selId);
+  if (match) {
+    sel.value = String(match.id);
+    localStorage.setItem(storageKey, String(match.id));
+    // Clean up custom overrides if they were set for this selector
+    localStorage.removeItem(storageKey + '_ep');
+    localStorage.removeItem(storageKey + '_mi');
+  } else {
+    localStorage.setItem(storageKey + '_ep', ep);
+    localStorage.setItem(storageKey + '_mi', modelId);
+    localStorage.setItem(storageKey, '__custom__');
+    let opt = sel.querySelector('option[value="__custom__"]');
+    if (!opt) { opt = document.createElement('option'); opt.value = '__custom__'; sel.appendChild(opt); }
+    opt.textContent = `Custom: ${modelId}`;
+    sel.value = '__custom__';
+  }
+  document.getElementById('modelBrowserOverlay').style.display = 'none';
+  _mbContext = null;
+});
+
+document.getElementById('mbCancelBtn').addEventListener('click', () => {
+  document.getElementById('modelBrowserOverlay').style.display = 'none';
+  _mbContext = null;
+});
+
+document.getElementById('modelBrowserOverlay').addEventListener('click', function(e) {
+  if (e.target === this) { this.style.display = 'none'; _mbContext = null; }
+});
 
 document.getElementById('addModelBtn').addEventListener('click', () => {
   _mfEditId = null;
@@ -5002,11 +5217,11 @@ async function _rpPopulateUCs(runId) {
 }
 
 function _rpGetContext() {
-  const runId  = document.getElementById('rpRunSel')?.value;
-  const scope  = document.getElementById('rpScopeUC')?.checked ? 'uc' : 'run';
-  const ucUuid = scope === 'uc' ? (document.getElementById('rpUCSel')?.value || null) : null;
-  const modelId= parseInt(document.getElementById('rpModelSel')?.value, 10) || null;
-  return { runId, scope, ucUuid, modelId };
+  const runId   = document.getElementById('rpRunSel')?.value;
+  const scope   = document.getElementById('rpScopeUC')?.checked ? 'uc' : 'run';
+  const ucUuid  = scope === 'uc' ? (document.getElementById('rpUCSel')?.value || null) : null;
+  const resolved = _resolveEndpointModel('rpModelSel', 'reviewLastModel');
+  return { runId, scope, ucUuid, resolved };
 }
 
 document.getElementById('rpRunSel')?.addEventListener('change', function() {
@@ -5025,12 +5240,11 @@ document.getElementById('rpScopeUC')?.addEventListener('change', () => {
 });
 
 document.getElementById('rpRevRunBtn')?.addEventListener('click', async () => {
-  const { runId, scope, ucUuid, modelId } = _rpGetContext();
+  const { runId, scope, ucUuid, resolved } = _rpGetContext();
   if (!runId) { toast('Select a run first'); return; }
-  if (!modelId) { toast('Select a model first'); return; }
+  if (!resolved) { toast('Select a model first'); return; }
   if (scope === 'uc' && !ucUuid) { toast('Select a use case or switch to Full run'); return; }
-  localStorage.setItem('reviewLastModel', String(modelId));
-  const body = { scope, model_config_id: modelId, run_id: runId };
+  const body = { scope, run_id: runId, ...resolved };
   if (scope === 'uc') body.uc_uuid = ucUuid;
   _reviewCtx = { runId, ucUuid };
   await _runStream({
@@ -5047,12 +5261,11 @@ document.getElementById('rpRevRunBtn')?.addEventListener('click', async () => {
 });
 
 document.getElementById('rpEnhRunBtn')?.addEventListener('click', async () => {
-  const { runId, scope, ucUuid, modelId } = _rpGetContext();
+  const { runId, scope, ucUuid, resolved } = _rpGetContext();
   if (!runId) { toast('Select a run first'); return; }
-  if (!modelId) { toast('Select a model first'); return; }
+  if (!resolved) { toast('Select a model first'); return; }
   if (scope === 'uc' && !ucUuid) { toast('Select a use case or switch to Full run'); return; }
-  localStorage.setItem('enhanceLastModel', String(modelId));
-  const body = { scope, model_config_id: modelId, run_id: runId };
+  const body = { scope, run_id: runId, ...resolved };
   if (scope === 'uc') body.uc_uuid = ucUuid;
   _reviewCtx = { runId, ucUuid };
   await _runStream({
@@ -5300,14 +5513,13 @@ document.getElementById('rdRevModelSel').addEventListener('change', function() {
 });
 
 document.getElementById('rdRevRunBtn').addEventListener('click', async () => {
-  const modelId = parseInt(document.getElementById('rdRevModelSel').value, 10);
-  if (!modelId) { toast('Select a model first'); return; }
+  const resolved = _resolveEndpointModel('rdRevModelSel', 'reviewLastModel');
+  if (!resolved) { toast('Select a model first'); return; }
   const scope  = document.getElementById('rdRevScopeSel').value;
   const { runId, ucUuid } = _reviewCtx;
   if (!runId) { toast('No run selected'); return; }
   if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
-  localStorage.setItem('reviewLastModel', String(modelId));
-  const body = { scope, model_config_id: modelId, run_id: runId };
+  const body = { scope, run_id: runId, ...resolved };
   if (scope === 'uc') body.uc_uuid = ucUuid;
   await _runStream({
     endpoint: '/api/arch-review', body,
@@ -5377,14 +5589,13 @@ document.getElementById('rdEnhModelSel').addEventListener('change', function() {
 });
 
 document.getElementById('rdEnhRunBtn').addEventListener('click', async () => {
-  const modelId = parseInt(document.getElementById('rdEnhModelSel').value, 10);
-  if (!modelId) { toast('Select a model first'); return; }
+  const resolved = _resolveEndpointModel('rdEnhModelSel', 'enhanceLastModel');
+  if (!resolved) { toast('Select a model first'); return; }
   const scope  = document.getElementById('rdEnhScopeSel').value;
   const { runId, ucUuid } = _reviewCtx;
   if (!runId) { toast('No run selected'); return; }
   if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
-  localStorage.setItem('enhanceLastModel', String(modelId));
-  const body = { scope, model_config_id: modelId, run_id: runId };
+  const body = { scope, run_id: runId, ...resolved };
   if (scope === 'uc') body.uc_uuid = ucUuid;
   await _runStream({
     endpoint: '/api/enhancements', body,

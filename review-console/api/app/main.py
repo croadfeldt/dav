@@ -878,6 +878,8 @@ class UCAssistIn(BaseModel):
     current_yaml: Optional[str] = Field(None, max_length=64000)
     context: Optional[str] = Field(None, max_length=2000)
     model_config_id: Optional[int] = None
+    endpoint_url: Optional[str] = None
+    model_id: Optional[str] = None
 
 
 class MCPServerIn(BaseModel):
@@ -902,13 +904,17 @@ class ModelConfigIn(BaseModel):
 
 class ArchReviewIn(BaseModel):
     scope: str = Field(..., pattern="^(uc|run)$")
-    model_config_id: int
+    model_config_id: Optional[int] = None
+    endpoint_url: Optional[str] = None
+    model_id: Optional[str] = None
     run_id: Optional[str] = None
     uc_uuid: Optional[str] = None
 
 class EnhancementIn(BaseModel):
     scope: str = Field(..., pattern="^(uc|run)$")
-    model_config_id: int
+    model_config_id: Optional[int] = None
+    endpoint_url: Optional[str] = None
+    model_id: Optional[str] = None
     run_id: Optional[str] = None
     uc_uuid: Optional[str] = None
 
@@ -974,6 +980,21 @@ async def uc_assist_chat(payload: UCAssistIn, request: Request):
         if not row:
             raise HTTPException(404, "Model config not found or disabled")
         cfg = dict(row)
+    elif payload.endpoint_url and payload.model_id:
+        if pool is not None:
+            async with pool.acquire() as conn:
+                base = await conn.fetchrow(
+                    "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND enabled ORDER BY id LIMIT 1",
+                    payload.endpoint_url,
+                )
+        else:
+            base = None
+        cfg = {
+            "provider":     base["provider"] if base else "openai",
+            "endpoint_url": payload.endpoint_url,
+            "model_id":     payload.model_id,
+            "api_key":      base["api_key"] if base else "",
+        }
     result = await uc_assist.chat(
         user_message=payload.message,
         current_yaml=payload.current_yaml,
@@ -2506,12 +2527,29 @@ async def arch_review(payload: ArchReviewIn, request: Request):
     from . import arch_review as _ar
 
     async with pool.acquire() as conn:
-        model_row = await conn.fetchrow(
-            "SELECT * FROM model_configs WHERE id=$1 AND enabled",
-            payload.model_config_id,
-        )
-        if not model_row:
-            raise HTTPException(404, "Model config not found or disabled")
+        if payload.model_config_id is not None:
+            model_row = await conn.fetchrow(
+                "SELECT * FROM model_configs WHERE id=$1 AND enabled",
+                payload.model_config_id,
+            )
+            if not model_row:
+                raise HTTPException(404, "Model config not found or disabled")
+            model_row = dict(model_row)
+        elif payload.endpoint_url and payload.model_id:
+            # Custom endpoint+model: inherit provider/api_key from a registered
+            # row at the same endpoint, falling back to openai/no-key.
+            base = await conn.fetchrow(
+                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND enabled ORDER BY id LIMIT 1",
+                payload.endpoint_url,
+            )
+            model_row = {
+                "provider":     base["provider"] if base else "openai",
+                "endpoint_url": payload.endpoint_url,
+                "model_id":     payload.model_id,
+                "api_key":      base["api_key"]  if base else "",
+            }
+        else:
+            raise HTTPException(400, "Provide model_config_id or endpoint_url+model_id")
 
         if payload.scope == "uc":
             if not payload.run_id or not payload.uc_uuid:
@@ -2671,18 +2709,34 @@ async def enhancements(payload: EnhancementIn, request: Request):
     from . import arch_review as _ar
 
     async with pool.acquire() as conn:
-        model_row = await conn.fetchrow(
-            "SELECT * FROM model_configs WHERE id=$1 AND enabled", payload.model_config_id
-        )
-        if not model_row:
-            raise HTTPException(404, "Model config not found or disabled")
+        if payload.model_config_id is not None:
+            model_row = await conn.fetchrow(
+                "SELECT * FROM model_configs WHERE id=$1 AND enabled",
+                payload.model_config_id,
+            )
+            if not model_row:
+                raise HTTPException(404, "Model config not found or disabled")
+            model_row = dict(model_row)
+        elif payload.endpoint_url and payload.model_id:
+            base = await conn.fetchrow(
+                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND enabled ORDER BY id LIMIT 1",
+                payload.endpoint_url,
+            )
+            model_row = {
+                "provider":     base["provider"] if base else "openai",
+                "endpoint_url": payload.endpoint_url,
+                "model_id":     payload.model_id,
+                "api_key":      base["api_key"]  if base else "",
+            }
+        else:
+            raise HTTPException(400, "Provide model_config_id or endpoint_url+model_id")
         if not payload.run_id:
             raise HTTPException(400, "run_id required")
         user_prompt, system_prompt = await _enhancement_prompts(
             payload.scope, payload.run_id, payload.uc_uuid, conn
         )
 
-    model = dict(model_row)
+    model = model_row
 
     async def _gen():
         try:
