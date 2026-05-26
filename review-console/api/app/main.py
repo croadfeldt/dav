@@ -396,7 +396,9 @@ async def list_runs(limit: int = Query(50, ge=1, le=200)):
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     "SELECT run_name, name, description, category, tags, "
-                    "gpu_energy_joules, total_gen_tokens, total_prompt_tokens "
+                    "gpu_energy_joules, total_gen_tokens, total_prompt_tokens, "
+                    "set_id, set_name, selection_mode, "
+                    "uc_total, uc_succeeded, uc_failed "
                     "FROM run_sessions WHERE run_name = ANY($1::text[])",
                     names,
                 )
@@ -412,6 +414,12 @@ async def list_runs(limit: int = Query(50, ge=1, le=200)):
             r["gpu_energy_joules"] = s.get("gpu_energy_joules")
             r["total_gen_tokens"]  = s.get("total_gen_tokens")
             r["total_prompt_tokens"] = s.get("total_prompt_tokens")
+            r["set_id"]        = s.get("set_id")
+            r["set_name"]      = s.get("set_name") or None
+            r["selection_mode"] = s.get("selection_mode") or None
+            r["uc_total"]      = s.get("uc_total")
+            r["uc_succeeded"]  = s.get("uc_succeeded")
+            r["uc_failed"]     = s.get("uc_failed")
     return {"runs": runs, "enabled": True}
 
 

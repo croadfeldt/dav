@@ -2148,15 +2148,30 @@ function renderRunsList() {
     el.innerHTML = '<div class="empty">No runs found. Use + New Run to trigger one.</div>'; return;
   }
   el.innerHTML = '';
+  const modeLabels = {set:'Set', selection:'Selection', individual:'UC', corpus:'Full corpus'};
   allRuns.forEach(r => {
     const item = document.createElement('div');
     item.className = 'run-list-item' + (_rdName === r.name ? ' active' : '');
     const friendly = r.session_name || r.name || '?';
     const params = r.params || {};
+    // Scope line: prefer Set name + selection mode if recorded; otherwise the
+    // selection mode alone; otherwise the bare param mode (verification/etc).
+    const scopeBits = [];
+    if (r.set_name)        scopeBits.push(`⊞ ${esc(r.set_name)}`);
+    if (r.selection_mode)  scopeBits.push(esc(modeLabels[r.selection_mode] || r.selection_mode));
+    if (!scopeBits.length) scopeBits.push(esc(params.mode || 'verification'));
+    // Counts line: only shown if we've actually finalized (uc_total non-null).
+    let countsHtml = '';
+    if (typeof r.uc_total === 'number') {
+      const okColor = (r.uc_failed || 0) > 0 ? 'var(--accent)' : 'var(--green)';
+      countsHtml = `<span style="font-size:10px;color:${okColor};">${r.uc_succeeded}/${r.uc_total} ok</span>` +
+        ((r.uc_failed || 0) > 0 ? ` <span style="font-size:10px;color:var(--red);">${r.uc_failed} fail</span>` : '');
+    }
     item.innerHTML = `
       <div class="rli-main">
         <div class="rli-name">${esc(friendly)}</div>
-        <div class="rli-sub">${esc(r.name||'')} · ${esc(params.mode||'verification')}</div>
+        <div class="rli-sub">${scopeBits.join(' · ')}${countsHtml ? ' · ' + countsHtml : ''}</div>
+        <div class="rli-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.6;">${esc(r.name||'')}</div>
       </div>
       <div class="rli-right">
         ${phaseHtml(r.phase)}<br>
@@ -2735,6 +2750,22 @@ function renderRunDrawerDetail(d) {
       : '<span style="color:var(--text-faint);font-size:10px">—</span>';
     let html = '';
     if (s.description) html += `<div class="kv-label">description</div><div class="kv-val">${esc(s.description)}</div>`;
+    // R2 lineage — what was run (Set + selection mode)
+    if (s.set_name || s.selection_mode) {
+      const modeLabels = {set:'Set', selection:'Selection', individual:'Individual UC', corpus:'Full corpus'};
+      const bits = [];
+      if (s.set_name)        bits.push(`<span style="cursor:pointer;color:var(--accent);" onclick="switchView('usecases');setTimeout(()=>selectSet(${s.set_id}),100);">⊞ ${esc(s.set_name)}</span>`);
+      if (s.selection_mode)  bits.push(`<span style="color:var(--text-faint);">${esc(modeLabels[s.selection_mode] || s.selection_mode)}</span>`);
+      html += `<div class="kv-label">scope</div><div class="kv-val">${bits.join(' · ')}</div>`;
+    }
+    // UC counts (populated after finalize) — total / succeeded / failed
+    if (typeof s.uc_total === 'number') {
+      const okColor = (s.uc_failed || 0) > 0 ? 'var(--accent)' : 'var(--green)';
+      html += `<div class="kv-label">UC counts</div><div class="kv-val">` +
+              `<strong style="color:${okColor};">${s.uc_succeeded ?? '?'}/${s.uc_total} ok</strong>` +
+              ((s.uc_failed || 0) > 0 ? ` <span style="color:var(--red);">${s.uc_failed} failed</span>` : '') +
+              `</div>`;
+    }
     html += `<div class="kv-label">category</div><div class="kv-val">${esc(s.category||'ad-hoc')}</div>`;
     if (s.tags && s.tags.length) html += `<div class="kv-label">tags</div><div class="kv-val">${tagsHtml}</div>`;
     // Finalized stats — only render once the lazy finalizer has populated them

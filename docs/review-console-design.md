@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.43  
+**Current version:** v0.9.44  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -520,6 +520,14 @@ Replaces the prior single-purpose toggle that only flipped `color` between accen
 Fix: in-turn dedup keyed on `(tool_name, json.dumps(args, sort_keys=True))`. The first occurrence in a response actually executes; every subsequent identical call returns a short `⛔ DUPLICATE-IN-TURN` marker pointing at the first `tool_call_id` ("STOP emitting duplicate tool calls in one response — wait for the result of one call before deciding what to call next"). The OpenAI tool-call protocol requires one response per `tool_call_id`, so the marker satisfies that constraint without re-running the call or eating real context. JSONL emit gets a `dedup_of: <first_id>` field so the UI can later distinguish dedup'd entries.
 
 This alone should cut context growth dramatically. If runs still hit the limit, the follow-on is a soft cap that forces a final response when input tokens cross e.g. 24K.
+
+**Runs list/detail — scope + counts (v0.9.44):** The Runs tab list rows were anonymous beyond name + mode; reviewers couldn't tell what Set/scope was running or how it finished without drilling in. Same for the Run-detail Session section.
+
+- **`GET /api/runs`** SELECT now pulls `set_id` / `set_name` / `selection_mode` / `uc_total` / `uc_succeeded` / `uc_failed` from `run_sessions` and joins them onto each list row.
+- **Runs list row** gains a scope sub-line (`⊞ <SetName> · <selection-mode-label>`) and, when the run has finalized, a counts segment (`N/M ok` in green or accent when there are failures, `K fail` in red).
+- **Run-detail Session section** gains two new kv rows: `scope` (Set chip + mode, Set chip clickable to filter the UC tab to it) and `UC counts` (same color logic as the list row), inserted above the existing `category` row.
+
+`run-detail` endpoint already does `SELECT *` from `run_sessions`, so the new columns flow through automatically — no separate API change beyond `/api/runs`.
 
 **Live runs list (v0.9.42):** Runs list now polls every 5s while the Runs tab is the active view. Triggers from outside the UI (direct API call, CLI, webhook, etc.) appear in the list within one poll cycle without a manual refresh; in-flight phase transitions (Pending → Running → Succeeded/Failed) repaint live. The poll self-gates on `document.visibilityState === 'visible'` and the tab being active, so a hidden tab or a user on a different view doesn't burn requests. Implementation: `_startRunsListPoll` / `_stopRunsListPoll` are toggled by `switchView`.
 
