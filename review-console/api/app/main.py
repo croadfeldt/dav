@@ -1259,6 +1259,47 @@ async def transition_use_case(uuid: str, payload: LifecycleTransitionIn, request
     return {"ok": True, "uuid": uuid, "from_state": from_state, "to_state": payload.to_state}
 
 
+@app.get("/api/use-cases/{uuid}/runs")
+async def get_use_case_runs(uuid: str, limit: int = 20):
+    """Recent runs that processed this UC, newest first, with per-run verdict.
+
+    Supports both managed and corpus UCs — the uuid is the join key on
+    uc_analyses. Used by the UC detail pane's "Test history" section.
+    """
+    if limit < 1 or limit > 200:
+        limit = 20
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT ua.run_id, ua.uc_handle, ua.status, ua.verdict,
+                      ua.wall_time_seconds, ua.sample_count, ua.model,
+                      ua.analyzed_at, ua.ingested_at,
+                      (SELECT COUNT(*) FROM uc_gaps g WHERE g.analysis_id = ua.id) AS gap_count
+               FROM uc_analyses ua
+               WHERE ua.uc_uuid = $1
+               ORDER BY COALESCE(ua.analyzed_at, ua.ingested_at) DESC
+               LIMIT $2""",
+            uuid, limit,
+        )
+    return {
+        "uuid": uuid,
+        "runs": [
+            {
+                "run_id": r["run_id"],
+                "uc_handle": r["uc_handle"],
+                "status": r["status"],
+                "verdict": r["verdict"],
+                "wall_time_seconds": r["wall_time_seconds"],
+                "sample_count": r["sample_count"],
+                "model": r["model"],
+                "analyzed_at": r["analyzed_at"].isoformat() if r["analyzed_at"] else None,
+                "ingested_at": r["ingested_at"].isoformat(),
+                "gap_count": int(r["gap_count"] or 0),
+            }
+            for r in rows
+        ],
+    }
+
+
 @app.get("/api/use-cases/{uuid}/lifecycle")
 async def get_use_case_lifecycle(uuid: str):
     """Return the lifecycle event history for a managed UC."""

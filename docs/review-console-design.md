@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.18  
+**Current version:** v0.9.19  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -298,6 +298,12 @@ Overlay background uses `var(--bg-panel)` — `var(--surface)` is not a defined 
 **UC Name / title field (v0.9.17):** UCs carry a human-readable name in the YAML's top-level `title:` field. The UC editor surfaces it as a dedicated **Name** input above the YAML editor. On save, the input value is injected into the YAML's `title:` line via `_injectTitleIntoYaml()` so the two halves of the editor never disagree. On open, `_extractTitleFromYaml()` pulls the current value into the input. The API's `_derive_uc_title()` helper prefers top-level `title:` > `scenario.description` > `handle` > `uuid`, with a 120-char cap. UC list and detail render the title prominently; UUID and handle move to a small monospaced ID line. UC Assist's system prompt teaches the model to populate `title:`, and the "Apply to editor" button syncs the title from the assistant's YAML into the Name input.
 
 **Default Set (v0.9.18):** `use_case_sets` has an `is_default` boolean column with a partial unique index enforcing at most one default row. The Sets detail header has a **★ Set as default** / **Clear default** toggle; the Sets list shows a `DEFAULT` badge on the chosen one. The New Run modal — when opened with no explicit set/subpath context (e.g. the top-bar "+ New run" button) — checks for a default Set and pre-fills `corpus_subpath` from its common path prefix, with a banner reading "Pre-filled from default Set …". Calls that already carry their own context (`runSet`, the Re-analyze flow) bypass this. Endpoints: `PUT /api/sets/{id}/default` (set), `DELETE /api/sets/{id}/default` (clear). Migration 004 adds the column + partial unique index.
+
+**Test evaluation from UC (v0.9.19):** UC detail pane gets a **▶ Test evaluation** button and a **Test history** section.
+- **Button** — enabled for corpus UCs only. Calls `testRunUC(uuid, path, title)` which computes the narrowest directory containing the UC's path (`_narrowestSubpath`) and opens the New Run modal pre-filled with that as `corpus_subpath`, plus a session-name pre-fill of `test: <title>`. Managed UCs see the button disabled with a tooltip explaining they need to be promoted to the corpus first (Push to corpus, planned). The engine still runs everything under `corpus_subpath`, so a "single UC test" may include siblings in the same directory — true per-UC engine filtering is a future engine change.
+- **Test history section** — async-loaded by `loadUCTestHistory(uuid)` after the detail pane renders. Calls `GET /api/use-cases/{uuid}/runs?limit=10` and renders each run as a row showing verdict (color-coded), run_id, wall time, gap count, and timestamp. Clicking a row routes through `_openUCRunResult` which switches to the Results tab, selects the run, then opens the per-UC analysis — works for both managed and corpus UCs since the join key is `uc_uuid`.
+
+This is one half of the **Run test evaluation from UC** pipeline item — the single-UC path. The multi-select-from-list path lands in the upcoming UC/Sets merge work (the unified list makes batch selection natural).
 
 ---
 

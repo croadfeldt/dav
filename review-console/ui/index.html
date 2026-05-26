@@ -3714,9 +3714,11 @@ function renderUCDetail(data, lifecycle) {
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;margin-top:4px">
         ${isManaged
-          ? `<button class="btn ghost" onclick="editUC('${esc(uuid)}')">Edit</button>
+          ? `<button class="btn primary" title="Managed UCs aren't in the corpus repo the engine reads from — promote / Push to corpus first (coming)" disabled style="opacity:0.55;cursor:not-allowed;">▶ Test evaluation</button>
+             <button class="btn ghost" onclick="editUC('${esc(uuid)}')">Edit</button>
              <button class="btn danger" onclick="deleteUC('${esc(uuid)}',this)">Delete</button>`
-          : `<button class="btn ghost" onclick="cloneUC('${esc(uuid)}')">Clone to managed</button>`}
+          : `<button class="btn primary" onclick="testRunUC('${esc(uuid)}', ${JSON.stringify(data.path||'')}, ${JSON.stringify(titleText)})">▶ Test evaluation</button>
+             <button class="btn ghost" onclick="cloneUC('${esc(uuid)}')">Clone to managed</button>`}
       </div>
     </div>
     <div style="margin-bottom:14px">${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>`;
@@ -3825,6 +3827,14 @@ function renderUCDetail(data, lifecycle) {
     </div></div>`;
   }
 
+  // Test history placeholder — populated async by loadUCTestHistory()
+  html += `<div class="detail-section" id="ucTestHistorySection">
+    <div class="detail-section-title">Test history</div>
+    <div id="ucTestHistoryBody" class="analysis-block">
+      <div class="analysis-block-body" style="padding:8px 12px;color:var(--text-faint);font-size:11px">loading…</div>
+    </div>
+  </div>`;
+
   if (data.yaml_content) {
     html += `<div class="detail-section">
       <div class="detail-section-title" style="cursor:pointer" onclick="toggleRaw(this)">
@@ -3839,6 +3849,94 @@ function renderUCDetail(data, lifecycle) {
 
   html += '</div>';
   el.innerHTML = html;
+  loadUCTestHistory(uuid);
+}
+
+// ── UC test history (async, fills the placeholder section after detail renders) ─
+
+const _verdictColor = {
+  supported:             'var(--green)',
+  partially_supported:   'var(--accent)',
+  not_supported:         'var(--red)',
+  error:                 'var(--red)',
+};
+
+async function _openUCRunResult(runId, ucUuid) {
+  // Switch to Results, select the run, then open the per-UC analysis.
+  // selectRunResult is async and sets activeRunResultId before selectUCResult
+  // tries to read it.
+  switchView('results');
+  await selectRunResult(runId);
+  await selectUCResult(ucUuid);
+}
+
+async function loadUCTestHistory(uuid) {
+  const body = document.getElementById('ucTestHistoryBody');
+  if (!body) return;
+  try {
+    const resp = await api(`/api/use-cases/${encodeURIComponent(uuid)}/runs?limit=10`);
+    const runs = resp.runs || [];
+    if (!runs.length) {
+      body.innerHTML = '<div class="analysis-block-body" style="padding:8px 12px;color:var(--text-faint);font-size:11px">No test runs have processed this UC yet.</div>';
+      return;
+    }
+    let h = '<div class="analysis-block-body" style="padding:4px 0">';
+    runs.forEach(r => {
+      const when = r.analyzed_at || r.ingested_at;
+      const verdictColor = _verdictColor[r.verdict] || 'var(--text-faint)';
+      const verdictTxt = r.verdict ? esc(r.verdict.replace(/_/g,' ')) : (r.status || '—');
+      const wt = r.wall_time_seconds ? `${r.wall_time_seconds.toFixed(1)}s` : '';
+      const gaps = r.gap_count ? `${r.gap_count} gap${r.gap_count!==1?'s':''}` : '';
+      h += `<div style="display:flex;align-items:center;gap:10px;padding:5px 12px;font-size:11px;border-top:1px solid var(--border);cursor:pointer"
+              onclick="_openUCRunResult('${esc(r.run_id)}','${esc(uuid)}')"
+              title="Open in Results tab">
+        <span style="color:${verdictColor};font-weight:500;min-width:120px;">${verdictTxt}</span>
+        <span style="font-family:var(--mono,monospace);font-size:10px;color:var(--text-dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.run_id)}</span>
+        <span style="color:var(--text-faint);font-size:10px;min-width:60px;text-align:right">${esc(wt)}</span>
+        <span style="color:var(--text-faint);font-size:10px;min-width:60px;text-align:right">${esc(gaps)}</span>
+        <span style="color:var(--text-faint);font-size:10px;min-width:140px;text-align:right">${esc(fmtTs(when))}</span>
+      </div>`;
+    });
+    h += '</div>';
+    body.innerHTML = h;
+  } catch (e) {
+    body.innerHTML = `<div class="analysis-block-body" style="padding:8px 12px;color:var(--red);font-size:11px">Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+
+// ── Test-run-from-UC: open New Run scoped to the narrowest dir containing this UC ─
+
+function _narrowestSubpath(ucPaths) {
+  const cleaned = ucPaths.filter(Boolean);
+  if (!cleaned.length) return '';
+  // For a single UC, the subpath is the file's parent dir.
+  // For multiple, fall back to the common ancestor.
+  const dirs = cleaned.map(p => {
+    const i = p.lastIndexOf('/');
+    return i >= 0 ? p.slice(0, i) : '';
+  });
+  let common = dirs[0];
+  for (let i = 1; i < dirs.length; i++) {
+    while (common && dirs[i].indexOf(common) !== 0) {
+      const j = common.lastIndexOf('/');
+      common = j > 0 ? common.slice(0, j) : '';
+    }
+  }
+  return common;
+}
+
+async function testRunUC(uuid, ucPath, title) {
+  if (!ucPath) {
+    toast('No corpus path on this UC — cannot scope a test run.', true);
+    return;
+  }
+  const subpath = _narrowestSubpath([ucPath]);
+  const sibCount = '';  // could fetch a count of files at the subpath; skipped for now
+  const banner = `Test evaluation: ${title} · scope ${subpath || '/'}${sibCount}`;
+  await openNewRun(banner, subpath);
+  // Pre-fill session name so it's clear what this run is for
+  const sn = document.getElementById('nrSessionName');
+  if (sn && !sn.value) sn.value = `test: ${title}`.slice(0, 120);
 }
 
 function toggleRaw(el) {
