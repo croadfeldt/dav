@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.34  
+**Current version:** v0.9.35  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -456,6 +456,17 @@ uuid: uc-...
 The block is recognized by its header, so re-applying a later turn (or applying multiple times in a session) replaces the existing block rather than stacking duplicates. The engine's `safe_load` ignores comments, so this has zero impact on validation. The UC Assist system prompt was updated to instruct the model to preserve any existing `# UC Assist prompts:` comment block when refining, so iterating on an already-applied UC keeps the original provenance.
 
 Future enhancement: also surface a structured form under `metadata.assist_prompts` for queryability, and a "Replay these prompts against a different model" action on the UC detail.
+
+**R2 implementation — result lineage + state (v0.9.35):** Implements R2 from the canonical requirements section.
+
+- **Migration 006** adds `run_sessions.set_id` / `set_name` / `selection_mode` / `uc_state_snapshot` (JSONB map `{uuid: lifecycle_state}` captured at trigger time) and `uc_analyses.lifecycle_state_at_run` / `source_kind`.
+- **Trigger** (`POST /api/runs`): `RunTriggerIn` accepts `set_id`, `set_name`, `selection_mode`; before inserting into `run_sessions`, the API snapshots the lifecycle_state of every referenced managed UC (lookups by `managed_uc_uuids` + `uc_uuids` from the DB) and writes it as JSONB.
+- **Ingest** (`POST /api/analysis/ingest/{run_id}`): correlates workspace `run_id` → `run_sessions.run_name` via the ±15-min `started_at` window, populates `analysis_runs.run_name`, pulls the `uc_state_snapshot`, and writes each UC's `lifecycle_state_at_run` + `source_kind` into `uc_analyses` rows.
+- **Results enrichment** (`GET /api/results/{run_id}`): per-UC `lifecycle_state_at_run` / `source_kind` and run-level `set_id` / `set_name` / `selection_mode` / `session_name` are merged onto the response.
+- **UI lineage threading**: every run-trigger path (`runSet`, `testRunUC`, `_batchTestSelectedUCs`, the default-Set fallback in `openNewRun`) now passes `{ set_id?, set_name?, selection_mode }` through a new `_pendingRunLineage` global; `submitNewRun` includes the lineage in the POST payload. `selection_mode` defaults to `'corpus'` when no filter is active, `'selection'` for ad-hoc multi-select, `'set'` for Set runs, `'individual'` for single-UC test.
+- **UI surface**: the persistent Results header now has a "Lineage:" row showing the Set (clickable to switch to the UC tab filtered to that Set) + the selection mode. Each UC row in the result list shows a small color-coded `LIFECYCLE_STATE_AT_RUN` badge for managed UCs (draft / ready / in_review / approved / deprecated) — reviewers can tell at a glance which results came from a pre-promotion test vs an approved UC.
+
+What it doesn't (yet) do: enforce R3 (block enhancement PR generation when any source UC is non-approved). That's the next commit.
 
 **Results tab — persistent run-summary header (v0.9.31):** Same shape as the Runs detail v0.9.30 work: stats stay above the output, output bounded to the panel. Previously `renderRunSummaryHeader` rendered the run-level stats into `analysisDetail`; picking a UC replaced them with the per-UC analysis and the run context disappeared. Now a dedicated `runResultsHeader` strip sits above `analysisDetail`, populated on `selectRunResult` and never overwritten by per-UC rendering. Compact single-row layout: session name + run_id + mode on the left; `N/M UCs (X%) · failed · samples · ⏱ wall · finished_at` on the right. Wraps at narrow widths. `analysisDetail` gets `flex:1; overflow-y:auto; min-height:0` so the per-UC content scrolls *within* the panel — the page never grows beyond the viewport.
 

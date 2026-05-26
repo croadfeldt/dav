@@ -2830,10 +2830,11 @@ async function loadNewRunDefaults(forcedSubpath) {
 // Test eval from a single UC, etc.), submitNewRun reads this to pass uc_handles
 // / uc_uuids through to the engine — engine-side filter scopes the run to
 // exactly these UCs instead of the whole directory. Cleared on close.
-let _pendingRunFilter = null;   // { handles: string[], uuids: string[] }
+let _pendingRunFilter = null;   // { handles: string[], uuids: string[], managed: string[] }
+let _pendingRunLineage = null;  // R2: { set_id?, set_name?, selection_mode: 'set'|'selection'|'individual'|'corpus' }
 const _selectedUCs = new Set(); // UUIDs of UCs checked in the list for batch ops
 
-async function openNewRun(banner, subpath, ucFilter, branchOverride) {
+async function openNewRun(banner, subpath, ucFilter, branchOverride, lineage) {
   document.getElementById('newRunModal').classList.add('open');
   document.getElementById('nrStatus').textContent = '';
   document.getElementById('submitNewRun').disabled = false;
@@ -2841,6 +2842,7 @@ async function openNewRun(banner, subpath, ucFilter, branchOverride) {
   document.getElementById('nrSessionName').value = '';
   document.getElementById('nrDescription').value = '';
   _pendingRunFilter = ucFilter || null;
+  _pendingRunLineage = lineage || null;
   const bannerEl = document.getElementById('newRunBanner');
 
   // If no explicit subpath/banner was supplied, fall back to the project default Set
@@ -2858,6 +2860,8 @@ async function openNewRun(banner, subpath, ucFilter, branchOverride) {
           effectiveSubpath = subpathInfo.subpath;
           const filter = _filterFromSetMembers(setData.members || []);
           _pendingRunFilter = filter;
+          // R2: lineage from the default-Set fallback path
+          _pendingRunLineage = { set_id: def.id, set_name: def.name, selection_mode: 'set' };
           const skipMsg = subpathInfo.managed_count > 0
             ? ` ⚠ ${subpathInfo.managed_count} managed UC(s) will be skipped (promote first).`
             : '';
@@ -2915,7 +2919,8 @@ async function loadRunCategories() {
 
 function closeNewRun() {
   document.getElementById('newRunModal').classList.remove('open');
-  _pendingRunFilter = null;   // don't leak filter into the next opening
+  _pendingRunFilter = null;
+  _pendingRunLineage = null;  // don't leak across modal openings
 }
 
 async function submitNewRun() {
@@ -2954,6 +2959,12 @@ async function submitNewRun() {
     // Managed UCs are fetched from the console API by the engine at run
     // start; lets reviewers test pre-promotion without pushing first.
     managed_uc_uuids:   (_pendingRunFilter?.managed?.length ? _pendingRunFilter.managed : null),
+    // R2: lineage — which Set + selection mode produced this run.
+    set_id:             _pendingRunLineage?.set_id || null,
+    set_name:           _pendingRunLineage?.set_name || null,
+    selection_mode:     _pendingRunLineage?.selection_mode || (
+      _pendingRunFilter ? 'selection' : 'corpus'
+    ),
   };
   try {
     const resp = await api('/api/runs', {method:'POST', body:JSON.stringify(payload)});
@@ -3060,6 +3071,15 @@ function renderRunSummaryHeader(s) {
   const meta = (allResults || []).find(r => r.run_id === s.run_id) || {};
   const title = meta.session_name || s.run_id;
   const header = document.getElementById('runResultsHeader');
+  // R2: lineage line — Set + selection mode + (if any) the session name.
+  // Renders when at least one is populated; suppressed for unannotated runs.
+  const modeLabels = {set:'Set', selection:'Selection', individual:'Individual UC', corpus:'Full corpus'};
+  const lineageBits = [];
+  if (s.set_name) lineageBits.push(`<span style="cursor:pointer;color:var(--accent);" title="Filter UC tab to this Set" onclick="switchView('usecases');setTimeout(()=>selectSet(${s.set_id}),100);">⊞ ${esc(s.set_name)}</span>`);
+  if (s.selection_mode) lineageBits.push(`<span style="color:var(--text-faint);">${esc(modeLabels[s.selection_mode] || s.selection_mode)}</span>`);
+  const lineageRow = lineageBits.length
+    ? `<div style="font-size:11px;margin-top:6px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;"><span style="color:var(--text-faint);">Lineage:</span>${lineageBits.join('<span style="color:var(--border-bright);">·</span>')}</div>`
+    : '';
   header.innerHTML = `
     <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;">
       <div style="min-width:0;flex:1;">
@@ -3073,7 +3093,8 @@ function renderRunSummaryHeader(s) {
         <span style="color:var(--text-faint);">⏱ ${s.runner_total_seconds ? s.runner_total_seconds+'s' : '—'}</span>
         <span style="color:var(--text-faint);">${esc(fmtTs(s.finished_at || s.started_at))}</span>
       </div>
-    </div>`;
+    </div>
+    ${lineageRow}`;
   header.style.display = '';
   // Clear the per-UC area to its empty state — header stays
   const bar = document.getElementById('analysisActionBar'); bar.innerHTML=''; bar.style.display='none';
@@ -3121,9 +3142,19 @@ function _ucRowEl(u, { stripCategory = false } = {}) {
     : (u.verdict||'?').replace(/_/g,' ').replace('partially supported','partial').replace('not supported','not supp.');
   const rawHandle = u.uc_handle || u.uc_uuid;
   const displayHandle = stripCategory ? _ucHandleParts(rawHandle).display : rawHandle;
+  // R2: lifecycle_state_at_run badge — only shown when the UC was managed at
+  // run time. Color-coded so reviewers see at a glance which results came
+  // from pre-promotion vs approved UCs.
+  let stateBadge = '';
+  if (u.lifecycle_state_at_run) {
+    const stateColors = { draft:'var(--text-faint)', ready:'var(--blue)', in_review:'var(--accent)', approved:'var(--green)', deprecated:'var(--red)' };
+    const c = stateColors[u.lifecycle_state_at_run] || 'var(--text-faint)';
+    stateBadge = `<span style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;" title="UC lifecycle state when this run was triggered">${esc(u.lifecycle_state_at_run)}</span>`;
+  }
   item.innerHTML = `
     <span class="${vClass}" style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;flex-shrink:0;width:52px;padding-top:1px">${esc(vLabel)}</span>
     <span class="uc-handle">${esc(displayHandle)}</span>
+    ${stateBadge}
     <span class="uc-time">${u.wall_time_seconds ? u.wall_time_seconds+'s' : ''}</span>`;
   item.addEventListener('click', () => selectUCResult(u.uc_uuid));
   return item;
@@ -3893,7 +3924,12 @@ async function _batchTestSelectedUCs() {
     managed.length ? `${managed.length} managed (fetched from API)` : null,
   ].filter(Boolean).join(' + ');
   const banner = `Batch test eval: ${counts} · engine-filtered`;
-  await openNewRun(banner, subpath, {handles, uuids, managed});
+  // R2: if the user filtered the list to a Set and then ran the selection,
+  // record that Set as lineage; otherwise mark as ad-hoc selection.
+  const lineage = (typeof activeSetId === 'number')
+    ? { set_id: activeSetId, set_name: (allSets.find(s => s.id===activeSetId)||{}).name, selection_mode: 'selection' }
+    : { selection_mode: 'selection' };
+  await openNewRun(banner, subpath, {handles, uuids, managed}, undefined, lineage);
   const sn = document.getElementById('nrSessionName');
   if (sn && !sn.value) sn.value = `batch test: ${selected.length} UCs`.slice(0, 120);
 }
@@ -4257,7 +4293,8 @@ async function testRunUC(uuid, ucPath, title, branchOverride) {
   const banner = isManagedDirect
     ? `Test evaluation (managed): ${title} · engine fetches YAML from the console API at run start`
     : `Test evaluation: ${title} · scope ${subpath || '/'} (engine-filtered to this UC only)${branchSuffix}`;
-  await openNewRun(banner, subpath, filter, branchOverride);
+  await openNewRun(banner, subpath, filter, branchOverride,
+                   { selection_mode: 'individual' });
   const sn = document.getElementById('nrSessionName');
   if (sn && !sn.value) sn.value = `test: ${title}`.slice(0, 120);
 }
@@ -5113,8 +5150,6 @@ async function runSet(setId, setName) {
     const info = await api(`/api/sets/${setId}/corpus-subpath`);
     const set  = await api(`/api/sets/${setId}`);
     const filter = _filterFromSetMembers(set.members || []);
-    // Set is "runnable" if it has ANY members now — managed UCs are fetched
-    // from the console API at run start (v0.9.29+). Refuse only when empty.
     const total = (set.members || []).length;
     if (!total) {
       toast(`"${setName}" is empty — add UCs first (drag from the UC list, or use + UC in the Manage Sets modal).`, true);
@@ -5124,7 +5159,8 @@ async function runSet(setId, setName) {
     if (info.corpus_count) bits.push(`${info.corpus_count} corpus`);
     if (info.managed_count) bits.push(`${info.managed_count} managed (fetched from API)`);
     const banner = `Running set "${setName}" — ${bits.join(' + ')} · engine-filtered to exactly these UCs`;
-    openNewRun(banner, info.subpath || '', filter);
+    openNewRun(banner, info.subpath || '', filter, undefined,
+               { set_id: setId, set_name: setName, selection_mode: 'set' });
   } catch (e) { toast('Could not compute set scope: ' + e.message, true); }
 }
 

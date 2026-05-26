@@ -51,6 +51,7 @@ MIGRATE_002_PATH = Path(__file__).parent / "migrate_002_model_configs.sql"
 MIGRATE_003_PATH = Path(__file__).parent / "migrate_003_model_defaults.sql"
 MIGRATE_004_PATH = Path(__file__).parent / "migrate_004_default_set.sql"
 MIGRATE_005_PATH = Path(__file__).parent / "migrate_005_corpus_push.sql"
+MIGRATE_006_PATH = Path(__file__).parent / "migrate_006_run_lineage.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -141,6 +142,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_004_PATH.read_text())
         log.info("Applying migration 005 (corpus push state)...")
         await conn.execute(MIGRATE_005_PATH.read_text())
+        log.info("Applying migration 006 (run lineage + state)...")
+        await conn.execute(MIGRATE_006_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -270,6 +273,11 @@ class RunTriggerIn(BaseModel):
     # unpushed UCs without touching the corpus repo. Pairs with the existing
     # uc_handles / uc_uuids filter — managed UCs always run when listed here.
     managed_uc_uuids: Optional[list[str]] = None
+    # R2 — lineage: which Set (if any) the run was triggered for, and how
+    # the user selected the UCs. Stored on run_sessions for provenance.
+    set_id:         Optional[int] = None
+    set_name:       Optional[str] = None
+    selection_mode: Optional[str] = None  # 'set' | 'selection' | 'individual' | 'corpus'
     # User-facing session metadata (persisted to run_sessions)
     name: str = ""
     description: str = ""
@@ -513,18 +521,44 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
 
     # Persist the run-session row (name + category + audit trail + baseline).
     # Failures here don't roll back the PipelineRun.
+    # R2: snapshot the lifecycle state of every referenced managed UC at
+    # trigger time so the result can later show "was this approved when
+    # tested" even if the UC moves states or is deleted afterward.
+    uc_state_snapshot = {}
+    referenced_managed = set(payload.managed_uc_uuids or [])
+    # Set-runs may include managed members via uc_uuids too, but managed
+    # source UCs that aren't pushed are exclusively in managed_uc_uuids.
+    # Also snapshot any uc_uuids that happen to be managed in the DB.
+    if payload.uc_uuids:
+        referenced_managed.update(payload.uc_uuids)
+    if referenced_managed:
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT uuid, lifecycle_state FROM managed_use_cases "
+                    "WHERE uuid = ANY($1::text[])",
+                    list(referenced_managed),
+                )
+            for r in rows:
+                uc_state_snapshot[r["uuid"]] = r["lifecycle_state"] or "draft"
+        except Exception as e:
+            log.warning("uc-state snapshot failed: %s", e)
     try:
         async with pool.acquire() as conn:
             await conn.execute(
                 """INSERT INTO run_sessions
                    (run_name, name, description, category, tags, mode,
                     created_by, started_at,
-                    baseline_gen_tokens, baseline_prompt_tokens)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9)""",
+                    baseline_gen_tokens, baseline_prompt_tokens,
+                    set_id, set_name, selection_mode, uc_state_snapshot)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9,
+                           $10, $11, $12, $13::jsonb)""",
                 result["name"], payload.name, payload.description,
                 payload.category or "ad-hoc", payload.tags or [],
                 payload.mode, reviewer,
                 baseline_gen, baseline_prompt,
+                payload.set_id, payload.set_name, payload.selection_mode,
+                json.dumps(uc_state_snapshot) if uc_state_snapshot else None,
             )
     except Exception as e:
         log.warning("run_sessions insert failed for %s: %s", result.get("name"), e)
@@ -906,12 +940,45 @@ async def compare_results(
 @app.get("/api/results/{run_id}")
 async def get_result(run_id: str):
     """Return the run-summary.yaml content for a specific run, enriched with
-    per-UC verdicts read from the individual analysis files."""
+    per-UC verdicts from the analysis files AND per-UC lineage/state from
+    the DB (R2: lifecycle_state_at_run, source_kind, session-level set
+    context)."""
     if not _results.is_available():
         raise HTTPException(503, "workspace PVC not mounted")
     summary = _results.get_run_summary_enriched(run_id)
     if summary is None:
         raise HTTPException(404, f"run {run_id!r} not found")
+    # R2: enrich with DB-stored lineage + state
+    if pool is not None:
+        try:
+            async with pool.acquire() as conn:
+                meta = await conn.fetchrow(
+                    """SELECT ar.run_name,
+                              rs.set_id, rs.set_name, rs.selection_mode,
+                              rs.name AS session_name
+                       FROM analysis_runs ar
+                       LEFT JOIN run_sessions rs ON rs.run_name = ar.run_name
+                       WHERE ar.run_id = $1""",
+                    run_id,
+                )
+                rows = await conn.fetch(
+                    """SELECT uc_uuid, lifecycle_state_at_run, source_kind
+                       FROM uc_analyses WHERE run_id = $1""",
+                    run_id,
+                )
+            if meta:
+                summary["session_name"]    = meta["session_name"] or None
+                summary["set_id"]          = meta["set_id"]
+                summary["set_name"]        = meta["set_name"] or None
+                summary["selection_mode"]  = meta["selection_mode"] or None
+            state_by_uuid = {r["uc_uuid"]: (r["lifecycle_state_at_run"], r["source_kind"]) for r in rows}
+            for uc in (summary.get("ucs") or []):
+                s = state_by_uuid.get(uc.get("uc_uuid"))
+                if s:
+                    uc["lifecycle_state_at_run"] = s[0]
+                    uc["source_kind"] = s[1]
+        except Exception as e:
+            log.warning("get_result: lineage enrichment failed for %s: %s", run_id, e)
     return summary
 
 
@@ -2390,12 +2457,41 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
         # Clear existing ingestion for this run so re-ingestion is safe
         await conn.execute("DELETE FROM analysis_runs WHERE run_id=$1", run_id)
 
+        # R2 — correlate this workspace run_id to its run_sessions row via
+        # timestamp (workspace run_ids carry a timestamp prefix that's set when
+        # the engine spawns; the run_sessions row was created at trigger time,
+        # typically a few seconds earlier). Pull the uc_state_snapshot for the
+        # per-UC lifecycle_state_at_run column.
+        run_session = None
+        run_started_ts = _parse_ts(summary.get("started_at"))
+        if run_started_ts:
+            run_session = await conn.fetchrow(
+                """SELECT run_name, uc_state_snapshot, set_name, selection_mode
+                   FROM run_sessions
+                   WHERE started_at BETWEEN $1::timestamptz - interval '15 minutes'
+                                        AND $1::timestamptz + interval '15 minutes'
+                   ORDER BY ABS(EXTRACT(EPOCH FROM (started_at - $1::timestamptz))) ASC
+                   LIMIT 1""",
+                run_started_ts,
+            )
+        run_name_for_analysis = run_session["run_name"] if run_session else None
+        uc_state_snapshot = {}
+        if run_session and run_session["uc_state_snapshot"]:
+            raw = run_session["uc_state_snapshot"]
+            # asyncpg returns JSONB as str by default — parse defensively
+            if isinstance(raw, str):
+                try: uc_state_snapshot = json.loads(raw)
+                except Exception: pass
+            elif isinstance(raw, dict):
+                uc_state_snapshot = raw
+
         await conn.execute(
             """INSERT INTO analysis_runs
-               (run_id, mode, started_at, finished_at, total_ucs,
+               (run_id, run_name, mode, started_at, finished_at, total_ucs,
                 successful, failed, total_samples)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)""",
             run_id,
+            run_name_for_analysis,
             summary.get("mode"),
             _parse_ts(summary.get("started_at")),
             _parse_ts(summary.get("finished_at")),
@@ -2446,12 +2542,17 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                             gaps.append(g)
                             seen_gap_ids.add(gid)
 
+            # R2: state-at-run from the snapshot; if not in the snapshot,
+            # the UC was corpus-source (no managed lifecycle).
+            state_at_run = uc_state_snapshot.get(uc_uuid)
+            source_kind = "managed" if state_at_run else "corpus"
             row = await conn.fetchrow(
                 """INSERT INTO uc_analyses
                    (run_id, uc_uuid, uc_handle, status, verdict, overall_assessment,
                     wall_time_seconds, sample_count, engine_version, model,
-                    endpoint_url, analyzed_at)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                    endpoint_url, analyzed_at,
+                    lifecycle_state_at_run, source_kind)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                    RETURNING id""",
                 run_id, uc_uuid,
                 uc.get("uc_handle"),
@@ -2461,6 +2562,7 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 uc.get("wall_time_seconds"),
                 uc.get("sample_count"),
                 engine_version, model, endpoint_url, analyzed_at,
+                state_at_run, source_kind,
             )
             analysis_id = row["id"]
             ingested_ucs += 1
