@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.20  
+**Current version:** v0.9.21  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -314,6 +314,13 @@ This is one half of the **Run test evaluation from UC** pipeline item — the si
 - **Nav:** the Sets nav item is removed. Existing in-app links that did `switchView('sets')` are repointed to the in-place `selectSet()` filter — no tab switch needed.
 
 Why this shape: Sets are functionally tags on UCs. Treating them as a sibling tab doubled UI surface for what's really a UC property. The merge also makes batch selection a natural next step (multi-select UC rows → "Add to set" / "Run test eval on selected") without inventing a new screen.
+
+**UC ↔ Set membership editing (v0.9.21):** The merged view was missing the discoverable affordances the old Sets detail pane provided for adding/removing members. Three new paths to manage membership:
+1. **Drag a UC row onto a Set in the left rail** — the UC list item is `draggable=true` and stashes the UC reference in `dataTransfer` as `application/x-dav-uc`; Set rail items are drop targets that highlight on dragover and `POST /api/sets/{id}/members` on drop.
+2. **+ Add to Set picker on the UC detail** — a dashed `+` chip in the Sets section opens an in-place popover listing every Set with current memberships pre-checked. Clicking toggles membership (add or remove). Outside-click dismisses.
+3. **Per-chip × remove** — each Set chip in the UC detail has an inline × that removes that single membership without confirmation (set memberships are cheap; full Set delete still uses the two-click arm pattern).
+
+All three paths share `_addUCToSet` / `_removeUCFromSet` / `_toggleUCSetMembership` helpers, which re-fetch sets + UCs and re-render the Manage Sets modal so all surfaces stay consistent.
 
 ---
 

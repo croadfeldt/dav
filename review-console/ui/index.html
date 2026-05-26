@@ -3675,6 +3675,12 @@ function renderUCList() {
     items.forEach(u => {
       const item = document.createElement('div');
       item.className = 'list-item' + (activeUCId===u.uuid ? ' active' : '');
+      item.draggable = true;
+      item.title = 'Drag to a Set in the left rail to add membership';
+      item.dataset.ucUuid = u.uuid;
+      item.dataset.ucSource = u.source;
+      item.dataset.ucHandle = u.handle || '';
+      item.dataset.ucPath = u.path || '';
       const tags = (u.tags||[]).slice(0,2).map(t => `<span class="tag">${esc(t)}</span>`).join('');
       const titleText = u.title || u.handle || u.uuid || '?';
       const subText = (u.handle && u.handle !== titleText) ? u.handle : u.uuid;
@@ -3686,6 +3692,14 @@ function renderUCList() {
         </div>
         ${u.lifecycle_state ? lcHtml(u.lifecycle_state) : `<span class="src-badge src-${u.source}">${u.source}</span>`}`;
       item.addEventListener('click', () => selectUC(u.uuid));
+      item.addEventListener('dragstart', e => {
+        e.dataTransfer.effectAllowed = 'copy';
+        e.dataTransfer.setData('application/x-dav-uc', JSON.stringify({
+          uuid: u.uuid, source: u.source, handle: u.handle || null, path: u.path || null,
+        }));
+        item.style.opacity = '0.55';
+      });
+      item.addEventListener('dragend', () => { item.style.opacity = ''; });
       el.appendChild(item);
     });
   };
@@ -3783,14 +3797,24 @@ function renderUCDetail(data, lifecycle) {
       html += '</div></div></div>';
     }
 
-    // Set memberships
+    // Set memberships — interactive chips (click chip = filter list; × = remove)
+    const ucPathEsc = (data.path || '').replace(/'/g,"\\'");
+    const ucHandleEsc = (parsed.handle || data.handle || '').replace(/'/g,"\\'");
+    const chipsHtml = sets.length
+      ? sets.map(s => `<span class="set-chip" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px;" title="Click to filter list to this Set">
+            <span onclick="selectSet(${s.id})">⊞ ${esc(s.name)}</span>
+            <span style="cursor:pointer;color:var(--red);font-weight:600;padding:0 2px;" title="Remove from Set" onclick="event.stopPropagation();_removeUCFromSet(${s.id},'${esc(uuid)}','${esc(s.name)}')">×</span>
+          </span>`).join('')
+      : '<span style="color:var(--text-faint);font-size:11px">Not in any set yet</span>';
     html += `<div class="detail-section">
       <div class="detail-section-title">Sets</div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
-        ${sets.length
-          ? sets.map(s => `<span class="set-chip" style="cursor:pointer" title="Filter UC list to this Set" onclick="selectSet(${s.id})">⊞ ${esc(s.name)}</span>`).join('')
-          : '<span style="color:var(--text-faint);font-size:11px">Not in any set</span>'}
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;position:relative;">
+        ${chipsHtml}
+        <span class="set-chip" id="ucDetailAddSetBtn" style="cursor:pointer;background:var(--bg-input);border:1px dashed var(--border-bright);color:var(--text-faint);"
+              onclick="_openAddSetPicker('${esc(uuid)}', '${esc(data.source||'managed')}', '${ucHandleEsc}', '${ucPathEsc}', this)">+ Add to Set</span>
+        <div id="ucDetailAddSetPopover" style="display:none;position:absolute;top:100%;left:0;margin-top:6px;z-index:60;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:3px;box-shadow:0 4px 12px rgba(0,0,0,0.35);min-width:240px;max-height:280px;overflow-y:auto;"></div>
       </div>
+      <div style="font-size:10px;color:var(--text-faint);margin-top:6px;">Tip: drag a UC from the list onto a Set in the left rail to add it there too.</div>
     </div>`;
   }
 
@@ -4323,8 +4347,135 @@ function renderSetFilterRail() {
       <span style="font-size:10px;color:var(--text-faint);min-width:24px;text-align:right">${it.count}</span>
     `;
     item.addEventListener('click', () => selectSet(it.key));
+    // Real Set rail items (numeric key) are drop targets for UC drag-add
+    if (typeof it.key === 'number') {
+      const setId = it.key;
+      item.addEventListener('dragover', e => {
+        if (!e.dataTransfer.types.includes('application/x-dav-uc')) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        item.style.background = 'var(--accent-bg)';
+        item.style.boxShadow = 'inset 0 0 0 1px var(--accent)';
+      });
+      item.addEventListener('dragleave', () => {
+        item.style.background = '';
+        item.style.boxShadow = '';
+      });
+      item.addEventListener('drop', async e => {
+        e.preventDefault();
+        item.style.background = '';
+        item.style.boxShadow = '';
+        const raw = e.dataTransfer.getData('application/x-dav-uc');
+        if (!raw) return;
+        let uc;
+        try { uc = JSON.parse(raw); } catch { return; }
+        await _addUCToSet(setId, uc, it.label);
+      });
+    }
     el.appendChild(item);
   });
+}
+
+// ── Add-to-Set picker (popover on UC detail's Sets section) ───────────────────
+function _openAddSetPicker(ucUuid, ucSource, ucHandle, ucPath, anchorEl) {
+  const pop = document.getElementById('ucDetailAddSetPopover');
+  if (!pop) return;
+  if (pop.style.display === 'block') { pop.style.display = 'none'; return; }
+  if (!allSets || !allSets.length) {
+    pop.innerHTML = '<div style="padding:10px 12px;font-size:11px;color:var(--text-faint);">No Sets yet. Use + New in the left rail to create one.</div>';
+    pop.style.display = 'block';
+    return;
+  }
+  // Figure out which sets this UC is already in (from the loaded UC detail's `sets` array)
+  const uc = (allUCs || []).find(u => u.uuid === ucUuid);
+  const memberOf = new Set((uc && uc.set_ids) || []);
+  let h = '<div style="padding:4px 0;">';
+  allSets.forEach(s => {
+    const isMember = memberOf.has(s.id);
+    h += `<div style="padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:12px;${isMember ? 'background:var(--accent-bg);' : ''}"
+             onmouseover="this.style.background='var(--bg-raised)'" onmouseout="this.style.background='${isMember ? 'var(--accent-bg)' : ''}'"
+             onclick="_toggleUCSetMembership(${s.id}, '${esc(ucUuid)}', '${esc(ucSource)}', '${esc(ucHandle)}', '${esc(ucPath)}', ${isMember}, ${JSON.stringify(s.name)})">
+      <span style="font-family:var(--mono,monospace);color:${isMember ? 'var(--green)' : 'var(--text-faint)'};min-width:14px;">${isMember ? '✓' : ''}</span>
+      <span style="flex:1;">${esc(s.name)}</span>
+      ${s.is_default ? '<span style="font-size:9px;color:var(--accent);">DEFAULT</span>' : ''}
+      <span style="font-size:10px;color:var(--text-faint);">${s.member_count}</span>
+    </div>`;
+  });
+  h += '</div>';
+  pop.innerHTML = h;
+  pop.style.display = 'block';
+  // Close on outside click
+  setTimeout(() => {
+    const close = e => {
+      if (!pop.contains(e.target) && e.target !== anchorEl) {
+        pop.style.display = 'none';
+        document.removeEventListener('click', close);
+      }
+    };
+    document.addEventListener('click', close);
+  }, 0);
+}
+
+async function _toggleUCSetMembership(setId, ucUuid, ucSource, ucHandle, ucPath, isMember, setName) {
+  try {
+    if (isMember) {
+      await api(`/api/sets/${setId}/members/${encodeURIComponent(ucUuid)}`, {method: 'DELETE'});
+      toast(`Removed from "${setName}"`);
+    } else {
+      await api(`/api/sets/${setId}/members`, {
+        method: 'POST',
+        body: JSON.stringify({
+          uc_uuid: ucUuid,
+          uc_source: ucSource || 'managed',
+          uc_handle: ucHandle || null,
+          uc_path: ucPath || null,
+        }),
+      });
+      toast(`Added to "${setName}"`);
+    }
+    document.getElementById('ucDetailAddSetPopover').style.display = 'none';
+    await loadSets();
+    await loadUCs();
+    // Re-render the UC detail to refresh the chip strip
+    if (activeUCId === ucUuid) selectUC(ucUuid);
+    renderManageSetsList();
+  } catch (e) {
+    if (/already/i.test(e.message)) toast(`Already in "${setName}"`);
+    else toast('Failed: ' + e.message, true);
+  }
+}
+
+async function _removeUCFromSet(setId, ucUuid, setName) {
+  try {
+    await api(`/api/sets/${setId}/members/${encodeURIComponent(ucUuid)}`, {method: 'DELETE'});
+    toast(`Removed from "${setName}"`);
+    await loadSets();
+    await loadUCs();
+    if (activeUCId === ucUuid) selectUC(ucUuid);
+    renderManageSetsList();
+  } catch (e) { toast('Remove failed: ' + e.message, true); }
+}
+
+async function _addUCToSet(setId, uc, setLabel) {
+  try {
+    await api(`/api/sets/${setId}/members`, {
+      method: 'POST',
+      body: JSON.stringify({
+        uc_uuid:   uc.uuid,
+        uc_source: uc.source || 'managed',
+        uc_handle: uc.handle || null,
+        uc_path:   uc.path || null,
+      }),
+    });
+    toast(`Added to "${setLabel}"`);
+    await loadSets();
+    await loadUCs();
+    renderManageSetsList();
+  } catch (e) {
+    // Idempotent-ish — duplicate adds return 409
+    if (/already/i.test(e.message)) toast(`Already in "${setLabel}"`);
+    else toast('Add failed: ' + e.message, true);
+  }
 }
 
 function _getDefaultSet() {
