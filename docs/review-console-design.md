@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.17  
+**Current version:** v0.9.18  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -296,6 +296,8 @@ Overlay background uses `var(--bg-panel)` — `var(--surface)` is not a defined 
 **UC modal layout:** The UC editor modal-body uses `display:flex; flex-direction:row` to put the YAML editor pane and the AI Assist panel side-by-side. The base `.modal-body` class is `flex-direction:column`, so the row direction must be set explicitly on the inline style — forgetting this stacks the panels vertically.
 
 **UC Name / title field (v0.9.17):** UCs carry a human-readable name in the YAML's top-level `title:` field. The UC editor surfaces it as a dedicated **Name** input above the YAML editor. On save, the input value is injected into the YAML's `title:` line via `_injectTitleIntoYaml()` so the two halves of the editor never disagree. On open, `_extractTitleFromYaml()` pulls the current value into the input. The API's `_derive_uc_title()` helper prefers top-level `title:` > `scenario.description` > `handle` > `uuid`, with a 120-char cap. UC list and detail render the title prominently; UUID and handle move to a small monospaced ID line. UC Assist's system prompt teaches the model to populate `title:`, and the "Apply to editor" button syncs the title from the assistant's YAML into the Name input.
+
+**Default Set (v0.9.18):** `use_case_sets` has an `is_default` boolean column with a partial unique index enforcing at most one default row. The Sets detail header has a **★ Set as default** / **Clear default** toggle; the Sets list shows a `DEFAULT` badge on the chosen one. The New Run modal — when opened with no explicit set/subpath context (e.g. the top-bar "+ New run" button) — checks for a default Set and pre-fills `corpus_subpath` from its common path prefix, with a banner reading "Pre-filled from default Set …". Calls that already carry their own context (`runSet`, the Re-analyze flow) bypass this. Endpoints: `PUT /api/sets/{id}/default` (set), `DELETE /api/sets/{id}/default` (clear). Migration 004 adds the column + partial unique index.
 
 ---
 

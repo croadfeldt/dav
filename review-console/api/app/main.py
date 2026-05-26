@@ -48,6 +48,7 @@ CORPUS_EXCLUDE = parse_patterns(os.environ.get("CORPUS_EXCLUDE"))
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 MIGRATE_002_PATH = Path(__file__).parent / "migrate_002_model_configs.sql"
 MIGRATE_003_PATH = Path(__file__).parent / "migrate_003_model_defaults.sql"
+MIGRATE_004_PATH = Path(__file__).parent / "migrate_004_default_set.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -134,6 +135,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_002_PATH.read_text())
         log.info("Applying migration 003 (model_defaults)...")
         await conn.execute(MIGRATE_003_PATH.read_text())
+        log.info("Applying migration 004 (default set marker)...")
+        await conn.execute(MIGRATE_004_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -1285,6 +1288,7 @@ def _set_row(r, member_count: int = 0) -> dict:
         "id": r["id"],
         "name": r["name"],
         "description": r["description"],
+        "is_default": bool(r["is_default"]) if "is_default" in r else False,
         "created_by": r["created_by"],
         "created_at": r["created_at"].isoformat(),
         "updated_at": r["updated_at"].isoformat(),
@@ -1368,6 +1372,46 @@ async def delete_set(set_id: int, request: Request):
     if result == "DELETE 0":
         raise HTTPException(404, f"set {set_id} not found")
     return {"ok": True, "id": set_id}
+
+
+@app.put("/api/sets/{set_id}/default")
+async def set_default_set(set_id: int, request: Request):
+    """Mark this Set as the project default. Clears the previous default.
+
+    Used by the New Run modal to pre-populate UC selection and (later) by
+    out-of-band run scheduling that needs an implicit UC set.
+    """
+    get_user(request)  # auth check
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            exists = await conn.fetchval(
+                "SELECT 1 FROM use_case_sets WHERE id=$1", set_id
+            )
+            if not exists:
+                raise HTTPException(404, f"set {set_id} not found")
+            await conn.execute(
+                "UPDATE use_case_sets SET is_default=FALSE WHERE is_default AND id<>$1",
+                set_id,
+            )
+            await conn.execute(
+                "UPDATE use_case_sets SET is_default=TRUE, updated_at=now() WHERE id=$1",
+                set_id,
+            )
+    return {"ok": True, "id": set_id, "is_default": True}
+
+
+@app.delete("/api/sets/{set_id}/default")
+async def clear_default_set(set_id: int, request: Request):
+    """Unmark this Set as the project default, leaving no default."""
+    get_user(request)
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE use_case_sets SET is_default=FALSE, updated_at=now() WHERE id=$1",
+            set_id,
+        )
+    if result == "UPDATE 0":
+        raise HTTPException(404, f"set {set_id} not found")
+    return {"ok": True, "id": set_id, "is_default": False}
 
 
 @app.post("/api/sets/{set_id}/members")
