@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.44  
+**Current version:** v0.9.45  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -528,6 +528,15 @@ This alone should cut context growth dramatically. If runs still hit the limit, 
 - **Run-detail Session section** gains two new kv rows: `scope` (Set chip + mode, Set chip clickable to filter the UC tab to it) and `UC counts` (same color logic as the list row), inserted above the existing `category` row.
 
 `run-detail` endpoint already does `SELECT *` from `run_sessions`, so the new columns flow through automatically — no separate API change beyond `/api/runs`.
+
+**Parallel-tool-call disable + wrap-up nudge (v0.9.45):** v0.9.43's dedup prevented the context-window crash but a new failure surfaced — the model emitted the same tool_call 1→3→7→15 times across turns 2-10, eventually consuming the 30-turn budget without producing a usable final JSON.
+
+Two fixes:
+
+1. **`parallel_tool_calls: false`** added to the OpenAI-compatible request body (`client.py`) whenever `tools` is set. vLLM honors the flag — the model is constrained to one tool_call per response, which physically prevents the parallel-duplicate explosion at the source. Backends that ignore the flag (older vLLMs, OpenAI's own) are no worse off than today.
+2. **Wrap-up nudge** in tool responses (`agent.py`) — on the last 3 turns before the tool-call budget, every tool response gets prepended with `⚠ WRAP-UP: only N tool-call turn(s) left … synthesize your final JSON analysis on your NEXT response …`. The budget-hit turn already strips tools entirely (existing behavior); this gives the model 3 turns of warning to converge.
+
+Together: #1 kills the duplicate explosion that was the root cause; #2 is the safety net so a model that's still indecisive at turn 28 gets a clear "wrap it up now" signal before tools are forcibly removed.
 
 **Live runs list (v0.9.42):** Runs list now polls every 5s while the Runs tab is the active view. Triggers from outside the UI (direct API call, CLI, webhook, etc.) appear in the list within one poll cycle without a manual refresh; in-flight phase transitions (Pending → Running → Succeeded/Failed) repaint live. The poll self-gates on `document.visibilityState === 'visible'` and the tab being active, so a hidden tab or a user on a different view doesn't burn requests. Implementation: `_startRunsListPoll` / `_stopRunsListPoll` are toggled by `switchView`.
 

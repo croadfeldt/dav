@@ -263,6 +263,14 @@ class InferenceClient:
         if tools:
             body["tools"] = [t.to_openai() for t in tools]
             body["tool_choice"] = "auto"
+            # Disable parallel tool calls so the model emits ONE tool_call
+            # per response and waits for the result before deciding what to
+            # call next. This prevents pathological decoder states where the
+            # model emits the same tool_call 4-16 times in parallel
+            # (observed in Qwen3-32B at temperature 0.2). vLLM honors this
+            # OpenAI-compatible flag; backends that ignore it are no worse
+            # off than today.
+            body["parallel_tool_calls"] = False
         if guided_json_schema:
             # vLLM-specific extension, ignored by vanilla OpenAI endpoints
             body["extra_body"] = {"guided_json": guided_json_schema}

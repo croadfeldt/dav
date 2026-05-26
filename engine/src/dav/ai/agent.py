@@ -497,6 +497,22 @@ class Stage2Agent:
                     # so prepending here is more reliable than relying on the
                     # buried system-prompt directive.
                     full_result = self._anti_fishing_wrap(tool_name, args, full_result, mcp_result.ok)
+                    # Wrap-up nudge — when nearing the tool-call budget, prepend
+                    # a directive telling the model to stop fetching and write
+                    # its final JSON. Last 3 turns get the warning; the
+                    # budget-hit turn already strips tools (handled above).
+                    remaining = self.config.max_tool_calls - turn
+                    if remaining <= 3 and mcp_result.ok:
+                        full_result = (
+                            f"⚠ WRAP-UP: only {remaining} tool-call turn(s) "
+                            f"left before the budget closes. STOP fetching new "
+                            f"sections and synthesize your final JSON analysis "
+                            f"on your NEXT response using whatever you already "
+                            f"have. The engine will refuse further tool calls "
+                            f"after turn {self.config.max_tool_calls}.\n\n"
+                            f"--- Original tool response below ---\n\n"
+                            f"{full_result}"
+                        )
                     _exec_cache[dedup_key] = (tc["id"], full_result)
 
                     self._tool_trace.append(ToolCall(
