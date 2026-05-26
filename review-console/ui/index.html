@@ -1236,11 +1236,32 @@
         </div>
       </div>
 
+      <div class="cfg-card panel-card" id="configEvalDefaultPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Default evaluation model</div>
+            <div class="pc-sub">Project default for new analysis runs — applies to all users. Can be overridden per run in the New Run modal.</div>
+          </div>
+          <span id="evalDefaultStatus" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <select id="evalDefaultModelSel" style="min-width:260px;">
+              <option value="">— no default set —</option>
+            </select>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('evalDefaultModelSel','evalDefaultModel')">Browse…</button>
+            <button class="btn primary btn-sm" id="saveEvalDefaultBtn">Save</button>
+            <span id="evalDefaultMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div class="form-hint" style="margin-top:8px;">Stored server-side. Only registered model endpoints can be set as the project default.</div>
+        </div>
+      </div>
+
       <div class="cfg-card panel-card" id="configUCAssistPanel">
         <div class="panel-card-header">
           <div>
-            <div class="pc-title">UC Assist model</div>
-            <div class="pc-sub">Select which model to use for NL-assisted use case authoring (✦ Assist in the UC editor). Add model endpoints above to populate this list.</div>
+            <div class="pc-title">Default UC Assist model</div>
+            <div class="pc-sub">Your personal default for NL-assisted use case authoring. Stored locally — does not affect other users.</div>
           </div>
           <span id="ucAssistCfgStatus" style="font-size:10px;color:var(--text-faint);"></span>
         </div>
@@ -1489,14 +1510,22 @@
           <span>✦ AI Assist</span>
           <span id="ucAssistStatus" style="color:var(--text-faint); font-size:9px; letter-spacing:0"></span>
         </div>
+        <!-- Model selector -->
+        <div style="padding:5px 10px; border-bottom:1px solid var(--border); display:flex; gap:6px; align-items:center; flex-shrink:0;">
+          <select id="ucAssistPanelModelSel" style="flex:1; font-size:11px;"></select>
+          <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('ucAssistPanelModelSel',_ucAssistModelKey)" style="padding:3px 8px; font-size:10px;">Browse…</button>
+        </div>
         <!-- Chat history -->
         <div id="ucAssistHistory" style="flex:1; overflow-y:auto; padding:10px 14px; font-size:12px; display:flex; flex-direction:column; gap:10px; min-height:0;"></div>
         <!-- Input area -->
         <div style="border-top:1px solid var(--border); padding:10px 12px; display:flex; flex-direction:column; gap:6px; flex-shrink:0;">
-          <textarea id="ucAssistInput" rows="3" placeholder="Describe what you want to create or change…" style="width:100%; font-family:var(--mono); font-size:11px; background:var(--bg-input); border:1px solid var(--border); color:var(--text); padding:7px 9px; border-radius:2px; resize:none; line-height:1.5;"></textarea>
-          <div style="display:flex; gap:6px; justify-content:flex-end;">
-            <button class="btn ghost btn-icon" id="ucAssistClearBtn" style="font-size:10px;">Clear</button>
-            <button class="btn primary" id="ucAssistSendBtn" style="font-size:10px; padding:4px 12px;">Send</button>
+          <textarea id="ucAssistInput" rows="6" placeholder="Describe what you want to create or change…" style="width:100%; font-family:inherit; font-size:12px; background:var(--bg-input); border:1px solid var(--border); color:var(--text); padding:8px 10px; border-radius:2px; resize:vertical; line-height:1.6; min-height:80px;"></textarea>
+          <div style="display:flex; gap:6px; align-items:center; justify-content:space-between;">
+            <span style="font-size:9px; color:var(--text-faint);">⌘↵ to send</span>
+            <div style="display:flex; gap:6px;">
+              <button class="btn ghost btn-sm" id="ucAssistClearBtn">Clear</button>
+              <button class="btn primary btn-sm" id="ucAssistSendBtn">Send</button>
+            </div>
           </div>
         </div>
       </div>
@@ -2719,8 +2748,11 @@ async function loadNewRunDefaults(forcedSubpath) {
     document.getElementById('nrCorpusBranch').value= corpus.repo_branch || '';
     const nrSel = document.getElementById('nrModelSel');
     if (nrSel && !nrSel.value) {
-      const matched = _reviewModels.find(m => m.enabled && m.endpoint_url === inf.endpoint && m.model_id === inf.model);
-      if (matched) nrSel.value = String(matched.id);
+      // No user override — fall back to project default evaluation model
+      try {
+        const defaults = await api('/api/model-defaults');
+        if (defaults.evaluation) nrSel.value = String(defaults.evaluation);
+      } catch(_) { /* ignore */ }
     }
 
     if (forcedSubpath !== undefined) {
@@ -3859,12 +3891,18 @@ let _ucAssistAvailable = null;  // null=unknown, true/false
 
 function _ucAssistCheckAvail() {
   if (_ucAssistAvailable !== null) return Promise.resolve(_ucAssistAvailable);
-  const sel = document.getElementById('ucAssistModelSel');
-  _ucAssistAvailable = !!(sel && sel.value);
+  const resolved = _resolveFromStorage(_ucAssistModelKey);
+  _ucAssistAvailable = !!resolved;
   const statusEl = document.getElementById('ucAssistStatus');
   if (statusEl) {
-    const m = _reviewModels.find(r => String(r.id) === String(sel && sel.value));
-    statusEl.textContent = _ucAssistAvailable ? (m ? m.name : 'configured') : 'not configured';
+    if (resolved && resolved.model_config_id) {
+      const m = _reviewModels.find(r => r.id === resolved.model_config_id);
+      statusEl.textContent = m ? m.name : 'configured';
+    } else if (resolved && resolved.model_id) {
+      statusEl.textContent = resolved.model_id;
+    } else {
+      statusEl.textContent = 'not configured';
+    }
   }
   return Promise.resolve(_ucAssistAvailable);
 }
@@ -3872,6 +3910,8 @@ function _ucAssistCheckAvail() {
 function _ucAssistOpen() {
   const panel = document.getElementById('ucAssistPanel');
   panel.style.display = 'flex';
+  _populateModelSel('ucAssistPanelModelSel', _ucAssistModelKey);
+  _ucAssistAvailable = null; // re-check on open
   _ucAssistCheckAvail();
   document.getElementById('ucAssistInput').focus();
 }
@@ -3920,7 +3960,7 @@ async function _ucAssistSend() {
     _ucAssistAppendMessage('assistant', 'UC Assist is not configured. Enable "UC assist" on a model endpoint in Config → Models.', null, true);
     return;
   }
-  const ucResolved = _resolveEndpointModel('ucAssistModelSel', _ucAssistModelKey);
+  const ucResolved = _resolveFromStorage(_ucAssistModelKey);
   _ucAssistAppendMessage('user', msg);
   input.value = '';
   const btn = document.getElementById('ucAssistSendBtn');
@@ -4461,6 +4501,7 @@ async function loadConfig() {
   _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
   _populateModelSel('nrModelSel', 'nrLastModel');
   await loadUCAssistConfig();  // populates ucAssistModelSel from _reviewModels
+  await loadEvalDefault();    // populates evalDefaultModelSel from DB
   await loadMCPServers();
   await loadCodeRepos();
   setupConfigNav();
@@ -4837,6 +4878,70 @@ function _resolveEndpointModel(selId, storageKey) {
   if (!id) return null;
   return { model_config_id: id };
 }
+
+// ── Model default resolution (bypasses DOM, reads localStorage directly) ──────
+
+function _resolveFromStorage(storageKey) {
+  const stored = localStorage.getItem(storageKey);
+  if (!stored) return null;
+  if (stored === '__custom__') {
+    const ep = localStorage.getItem(storageKey + '_ep');
+    const mi = localStorage.getItem(storageKey + '_mi');
+    return (ep && mi) ? { endpoint_url: ep, model_id: mi } : null;
+  }
+  const id = parseInt(stored, 10);
+  return id ? { model_config_id: id } : null;
+}
+
+// ── Project-scoped evaluation model default ────────────────────────────────────
+
+let _evalDefaultModelId = null;
+
+function _populateEvalDefaultSel(modelId) {
+  const sel = document.getElementById('evalDefaultModelSel');
+  if (!sel) return;
+  const enabled = _reviewModels.filter(m => m.enabled);
+  sel.innerHTML = '<option value="">— no default set —</option>' +
+    enabled.map(m => `<option value="${m.id}">${esc(m.name)} (${m.is_local ? 'local' : 'frontier'})</option>`).join('');
+  if (modelId) sel.value = String(modelId);
+}
+
+async function loadEvalDefault() {
+  try {
+    const defaults = await api('/api/model-defaults');
+    _evalDefaultModelId = defaults.evaluation || null;
+  } catch(e) {
+    _evalDefaultModelId = null;
+  }
+  _populateEvalDefaultSel(_evalDefaultModelId);
+}
+
+document.getElementById('saveEvalDefaultBtn').addEventListener('click', async () => {
+  const sel = document.getElementById('evalDefaultModelSel');
+  const val = sel.value;
+  if (val === '__custom__') {
+    document.getElementById('evalDefaultMsg').textContent = 'Custom endpoints cannot be a project default — register the endpoint in Model Endpoints first.';
+    return;
+  }
+  const modelId = val ? parseInt(val, 10) : null;
+  const btn = document.getElementById('saveEvalDefaultBtn');
+  const msgEl = document.getElementById('evalDefaultMsg');
+  btn.disabled = true; msgEl.textContent = '';
+  try {
+    await api('/api/model-defaults/evaluation', {
+      method: 'PUT',
+      body: JSON.stringify({ model_config_id: modelId }),
+    });
+    _evalDefaultModelId = modelId;
+    msgEl.textContent = modelId ? 'Default saved' : 'Default cleared';
+    msgEl.style.color = 'var(--green)';
+    setTimeout(() => { msgEl.textContent = ''; msgEl.style.color = ''; }, 2500);
+  } catch(e) {
+    msgEl.textContent = 'Save failed: ' + e.message;
+    msgEl.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
+});
 
 // ── Model Browser ─────────────────────────────────────────────────────────────
 
@@ -5859,10 +5964,12 @@ const _ucAssistModelKey = 'ucAssistModelId';
 
 function _populateUCAssistModelSel() {
   _populateModelSel('ucAssistModelSel', _ucAssistModelKey);
+  _populateModelSel('ucAssistPanelModelSel', _ucAssistModelKey);
+  _populateEvalDefaultSel(_evalDefaultModelId);
   const sel = document.getElementById('ucAssistModelSel');
   const statusEl = document.getElementById('ucAssistCfgStatus');
   const hasModels = _reviewModels.some(m => m.enabled);
-  _ucAssistAvailable = !!(sel && sel.value);
+  _ucAssistAvailable = null;
   if (statusEl) {
     statusEl.textContent = hasModels ? (sel && sel.value ? '✓ model selected' : 'no model selected') : 'no models configured';
     statusEl.style.color = (sel && sel.value) ? 'var(--ok)' : 'var(--text-faint)';
@@ -5876,7 +5983,18 @@ async function loadUCAssistConfig() {
 
 document.getElementById('ucAssistModelSel').addEventListener('change', function() {
   localStorage.setItem(_ucAssistModelKey, this.value);
-  _ucAssistAvailable = !!this.value;
+  _ucAssistAvailable = null;
+  // Mirror to panel selector if open
+  const panelSel = document.getElementById('ucAssistPanelModelSel');
+  if (panelSel && panelSel.querySelector(`option[value="${this.value}"]`)) panelSel.value = this.value;
+});
+
+document.getElementById('ucAssistPanelModelSel').addEventListener('change', function() {
+  localStorage.setItem(_ucAssistModelKey, this.value);
+  _ucAssistAvailable = null;
+  // Mirror to Config selector
+  const cfgSel = document.getElementById('ucAssistModelSel');
+  if (cfgSel && cfgSel.querySelector(`option[value="${this.value}"]`)) cfgSel.value = this.value;
 });
 
 // ── Code Repositories ────────────────────────────────────────────────────────

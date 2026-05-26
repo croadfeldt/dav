@@ -47,6 +47,7 @@ CORPUS_INCLUDE = parse_patterns(os.environ.get("CORPUS_INCLUDE"))
 CORPUS_EXCLUDE = parse_patterns(os.environ.get("CORPUS_EXCLUDE"))
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 MIGRATE_002_PATH = Path(__file__).parent / "migrate_002_model_configs.sql"
+MIGRATE_003_PATH = Path(__file__).parent / "migrate_003_model_defaults.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -131,6 +132,8 @@ async def lifespan(app: FastAPI):
     async with pool.acquire() as conn:
         log.info("Applying migration 002 (model_configs consolidation)...")
         await conn.execute(MIGRATE_002_PATH.read_text())
+        log.info("Applying migration 003 (model_defaults)...")
+        await conn.execute(MIGRATE_003_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -2507,6 +2510,49 @@ async def delete_review_model(mid: int, request: Request):
     get_user(request)
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM model_configs WHERE id=$1", mid)
+    return {"ok": True}
+
+
+# ========================= MODEL DEFAULTS =========================
+
+_VALID_DEFAULT_KEYS = {"evaluation"}
+
+
+class ModelDefaultIn(BaseModel):
+    model_config_id: Optional[int] = None
+
+
+@app.get("/api/model-defaults")
+async def get_model_defaults():
+    """Return project-scoped model defaults keyed by pipeline type."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT key, model_config_id FROM model_defaults")
+    return {r["key"]: r["model_config_id"] for r in rows}
+
+
+@app.put("/api/model-defaults/{key}")
+async def set_model_default(key: str, payload: ModelDefaultIn, request: Request):
+    """Set or clear a project-scoped model default."""
+    if key not in _VALID_DEFAULT_KEYS:
+        raise HTTPException(400, f"unknown default key: {key!r} — valid: {sorted(_VALID_DEFAULT_KEYS)}")
+    user = get_user(request)
+    if payload.model_config_id is not None:
+        async with pool.acquire() as conn:
+            exists = await conn.fetchval(
+                "SELECT 1 FROM model_configs WHERE id=$1 AND enabled", payload.model_config_id
+            )
+        if not exists:
+            raise HTTPException(404, "model config not found or disabled")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO model_defaults (key, model_config_id, updated_by, updated_at)
+               VALUES ($1, $2, $3, NOW())
+               ON CONFLICT (key) DO UPDATE
+               SET model_config_id = EXCLUDED.model_config_id,
+                   updated_by      = EXCLUDED.updated_by,
+                   updated_at      = NOW()""",
+            key, payload.model_config_id, user,
+        )
     return {"ok": True}
 
 
