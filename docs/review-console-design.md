@@ -302,6 +302,7 @@ Overlay background uses `var(--bg-panel)` — `var(--surface)` is not a defined 
 - **Managed UC git push-back** — managed UCs live only in Postgres; no mechanism to PR them back to the corpus repo.
 - **Multi-consumer** — one console instance = one consumer. Switching requires redeploy.
 - **Engine image rebuild** — the `dav-engine:latest` image must be rebuilt and redeployed after engine code changes. Console-triggered runs always use `dav-engine:latest` from the OCP image registry.
+- **DCM / data model rework (planned)** — next major design effort. Scope to be defined in the next session (2026-05-26). Will revisit the underlying DAV domain capability model and the schemas / contracts it implies between engine, console, and consumer corpora.
 
 ---
 
