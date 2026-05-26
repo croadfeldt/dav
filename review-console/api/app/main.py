@@ -934,7 +934,7 @@ class PrCreateIn(BaseModel):
 
 @app.get("/api/uc-assist/models")
 async def list_uc_assist_models():
-    """List model configs flagged for UC assist (api_key masked)."""
+    """List all enabled model configs (api_key masked). Alias for /api/models filtered to enabled."""
     if pool is None:
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
@@ -944,7 +944,7 @@ async def list_uc_assist_models():
                       enabled, is_local, use_arch_review, use_uc_assist,
                       created_by, created_at, updated_at
                FROM model_configs
-               WHERE use_uc_assist AND enabled
+               WHERE enabled
                ORDER BY name"""
         )
     return [dict(r) for r in rows]
@@ -968,11 +968,11 @@ async def uc_assist_chat(payload: UCAssistIn, request: Request):
             raise HTTPException(503, "pool not initialized")
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND enabled AND use_uc_assist",
+                "SELECT * FROM model_configs WHERE id=$1 AND enabled",
                 payload.model_config_id,
             )
         if not row:
-            raise HTTPException(404, "Model config not found, disabled, or not flagged for UC assist")
+            raise HTTPException(404, "Model config not found or disabled")
         cfg = dict(row)
     result = await uc_assist.chat(
         user_message=payload.message,
@@ -2507,11 +2507,11 @@ async def arch_review(payload: ArchReviewIn, request: Request):
 
     async with pool.acquire() as conn:
         model_row = await conn.fetchrow(
-            "SELECT * FROM model_configs WHERE id=$1 AND enabled AND use_arch_review",
+            "SELECT * FROM model_configs WHERE id=$1 AND enabled",
             payload.model_config_id,
         )
         if not model_row:
-            raise HTTPException(404, "Model config not found, disabled, or not flagged for arch review")
+            raise HTTPException(404, "Model config not found or disabled")
 
         if payload.scope == "uc":
             if not payload.run_id or not payload.uc_uuid:
@@ -2672,7 +2672,7 @@ async def enhancements(payload: EnhancementIn, request: Request):
 
     async with pool.acquire() as conn:
         model_row = await conn.fetchrow(
-            "SELECT * FROM model_configs WHERE id=$1 AND enabled AND use_arch_review", payload.model_config_id
+            "SELECT * FROM model_configs WHERE id=$1 AND enabled", payload.model_config_id
         )
         if not model_row:
             raise HTTPException(404, "Model config not found or disabled")

@@ -1257,17 +1257,6 @@
               </label>
             </div>
           </div>
-          <div style="margin-top:10px;padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">
-            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:6px;">Available for</div>
-            <div style="display:flex;gap:18px;flex-wrap:wrap;">
-              <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;">
-                <input type="checkbox" id="mfUseArchReview" checked /> Arch review &amp; enhancements
-              </label>
-              <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;">
-                <input type="checkbox" id="mfUseUCAssist" /> UC assist
-              </label>
-            </div>
-          </div>
           <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
             <button class="btn primary" id="saveModelBtn">Save</button>
             <button class="btn ghost" id="cancelModelBtn">Cancel</button>
@@ -1280,18 +1269,18 @@
         <div class="panel-card-header">
           <div>
             <div class="pc-title">UC Assist model</div>
-            <div class="pc-sub">Select which model to use for NL-assisted use case authoring (✦ Assist in the UC editor). Enable "UC assist" on a model endpoint above to add it here.</div>
+            <div class="pc-sub">Select which model to use for NL-assisted use case authoring (✦ Assist in the UC editor). Add model endpoints above to populate this list.</div>
           </div>
           <span id="ucAssistCfgStatus" style="font-size:10px;color:var(--text-faint);"></span>
         </div>
         <div class="panel-card-body">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <select id="ucAssistModelSel" style="min-width:260px;">
-              <option value="">— no models with UC assist enabled —</option>
+              <option value="">— select a model —</option>
             </select>
             <span id="uacMsg" style="font-size:11px;color:var(--text-faint);"></span>
           </div>
-          <div class="form-hint" style="margin-top:8px;">Selected model is stored locally and passed with each UC assist request. Add endpoints with the "UC assist" flag above.</div>
+          <div class="form-hint" style="margin-top:8px;">Selected model is stored locally and passed with each request. Add endpoints in the Model Endpoints panel above.</div>
         </div>
       </div>
 
@@ -1796,8 +1785,8 @@ async function init() {
   catch (e) { console.error(e); setApiStatus(false, e.message); }
   // Pre-load models so arch review + UC assist selectors are ready on any tab.
   loadReviewModels().then(() => {
-    _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
-    _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
+    _populateModelSel('rdRevModelSel', 'reviewLastModel');
+    _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
     _populateUCAssistModelSel();
   }).catch(() => {});
   switchView('runs');
@@ -4438,8 +4427,8 @@ async function loadConfig() {
   // Load review models, MCP, code repos, UC assist, and setup config nav
   await loadReviewModels();
   renderModelList();
-  _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
-  _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
+  _populateModelSel('rdRevModelSel', 'reviewLastModel');
+  _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
   await loadUCAssistConfig();  // populates ucAssistModelSel from _reviewModels
   await loadMCPServers();
   await loadCodeRepos();
@@ -4934,39 +4923,28 @@ function renderModelList() {
     el.innerHTML = '<div style="padding:14px 16px;font-size:12px;color:var(--text-faint)">No models configured. Click "+ Add model" to add one.</div>';
     return;
   }
-  el.innerHTML = _reviewModels.map(m => {
-    const uses = [];
-    if (m.use_arch_review) uses.push('arch review');
-    if (m.use_uc_assist)   uses.push('UC assist');
-    const useStr = uses.length ? uses.join(', ') : 'no uses enabled';
-    return `
+  el.innerHTML = _reviewModels.map(m => `
     <div class="model-manager-row">
       <span class="model-pill ${m.is_local ? 'local' : 'frontier'}">${m.is_local ? 'local' : 'frontier'}</span>
       <span style="font-weight:500;color:var(--text);flex:1">${esc(m.name)}</span>
       <span style="color:var(--text-faint);font-size:11px;">${esc(m.provider)} · ${esc(m.model_id)}</span>
-      <span style="color:var(--text-faint);font-size:10px;font-style:italic;">${esc(useStr)}</span>
       ${!m.enabled ? '<span class="model-pill disabled">disabled</span>' : ''}
       <button class="btn ghost btn-sm" onclick="editModel(${m.id})">Edit</button>
       <button class="btn ghost btn-sm" style="color:var(--red)" onclick="deleteModel(${m.id},${JSON.stringify(m.name)})">✕</button>
-    </div>`;
-  }).join('');
+    </div>`).join('');
 }
 
-function _populateDrawerModelSel(selId, storageKey) {
+function _populateModelSel(selId, storageKey) {
   const sel = document.getElementById(selId);
   if (!sel) return;
-  const enabled = _reviewModels.filter(m => m.enabled && m.use_arch_review);
-  if (!enabled.length) {
-    sel.innerHTML = '<option value="">No arch-review models — add one in Config</option>';
-    return;
-  }
-  const prev = sel.value;
-  sel.innerHTML = enabled.map(m =>
-    `<option value="${m.id}">${esc(m.name)} (${m.is_local ? 'local' : 'frontier'})</option>`
-  ).join('');
-  if (prev && enabled.find(m => String(m.id) === prev)) { sel.value = prev; return; }
+  const enabled = _reviewModels.filter(m => m.enabled);
+  sel.innerHTML = '<option value="">— select a model —</option>' +
+    enabled.map(m =>
+      `<option value="${m.id}">${esc(m.name)} (${m.is_local ? 'local' : 'frontier'})</option>`
+    ).join('');
   const stored = localStorage.getItem(storageKey);
   if (stored && enabled.find(m => String(m.id) === stored)) sel.value = stored;
+  // else stays at "" (none)
 }
 
 document.getElementById('addModelBtn').addEventListener('click', () => {
@@ -4979,8 +4957,6 @@ document.getElementById('addModelBtn').addEventListener('click', () => {
   document.getElementById('mfApiKey').value = '';
   document.getElementById('mfLocal').checked = false;
   document.getElementById('mfEnabled').checked = true;
-  document.getElementById('mfUseArchReview').checked = true;
-  document.getElementById('mfUseUCAssist').checked = false;
   document.getElementById('modelFormMsg').textContent = '';
   document.getElementById('modelFormCard').style.display = '';
   document.getElementById('mfName').focus();
@@ -4994,15 +4970,13 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
   const btn = document.getElementById('saveModelBtn');
   const msg = document.getElementById('modelFormMsg');
   const payload = {
-    name:            document.getElementById('mfName').value.trim(),
-    provider:        document.getElementById('mfProvider').value,
-    endpoint_url:    document.getElementById('mfEndpoint').value.trim(),
-    model_id:        document.getElementById('mfModelId').value.trim(),
-    api_key:         document.getElementById('mfApiKey').value,
-    is_local:        document.getElementById('mfLocal').checked,
-    enabled:         document.getElementById('mfEnabled').checked,
-    use_arch_review: document.getElementById('mfUseArchReview').checked,
-    use_uc_assist:   document.getElementById('mfUseUCAssist').checked,
+    name:         document.getElementById('mfName').value.trim(),
+    provider:     document.getElementById('mfProvider').value,
+    endpoint_url: document.getElementById('mfEndpoint').value.trim(),
+    model_id:     document.getElementById('mfModelId').value.trim(),
+    api_key:      document.getElementById('mfApiKey').value,
+    is_local:     document.getElementById('mfLocal').checked,
+    enabled:      document.getElementById('mfEnabled').checked,
   };
   if (!payload.name || !payload.endpoint_url || !payload.model_id) {
     msg.style.color = 'var(--red)'; msg.textContent = 'Name, endpoint, and model ID are required.'; return;
@@ -5016,8 +4990,8 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     }
     await loadReviewModels();
     renderModelList();
-    _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
-    _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
+    _populateModelSel('rdRevModelSel', 'reviewLastModel');
+    _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
     _populateUCAssistModelSel();
     document.getElementById('modelFormCard').style.display = 'none';
     toast(_mfEditId ? 'Model updated' : 'Model added');
@@ -5040,8 +5014,6 @@ function editModel(id) {
   document.getElementById('mfApiKey').value = '';
   document.getElementById('mfLocal').checked = m.is_local;
   document.getElementById('mfEnabled').checked = m.enabled;
-  document.getElementById('mfUseArchReview').checked = m.use_arch_review;
-  document.getElementById('mfUseUCAssist').checked = m.use_uc_assist;
   document.getElementById('modelFormMsg').textContent = '';
   document.getElementById('modelFormCard').style.display = '';
   document.getElementById('mfName').focus();
@@ -5053,8 +5025,8 @@ async function deleteModel(id, name) {
     await api(`/api/models/${id}`, { method:'DELETE' });
     await loadReviewModels();
     renderModelList();
-    _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
-    _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
+    _populateModelSel('rdRevModelSel', 'reviewLastModel');
+    _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
     _populateUCAssistModelSel();
     toast('Model deleted');
   } catch(e) {
@@ -5113,7 +5085,7 @@ function openReviewPane(scope, ucUuid, startAt = 'review') {
       const ucEntry = (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid);
       if (link) { link.textContent = `UC: ${ucEntry?.uc_handle||ucUuid}`; link.style.display = ''; }
     }
-    _populateDrawerModelSel('rpModelSel', 'reviewLastModel');
+    _populateModelSel('rpModelSel', 'reviewLastModel');
   }, 50);
 }
 
@@ -5136,8 +5108,8 @@ function openRunDetailReview(scope, ucUuid, startAt = 'review') {
   const enhSel = document.getElementById('rdEnhScopeSel');
   if (enhSel) { enhSel.value = scope; enhSel.querySelector('option[value="uc"]').disabled = !ucUuid; }
 
-  _populateDrawerModelSel('rdRevModelSel', 'reviewLastModel');
-  _populateDrawerModelSel('rdEnhModelSel', 'enhanceLastModel');
+  _populateModelSel('rdRevModelSel', 'reviewLastModel');
+  _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
 
   ['rdRevStream','rdEnhStream'].forEach(id => {
     const el = document.getElementById(id); if (!el) return;
@@ -5179,7 +5151,7 @@ async function loadReviewTab() {
   });
   if (prev) sel.value = prev;
   // Populate model selector
-  _populateDrawerModelSel('rpModelSel', 'reviewLastModel');
+  _populateModelSel('rpModelSel', 'reviewLastModel');
   // If results not yet loaded, load them
   if (!allResults.length) {
     try {
@@ -5512,6 +5484,10 @@ document.getElementById('rdRevReasoningBtn').addEventListener('click', function(
   el.scrollTop = el.scrollHeight;
 });
 
+document.getElementById('rdRevModelSel').addEventListener('change', function() {
+  if (this.value) localStorage.setItem('reviewLastModel', this.value);
+});
+
 document.getElementById('rdRevRunBtn').addEventListener('click', async () => {
   const modelId = parseInt(document.getElementById('rdRevModelSel').value, 10);
   if (!modelId) { toast('Select a model first'); return; }
@@ -5583,6 +5559,10 @@ document.getElementById('rdEnhReasoningBtn').addEventListener('click', function(
   const el = document.getElementById('rdEnhStream');
   el.textContent = (!on) ? _rdEnhRaw.text : _stripThink(_rdEnhRaw.text);
   el.scrollTop = el.scrollHeight;
+});
+
+document.getElementById('rdEnhModelSel').addEventListener('change', function() {
+  if (this.value) localStorage.setItem('enhanceLastModel', this.value);
 });
 
 document.getElementById('rdEnhRunBtn').addEventListener('click', async () => {
@@ -5853,23 +5833,15 @@ document.getElementById('copyCursorBtn').addEventListener('click', () => {
 const _ucAssistModelKey = 'ucAssistModelId';
 
 function _populateUCAssistModelSel() {
+  _populateModelSel('ucAssistModelSel', _ucAssistModelKey);
   const sel = document.getElementById('ucAssistModelSel');
   const statusEl = document.getElementById('ucAssistCfgStatus');
-  if (!sel) return;
-  const eligible = _reviewModels.filter(m => m.enabled && m.use_uc_assist);
-  if (!eligible.length) {
-    sel.innerHTML = '<option value="">— no models with UC assist enabled —</option>';
-    if (statusEl) { statusEl.textContent = 'not configured'; statusEl.style.color = 'var(--text-faint)'; }
-    _ucAssistAvailable = false;
-    return;
+  const hasModels = _reviewModels.some(m => m.enabled);
+  _ucAssistAvailable = !!(sel && sel.value);
+  if (statusEl) {
+    statusEl.textContent = hasModels ? (sel && sel.value ? '✓ model selected' : 'no model selected') : 'no models configured';
+    statusEl.style.color = (sel && sel.value) ? 'var(--ok)' : 'var(--text-faint)';
   }
-  const stored = localStorage.getItem(_ucAssistModelKey);
-  sel.innerHTML = eligible.map(m =>
-    `<option value="${m.id}">${esc(m.name)} (${m.is_local ? 'local' : 'frontier'})</option>`
-  ).join('');
-  if (stored && eligible.find(m => String(m.id) === stored)) sel.value = stored;
-  if (statusEl) { statusEl.textContent = '✓ configured'; statusEl.style.color = 'var(--ok)'; }
-  _ucAssistAvailable = true;
 }
 
 async function loadUCAssistConfig() {
