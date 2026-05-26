@@ -1785,6 +1785,10 @@ function toast(msg, isError) {
 
 // ── Utilities ────────────────────────────────────────────────
 function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// Embed JSON.stringify output safely inside a double-quoted HTML attribute
+// (e.g. onclick="..."). Without &quot;-escaping, an inner `"` would terminate
+// the attribute and silently kill the handler — this was a real bug (v0.9.31).
+function attrJson(v) { return JSON.stringify(v).replace(/"/g, '&quot;'); }
 
 function fmtTs(ts) {
   if (!ts) return '—';
@@ -3907,7 +3911,7 @@ async function _openBatchAddSetPopover(anchor) {
   allSets.forEach(s => {
     h += `<div style="padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;"
              onmouseover="this.style.background='var(--bg-raised)'" onmouseout="this.style.background=''"
-             onclick="_batchAddSelectedToSet(${s.id}, ${JSON.stringify(s.name)})">
+             onclick="_batchAddSelectedToSet(${s.id}, ${attrJson(s.name)})">
       <span style="flex:1;">${esc(s.name)}</span>
       ${s.is_default ? '<span style="font-size:9px;color:var(--accent);">DEFAULT</span>' : ''}
       <span style="font-size:10px;color:var(--text-faint);">${s.member_count}</span>
@@ -4008,7 +4012,7 @@ function renderUCDetail(data, lifecycle) {
              ${_renderManagedTestBtn(data, titleText)}
              <button class="btn ghost" onclick="editUC('${esc(uuid)}')">Edit</button>
              <button class="btn danger" onclick="deleteUC('${esc(uuid)}',this)">Delete</button>`
-          : `<button class="btn primary" onclick="testRunUC('${esc(uuid)}', ${JSON.stringify(data.path||'')}, ${JSON.stringify(titleText)})">▶ Test evaluation</button>
+          : `<button class="btn primary" onclick="testRunUC('${esc(uuid)}', ${attrJson(data.path||'')}, ${attrJson(titleText)})">▶ Test evaluation</button>
              <button class="btn ghost" onclick="cloneUC('${esc(uuid)}')">Clone to managed</button>`}
       </div>
     </div>
@@ -4730,12 +4734,12 @@ function _renderManagedTestBtn(data, titleText) {
   //      — push to a PR branch AND test against that branch. Useful when
   //      the reviewer wants the test recorded against a corpus path.
   const uuid = data.uuid;
-  const direct = `<button class="btn primary" title="Run gap analysis against this managed UC — engine fetches the YAML from the console API at run start, no push required" onclick="testRunUC('${esc(uuid)}', '', ${JSON.stringify(titleText)})">▶ Test evaluation</button>`;
+  const direct = `<button class="btn primary" title="Run gap analysis against this managed UC — engine fetches the YAML from the console API at run start, no push required" onclick="testRunUC('${esc(uuid)}', '', ${attrJson(titleText)})">▶ Test evaluation</button>`;
   const st = _corpusPushStatus || {configured:false, host:'unknown'};
   const pushReady = st.host === 'github' && st.configured;
   if (data.corpus_synced_path && data.corpus_branch) {
     // Already pushed — surface the PR-branch test path as the secondary
-    const branchBtn = `<button class="btn ghost btn-sm" title="Test on the existing PR branch '${esc(data.corpus_branch)}'" onclick="testRunUC('${esc(uuid)}', ${JSON.stringify(data.corpus_synced_path)}, ${JSON.stringify(titleText)}, ${JSON.stringify(data.corpus_branch)})">▶ on PR branch</button>`;
+    const branchBtn = `<button class="btn ghost btn-sm" title="Test on the existing PR branch '${esc(data.corpus_branch)}'" onclick="testRunUC('${esc(uuid)}', ${attrJson(data.corpus_synced_path)}, ${attrJson(titleText)}, ${attrJson(data.corpus_branch)})">▶ on PR branch</button>`;
     return direct + branchBtn;
   }
   if (pushReady) {
@@ -4817,7 +4821,7 @@ function _openAddSetPicker(ucUuid, ucSource, ucHandle, ucPath, anchorEl) {
     const isMember = memberOf.has(s.id);
     h += `<div style="padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:12px;${isMember ? 'background:var(--accent-bg);' : ''}"
              onmouseover="this.style.background='var(--bg-raised)'" onmouseout="this.style.background='${isMember ? 'var(--accent-bg)' : ''}'"
-             onclick="_toggleUCSetMembership(${s.id}, '${esc(ucUuid)}', '${esc(ucSource)}', '${esc(ucHandle)}', '${esc(ucPath)}', ${isMember}, ${JSON.stringify(s.name)})">
+             onclick="_toggleUCSetMembership(${s.id}, '${esc(ucUuid)}', '${esc(ucSource)}', '${esc(ucHandle)}', '${esc(ucPath)}', ${isMember}, ${attrJson(s.name)})">
       <span style="font-family:var(--mono,monospace);color:${isMember ? 'var(--green)' : 'var(--text-faint)'};min-width:14px;">${isMember ? '✓' : ''}</span>
       <span style="flex:1;">${esc(s.name)}</span>
       ${s.is_default ? '<span style="font-size:9px;color:var(--accent);">DEFAULT</span>' : ''}
@@ -4970,10 +4974,10 @@ function renderManageSetsList() {
             ${esc(s.description || '—')} · ${s.member_count} UC${s.member_count !== 1 ? 's' : ''}
           </div>
         </div>
-        <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${JSON.stringify(s.name)})">▶ Run</button>
+        <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${attrJson(s.name)})">▶ Run</button>
         ${defBtn}
         <button class="btn ghost btn-sm" onclick="openSetModal(${s.id})">Edit</button>
-        <button class="btn ghost btn-sm" onclick="openPromoteModal(${s.id}, ${JSON.stringify(s.name)})">↑ Promote</button>
+        <button class="btn ghost btn-sm" onclick="openPromoteModal(${s.id}, ${attrJson(s.name)})">↑ Promote</button>
         <div style="position:relative;display:inline-block;">
           <button class="btn ghost btn-sm" onclick="toggleExportSetMenu(${s.id}, event)">↓ Export</button>
           <div id="exportSetMenu-${s.id}" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:140px;">
@@ -5019,7 +5023,7 @@ async function _toggleSetMembers(setId, btn) {
               title="${esc(m.uc_uuid)}">${esc(title)}</span>
         <span class="src-badge src-${m.uc_source}" style="font-size:9px;">${m.uc_source}</span>
         <button class="btn danger btn-icon" style="font-size:11px;padding:0 6px;" title="Remove from set"
-                onclick="_removeMemberFromManage(${setId}, '${esc(m.uc_uuid)}', ${JSON.stringify(data.name)})">×</button>
+                onclick="_removeMemberFromManage(${setId}, '${esc(m.uc_uuid)}', ${attrJson(data.name)})">×</button>
       </div>`;
     }).join('');
     box.innerHTML = `<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:2px;">${rows}</div>`;

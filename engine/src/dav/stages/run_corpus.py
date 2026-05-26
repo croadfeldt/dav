@@ -604,16 +604,55 @@ def _cli():
         consumer_profile.framework_name, consumer_profile.consumer_id,
     )
 
-    # Gather corpus
+    # Gather corpus (unconditionally — we may filter or replace it below)
     corpus_files = gather_corpus(args.corpus_path)
     log.info("corpus: %d files at %s", len(corpus_files), args.corpus_path)
 
-    # Optional managed-UC materialization — driven by the console's
-    # Test evaluation flow for unpushed managed UCs. Fetches each
-    # uuid's YAML from the console API and writes to a scratch dir so
-    # the engine processes them like any corpus UC. Doesn't require
-    # the UC to be in the corpus repo yet.
-    managed_uuids = [u.strip() for u in (args.managed_uc_uuids or "").split(",") if u.strip()]
+    # Selection-aware gathering. Per R1 in the console design doc:
+    # when ANY explicit selection is provided (handles, uuids, managed),
+    # the engine runs ONLY the explicit selection — never the whole
+    # corpus subpath as a fallback.
+    handles_filter = {h.strip() for h in (args.uc_handles or "").split(",") if h.strip()}
+    uuids_filter   = {u.strip() for u in (args.uc_uuids   or "").split(",") if u.strip()}
+    managed_uuids  = [u.strip() for u in (args.managed_uc_uuids or "").split(",") if u.strip()]
+    has_explicit  = bool(handles_filter or uuids_filter or managed_uuids)
+
+    # Step 1: filter corpus_files to matching handles/uuids (if any).
+    # If no corpus filter but managed UCs were requested, drop corpus
+    # entirely (we'll only run the materialized managed UCs).
+    if handles_filter or uuids_filter:
+        import yaml as _yaml
+        filtered = []
+        for path in corpus_files:
+            try:
+                with path.open() as fh:
+                    data = _yaml.safe_load(fh) or {}
+            except Exception as e:
+                log.warning("uc-filter: skipping unreadable %s (%s)", path, e)
+                continue
+            if not isinstance(data, dict):
+                continue
+            h = (data.get("handle") or "").strip()
+            u = (data.get("uuid") or "").strip()
+            if (h and h in handles_filter) or (u and u in uuids_filter):
+                filtered.append(path)
+        skipped = len(corpus_files) - len(filtered)
+        log.info(
+            "uc-filter: corpus %d → %d (skipped %d) handles=%d uuids=%d",
+            len(corpus_files), len(filtered), skipped,
+            len(handles_filter), len(uuids_filter),
+        )
+        corpus_files = filtered
+    elif has_explicit:
+        # Only managed UCs were requested — don't run anything from the
+        # corpus subpath even if it would otherwise auto-populate.
+        log.info(
+            "uc-filter: only managed UCs requested (%d) — clearing %d corpus file(s)",
+            len(managed_uuids), len(corpus_files),
+        )
+        corpus_files = []
+
+    # Step 2: materialize managed UCs (always added, never filtered out).
     if managed_uuids:
         if not args.console_api_url:
             print("ERROR: --managed-uc-uuids requires --console-api-url",
@@ -649,48 +688,13 @@ def _cli():
         log.info("managed-ucs: materialized %d / %d UC(s)", fetched, len(managed_uuids))
 
     if not corpus_files:
-        print(
-            f"ERROR: no UC YAMLs found (corpus_path={args.corpus_path}, "
-            f"managed-uc-uuids={len(managed_uuids)})",
-            file=sys.stderr,
-        )
+        msg = "no UC YAMLs to run"
+        if has_explicit:
+            msg += " (explicit selection matched nothing)"
+        else:
+            msg += f" under {args.corpus_path}"
+        print(f"ERROR: {msg}", file=sys.stderr)
         return 2
-
-    # Optional UC filtering — driven by console "Run this Set" / single-UC
-    # test eval flows. When set, only UCs whose handle or uuid is in the
-    # supplied lists are processed; other corpus files are silently skipped.
-    handles_filter = {h.strip() for h in (args.uc_handles or "").split(",") if h.strip()}
-    uuids_filter   = {u.strip() for u in (args.uc_uuids   or "").split(",") if u.strip()}
-    if handles_filter or uuids_filter:
-        import yaml as _yaml
-        filtered = []
-        for path in corpus_files:
-            try:
-                with path.open() as fh:
-                    data = _yaml.safe_load(fh) or {}
-            except Exception as e:
-                log.warning("uc-filter: skipping unreadable %s (%s)", path, e)
-                continue
-            if not isinstance(data, dict):
-                continue
-            h = (data.get("handle") or "").strip()
-            u = (data.get("uuid") or "").strip()
-            if (h and h in handles_filter) or (u and u in uuids_filter):
-                filtered.append(path)
-        skipped = len(corpus_files) - len(filtered)
-        log.info(
-            "uc-filter: %d → %d UCs (skipped %d) handles=%d uuids=%d",
-            len(corpus_files), len(filtered), skipped,
-            len(handles_filter), len(uuids_filter),
-        )
-        corpus_files = filtered
-        if not corpus_files:
-            print(
-                "ERROR: --uc-handles/--uc-uuids filtered out every UC under "
-                f"{args.corpus_path}; nothing to run",
-                file=sys.stderr,
-            )
-            return 2
 
     # Build run-id and run dir
     run_id = derive_run_id(corpus_files)

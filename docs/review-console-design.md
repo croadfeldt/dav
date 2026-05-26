@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.31  
+**Current version:** v0.9.32  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -429,7 +429,48 @@ oc rollout restart deploy/dav-review-api -n dav
 
 To rotate later: `oc set data secret/dav-review-api-tokens DAV_CORPUS_PUSH_TOKEN=ghp_…` + restart.
 
+**Bug fixes — selection authority + onclick HTML escape (v0.9.32):** Implements R1 from the canonical requirements section above. Two real bugs were keeping selection-based runs from working as documented:
+
+1. **Engine ran the whole corpus when a Set with only managed UCs was triggered.** Root cause: when the console sent `managed_uc_uuids` but no `uc_handles`/`uc_uuids`, the engine's filter block didn't fire (`if handles_filter or uuids_filter:` was False), so `corpus_files` retained the full `gather_corpus` result. The materialized managed UCs were appended, then everything ran. Fix: the engine now treats *any* non-empty selection (handles, uuids, OR managed_uuids) as "explicit selection mode" and clears `corpus_files` of unrequested corpus content. Materialized managed UCs are added **after** the filter, so they're always included when listed. Per R1: "selection is authoritative — when any filter is non-empty, the engine runs only what's listed."
+2. **`▶ Test evaluation` (and several other) onclick handlers silently did nothing.** Root cause: `JSON.stringify(value)` produces `"..."` (with double quotes), and embedding that inside a double-quoted HTML attribute (`onclick="...${JSON.stringify(x)}..."`) terminates the attribute at the first inner `"`. Fix: new `attrJson(v)` helper wraps `JSON.stringify` and replaces each `"` with `&quot;`; the browser decodes the entity when it reads the attribute value for execution, so the JS sees the right quotes. Applied to all 8 onclick sites that embedded JSON.
+
 **Results tab — persistent run-summary header (v0.9.31):** Same shape as the Runs detail v0.9.30 work: stats stay above the output, output bounded to the panel. Previously `renderRunSummaryHeader` rendered the run-level stats into `analysisDetail`; picking a UC replaced them with the per-UC analysis and the run context disappeared. Now a dedicated `runResultsHeader` strip sits above `analysisDetail`, populated on `selectRunResult` and never overwritten by per-UC rendering. Compact single-row layout: session name + run_id + mode on the left; `N/M UCs (X%) · failed · samples · ⏱ wall · finished_at` on the right. Wraps at narrow widths. `analysisDetail` gets `flex:1; overflow-y:auto; min-height:0` so the per-UC content scrolls *within* the panel — the page never grows beyond the viewport.
+
+---
+
+## UC test execution requirements (canonical, 2026-05-26)
+
+The console must let reviewers kick off evaluations at three granularities, all flowing through the same gap-analysis pipeline.
+
+**R1 — Three selection granularities, one pipeline:**
+
+1. **Set-level** — clicking ▶ Run on a Set executes **exactly** the UCs in that Set. Corpus members run via handle/uuid filter; managed members are materialized from the console API. The rest of the corpus is NOT run.
+2. **Selection-within-Set** — when a Set is active in the rail, the multi-select toolbar's ▶ Test selected runs **only** the checked UCs (subset of the Set or any other subset the user has selected).
+3. **Individual UC** — the ▶ Test evaluation button on a UC detail runs only that UC.
+
+All three send the same shape to the engine (handles + uuids + managed_uuids). Different selection scope; identical execution path; identical result schema. **Selection is authoritative — when any filter is non-empty, the engine runs only what's listed, never the whole corpus subpath.**
+
+**R2 — Results must carry lineage and state:**
+
+Each run records, beyond what's already captured (`run_id`, `triggered_by`, timestamps, totals):
+
+- `set_id` + `set_name` — the Set (if any) the run was triggered for
+- `selection_mode` — `set` | `selection` | `individual` | `corpus` (full)
+- Per-UC `lifecycle_state_at_run` — the UC's lifecycle state at trigger time, snapshotted so a reviewer can later distinguish "this was approved when tested" from "this was a pre-promotion test in draft"
+- Per-UC `source` (`corpus` | `managed`) — already implicit; surfaced explicitly in result UI
+
+The Results tab surfaces these so a reviewer can see provenance without leaving the view.
+
+**R3 — Approval gate before architecture enhancements:**
+
+The Plan enhancements / Generate enhancement PR flow must:
+
+1. **Inspect** the lifecycle state of every UC referenced in the results being used
+2. If any UC is **not in `approved` state** (`draft` / `ready` / `in_review` / `deprecated`), show a warning modal listing the non-approved UCs and require explicit confirmation before proceeding with PR generation
+3. **Enforce** both client-side (the warning + confirmation) AND server-side in the enhancement PR endpoint (defense in depth — pure UI gating is bypassable)
+4. The confirmation override is recorded in the resulting PR body with the list of non-approved UCs and the user who confirmed
+
+Implementation status of these requirements lives in the per-version notes below.
 
 ---
 
