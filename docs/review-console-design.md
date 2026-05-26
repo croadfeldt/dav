@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.19  
+**Current version:** v0.9.20  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -304,6 +304,16 @@ Overlay background uses `var(--bg-panel)` — `var(--surface)` is not a defined 
 - **Test history section** — async-loaded by `loadUCTestHistory(uuid)` after the detail pane renders. Calls `GET /api/use-cases/{uuid}/runs?limit=10` and renders each run as a row showing verdict (color-coded), run_id, wall time, gap count, and timestamp. Clicking a row routes through `_openUCRunResult` which switches to the Results tab, selects the run, then opens the per-UC analysis — works for both managed and corpus UCs since the join key is `uc_uuid`.
 
 This is one half of the **Run test evaluation from UC** pipeline item — the single-UC path. The multi-select-from-list path lands in the upcoming UC/Sets merge work (the unified list makes batch selection natural).
+
+**Merged UC/Sets view (v0.9.20):** The standalone Sets tab is gone; Sets are now a left-rail filter on the unified **Use Cases** tab. Three-column layout:
+- **Left rail (Sets filter):** "All UCs" + "(No set)" + one item per Set with member count + DEFAULT badge. Clicking filters the UC list. Above the rail: **+ New** (creates a Set) and **⚙ Manage** (opens the Manage Sets modal). State: `activeSetId` is either `null` (All), `'__none__'` (UCs with no set), or a numeric set id.
+- **Middle (UC list):** unchanged shape; gains a header **active-set banner** when a Set filter is applied — shows `Set: <name> (N UCs)` with ▶ Run / ⚙ Manage / × Clear buttons.
+- **Right (UC detail):** unchanged; the **Sets** chip strip now filters the list in place (clicking a chip calls `selectSet(id)` rather than navigating to the gone Sets view).
+- **Manage Sets modal:** the new home for what used to be the Sets-detail-pane actions — per-Set Edit / ▶ Run / ★ Default / ↑ Promote / ↓ Export / + UC / × Delete. Reuses existing endpoints; no API changes for management itself.
+- **API:** `GET /api/use-cases` now returns `set_ids: [int]` on each row so the client-side set filter doesn't need an N+1 lookup. The set→members join is computed once per list call.
+- **Nav:** the Sets nav item is removed. Existing in-app links that did `switchView('sets')` are repointed to the in-place `selectSet()` filter — no tab switch needed.
+
+Why this shape: Sets are functionally tags on UCs. Treating them as a sibling tab doubled UI surface for what's really a UC property. The merge also makes batch selection a natural next step (multi-select UC rows → "Add to set" / "Run test eval on selected") without inventing a new screen.
 
 ---
 

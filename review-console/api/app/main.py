@@ -1051,9 +1051,22 @@ def _derive_uc_title(parsed: dict, fallback_id: str) -> str:
 async def list_use_cases(
     source: Optional[str] = Query(None, description="'managed', 'corpus', or None for both"),
 ):
-    """List use cases — from the managed DB, the corpus files, or both."""
+    """List use cases — from the managed DB, the corpus files, or both.
+
+    Each row carries `set_ids: [int]` so the merged UC/Sets UI can
+    filter the list by set membership without an N+1 query per UC.
+    """
     managed = []
     corpus_ucs = []
+
+    # Pre-build uuid → [set_ids] map once for all UCs (managed + corpus).
+    async with pool.acquire() as conn:
+        member_rows = await conn.fetch(
+            "SELECT uc_uuid, set_id FROM use_case_set_members"
+        )
+    set_ids_by_uuid: dict[str, list[int]] = {}
+    for r in member_rows:
+        set_ids_by_uuid.setdefault(r["uc_uuid"], []).append(int(r["set_id"]))
 
     if source in (None, "managed"):
         async with pool.acquire() as conn:
@@ -1068,6 +1081,7 @@ async def list_use_cases(
                 "source": "managed",
                 "created_at": r["created_at"].isoformat(),
                 "updated_at": r["updated_at"].isoformat(),
+                "set_ids": set_ids_by_uuid.get(r["uuid"], []),
             }
             for r in rows
         ]
@@ -1085,14 +1099,16 @@ async def list_use_cases(
                 data = _yaml.safe_load(r["content"])
                 if not isinstance(data, dict) or "uuid" not in data:
                     continue
+                uc_uuid = data.get("uuid")
                 corpus_ucs.append({
-                    "uuid":    data.get("uuid"),
+                    "uuid":    uc_uuid,
                     "title":   data.get("scenario", {}).get("description", "")[:80]
                                if isinstance(data.get("scenario"), dict) else "",
                     "handle":  data.get("handle"),
                     "tags":    data.get("tags", []),
                     "path":    r["path"],
                     "source":  "corpus",
+                    "set_ids": set_ids_by_uuid.get(uc_uuid, []),
                 })
             except Exception:
                 continue

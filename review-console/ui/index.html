@@ -705,9 +705,6 @@
       <a class="pf-nav-item active" data-view="usecases" href="javascript:void(0)">
         <span class="nav-icon">✎</span><span class="nav-label">Use Cases <span class="badge" id="badgeUC" style="font-size:9px;"></span></span>
       </a>
-      <a class="pf-nav-item" data-view="sets" href="javascript:void(0)">
-        <span class="nav-icon">⊞</span><span class="nav-label">Sets <span class="badge" id="badgeSets" style="font-size:9px;"></span></span>
-      </a>
       <a class="pf-nav-item" data-view="runs" href="javascript:void(0)">
         <span class="nav-icon">▶</span><span class="nav-label">Runs <span class="badge" id="badgeRuns" style="font-size:9px;"></span></span>
       </a>
@@ -935,9 +932,21 @@
       </div>
     </section>
 
-    <!-- ══════════════ USE CASES ══════════════ -->
+    <!-- ══════════════ USE CASES (merged with Sets-as-filter) ══════════════ -->
     <section class="pf-view" id="view-usecases">
       <div class="split">
+    <!-- Set filter rail -->
+    <div class="split-left" style="width:200px; min-width:160px; max-width:280px;">
+      <div class="panel-header">
+        <div class="panel-title">Sets</div>
+        <div style="display:flex;gap:4px;flex-shrink:0;">
+          <button class="btn ghost btn-icon" id="manageSetsBtn" title="Manage Sets (rename, delete, promote, export, …)">⚙</button>
+          <button class="btn primary" style="font-size:10px; padding:4px 10px;" id="newSetBtn">+ New</button>
+        </div>
+      </div>
+      <div class="scrollable" id="setFilterRail"><div class="empty">loading…</div></div>
+    </div>
+    <!-- UC list -->
     <div class="split-left" style="width:340px; min-width:260px;">
       <div class="panel-header">
         <div class="panel-title">Use <em>cases</em></div>
@@ -953,6 +962,13 @@
           </div>
           <button class="btn primary" style="font-size:10px; padding:4px 10px;" id="newUCBtn">+ New</button>
         </div>
+      </div>
+      <!-- Active-set banner (visible only when a Set filter is applied) -->
+      <div id="ucListSetBanner" style="display:none;padding:6px 10px;background:var(--accent-bg);border-bottom:1px solid var(--accent-soft);align-items:center;gap:6px;font-size:11px;">
+        <span id="ucListSetBannerLabel" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent)"></span>
+        <button class="btn ghost btn-sm" id="ucListSetBannerRunBtn" title="Run this Set">▶ Run</button>
+        <button class="btn ghost btn-sm" id="ucListSetBannerManageBtn" title="Manage this Set">⚙</button>
+        <button class="btn ghost btn-sm" id="ucListSetBannerClearBtn" title="Clear Set filter">×</button>
       </div>
       <div class="panel-toolbar">
         <input id="ucFilter" placeholder="search uuid / title / tag…" style="flex:1;" />
@@ -975,27 +991,6 @@
     <div class="split-right">
       <div id="ucDetail" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
         <div class="detail-pane"><div class="detail-empty">Select a use case or create a new one.</div></div>
-      </div>
-    </div>
-      </div>
-    </section>
-
-    <!-- ══════════════ SETS ══════════════ -->
-    <section class="pf-view" id="view-sets">
-      <div class="split">
-    <div class="split-left" style="width:300px; min-width:220px;">
-      <div class="panel-header">
-        <div class="panel-title">UC <em>sets</em></div>
-        <button class="btn primary" style="font-size:10px; padding:4px 10px;" id="newSetBtn">+ New</button>
-      </div>
-      <div class="panel-toolbar">
-        <input id="setFilter" placeholder="filter sets…" />
-      </div>
-      <div class="scrollable" id="setList"><div class="empty">loading…</div></div>
-    </div>
-    <div class="split-right">
-      <div id="setDetail" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
-        <div class="detail-pane"><div class="detail-empty">Select a set or create a new one.</div></div>
       </div>
     </div>
       </div>
@@ -1567,6 +1562,28 @@
   </div>
 </div>
 
+<!-- ══════════════════════════ MANAGE SETS MODAL ══════════════════════════ -->
+<div class="modal-overlay" id="manageSetsModal">
+  <div class="modal" style="width:780px;max-width:96vw;">
+    <div class="modal-header">
+      <div class="modal-title">Manage <em>Sets</em></div>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <button class="btn primary btn-sm" id="manageSetsNewBtn">+ New</button>
+        <button class="btn ghost btn-icon" id="closeManageSetsModal">✕</button>
+      </div>
+    </div>
+    <div class="modal-body" style="padding:0;">
+      <div id="manageSetsList" style="font-size:12px;">
+        <div class="empty" style="padding:20px;">loading…</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <span style="flex:1;font-size:11px;color:var(--text-faint);">Sets group UCs. Mark one as default to pre-fill New Run.</span>
+      <button class="btn ghost" id="manageSetsDoneBtn">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- ══════════════════════════ ADD MEMBER MODAL ══════════════════════════ -->
 <div class="modal-overlay" id="addMemberModal">
   <div class="modal" style="width:520px;">
@@ -1881,8 +1898,7 @@ function switchView(name) {
     v.classList.toggle('active', v.id === 'view-' + name));
   if (name === 'runs')     loadRuns();
   if (name === 'results')  loadResults();
-  if (name === 'usecases') loadUCs();
-  if (name === 'sets')     loadSets();
+  if (name === 'usecases') { loadUCs(); loadSets(); }
   if (name === 'review')   loadReviewTab();
   if (name === 'config')   loadConfig();
 }
@@ -3619,6 +3635,8 @@ async function loadUCs() {
     allUCs = resp.use_cases || [];
     document.getElementById('badgeUC').textContent = allUCs.length;
     renderUCList();
+    // Counts in the rail depend on allUCs — refresh whenever UCs reload
+    renderSetFilterRail();
   } catch (e) {
     document.getElementById('ucList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
   }
@@ -3626,8 +3644,15 @@ async function loadUCs() {
 
 function renderUCList() {
   const el = document.getElementById('ucList');
+  // Set-membership filter from the left rail
+  let setFiltered = allUCs;
+  if (activeSetId === '__none__') {
+    setFiltered = allUCs.filter(u => !u.set_ids || !u.set_ids.length);
+  } else if (typeof activeSetId === 'number') {
+    setFiltered = allUCs.filter(u => (u.set_ids || []).includes(activeSetId));
+  }
   const filter = (document.getElementById('ucFilter').value||'').toLowerCase();
-  let filtered = allUCs.filter(u =>
+  let filtered = setFiltered.filter(u =>
     !filter ||
     (u.uuid||'').toLowerCase().includes(filter) ||
     (u.title||'').toLowerCase().includes(filter) ||
@@ -3763,7 +3788,7 @@ function renderUCDetail(data, lifecycle) {
       <div class="detail-section-title">Sets</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center">
         ${sets.length
-          ? sets.map(s => `<span class="set-chip" style="cursor:pointer" onclick="switchView('sets');setTimeout(()=>selectSet(${s.id}),100)">⊞ ${esc(s.name)}</span>`).join('')
+          ? sets.map(s => `<span class="set-chip" style="cursor:pointer" title="Filter UC list to this Set" onclick="selectSet(${s.id})">⊞ ${esc(s.name)}</span>`).join('')
           : '<span style="color:var(--text-faint);font-size:11px">Not in any set</span>'}
       </div>
     </div>`;
@@ -4249,34 +4274,55 @@ tags:
 // ══════════════════════════ SETS ══════════════════════════
 
 async function loadSets() {
-  document.getElementById('setList').innerHTML = '<div class="empty">loading…</div>';
+  // In the merged UC/Sets view, "loadSets" populates the left-rail filter.
+  // It's also called by openNewRun → _getDefaultSet() to find the project default.
+  const rail = document.getElementById('setFilterRail');
+  if (rail) rail.innerHTML = '<div class="empty">loading…</div>';
   try {
     const resp = await api('/api/sets');
     allSets = resp.sets || [];
-    document.getElementById('badgeSets').textContent = allSets.length;
-    renderSetList();
+    renderSetFilterRail();
+    renderUCListSetBanner();
   } catch (e) {
-    document.getElementById('setList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+    if (rail) rail.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
   }
 }
 
-function renderSetList() {
-  const el = document.getElementById('setList');
-  const filter = (document.getElementById('setFilter').value||'').toLowerCase();
-  const filtered = allSets.filter(s => !filter || s.name.toLowerCase().includes(filter) || (s.description||'').toLowerCase().includes(filter));
-  if (!filtered.length) { el.innerHTML = '<div class="empty">No sets. Create one with + New.</div>'; return; }
+function renderSetFilterRail() {
+  const el = document.getElementById('setFilterRail');
+  if (!el) return;
+  // Compute counts from allUCs (loaded by loadUCs). May be empty on first render —
+  // loadUCs() calls renderUCList which re-renders independently; the rail just shows
+  // counts from whatever's currently in allUCs.
+  const totalUCs = (allUCs || []).length;
+  const noSetUCs = (allUCs || []).filter(u => !u.set_ids || !u.set_ids.length).length;
+  const items = [];
+  items.push({key: '__all__',   label: 'All UCs',  count: totalUCs, isAll: true});
+  items.push({key: '__none__',  label: '(No set)', count: noSetUCs});
+  (allSets || []).forEach(s => items.push({
+    key: s.id, label: s.name, count: s.member_count, isDefault: s.is_default,
+  }));
+
   el.innerHTML = '';
-  filtered.forEach(s => {
+  items.forEach(it => {
+    const isActive =
+      (it.key === '__all__'  && activeSetId === null) ||
+      (it.key === '__none__' && activeSetId === '__none__') ||
+      (typeof it.key === 'number' && activeSetId === it.key);
     const item = document.createElement('div');
-    item.className = 'list-item' + (activeSetId===s.id ? ' active' : '');
-    const defaultBadge = s.is_default
-      ? '<span style="font-size:9px;color:var(--accent);border:1px solid var(--accent-soft);padding:1px 5px;border-radius:2px;margin-left:6px;">DEFAULT</span>'
+    item.className = 'list-item' + (isActive ? ' active' : '');
+    item.style.cssText = 'padding:6px 10px;cursor:pointer;display:flex;align-items:center;gap:6px;';
+    const defaultBadge = it.isDefault
+      ? '<span style="font-size:8px;color:var(--accent);border:1px solid var(--accent-soft);padding:0 4px;border-radius:2px;">DEF</span>'
       : '';
-    item.innerHTML = `<div class="li-main">
-      <div class="li-title">${esc(s.name)}${defaultBadge}</div>
-      <div class="li-sub">${esc(s.description||'')} · ${s.member_count} UC${s.member_count!==1?'s':''}</div>
-    </div>`;
-    item.addEventListener('click', () => selectSet(s.id));
+    item.innerHTML = `
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;${it.isAll ? 'font-weight:500;' : ''}">
+        ${esc(it.label)}
+      </span>
+      ${defaultBadge}
+      <span style="font-size:10px;color:var(--text-faint);min-width:24px;text-align:right">${it.count}</span>
+    `;
+    item.addEventListener('click', () => selectSet(it.key));
     el.appendChild(item);
   });
 }
@@ -4285,80 +4331,86 @@ function _getDefaultSet() {
   return (allSets || []).find(s => s.is_default) || null;
 }
 
-async function selectSet(setId) {
-  activeSetId = setId; renderSetList();
-  document.getElementById('setDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">loading…</div></div>';
-  try {
-    const data = await api(`/api/sets/${setId}`);
-    renderSetDetail(data);
-  } catch (e) {
-    document.getElementById('setDetail').innerHTML =
-      `<div class="detail-pane"><div style="color:var(--red);padding-top:40px">${esc(e.message)}</div></div>`;
-  }
+// In the merged view, selectSet sets the UC-list filter rather than opening
+// a Set detail pane. Accepts a numeric set id, '__none__' (no set), or null/'__all__'.
+function selectSet(key) {
+  if (key === '__all__' || key === null || key === undefined) activeSetId = null;
+  else activeSetId = key;
+  renderSetFilterRail();
+  renderUCListSetBanner();
+  renderUCList();
 }
 
-function renderSetDetail(data) {
-  const el = document.getElementById('setDetail');
-  const members = data.members || [];
-
-  const defaultBadge = data.is_default
-    ? '<span style="font-size:10px;color:var(--accent);border:1px solid var(--accent-soft);padding:2px 6px;border-radius:2px;margin-left:10px;vertical-align:middle;">DEFAULT</span>'
-    : '';
-  const defaultBtn = data.is_default
-    ? `<button class="btn ghost" title="Clear default-Set marker" onclick="clearDefaultSet(${data.id})">Clear default</button>`
-    : `<button class="btn ghost" title="Mark this Set as the project default for New Run" onclick="setDefaultSet(${data.id})">★ Set as default</button>`;
-
-  let html = `<div class="detail-pane">
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px">
-      <div>
-        <div class="detail-title">Set: <em>${esc(data.name)}</em>${defaultBadge}</div>
-        <div class="detail-sub">${esc(data.description||'')} · created by ${esc(data.created_by)}</div>
-      </div>
-      <div style="display:flex;gap:6px;flex-shrink:0;margin-top:4px">
-        <button class="btn primary" onclick="runSet(${data.id},'${esc(data.name)}')">▶ Run</button>
-        ${defaultBtn}
-        <button class="btn ghost" onclick="openPromoteModal(${data.id},'${esc(data.name)}')">↑ Promote</button>
-        <div style="position:relative;display:inline-block;">
-          <button class="btn ghost" onclick="toggleExportSetMenu(${data.id},event)">↓ Export</button>
-          <div id="exportSetMenu-${data.id}" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:140px;">
-            <button class="dropdown-item" onclick="exportSet(${data.id},'tar.gz')">tar.gz (gzip)</button>
-            <button class="dropdown-item" onclick="exportSet(${data.id},'zip')">zip</button>
-            <button class="dropdown-item" onclick="exportSet(${data.id},'tar')">tar (uncompressed)</button>
-          </div>
-        </div>
-        <button class="btn ghost" onclick="openSetModal(${data.id})">Edit</button>
-        <button class="btn danger" onclick="deleteSet(${data.id},this)">Delete</button>
-      </div>
-    </div>
-
-    <div class="detail-section">
-      <div class="detail-section-title" style="justify-content:space-between">
-        <span style="display:flex;align-items:center;gap:10px">
-          <span>Members (${members.length})</span>
-        </span>
-        <button class="btn ghost btn-icon" onclick="openAddMember(${data.id})" style="font-size:11px">+ Add UC</button>
-      </div>`;
-
-  if (!members.length) {
-    html += '<div class="empty" style="padding:16px">No UCs in this set yet. Use + Add UC to populate it.</div>';
-  } else {
-    html += '<div class="analysis-block" style="overflow:hidden">';
-    members.forEach(m => {
-      const srcBadge = `<span class="src-badge src-${m.uc_source}">${m.uc_source}</span>`;
-      html += `<div class="member-row">
-        <span class="mr-uuid" style="cursor:pointer;color:var(--accent)"
-          onclick="switchView('usecases');setTimeout(()=>selectUC('${esc(m.uc_uuid)}'),100)">${esc(m.uc_uuid)}</span>
-        ${m.uc_handle ? `<span class="mr-handle">${esc(m.uc_handle)}</span>` : ''}
-        ${srcBadge}
-        <button class="btn danger btn-icon" title="Remove from set"
-          onclick="removeMember(${data.id},'${esc(m.uc_uuid)}')">×</button>
-      </div>`;
-    });
-    html += '</div>';
+function renderUCListSetBanner() {
+  const banner = document.getElementById('ucListSetBanner');
+  const label  = document.getElementById('ucListSetBannerLabel');
+  if (!banner || !label) return;
+  if (activeSetId === null) { banner.style.display = 'none'; return; }
+  if (activeSetId === '__none__') {
+    banner.style.display = 'flex';
+    label.textContent = 'Filtered: (No set)';
+    document.getElementById('ucListSetBannerRunBtn').style.display = 'none';
+    document.getElementById('ucListSetBannerManageBtn').style.display = 'none';
+    return;
   }
+  const set = (allSets || []).find(s => s.id === activeSetId);
+  if (!set) { banner.style.display = 'none'; return; }
+  banner.style.display = 'flex';
+  const defBit = set.is_default ? ' · DEFAULT' : '';
+  label.textContent = `Set: ${set.name} (${set.member_count} UC${set.member_count !== 1 ? 's' : ''})${defBit}`;
+  document.getElementById('ucListSetBannerRunBtn').style.display = '';
+  document.getElementById('ucListSetBannerManageBtn').style.display = '';
+}
 
-  html += '</div></div>';
-  el.innerHTML = html;
+// ── Manage Sets modal ─────────────────────────────────────────────────────────
+
+function openManageSetsModal() {
+  document.getElementById('manageSetsModal').classList.add('open');
+  renderManageSetsList();
+}
+
+function closeManageSetsModal() {
+  document.getElementById('manageSetsModal').classList.remove('open');
+}
+
+function renderManageSetsList() {
+  const el = document.getElementById('manageSetsList');
+  if (!allSets || !allSets.length) {
+    el.innerHTML = '<div class="empty" style="padding:24px;">No Sets yet. Use + New to create one.</div>';
+    return;
+  }
+  let h = '';
+  allSets.forEach(s => {
+    const defBadge = s.is_default
+      ? '<span style="font-size:9px;color:var(--accent);border:1px solid var(--accent-soft);padding:1px 5px;border-radius:2px;margin-left:8px;">DEFAULT</span>'
+      : '';
+    const defBtn = s.is_default
+      ? `<button class="btn ghost btn-sm" title="Clear default" onclick="clearDefaultSet(${s.id}).then(renderManageSetsList)">Clear default</button>`
+      : `<button class="btn ghost btn-sm" title="Mark as project default" onclick="setDefaultSet(${s.id}).then(renderManageSetsList)">★ Default</button>`;
+    h += `<div style="display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--border);">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:500;">${esc(s.name)}${defBadge}</div>
+        <div style="font-size:11px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+          ${esc(s.description || '—')} · ${s.member_count} UC${s.member_count !== 1 ? 's' : ''}
+        </div>
+      </div>
+      <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${JSON.stringify(s.name)})">▶ Run</button>
+      ${defBtn}
+      <button class="btn ghost btn-sm" onclick="openSetModal(${s.id})">Edit</button>
+      <button class="btn ghost btn-sm" onclick="openPromoteModal(${s.id}, ${JSON.stringify(s.name)})">↑ Promote</button>
+      <div style="position:relative;display:inline-block;">
+        <button class="btn ghost btn-sm" onclick="toggleExportSetMenu(${s.id}, event)">↓ Export</button>
+        <div id="exportSetMenu-${s.id}" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:140px;">
+          <button class="dropdown-item" onclick="exportSet(${s.id},'tar.gz')">tar.gz (gzip)</button>
+          <button class="dropdown-item" onclick="exportSet(${s.id},'zip')">zip</button>
+          <button class="dropdown-item" onclick="exportSet(${s.id},'tar')">tar (uncompressed)</button>
+        </div>
+      </div>
+      <button class="btn ghost btn-sm" onclick="openAddMember(${s.id})" title="Add a UC to this Set">+ UC</button>
+      <button class="btn danger btn-sm" onclick="deleteSet(${s.id}, this)">×</button>
+    </div>`;
+  });
+  el.innerHTML = h;
 }
 
 async function setDefaultSet(setId) {
@@ -4366,7 +4418,6 @@ async function setDefaultSet(setId) {
     await api(`/api/sets/${setId}/default`, {method: 'PUT'});
     toast('Marked as default Set');
     await loadSets();
-    selectSet(setId);
   } catch (e) { toast('Failed: ' + e.message, true); }
 }
 async function clearDefaultSet(setId) {
@@ -4374,7 +4425,6 @@ async function clearDefaultSet(setId) {
     await api(`/api/sets/${setId}/default`, {method: 'DELETE'});
     toast('Default cleared');
     await loadSets();
-    selectSet(setId);
   } catch (e) { toast('Failed: ' + e.message, true); }
 }
 
@@ -4419,8 +4469,10 @@ async function saveSet() {
     toast(editingSetId ? 'Set updated' : 'Set created');
     closeSetModal();
     await loadSets();
+    renderManageSetsList();
+    // For brand-new sets, filter the UC list to show "what's in it" (empty initially)
     const newId = resp.id || editingSetId;
-    if (newId) selectSet(newId);
+    if (newId && !editingSetId) selectSet(newId);
   } catch (e) {
     status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; btn.disabled = false;
   }
@@ -4432,9 +4484,11 @@ async function deleteSet(setId, btn) {
   _armDeleteBtn(btn, async () => {
     try {
       await api(`/api/sets/${setId}`, {method:'DELETE'});
-      toast('Set deleted'); activeSetId = null;
-      document.getElementById('setDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">Deleted.</div></div>';
-      loadSets();
+      toast('Set deleted');
+      if (activeSetId === setId) activeSetId = null;
+      await loadSets();
+      await loadUCs();  // set_ids on UCs may have changed
+      renderManageSetsList();
     } catch (e) { toast('Delete failed: ' + e.message, true); }
   });
 }
@@ -4442,7 +4496,10 @@ async function deleteSet(setId, btn) {
 async function removeMember(setId, ucUuid) {
   try {
     await api(`/api/sets/${setId}/members/${encodeURIComponent(ucUuid)}`, {method:'DELETE'});
-    toast('Removed from set'); selectSet(setId);
+    toast('Removed from set');
+    await loadSets();
+    await loadUCs();
+    renderManageSetsList();
   } catch (e) { toast('Remove failed: ' + e.message, true); }
 }
 
@@ -4511,7 +4568,11 @@ async function saveAddMember() {
   };
   try {
     await api(`/api/sets/${addMemberSetId}/members`, {method:'POST', body:JSON.stringify(payload)});
-    toast('Added to set'); closeAddMember(); selectSet(addMemberSetId);
+    toast('Added to set');
+    closeAddMember();
+    await loadSets();
+    await loadUCs();
+    renderManageSetsList();
   } catch (e) {
     status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; btn.disabled = false;
   }
@@ -4690,7 +4751,8 @@ async function confirmPromote() {
     toast(`Promoted ${resp.promoted} UC${resp.promoted!==1?'s':''}: ${fromState} → ${toState}`);
     closePromoteModal();
     await loadUCs();
-    selectSet(promoteSetId);
+    await loadSets();
+    renderManageSetsList();
   } catch (e) {
     status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; btn.disabled = false;
   }
@@ -4952,12 +5014,24 @@ document.getElementById('closeLCModal').addEventListener('click', closeLCModal);
 document.getElementById('cancelLCModal').addEventListener('click', closeLCModal);
 document.getElementById('confirmLCModal').addEventListener('click', confirmLCTransition);
 
-// Sets
+// Sets (now merged into the UC tab)
 document.getElementById('newSetBtn').addEventListener('click', () => openSetModal());
 document.getElementById('closeSetModal').addEventListener('click', closeSetModal);
 document.getElementById('cancelSetModal').addEventListener('click', closeSetModal);
 document.getElementById('saveSetModal').addEventListener('click', saveSet);
-document.getElementById('setFilter').addEventListener('input', renderSetList);
+// Manage Sets modal
+document.getElementById('manageSetsBtn').addEventListener('click', openManageSetsModal);
+document.getElementById('closeManageSetsModal').addEventListener('click', closeManageSetsModal);
+document.getElementById('manageSetsDoneBtn').addEventListener('click', closeManageSetsModal);
+document.getElementById('manageSetsNewBtn').addEventListener('click', () => { closeManageSetsModal(); openSetModal(); });
+// Active-set banner buttons
+document.getElementById('ucListSetBannerRunBtn').addEventListener('click', () => {
+  if (typeof activeSetId !== 'number') return;
+  const s = (allSets || []).find(x => x.id === activeSetId);
+  if (s) runSet(s.id, s.name);
+});
+document.getElementById('ucListSetBannerManageBtn').addEventListener('click', openManageSetsModal);
+document.getElementById('ucListSetBannerClearBtn').addEventListener('click', () => selectSet('__all__'));
 
 // Import / export
 document.getElementById('importUCBtn').addEventListener('click', openImportModal);
