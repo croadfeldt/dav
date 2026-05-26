@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.7  
+**Current version:** v0.9.8  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -112,7 +112,7 @@ The SPA is a single `index.html` with no build step. All state lives in JS globa
 
 **UC sets:** Named collections of UCs (`use_case_sets` + `use_case_set_members`). Used for targeted runs.
 
-**UC Assist:** NL prompt → YAML suggestion via configured model (selected from `model_configs` rows with `use_uc_assist=true`, or env-var fallback). Streaming SSE.
+**UC Assist:** NL prompt → YAML suggestion via configured model (selected from `model_configs` rows with `use_uc_assist=true`, or env-var fallback). Streaming SSE. The **Clear** button wipes both the conversation history and the compose textarea.
 
 ---
 
@@ -253,6 +253,12 @@ Migrations run automatically at API startup before `schema.sql`. Each migration 
 | `model_configs` | Centralized LLM endpoint registry; use-flags `use_arch_review`, `use_uc_assist` per row |
 | `mcp_server_configs` | MCP server registry; `use_uc_assist` flag per server |
 | `code_repo_configs` | Git repos for PR creation |
+
+---
+
+## UI conventions
+
+**Delete confirmation — `_armDeleteBtn(btn, action)`:** Native `confirm()` is suppressed by the OCP OAuth proxy, so all destructive actions use a two-click pattern instead. First click changes the button text to "Sure?" and adds a red outline; second click on the same button fires `action()`; clicking anywhere else resets the button. Used for: model endpoint delete, UC delete, UC set delete, MCP server delete, code repo delete. Any new destructive button must use this utility rather than `confirm()`.
 
 ---
 
