@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.32  
+**Current version:** v0.9.33  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -433,6 +433,13 @@ To rotate later: `oc set data secret/dav-review-api-tokens DAV_CORPUS_PUSH_TOKEN
 
 1. **Engine ran the whole corpus when a Set with only managed UCs was triggered.** Root cause: when the console sent `managed_uc_uuids` but no `uc_handles`/`uc_uuids`, the engine's filter block didn't fire (`if handles_filter or uuids_filter:` was False), so `corpus_files` retained the full `gather_corpus` result. The materialized managed UCs were appended, then everything ran. Fix: the engine now treats *any* non-empty selection (handles, uuids, OR managed_uuids) as "explicit selection mode" and clears `corpus_files` of unrequested corpus content. Materialized managed UCs are added **after** the filter, so they're always included when listed. Per R1: "selection is authoritative — when any filter is non-empty, the engine runs only what's listed."
 2. **`▶ Test evaluation` (and several other) onclick handlers silently did nothing.** Root cause: `JSON.stringify(value)` produces `"..."` (with double quotes), and embedding that inside a double-quoted HTML attribute (`onclick="...${JSON.stringify(x)}..."`) terminates the attribute at the first inner `"`. Fix: new `attrJson(v)` helper wraps `JSON.stringify` and replaces each `"` with `&quot;`; the browser decodes the entity when it reads the attribute value for execution, so the JS sees the right quotes. Applied to all 8 onclick sites that embedded JSON.
+
+**UC validity — template UUID prefix + UC Assist schema hint corrected (v0.9.33):** Two bugs the engine validation exposed after R1's selection-authority fix actually started running managed UCs end-to-end.
+
+1. **UUID missing `uc-` prefix.** The engine validates `uuid` starts with `uc-`. `openUCModal` was generating `crypto.randomUUID()` (which produces a plain UUID like `f3b64dda-…`) and **replacing** the template's `uc-<your-uuid-here>` placeholder text — dropping the `uc-` prefix in the process. Fix: replace only the `<your-uuid-here>` substring so the `uc-` prefix stays as static template text.
+2. **UC Assist schema hint had wrong enum values.** `_UC_SCHEMA_HINT` in `uc_assist.py` listed placeholders (`single_with_deps`, `multi_eligible`, `human-authored` as a mode, etc.) that don't exist in the DCM consumer profile. UC Assist was confidently generating UCs that fail engine validation. Rewrote the hint with the actual DCM enums for `lifecycle_phase`, `resource_complexity`, `policy_complexity`, `provider_landscape`, `governance_context`, `failure_mode`, `actor.profile`, `generated_by.mode`, and `generated_by.source` — plus the `uc-` uuid prefix rule and a "DO NOT invent values" warning. (Single-consumer hardcoded for now; making this dynamic via consumer profile fetch is a follow-on once we have more than one consumer.)
+
+Follow-on: the API should pre-validate UC YAML on create/update against the same engine schema so authors see errors in the editor instead of at run time.
 
 **Results tab — persistent run-summary header (v0.9.31):** Same shape as the Runs detail v0.9.30 work: stats stay above the output, output bounded to the panel. Previously `renderRunSummaryHeader` rendered the run-level stats into `analysisDetail`; picking a UC replaced them with the per-UC analysis and the run context disappeared. Now a dedicated `runResultsHeader` strip sits above `analysisDetail`, populated on `selectRunResult` and never overwritten by per-UC rendering. Compact single-row layout: session name + run_id + mode on the left; `N/M UCs (X%) · failed · samples · ⏱ wall · finished_at` on the right. Wraps at narrow widths. `analysisDetail` gets `flex:1; overflow-y:auto; min-height:0` so the per-UC content scrolls *within* the panel — the page never grows beyond the viewport.
 

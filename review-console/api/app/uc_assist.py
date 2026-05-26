@@ -27,36 +27,66 @@ ASSIST_MODEL = os.environ.get(
 
 # Injected at startup — UC YAML schema for grounding the model.
 _UC_SCHEMA_HINT = """
-A DAV use case (UC) is a YAML document with this top-level structure:
+A DAV use case (UC) is a YAML document. All enum values below are
+the actual values accepted by the engine for the DCM consumer
+profile — DO NOT invent other values; the run will fail validation.
 
-  title: <short human-readable name>   # REQUIRED. Shown in lists and detail headers.
-                                       # 1-120 chars. E.g. "VM provisioning — happy path"
-  uuid: <uuid-string>               # globally unique, kebab-case
+Required structure:
+
+  title: <short human-readable name>   # 1-120 chars, shown in lists/headers
+                                       # e.g. "VM provisioning — happy path"
+  uuid: uc-<unique-id>                 # MUST start with literal prefix `uc-`
+                                       # e.g. uc-d3b1f2a8-...
   handle: <prefix>/<category>/<descriptor>   # e.g. test/standard/vm-provision-happy
   scenario:
-    description: <one-line summary>
+    description: <one-line summary>          # non-empty
     actor:
-      persona: consumer | operator | admin
-      profile: standard | fsi | sovereign | minimal | prod
-    intent: <what the actor wants>
-    success_criteria:
-      - <criterion>
+      persona: <free-text persona>           # any non-empty string
+                                             # (e.g. consumer | operator | admin)
+      profile: minimal | dev | standard | prod | fsi | sovereign
+    intent: <what the actor wants>           # non-empty
+    success_criteria:                        # at least one item
+      - <observable criterion>
     dimensions:
-      lifecycle_phase: new_request | in_flight | post_completion
-      resource_complexity: single_no_deps | single_with_deps | multi_resource
-      policy_complexity: system_defaults_only | custom_policies | multi_policy
-      provider_landscape: single_eligible | multi_eligible | no_eligible
-      governance_context: standard_governance | elevated_governance
-      failure_mode: happy_path | partial_failure | total_failure
-    profile: <same as actor.profile>
+      lifecycle_phase:      new_request | modification | decommission
+                          | drift_detection | brownfield_ingestion
+                          | rehydration_faithful | rehydration_provider_portable
+                          | rehydration_historical_exact
+                          | rehydration_historical_portable
+                          | expiry_enforcement
+      resource_complexity:  single_no_deps | hard_dependencies | composite_service
+                          | conditional_soft_deps | process_resource
+                          | cross_dependency_payload
+      policy_complexity:    system_defaults_only | single_gatekeeper
+                          | multi_policy_chain | conflicting_policies
+                          | orchestration_flow_static | dynamic_conditional_flow
+                          | cross_domain_constraint | human_escalation_required
+                          | governance_matrix_enforcement | recovery_policy
+      provider_landscape:   single_eligible | multiple_eligible | none_eligible
+                          | peer_dcm_required | process_provider | mixed
+      governance_context:   no_governance | standard_governance | audit_heavy
+                          | compliance_gated | sovereignty_enforced
+      failure_mode:         happy_path | provider_failure | policy_violation
+                          | peer_dcm_disconnect | data_inconsistency
+                          | rollback_required | partial_fulfillment | timeout
+                          | resource_exhaustion
+    profile: <same enum as actor.profile>
     expected_domain_interactions:
       - domain: <domain-id>
         interaction: <section reference>
   generated_by:
-    mode: regression | human-authored | nl-assisted
-    source: <author or tool>
+    mode:   regression | pr-targeted | authoring         # NO other values
+    source: corpus | llm-unguided | llm-guided | human-authored
   tags: []
   metadata: {}
+
+Validation rules the engine enforces (your YAML must satisfy these):
+- `uuid` must start with `uc-`
+- `generated_by.mode` must be one of: regression, pr-targeted, authoring
+- `generated_by.source` must be one of: corpus, llm-unguided, llm-guided, human-authored
+- Every `dimensions.*` value MUST be picked from the lists above exactly.
+- `actor.profile` and `scenario.profile` must match the same enum.
+- `scenario.description`, `scenario.intent`, and `success_criteria` must be non-empty.
 """
 
 _SYSTEM_PROMPT = f"""You are an expert at writing DAV (Document and API Verification) use case YAML documents.

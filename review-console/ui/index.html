@@ -4405,10 +4405,13 @@ function openUCModal(uuid, yamlContent, tags) {
   document.getElementById('ucModalTitle').textContent = uuid ? 'Edit use case' : 'New use case';
   let content = yamlContent;
   if (!content) {
-    const newUuid = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    // Engine requires UC uuid to start with `uc-`. The template carries the
+    // `uc-` prefix as static text; only the placeholder body is replaced so
+    // we don't risk dropping or doubling it.
+    const rawUuid = (typeof crypto !== 'undefined' && crypto.randomUUID)
       ? crypto.randomUUID()
-      : 'uc-' + Math.random().toString(36).slice(2, 10);
-    content = UC_TEMPLATE.replace('uc-<your-uuid-here>', newUuid);
+      : Math.random().toString(36).slice(2, 10);
+    content = UC_TEMPLATE.replace('<your-uuid-here>', rawUuid);
   }
   document.getElementById('ucYamlEditor').value = content;
   document.getElementById('ucNameInput').value = _extractTitleFromYaml(content);
