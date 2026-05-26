@@ -3628,7 +3628,7 @@ function renderUCDetail(data, lifecycle) {
       <div style="display:flex;gap:6px;flex-shrink:0;margin-top:4px">
         ${isManaged
           ? `<button class="btn ghost" onclick="editUC('${esc(uuid)}')">Edit</button>
-             <button class="btn danger" onclick="deleteUC('${esc(uuid)}')">Delete</button>`
+             <button class="btn danger" onclick="deleteUC('${esc(uuid)}',this)">Delete</button>`
           : `<button class="btn ghost" onclick="cloneUC('${esc(uuid)}')">Clone to managed</button>`}
       </div>
     </div>
@@ -3814,14 +3814,16 @@ async function cloneUC(uuid) {
   try { const d = await api(`/api/use-cases/${encodeURIComponent(uuid)}`); openUCModal(null, d.yaml_content, d.tags); }
   catch (e) { toast('Load failed: ' + e.message, true); }
 }
-async function deleteUC(uuid) {
-  if (!confirm(`Delete use case "${uuid}"? This cannot be undone.`)) return;
-  try {
-    await api(`/api/use-cases/${encodeURIComponent(uuid)}`, {method:'DELETE'});
-    toast(`Deleted ${uuid}`); activeUCId = null;
-    document.getElementById('ucDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">Deleted.</div></div>';
-    loadUCs();
-  } catch (e) { toast('Delete failed: ' + e.message, true); }
+async function deleteUC(uuid, btn) {
+  if (!btn) return;
+  _armDeleteBtn(btn, async () => {
+    try {
+      await api(`/api/use-cases/${encodeURIComponent(uuid)}`, {method:'DELETE'});
+      toast(`Deleted ${uuid}`); activeUCId = null;
+      document.getElementById('ucDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">Deleted.</div></div>';
+      loadUCs();
+    } catch (e) { toast('Delete failed: ' + e.message, true); }
+  });
 }
 function closeUCModal() {
   document.getElementById('ucModal').classList.remove('open');
@@ -4062,7 +4064,7 @@ function renderSetDetail(data) {
           </div>
         </div>
         <button class="btn ghost" onclick="openSetModal(${data.id})">Edit</button>
-        <button class="btn danger" onclick="deleteSet(${data.id})">Delete</button>
+        <button class="btn danger" onclick="deleteSet(${data.id},this)">Delete</button>
       </div>
     </div>
 
@@ -4144,15 +4146,17 @@ async function saveSet() {
   }
 }
 
-async function deleteSet(setId) {
+async function deleteSet(setId, btn) {
+  if (!btn) return;
   const s = allSets.find(x => x.id===setId);
-  if (!confirm(`Delete set "${s?.name||setId}"? Members will be unlinked but not deleted.`)) return;
-  try {
-    await api(`/api/sets/${setId}`, {method:'DELETE'});
-    toast('Set deleted'); activeSetId = null;
-    document.getElementById('setDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">Deleted.</div></div>';
-    loadSets();
-  } catch (e) { toast('Delete failed: ' + e.message, true); }
+  _armDeleteBtn(btn, async () => {
+    try {
+      await api(`/api/sets/${setId}`, {method:'DELETE'});
+      toast('Set deleted'); activeSetId = null;
+      document.getElementById('setDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">Deleted.</div></div>';
+      loadSets();
+    } catch (e) { toast('Delete failed: ' + e.message, true); }
+  });
 }
 
 async function removeMember(setId, ucUuid) {
@@ -4855,6 +4859,31 @@ wireInferencePanel();
 let _reviewModels = [];   // cached from /api/models
 let _mfEditId = null;     // ID of model being edited (null = create)
 
+// Two-click arm/confirm for delete buttons (replaces confirm() which is
+// suppressed by the OCP OAuth proxy). First click: shows "Sure?" + outline.
+// Second click within the same button: fires action(). Click outside: resets.
+function _armDeleteBtn(btn, action) {
+  if (btn.dataset.armed) {
+    delete btn.dataset.armed;
+    btn.textContent = btn.dataset.origText || btn.textContent;
+    btn.style.outline = '';
+    action();
+    return;
+  }
+  btn.dataset.origText = btn.textContent;
+  btn.dataset.armed = '1';
+  btn.textContent = 'Sure?';
+  btn.style.outline = '1px solid var(--red)';
+  const reset = () => {
+    delete btn.dataset.armed;
+    btn.textContent = btn.dataset.origText;
+    btn.style.outline = '';
+    document.removeEventListener('click', outside, true);
+  };
+  const outside = e => { if (!btn.contains(e.target)) reset(); };
+  setTimeout(() => document.addEventListener('click', outside, true), 0);
+}
+
 async function loadReviewModels() {
   try {
     _reviewModels = await api('/api/models');
@@ -4877,7 +4906,7 @@ function renderModelList() {
       <span style="color:var(--text-faint);font-size:11px;">${esc(m.provider)} · ${esc(m.model_id)}</span>
       ${!m.enabled ? '<span class="model-pill disabled">disabled</span>' : ''}
       <button class="btn ghost btn-sm" onclick="editModel(${m.id})">Edit</button>
-      <button class="btn ghost btn-sm" style="color:var(--red)" onclick="deleteModel(${m.id},${JSON.stringify(m.name)})">✕</button>
+      <button class="btn ghost btn-sm" style="color:var(--red)" onclick="deleteModel(${m.id},${JSON.stringify(m.name)},this)">✕</button>
     </div>`).join('');
 }
 
@@ -4968,21 +4997,23 @@ function editModel(id) {
   document.getElementById('mfName').focus();
 }
 
-async function deleteModel(id, name) {
-  if (!confirm(`Delete model "${name}"?`)) return;
-  try {
-    await api(`/api/models/${id}`, { method:'DELETE' });
-    await loadReviewModels();
-    renderModelList();
-    _populateModelSel('rdRevModelSel', 'reviewLastModel');
-    _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
-    _populateModelSel('srcInfModelSel', 'inferenceLastModel');
-    _populateModelSel('nrModelSel', 'nrLastModel');
-    _populateUCAssistModelSel();
-    toast('Model deleted');
-  } catch(e) {
-    toast('Delete failed: ' + e.message);
-  }
+async function deleteModel(id, name, btn) {
+  if (!btn) return;
+  _armDeleteBtn(btn, async () => {
+    try {
+      await api(`/api/models/${id}`, { method:'DELETE' });
+      await loadReviewModels();
+      renderModelList();
+      _populateModelSel('rdRevModelSel', 'reviewLastModel');
+      _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
+      _populateModelSel('srcInfModelSel', 'inferenceLastModel');
+      _populateModelSel('nrModelSel', 'nrLastModel');
+      _populateUCAssistModelSel();
+      toast('Model deleted');
+    } catch(e) {
+      toast('Delete failed: ' + e.message);
+    }
+  });
 }
 
 // ── Review & Plan drawer ─────────────────────────────────────────────────────
@@ -5664,7 +5695,7 @@ function renderMCPList() {
       ${!m.enabled ? '<span style="font-size:9px;color:var(--text-faint);border:1px solid var(--border);padding:1px 5px;border-radius:2px;">disabled</span>' : ''}
       <span class="mcp-actions">
         <button class="btn ghost btn-icon" style="font-size:10px;" onclick="openMCPForm(${m.id})">Edit</button>
-        <button class="btn ghost btn-icon" style="font-size:10px;color:var(--error);" onclick="deleteMCP(${m.id})">✕</button>
+        <button class="btn ghost btn-icon" style="font-size:10px;color:var(--error);" onclick="deleteMCP(${m.id},this)">✕</button>
       </span>
     </div>`).join('');
 }
@@ -5718,14 +5749,17 @@ function openMCPForm(id) {
   document.getElementById('mcpfName').focus();
 }
 
-async function deleteMCP(id) {
+async function deleteMCP(id, btn) {
+  if (!btn) return;
   const m = _mcpServers.find(s => s.id === id);
-  if (!m || !confirm(`Remove "${m.name}"?`)) return;
-  try {
-    await api(`/api/mcp-servers/${id}`, { method: 'DELETE' });
-    _mcpServers = _mcpServers.filter(s => s.id !== id);
-    renderMCPList();
-  } catch (e) { toast('Delete failed: ' + e.message, true); }
+  if (!m) return;
+  _armDeleteBtn(btn, async () => {
+    try {
+      await api(`/api/mcp-servers/${id}`, { method: 'DELETE' });
+      _mcpServers = _mcpServers.filter(s => s.id !== id);
+      renderMCPList();
+    } catch (e) { toast('Delete failed: ' + e.message, true); }
+  });
 }
 
 document.getElementById('addMCPBtn').addEventListener('click', () => openMCPForm(null));
@@ -5831,7 +5865,7 @@ function renderCodeRepoList() {
       ${!r.enabled ? '<span style="font-size:9px;color:var(--text-faint);border:1px solid var(--border);padding:1px 5px;border-radius:2px;">disabled</span>' : ''}
       <span class="mcp-actions">
         <button class="btn ghost btn-icon" style="font-size:10px;" onclick="openCodeRepoForm(${r.id})">Edit</button>
-        <button class="btn ghost btn-icon" style="font-size:10px;color:var(--error);" onclick="deleteCodeRepo(${r.id})">✕</button>
+        <button class="btn ghost btn-icon" style="font-size:10px;color:var(--error);" onclick="deleteCodeRepo(${r.id},this)">✕</button>
       </span>
     </div>`).join('');
 }
@@ -5851,14 +5885,17 @@ function openCodeRepoForm(id) {
   document.getElementById('crfName').focus();
 }
 
-async function deleteCodeRepo(id) {
+async function deleteCodeRepo(id, btn) {
+  if (!btn) return;
   const r = _codeRepos.find(x => x.id === id);
-  if (!r || !confirm(`Remove "${r.name}"?`)) return;
-  try {
-    await api(`/api/code-repos/${id}`, { method: 'DELETE' });
-    _codeRepos = _codeRepos.filter(x => x.id !== id);
-    renderCodeRepoList();
-  } catch (e) { toast('Delete failed: ' + e.message, true); }
+  if (!r) return;
+  _armDeleteBtn(btn, async () => {
+    try {
+      await api(`/api/code-repos/${id}`, { method: 'DELETE' });
+      _codeRepos = _codeRepos.filter(x => x.id !== id);
+      renderCodeRepoList();
+    } catch (e) { toast('Delete failed: ' + e.message, true); }
+  });
 }
 
 document.getElementById('addCodeRepoBtn').addEventListener('click', () => openCodeRepoForm(null));
