@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.6  
+**Current version:** v0.9.7  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -58,7 +58,7 @@ The SPA is a single `index.html` with no build step. All state lives in JS globa
 - `GET /api/runs/{name}/status` — live phase polling
 - `GET /api/runs/stats` — cluster-wide kWh / token totals
 
-**Trigger form:** `POST /api/runs` → creates a `run_sessions` row and calls Tekton to start `dav-stage2` PipelineRun. Params: name, description, category, tags, mode (verification/reproduce/explore), inference endpoint/model, corpus subpath, repo overrides, sample count, halt-on-error.
+**Trigger form:** `POST /api/runs` → creates a `run_sessions` row and calls Tekton to start `dav-stage2` PipelineRun. Params: name, description, category, tags, mode (verification/reproduce/explore), inference model (selected from `model_configs` via dropdown — endpoint + model_id derived from the row), corpus subpath, repo overrides, sample count, halt-on-error.
 
 **Run drawer:** Opens when a run row is clicked. Four layout modes (button in drawer header):
 - `detailed` — full GPU/vLLM stat tiles + task list + prompts panel (default)
@@ -112,7 +112,7 @@ The SPA is a single `index.html` with no build step. All state lives in JS globa
 
 **UC sets:** Named collections of UCs (`use_case_sets` + `use_case_set_members`). Used for targeted runs.
 
-**UC Assist:** NL prompt → YAML suggestion via configured model (`uc_assist_config` table or env vars). Streaming SSE.
+**UC Assist:** NL prompt → YAML suggestion via configured model (selected from `model_configs` rows with `use_uc_assist=true`, or env-var fallback). Streaming SSE.
 
 ---
 
@@ -123,9 +123,9 @@ The SPA is a single `index.html` with no build step. All state lives in JS globa
 Two-pane layout: left nav (category list), right content (selected category).
 
 **Categories:**
-- **Sources** — spec repo URL/branch, corpus repo URL/branch. Updates `dav-source-spec` ConfigMap + rolls `dav-docs-mcp` deployment.
-- **Model Endpoints** — all LLM endpoints in one `model_configs` table with per-endpoint use-flags: `use_arch_review` (default true) and `use_uc_assist` (default false). `api_key` masked on GET. Arch review / enhancement dropdowns filter to `use_arch_review=true`; UC assist selector filters to `use_uc_assist=true`.
-- **UC Assist model** — selector panel (no longer a separate config form); shows models flagged `use_uc_assist=true`. Selected model stored in localStorage; `model_config_id` sent with each `/api/uc-assist` request.
+- **Sources** — spec repo URL/branch, corpus repo URL/branch. Updates `dav-source-spec` ConfigMap + rolls `dav-docs-mcp` deployment. Evaluation endpoint: selects inference model from `model_configs` dropdown (replaces free-text endpoint/model inputs); applied via `POST /api/sources/inference` after optional Test validation.
+- **Model Endpoints** — all LLM endpoints in one `model_configs` table with per-endpoint use-flags: `use_arch_review` (default true) and `use_uc_assist` (default false). `api_key` masked on GET. All selectors across the console draw from the same enabled-model list via `_populateModelSel(selId, storageKey)`; selections persisted in localStorage per selector.
+- **UC Assist model** — selector panel showing all enabled models; selected model stored in localStorage; `model_config_id` sent with each `/api/uc-assist` request. Falls back to env-var config (`DAV_UC_ASSIST_*`) if no DB rows exist.
 - **MCP Integrations** — registered MCP servers (`mcp_server_configs` table) with `use_uc_assist` flag. Health polled on demand. Servers flagged `use_uc_assist` displayed with amber badge.
 - **Code Repositories** — git repos for branch/PR creation from enhancement findings (`code_repo_configs` table). Supports GitHub + GitLab.
 
@@ -135,7 +135,11 @@ Two-pane layout: left nav (category list), right content (selected category).
 
 Opened from the run drawer (tab at bottom). Scope is either `uc` (single UC) or `run` (all UCs in run).
 
-**Architectural Review:** Streams from `GET /api/analysis/arch-review/{run_id}?scope=run` or `?scope=uc&uc_uuid=…`. Uses `arch_review.py` → configured review model → streaming SSE to UI. Supports both OpenAI-compatible and Anthropic providers.
+**Architectural Review:** Streams from `GET /api/analysis/arch-review/{run_id}?scope=run` or `?scope=uc&uc_uuid=…`. Uses `arch_review.py` → configured review model → streaming SSE to UI. Supports both OpenAI-compatible and Anthropic providers. `<think>` blocks from reasoning models are passed through raw (no server-side stripping); the UI toggles their visibility client-side.
+
+**Think-block indicator:** While the model is inside a `<think>…</think>` block (detected by comparing `lastIndexOf('<think>')` vs `lastIndexOf('</think>')` on the accumulated stream), the status element shows a pulsing "Thinking…" label. Reverts to "Generating…" once the closing tag arrives.
+
+**Font controls:** A font bar above each stream panel provides A−/A+ buttons (11–22 px range) and a serif/sans/mono family picker. Settings applied via CSS custom properties (`--arch-font-size`, `--arch-font-family`) on `document.documentElement` and persisted in localStorage (`archFontSize`, `archFontFamily`).
 
 **Enhancement Planning:** Same streaming pattern, different system prompt. Produces per-gap enhancement specs with implementation outline, acceptance criteria, dependencies/risks.
 
@@ -221,6 +225,16 @@ If any link in this chain is broken (e.g., `turns_log_path` not passed, `_emit_t
 `STAGE2_PROMPT_VERSION` in `engine/src/dav/ai/prompts.py` is bumped on any change to the system or user prompt. Stored in each analysis YAML under `metadata.prompt_version`. Used for cross-run comparability assertions.
 
 Current: `"1.5"` — gap title field added, `spec_refs_missing` as list.
+
+---
+
+## DB migrations
+
+Migrations run automatically at API startup before `schema.sql`. Each migration file is idempotent (safe to re-run).
+
+| File | What it does |
+|---|---|
+| `migrate_002_model_configs.sql` | Renames `review_model_configs` → `model_configs`; adds `use_arch_review`/`use_uc_assist` flags; adds `use_uc_assist` to `mcp_server_configs`; migrates any `uc_assist_config` row into `model_configs`; drops `uc_assist_config` |
 
 ---
 
