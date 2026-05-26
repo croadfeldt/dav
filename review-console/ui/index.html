@@ -3061,7 +3061,15 @@ async function submitNewRun() {
     const name = resp.run?.name || '?';
     status.innerHTML = `<span style="color:var(--green)">triggered: ${esc(name)}</span>`;
     toast(`Run triggered: ${name}`);
-    setTimeout(() => { closeNewRun(); loadRuns(); }, 800);
+    // Navigate to the Runs tab and open this run's detail so the user can
+    // watch progress immediately. loadRuns() needs to finish first so the
+    // run shows up in allRuns before selectRun tries to find it.
+    setTimeout(async () => {
+      closeNewRun();
+      switchView('runs');
+      try { await loadRuns(); } catch(_) {}
+      if (name && name !== '?') selectRun(name);
+    }, 600);
   } catch (e) {
     status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
     toast('Trigger failed: ' + e.message, true); btn.disabled = false;

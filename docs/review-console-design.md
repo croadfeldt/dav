@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.37  
+**Current version:** v0.9.38  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -487,6 +487,8 @@ Corpus-source UCs are deliberately not gated (no lifecycle on those). Future enh
 - Hardcoded to DCM constants (single-consumer install). Future enhancement when multi-consumer ships: fetch enums from the active consumer profile.
 
 What this doesn't do (yet): retroactively fix existing bad UCs. The user's path for a single bad UC is delete + recreate; a `/api/use-cases/{uuid}/repair-uuid` endpoint that cascades the rename across set members + lifecycle events + uc_analyses is a noted follow-on if more accrue.
+
+**Auto-navigate to the new run on trigger (v0.9.38):** After `submitNewRun` succeeds, the UI now switches to the Runs tab, refreshes the run list so the new PipelineRun is in `allRuns`, then calls `selectRun(name)` so the run detail pane opens automatically. Users watching for run progress no longer have to manually navigate and click — the live polling starts immediately on the just-triggered run.
 
 **Results tab — persistent run-summary header (v0.9.31):** Same shape as the Runs detail v0.9.30 work: stats stay above the output, output bounded to the panel. Previously `renderRunSummaryHeader` rendered the run-level stats into `analysisDetail`; picking a UC replaced them with the per-UC analysis and the run context disappeared. Now a dedicated `runResultsHeader` strip sits above `analysisDetail`, populated on `selectRunResult` and never overwritten by per-UC rendering. Compact single-row layout: session name + run_id + mode on the left; `N/M UCs (X%) · failed · samples · ⏱ wall · finished_at` on the right. Wraps at narrow widths. `analysisDetail` gets `flex:1; overflow-y:auto; min-height:0` so the per-UC content scrolls *within* the panel — the page never grows beyond the viewport.
 
