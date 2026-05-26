@@ -259,6 +259,11 @@ class RunTriggerIn(BaseModel):
     inference_endpoint: Optional[str] = None
     inference_model: Optional[str] = None
     halt_on_error: bool = False
+    # Optional UC selection — when set, engine processes ONLY these UCs from
+    # within corpus_subpath (siblings are skipped). Used by Sets runs and
+    # single-UC test eval. Empty/None = whole subpath (legacy).
+    uc_handles: Optional[list[str]] = None
+    uc_uuids: Optional[list[str]] = None
     # User-facing session metadata (persisted to run_sessions)
     name: str = ""
     description: str = ""
@@ -473,6 +478,8 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             spec_repo_url=params["spec_repo_url"],
             spec_repo_branch=params["spec_repo_branch"],
             halt_on_error=payload.halt_on_error,
+            uc_handles=payload.uc_handles,
+            uc_uuids=payload.uc_uuids,
         )
     except Exception as e:
         log.exception("run trigger failed")

@@ -2795,13 +2795,20 @@ async function loadNewRunDefaults(forcedSubpath) {
   }
 }
 
-async function openNewRun(banner, subpath) {
+// When the New Run modal is opened with an explicit UC selection (Run a Set,
+// Test eval from a single UC, etc.), submitNewRun reads this to pass uc_handles
+// / uc_uuids through to the engine — engine-side filter scopes the run to
+// exactly these UCs instead of the whole directory. Cleared on close.
+let _pendingRunFilter = null;   // { handles: string[], uuids: string[] }
+
+async function openNewRun(banner, subpath, ucFilter) {
   document.getElementById('newRunModal').classList.add('open');
   document.getElementById('nrStatus').textContent = '';
   document.getElementById('submitNewRun').disabled = false;
   document.getElementById('newRunTitle').textContent = 'New run';
   document.getElementById('nrSessionName').value = '';
   document.getElementById('nrDescription').value = '';
+  _pendingRunFilter = ucFilter || null;
   const bannerEl = document.getElementById('newRunBanner');
 
   // If no explicit subpath/banner was supplied, fall back to the project default Set
@@ -2813,13 +2820,16 @@ async function openNewRun(banner, subpath) {
     const def = _getDefaultSet();
     if (def) {
       try {
-        const info = await api(`/api/sets/${def.id}/corpus-subpath`);
-        if (info.subpath) {
-          effectiveSubpath = info.subpath;
-          const skipMsg = info.managed_count > 0
-            ? ` ⚠ ${info.managed_count} managed UC(s) will be skipped (promote first).`
+        const setData = await api(`/api/sets/${def.id}`);
+        const subpathInfo = await api(`/api/sets/${def.id}/corpus-subpath`);
+        if (subpathInfo.subpath) {
+          effectiveSubpath = subpathInfo.subpath;
+          const filter = _filterFromSetMembers(setData.members || []);
+          _pendingRunFilter = filter;
+          const skipMsg = subpathInfo.managed_count > 0
+            ? ` ⚠ ${subpathInfo.managed_count} managed UC(s) will be skipped (promote first).`
             : '';
-          effectiveBanner = `Pre-filled from default Set "${def.name}" — ${info.corpus_count} corpus UC${info.corpus_count!==1?'s':''}.${skipMsg}`;
+          effectiveBanner = `Pre-filled from default Set "${def.name}" — ${subpathInfo.corpus_count} corpus UC${subpathInfo.corpus_count!==1?'s':''} (engine-filtered).${skipMsg}`;
         }
       } catch(_) { /* fall through to auto-detect */ }
     }
@@ -2829,6 +2839,19 @@ async function openNewRun(banner, subpath) {
   else bannerEl.style.display = 'none';
   loadNewRunDefaults(effectiveSubpath);
   loadRunCategories();
+}
+
+// Build {handles, uuids} arrays from a Set's members[]. Prefers handle when
+// present, falls back to uuid otherwise. Skips managed members since they're
+// not in the corpus the engine reads — they require Push-to-corpus first.
+function _filterFromSetMembers(members) {
+  const handles = [], uuids = [];
+  for (const m of members) {
+    if (m.uc_source !== 'corpus') continue;
+    if (m.uc_handle) handles.push(m.uc_handle);
+    else if (m.uc_uuid) uuids.push(m.uc_uuid);
+  }
+  return (handles.length || uuids.length) ? {handles, uuids} : null;
 }
 
 async function loadRunCategories() {
@@ -2848,7 +2871,10 @@ async function loadRunCategories() {
   }
 }
 
-function closeNewRun() { document.getElementById('newRunModal').classList.remove('open'); }
+function closeNewRun() {
+  document.getElementById('newRunModal').classList.remove('open');
+  _pendingRunFilter = null;   // don't leak filter into the next opening
+}
 
 async function submitNewRun() {
   const btn = document.getElementById('submitNewRun'), status = document.getElementById('nrStatus');
@@ -2879,6 +2905,10 @@ async function submitNewRun() {
     name:               document.getElementById('nrSessionName').value.trim(),
     description:        document.getElementById('nrDescription').value.trim(),
     category:           document.getElementById('nrCategory').value || 'ad-hoc',
+    // Optional engine-side UC filter — set by runSet / testRunUC. When
+    // present, engine processes only these UCs from within corpus_subpath.
+    uc_handles:         _pendingRunFilter?.handles || null,
+    uc_uuids:           _pendingRunFilter?.uuids   || null,
   };
   try {
     const resp = await api('/api/runs', {method:'POST', body:JSON.stringify(payload)});
@@ -3997,9 +4027,13 @@ async function testRunUC(uuid, ucPath, title) {
     return;
   }
   const subpath = _narrowestSubpath([ucPath]);
-  const sibCount = '';  // could fetch a count of files at the subpath; skipped for now
-  const banner = `Test evaluation: ${title} · scope ${subpath || '/'}${sibCount}`;
-  await openNewRun(banner, subpath);
+  // Look up the UC's handle from allUCs (UC list already loaded)
+  const uc = (allUCs || []).find(u => u.uuid === uuid);
+  const filter = (uc && uc.handle)
+    ? {handles: [uc.handle], uuids: []}
+    : {handles: [], uuids: [uuid]};
+  const banner = `Test evaluation: ${title} · scope ${subpath || '/'} (engine-filtered to this UC only)`;
+  await openNewRun(banner, subpath, filter);
   // Pre-fill session name so it's clear what this run is for
   const sn = document.getElementById('nrSessionName');
   if (sn && !sn.value) sn.value = `test: ${title}`.slice(0, 120);
@@ -4704,12 +4738,13 @@ async function clearDefaultSet(setId) {
 async function runSet(setId, setName) {
   try {
     const info = await api(`/api/sets/${setId}/corpus-subpath`);
+    const set  = await api(`/api/sets/${setId}`);
+    const filter = _filterFromSetMembers(set.members || []);
     const msg = info.managed_count > 0
       ? `⚠ ${info.managed_count} managed UC(s) in this set will be skipped (promote to corpus first).`
       : null;
-    const banner = `Running set "${setName}" — ${info.corpus_count} corpus UC${info.corpus_count!==1?'s':''}${msg ? '. '+msg : ''}`;
-    openNewRun(banner, info.subpath || '');
-    // Switch to runs tab so user sees the result
+    const banner = `Running set "${setName}" — ${info.corpus_count} corpus UC${info.corpus_count!==1?'s':''} (engine-filtered to exactly these UCs)${msg ? '. '+msg : ''}`;
+    openNewRun(banner, info.subpath || '', filter);
   } catch (e) { toast('Could not compute set scope: ' + e.message, true); }
 }
 

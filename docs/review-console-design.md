@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.23  
+**Current version:** v0.9.24  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -339,6 +339,23 @@ All three paths share `_addUCToSet` / `_removeUCFromSet` / `_toggleUCSetMembersh
 - **Hands-off note:** the Secret carrying `DAV_CORPUS_PUSH_TOKEN` is updated by the user in the consumer namespace per [[feedback-consumer-config]]; the console only reads it from the API pod's env.
 
 **Manage Sets — per-member × (v0.9.23):** Each set row in the Manage Sets modal now has an expander (▶) that fetches the set's members and renders them with a per-UC × to remove. The user reported the modal was the natural place to remove members and the UC chip × wasn't discoverable enough.
+
+**Engine-side UC filter (v0.9.24):** Sets and single-UC test runs now scope the engine to *exactly* the selected UCs, not the directory they sit in. Fixes the "Run Set ended up running the full corpus" bug — Sets were scoped by directory prefix, which collapsed to the corpus root when members were scattered.
+
+End-to-end change across engine, Tekton, and console:
+
+- **Engine (`run_corpus.py`)** — two new optional CLI args: `--uc-handles` and `--uc-uuids`, both comma-separated. After `gather_corpus`, each YAML is parsed and kept only if its `handle:` or `uuid:` is in the filter set (OR semantics). When neither flag is set, behavior is unchanged (whole subpath runs). Logs the before/after counts so operators can see what got filtered.
+- **Tekton Task `dav-run-corpus`** — two new params `uc-handles` and `uc-uuids` (string, default `""`). Wired into `OPTIONAL_ARGS` so the engine receives them when non-empty.
+- **Tekton Pipeline `dav-stage2`** — same two params declared at pipeline level and passed through to the task.
+- **Console API** — `RunTriggerIn` adds `uc_handles: list[str] | None` and `uc_uuids: list[str] | None`. `_mk_pipelinerun` serializes them as comma-joined PipelineRun params. Backwards-compatible: when omitted, no params are added and the engine runs the whole subpath as before.
+- **Console UI** — new `_pendingRunFilter` global; populated by `runSet` (reads Set members, prefers `handle` per member, falls back to `uuid`; skips managed members that aren't in corpus yet), `testRunUC` (single UC's handle/uuid), and the default-Set fallback in `openNewRun`. `submitNewRun` passes the lists through. Banner shows "(engine-filtered to exactly these UCs)" so reviewers know the scope. `closeNewRun` clears the filter so it doesn't leak across modal openings.
+
+**Deploy ordering matters** for backwards compatibility:
+1. Engine image rebuild first (new `--uc-handles` arg accepted, old runs still work).
+2. Tekton Task + Pipeline re-applied via `ansible-playbook --tags engine,tekton` (declares the new params with default `""`).
+3. Console rebuild + rollout (now safe to send `uc_handles` in PipelineRun specs since the Pipeline accepts the param).
+
+Reverse order would break: an old Pipeline rejects a PipelineRun specifying an unknown param.
 
 ---
 

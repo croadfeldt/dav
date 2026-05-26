@@ -67,6 +67,14 @@ spec:
     - name: halt-on-error
       type: string
       default: "false"
+    # UC filter — when set, run-corpus processes only matching UCs.
+    # Empty = whole corpus subpath (legacy behavior).
+    - name: uc-handles
+      type: string
+      default: ""
+    - name: uc-uuids
+      type: string
+      default: ""
 
     # Inference + MCP
     - name: inference-endpoint
@@ -199,6 +207,10 @@ spec:
           value: $(params.sample-count)
         - name: halt-on-error
           value: $(params.halt-on-error)
+        - name: uc-handles
+          value: $(params.uc-handles)
+        - name: uc-uuids
+          value: $(params.uc-uuids)
         - name: inference-endpoint
           value: $(params.inference-endpoint)
         - name: inference-model

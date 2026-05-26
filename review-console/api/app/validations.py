@@ -84,6 +84,8 @@ def _mk_pipelinerun(
     spec_repo_branch: Optional[str] = None,
     inference_model: Optional[str] = None,
     halt_on_error: bool = False,
+    uc_handles: Optional[list[str]] = None,
+    uc_uuids: Optional[list[str]] = None,
 ) -> dict:
     """Build a PipelineRun object targeting the DAV Pipeline."""
     suffix = str(int(time.time()))[-6:]
@@ -114,6 +116,10 @@ def _mk_pipelinerun(
         params.append({"name": "inference-model", "value": inference_model})
     if halt_on_error:
         params.append({"name": "halt-on-error", "value": "true"})
+    if uc_handles:
+        params.append({"name": "uc-handles", "value": ",".join(uc_handles)})
+    if uc_uuids:
+        params.append({"name": "uc-uuids", "value": ",".join(uc_uuids)})
 
     return {
         "apiVersion": f"{_TEKTON_GROUP}/{_TEKTON_VERSION}",
@@ -160,6 +166,8 @@ def trigger_run(
     spec_repo_branch: Optional[str] = None,
     inference_model: Optional[str] = None,
     halt_on_error: bool = False,
+    uc_handles: Optional[list[str]] = None,
+    uc_uuids: Optional[list[str]] = None,
 ) -> dict:
     """Create a PipelineRun. Returns the created object's status summary."""
     if not ENABLED:
@@ -180,6 +188,8 @@ def trigger_run(
         spec_repo_branch=spec_repo_branch,
         inference_model=inference_model,
         halt_on_error=halt_on_error,
+        uc_handles=uc_handles,
+        uc_uuids=uc_uuids,
     )
 
     try:

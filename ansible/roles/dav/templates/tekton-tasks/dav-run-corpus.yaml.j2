@@ -126,6 +126,23 @@ spec:
       type: string
       default: "INFO"
 
+    - name: uc-handles
+      type: string
+      description: |
+        Optional comma-separated list of UC `handle:` values. When set,
+        the engine processes ONLY those UCs from the corpus subpath,
+        skipping siblings. Used by the console for Set runs and
+        single-UC test evaluations. Empty = run everything (existing
+        directory-scoped behavior).
+      default: ""
+
+    - name: uc-uuids
+      type: string
+      description: |
+        Optional comma-separated list of UC `uuid:` values. Same as
+        uc-handles but matches on UUID. Combined with uc-handles via OR.
+      default: ""
+
   workspaces:
     - name: source
       description: |
@@ -171,6 +188,12 @@ spec:
         fi
         if [ -n "$(params.consumer-profile-path)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --consumer-profile $(params.consumer-profile-path)"
+        fi
+        if [ -n "$(params.uc-handles)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --uc-handles $(params.uc-handles)"
+        fi
+        if [ -n "$(params.uc-uuids)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --uc-uuids $(params.uc-uuids)"
         fi
 
         # Note: --no-enable-thinking is the recommended default for

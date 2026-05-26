@@ -557,6 +557,19 @@ def _cli():
         help="Stop the corpus run on first UC failure. Default: continue.",
     )
     parser.add_argument(
+        "--uc-handles", type=str, default=None,
+        help="Comma-separated list of UC `handle:` values. If set, only UCs "
+             "whose handle matches one of these are processed; other corpus "
+             "files are skipped. Combine with --uc-uuids for OR semantics. "
+             "If neither flag is set, the whole corpus runs (existing behavior).",
+    )
+    parser.add_argument(
+        "--uc-uuids", type=str, default=None,
+        help="Comma-separated list of UC `uuid:` values. Same semantics as "
+             "--uc-handles but matches on UUID — useful for UCs without a "
+             "stable handle.",
+    )
+    parser.add_argument(
         "--log-level", default="INFO",
     )
     args = parser.parse_args()
@@ -583,6 +596,42 @@ def _cli():
         print(f"ERROR: no UC YAMLs found under {args.corpus_path}", file=sys.stderr)
         return 2
     log.info("corpus: %d files at %s", len(corpus_files), args.corpus_path)
+
+    # Optional UC filtering — driven by console "Run this Set" / single-UC
+    # test eval flows. When set, only UCs whose handle or uuid is in the
+    # supplied lists are processed; other corpus files are silently skipped.
+    handles_filter = {h.strip() for h in (args.uc_handles or "").split(",") if h.strip()}
+    uuids_filter   = {u.strip() for u in (args.uc_uuids   or "").split(",") if u.strip()}
+    if handles_filter or uuids_filter:
+        import yaml as _yaml
+        filtered = []
+        for path in corpus_files:
+            try:
+                with path.open() as fh:
+                    data = _yaml.safe_load(fh) or {}
+            except Exception as e:
+                log.warning("uc-filter: skipping unreadable %s (%s)", path, e)
+                continue
+            if not isinstance(data, dict):
+                continue
+            h = (data.get("handle") or "").strip()
+            u = (data.get("uuid") or "").strip()
+            if (h and h in handles_filter) or (u and u in uuids_filter):
+                filtered.append(path)
+        skipped = len(corpus_files) - len(filtered)
+        log.info(
+            "uc-filter: %d → %d UCs (skipped %d) handles=%d uuids=%d",
+            len(corpus_files), len(filtered), skipped,
+            len(handles_filter), len(uuids_filter),
+        )
+        corpus_files = filtered
+        if not corpus_files:
+            print(
+                "ERROR: --uc-handles/--uc-uuids filtered out every UC under "
+                f"{args.corpus_path}; nothing to run",
+                file=sys.stderr,
+            )
+            return 2
 
     # Build run-id and run dir
     run_id = derive_run_id(corpus_files)
