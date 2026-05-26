@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.14  
+**Current version:** v0.9.15  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -291,6 +291,8 @@ Overlay background uses `var(--bg-panel)` — `var(--surface)` is not a defined 
 
 **Empty api_key handling:** Local model endpoints (e.g. vLLM, llama.cpp) often have no API key. The Authorization header is only sent when `api_key` is non-empty; otherwise the request goes unauthenticated. Anthropic endpoints raise a clear error when the key is missing, since they always require one. (`uc_assist.py` matched `arch_review.py` for this behavior in v0.9.14.)
 
+**UC Assist timeout:** Default httpx timeout in `uc_assist.chat()` is **300s** (was 60s, bumped in v0.9.15). Local 32B models doing multi-paragraph YAML drafting routinely exceed 60s — especially when current_yaml is large and the model has to revise rather than draft from scratch. The 5-minute ceiling matches what's reasonable for a single-turn assist response on local hardware; if a request takes longer than 5 minutes, something else is wrong (model unhealthy, GPU contention).
+
 **UC modal layout:** The UC editor modal-body uses `display:flex; flex-direction:row` to put the YAML editor pane and the AI Assist panel side-by-side. The base `.modal-body` class is `flex-direction:column`, so the row direction must be set explicitly on the inline style — forgetting this stacks the panels vertically.
 
 ---
@@ -306,6 +308,7 @@ Overlay background uses `var(--bg-panel)` — `var(--surface)` is not a defined 
 - **Kick off evaluation of a new UC from the editor (planned, requested 2026-05-25)** — currently a new UC can be drafted but evaluating it requires switching to the New Run modal and selecting the UC by handle. There should be a "Run evaluation" action directly on the UC editor (or in the UC detail pane) that triggers a single-UC run against the current consumer using the project default evaluation model.
 - **Push managed UCs back to the corpus as commit / PR (planned, requested 2026-05-25)** — managed UCs live only in Postgres today (noted in this section already). The new ask is an explicit "Push to corpus" action that creates a branch + commit + PR in the consumer's corpus repo (the URL/branch already configured per consumer in Config → Sources). Needs: a writeable token for the corpus repo, a path layout convention (dav/use-cases/ or use-cases/, auto-detected today on read), commit/PR metadata derived from the UC's `handle`, and probably a per-UC `synced_at` marker on the managed row.
 - **Reorder top-level tabs: Use Cases + Sets first (planned, requested 2026-05-25)** — Use Cases and Sets are the *starting point* of the DAV workflow (you draft a UC → group into a Set → trigger a Run against the Set → review Results). Today the tab order is Runs / Results / Use Cases / Sets / Review & Plan / Config. Reorder to put Use Cases and Sets first so the IA reflects the actual workflow.
+- **Human-readable name for UCs (planned, requested 2026-05-26)** — today the UC editor shows a YAML template where `scenario.description` is the only "title-ish" field, and the UC detail pane shows the UUID as the visible sub-heading. Users can't easily name a UC at create time. Surface an explicit **Name** input at the top of the UC editor (mapped to `scenario.description` or a new top-level `title:` field in the YAML), display the name prominently in the UC list and detail header, and demote the UUID to a smaller "ID" line. Applies to both hand-authored UCs and UC Assist–generated ones (the assist response should populate the Name field, not just the YAML body).
 
 ---
 

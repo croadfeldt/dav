@@ -92,7 +92,7 @@ async def chat(
     user_message: str,
     current_yaml: Optional[str] = None,
     context: Optional[str] = None,
-    timeout: float = 60.0,
+    timeout: float = 300.0,
     cfg: Optional[dict] = None,
     pool: Any = None,
 ) -> dict:
