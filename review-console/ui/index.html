@@ -970,6 +970,14 @@
         <button class="btn ghost btn-sm" id="ucListSetBannerManageBtn" title="Manage this Set">⚙</button>
         <button class="btn ghost btn-sm" id="ucListSetBannerClearBtn" title="Clear Set filter">×</button>
       </div>
+      <!-- Selection toolbar — visible when ≥1 UC in the list is checked -->
+      <div id="ucSelectionToolbar" style="display:none;position:relative;padding:6px 10px;background:var(--accent-bg);border-bottom:1px solid var(--accent-soft);align-items:center;gap:6px;font-size:11px;">
+        <span id="ucSelectionCount" style="flex:1;color:var(--accent);font-weight:500;"></span>
+        <button class="btn primary btn-sm" id="ucSelTestBtn" title="Run engine-filtered test eval against the selected UCs">▶ Test selected</button>
+        <button class="btn ghost btn-sm" id="ucSelAddSetBtn" title="Add the selected UCs to a Set">★ Add to Set…</button>
+        <button class="btn ghost btn-sm" id="ucSelClearBtn" title="Clear selection">×</button>
+        <div id="ucSelAddSetPopover" style="display:none;position:absolute;top:100%;right:6px;margin-top:4px;z-index:60;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:3px;box-shadow:0 4px 12px rgba(0,0,0,0.35);min-width:240px;max-height:280px;overflow-y:auto;"></div>
+      </div>
       <div class="panel-toolbar">
         <input id="ucFilter" placeholder="search uuid / title / tag…" style="flex:1;" />
       </div>
@@ -2808,6 +2816,7 @@ async function loadNewRunDefaults(forcedSubpath) {
 // / uc_uuids through to the engine — engine-side filter scopes the run to
 // exactly these UCs instead of the whole directory. Cleared on close.
 let _pendingRunFilter = null;   // { handles: string[], uuids: string[] }
+const _selectedUCs = new Set(); // UUIDs of UCs checked in the list for batch ops
 
 async function openNewRun(banner, subpath, ucFilter) {
   document.getElementById('newRunModal').classList.add('open');
@@ -3730,7 +3739,7 @@ function renderUCList() {
       const item = document.createElement('div');
       item.className = 'list-item' + (activeUCId===u.uuid ? ' active' : '');
       item.draggable = true;
-      item.title = 'Drag to a Set in the left rail to add membership';
+      item.title = 'Drag to a Set in the left rail · Checkbox selects for batch ops';
       item.dataset.ucUuid = u.uuid;
       item.dataset.ucSource = u.source;
       item.dataset.ucHandle = u.handle || '';
@@ -3738,13 +3747,26 @@ function renderUCList() {
       const tags = (u.tags||[]).slice(0,2).map(t => `<span class="tag">${esc(t)}</span>`).join('');
       const titleText = u.title || u.handle || u.uuid || '?';
       const subText = (u.handle && u.handle !== titleText) ? u.handle : u.uuid;
+      const isChecked = _selectedUCs.has(u.uuid);
       item.innerHTML = `
+        <input type="checkbox" class="uc-sel-cb" ${isChecked ? 'checked' : ''}
+               style="margin:2px 6px 0 0;width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;align-self:flex-start;cursor:pointer;"
+               title="Select for batch test / add-to-set" />
         <div class="li-main">
           <div class="li-title">${esc(titleText)}</div>
           <div class="li-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.7;">${esc(subText || '')}</div>
           ${tags ? `<div style="margin-top:3px">${tags}</div>` : ''}
         </div>
         ${u.lifecycle_state ? lcHtml(u.lifecycle_state) : `<span class="src-badge src-${u.source}">${u.source}</span>`}`;
+      // Row click selects/opens the UC; checkbox toggles batch selection
+      // (checkbox click stops propagation so it doesn't also open the UC)
+      const cb = item.querySelector('input.uc-sel-cb');
+      cb.addEventListener('click', e => e.stopPropagation());
+      cb.addEventListener('change', e => {
+        if (e.target.checked) _selectedUCs.add(u.uuid);
+        else _selectedUCs.delete(u.uuid);
+        _renderUCSelectionToolbar();
+      });
       item.addEventListener('click', () => selectUC(u.uuid));
       item.addEventListener('dragstart', e => {
         e.dataTransfer.effectAllowed = 'copy';
@@ -3760,6 +3782,124 @@ function renderUCList() {
 
   renderGroup(managed, 'Managed');
   renderGroup(corpus,  'Corpus');
+  _renderUCSelectionToolbar();
+}
+
+// ── Multi-select batch operations on the UC list ─────────────────────────────
+
+function _renderUCSelectionToolbar() {
+  const bar   = document.getElementById('ucSelectionToolbar');
+  const count = document.getElementById('ucSelectionCount');
+  if (!bar || !count) return;
+  // Stale selection cleanup: drop UUIDs no longer in allUCs
+  const present = new Set(allUCs.map(u => u.uuid));
+  for (const uuid of [..._selectedUCs]) {
+    if (!present.has(uuid)) _selectedUCs.delete(uuid);
+  }
+  const n = _selectedUCs.size;
+  if (!n) { bar.style.display = 'none'; return; }
+  // Split managed vs corpus for the warning
+  const selected = allUCs.filter(u => _selectedUCs.has(u.uuid));
+  const managedCount = selected.filter(u => u.source === 'managed').length;
+  const corpusCount  = selected.length - managedCount;
+  bar.style.display = 'flex';
+  let label = `${n} selected`;
+  if (managedCount && corpusCount)      label += ` (${corpusCount} testable, ${managedCount} managed will be skipped)`;
+  else if (managedCount && !corpusCount) label += ` · ⚠ all managed — none can be tested until pushed to corpus`;
+  count.textContent = label;
+  document.getElementById('ucSelTestBtn').disabled = corpusCount === 0;
+  document.getElementById('ucSelTestBtn').style.opacity = corpusCount === 0 ? '0.55' : '';
+}
+
+function _clearUCSelection() {
+  _selectedUCs.clear();
+  renderUCList();   // re-render to uncheck boxes + hide toolbar
+}
+
+async function _batchTestSelectedUCs() {
+  const selected = allUCs.filter(u => _selectedUCs.has(u.uuid) && u.source === 'corpus');
+  if (!selected.length) {
+    toast('No corpus UCs in selection — nothing to test', true);
+    return;
+  }
+  const handles = [], uuids = [], paths = [];
+  for (const u of selected) {
+    if (u.handle) handles.push(u.handle);
+    else          uuids.push(u.uuid);
+    if (u.path)   paths.push(u.path);
+  }
+  const subpath = _narrowestSubpath(paths);
+  const skipped = _selectedUCs.size - selected.length;
+  const banner = `Batch test eval: ${selected.length} UC${selected.length>1?'s':''} (engine-filtered)${skipped ? ` · ${skipped} managed UC(s) skipped` : ''}`;
+  await openNewRun(banner, subpath, {handles, uuids});
+  // Pre-fill a session name that hints at the scope
+  const sn = document.getElementById('nrSessionName');
+  if (sn && !sn.value) sn.value = `batch test: ${selected.length} UCs`.slice(0, 120);
+}
+
+async function _openBatchAddSetPopover(anchor) {
+  const pop = document.getElementById('ucSelAddSetPopover');
+  if (!pop) return;
+  if (pop.style.display === 'block') { pop.style.display = 'none'; return; }
+  if (!allSets || !allSets.length) {
+    pop.innerHTML = '<div style="padding:10px 12px;font-size:11px;color:var(--text-faint);">No Sets. Create one with + New in the left rail.</div>';
+    pop.style.display = 'block';
+    return;
+  }
+  let h = '<div style="padding:4px 0;font-size:12px;">';
+  allSets.forEach(s => {
+    h += `<div style="padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;"
+             onmouseover="this.style.background='var(--bg-raised)'" onmouseout="this.style.background=''"
+             onclick="_batchAddSelectedToSet(${s.id}, ${JSON.stringify(s.name)})">
+      <span style="flex:1;">${esc(s.name)}</span>
+      ${s.is_default ? '<span style="font-size:9px;color:var(--accent);">DEFAULT</span>' : ''}
+      <span style="font-size:10px;color:var(--text-faint);">${s.member_count}</span>
+    </div>`;
+  });
+  h += '</div>';
+  pop.innerHTML = h;
+  pop.style.display = 'block';
+  setTimeout(() => {
+    const close = e => {
+      if (!pop.contains(e.target) && e.target !== anchor) {
+        pop.style.display = 'none';
+        document.removeEventListener('click', close);
+      }
+    };
+    document.addEventListener('click', close);
+  }, 0);
+}
+
+async function _batchAddSelectedToSet(setId, setName) {
+  document.getElementById('ucSelAddSetPopover').style.display = 'none';
+  const selected = allUCs.filter(u => _selectedUCs.has(u.uuid));
+  let added = 0, dup = 0, fail = 0;
+  for (const u of selected) {
+    try {
+      await api(`/api/sets/${setId}/members`, {
+        method: 'POST',
+        body: JSON.stringify({
+          uc_uuid:   u.uuid,
+          uc_source: u.source || 'managed',
+          uc_handle: u.handle || null,
+          uc_path:   u.path || null,
+        }),
+      });
+      added++;
+    } catch (e) {
+      if (/already/i.test(e.message)) dup++;
+      else { fail++; log_warn?.('add to set failed', u.uuid, e.message); }
+    }
+  }
+  const summary = [
+    added ? `${added} added` : null,
+    dup   ? `${dup} already in set` : null,
+    fail  ? `${fail} failed` : null,
+  ].filter(Boolean).join(' · ');
+  toast(`"${setName}": ${summary || 'no-op'}`, fail > 0);
+  await loadSets();
+  await loadUCs();
+  renderManageSetsList();
 }
 
 async function selectUC(uuid) {
@@ -5398,6 +5538,10 @@ document.getElementById('ucListSetBannerRunBtn').addEventListener('click', () =>
 });
 document.getElementById('ucListSetBannerManageBtn').addEventListener('click', openManageSetsModal);
 document.getElementById('ucListSetBannerClearBtn').addEventListener('click', () => selectSet('__all__'));
+// Multi-select toolbar
+document.getElementById('ucSelTestBtn').addEventListener('click', _batchTestSelectedUCs);
+document.getElementById('ucSelAddSetBtn').addEventListener('click', e => _openBatchAddSetPopover(e.currentTarget));
+document.getElementById('ucSelClearBtn').addEventListener('click', _clearUCSelection);
 
 // Import / export
 document.getElementById('importUCBtn').addEventListener('click', openImportModal);

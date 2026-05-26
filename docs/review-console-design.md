@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.25  
+**Current version:** v0.9.26  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -367,6 +367,12 @@ API:
 - `PushToCorpusIn` gains `override: bool = False`. `POST /api/use-cases/{uuid}/push-to-corpus` returns **409** when the UC isn't approved and override isn't set.
 
 Why this is soft (override available) rather than hard: the design note from 2026-05-26 — "Mitigation for trivial UCs: warn + override with a reason." A reviewer who needs to ship a one-line glossary UC shouldn't be blocked by the "needs a passing run" rule; they record the override + reason and move on. The override is visible in lifecycle history and in any pushed PR, so the trail is preserved.
+
+**Multi-select batch test from UC list (v0.9.26):** Each UC list row now has a checkbox; the engine-side filter (v0.9.24) made this trivial. When ≥1 UC is checked, a sticky toolbar appears above the list with `N selected · ▶ Test selected · ★ Add to Set… · ×`. Actions:
+- **▶ Test selected** — opens the New Run modal with `uc_handles` / `uc_uuids` built from the corpus members of the selection; subpath set to the narrowest dir that contains all selected paths. Managed UCs in the selection are skipped (with a clear banner note) since they're not in the corpus repo.
+- **★ Add to Set…** — popover lists every Set; clicking one adds all selected UCs to it. Reports `N added · M already in set · K failed` in a single toast.
+- **× Clear** — uncheck everything.
+- Checkbox state lives in `_selectedUCs` (a module-level `Set` of UUIDs); `renderUCList` honors it across re-renders, and stale UUIDs (no longer in `allUCs`) are pruned automatically. The toolbar's "Test selected" button auto-disables when the selection contains zero corpus UCs.
 
 ---
 
