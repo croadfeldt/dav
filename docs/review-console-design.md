@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.42  
+**Current version:** v0.9.43  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -514,6 +514,12 @@ The prepend approach is more reliable than relying on the buried system-prompt d
 Replaces the prior single-purpose toggle that only flipped `color` between accent and faint and didn't react to user scrolling. Future tail panes should call `_setupAutoFollow(...)` with their state get/set closures.
 
 **Anti-fishing threshold tightened to 2 (v0.9.41):** Empirical: v0.9.39 reduced tool-call waste by 22% across a 3-sample run, but the engine still allowed 4 attempts of the same `section_title` (counter increments on each miss; 3rd miss got the prepend, 4th was the call after the prepend). User asked for tighter gating — threshold dropped from 3 to 2 misses. Now the 2nd attempt of the same `section_title` returns the STOP directive, capping fishing at roughly 1 useless retry instead of 3.
+
+**In-turn tool-call dedup (v0.9.43):** A run after v0.9.41 hit the model's 32K context limit and 400'd. Root cause: the model was emitting the **same tool call 4-8 times in a single response** (turn 9 fired `get_document_section` with identical args 8 times). The engine executed each one, each adding a 1-3 KB tool response to the context. Anti-fishing per-miss counters can't help because all duplicates fire before any new response updates the count.
+
+Fix: in-turn dedup keyed on `(tool_name, json.dumps(args, sort_keys=True))`. The first occurrence in a response actually executes; every subsequent identical call returns a short `⛔ DUPLICATE-IN-TURN` marker pointing at the first `tool_call_id` ("STOP emitting duplicate tool calls in one response — wait for the result of one call before deciding what to call next"). The OpenAI tool-call protocol requires one response per `tool_call_id`, so the marker satisfies that constraint without re-running the call or eating real context. JSONL emit gets a `dedup_of: <first_id>` field so the UI can later distinguish dedup'd entries.
+
+This alone should cut context growth dramatically. If runs still hit the limit, the follow-on is a soft cap that forces a final response when input tokens cross e.g. 24K.
 
 **Live runs list (v0.9.42):** Runs list now polls every 5s while the Runs tab is the active view. Triggers from outside the UI (direct API call, CLI, webhook, etc.) appear in the list within one poll cycle without a manual refresh; in-flight phase transitions (Pending → Running → Succeeded/Failed) repaint live. The poll self-gates on `document.visibilityState === 'visible'` and the tab being active, so a hidden tab or a user on a different view doesn't burn requests. Implementation: `_startRunsListPoll` / `_stopRunsListPoll` are toggled by `switchView`.
 

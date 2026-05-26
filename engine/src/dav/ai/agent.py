@@ -437,6 +437,16 @@ class Stage2Agent:
                 )
                 messages.append(assistant_msg)
 
+                # In-turn dedup: models sometimes emit the same tool call 4-8
+                # times in parallel within a single response. Each duplicate
+                # eats context (tool responses are 1-3 KB each) and pushes us
+                # toward the context limit. Execute each (tool_name, args)
+                # pair ONCE; for duplicates, return a short "[duplicate]"
+                # marker referencing the first tool_call_id so the model
+                # still gets the required response per tool_call_id but
+                # without re-running the call or eating real context.
+                # Result cache: (tool_name, args_json) -> (first_tc_id, content)
+                _exec_cache: dict[tuple, tuple[str, str]] = {}
                 for tc in response.tool_calls:
                     tool_name = tc["function"]["name"]
                     try:
@@ -445,6 +455,35 @@ class Stage2Agent:
                     except json.JSONDecodeError:
                         args = {}
                         log.warning("tool %s had malformed arg JSON: %r", tool_name, raw_args)
+                    dedup_key = (tool_name, json.dumps(args, sort_keys=True, default=str))
+
+                    if dedup_key in _exec_cache:
+                        first_id, first_content = _exec_cache[dedup_key]
+                        dup_content = (
+                            f"⛔ DUPLICATE-IN-TURN: you emitted this exact "
+                            f"tool call {tool_name}({json.dumps(args)}) multiple "
+                            f"times in a single response. The engine executed it "
+                            f"once (see tool_call_id={first_id}); this response "
+                            f"is a no-op marker. STOP emitting duplicate tool "
+                            f"calls in one response — wait for the result of "
+                            f"one call before deciding what to call next."
+                        )
+                        log.info(
+                            "turn %d: dedup duplicate %s args=%s (first_id=%s)",
+                            turn, tool_name, args, first_id,
+                        )
+                        self._emit_turn(
+                            turn=turn, kind="tool",
+                            tool_name=tool_name, args=args, ok=True,
+                            result=dup_content, result_length=len(dup_content),
+                            dedup_of=first_id,
+                        )
+                        messages.append(ChatMessage(
+                            role="tool", content=dup_content,
+                            tool_call_id=tc["id"], name=tool_name,
+                        ))
+                        continue
+
                     log.info("turn %d: mcp call %s args=%s", turn, tool_name, args)
 
                     mcp_result = self.mcp.call(tool_name, args)
@@ -458,6 +497,8 @@ class Stage2Agent:
                     # so prepending here is more reliable than relying on the
                     # buried system-prompt directive.
                     full_result = self._anti_fishing_wrap(tool_name, args, full_result, mcp_result.ok)
+                    _exec_cache[dedup_key] = (tc["id"], full_result)
+
                     self._tool_trace.append(ToolCall(
                         tool=tool_name,
                         args=args,
