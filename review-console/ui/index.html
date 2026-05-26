@@ -1619,8 +1619,16 @@
     </div>
     <div class="modal-body">
       <div style="font-size:12px; color:var(--text-dim); margin-bottom:4px;" id="lcModalDesc"></div>
-      <div class="form-field"><label>Notes (optional)</label>
+      <!-- Approval gate banner — populated when transitioning to 'approved' -->
+      <div id="lcApprovalGate" style="display:none; padding:8px 12px; border-radius:3px; margin-bottom:10px; font-size:11px; line-height:1.5;"></div>
+      <div class="form-field"><label id="lcModalNotesLabel">Notes (optional)</label>
         <textarea id="lcModalNotes" rows="3" placeholder="Reason for transition, review comments, etc."></textarea>
+      </div>
+      <div class="form-field" id="lcOverrideRow" style="display:none;">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+          <input type="checkbox" id="lcOverrideCheckbox" style="width:auto; height:auto; accent-color:var(--red);" />
+          <span style="font-size:12px;">⚠ Approve anyway (override — requires a reason above)</span>
+        </label>
       </div>
     </div>
     <div class="modal-footer">
@@ -4044,7 +4052,7 @@ function toggleRaw(el) {
 }
 
 // ── Lifecycle transition modal ──────────────────────────────
-function openLCModal(uuid, toState, label) {
+async function openLCModal(uuid, toState, label) {
   lcPendingUCId = uuid; lcPendingTo = toState;
   document.getElementById('lcModalTitle').textContent = label;
   document.getElementById('lcModalDesc').textContent =
@@ -4052,7 +4060,43 @@ function openLCModal(uuid, toState, label) {
   document.getElementById('lcModalNotes').value = '';
   document.getElementById('lcModalStatus').textContent = '';
   document.getElementById('confirmLCModal').disabled = false;
+  // Reset gate UI
+  const gate = document.getElementById('lcApprovalGate');
+  const overrideRow = document.getElementById('lcOverrideRow');
+  const overrideBox = document.getElementById('lcOverrideCheckbox');
+  const notesLabel  = document.getElementById('lcModalNotesLabel');
+  gate.style.display = 'none';
+  overrideRow.style.display = 'none';
+  overrideBox.checked = false;
+  notesLabel.textContent = 'Notes (optional)';
   document.getElementById('lcModal').classList.add('open');
+  // For 'approved' transitions, surface the passing-run status before the
+  // user commits, so they understand whether they need an override.
+  if (toState === 'approved') {
+    gate.style.display = 'block';
+    gate.style.background = 'var(--bg-input)';
+    gate.style.border = '1px solid var(--border)';
+    gate.innerHTML = '<span style="color:var(--text-faint);">Checking for passing runs…</span>';
+    try {
+      const resp = await api(`/api/use-cases/${encodeURIComponent(uuid)}/runs?limit=50`);
+      const passing = (resp.runs || []).filter(r =>
+        r.status === 'success' && (r.verdict === 'supported' || r.verdict === 'partially_supported')
+      );
+      if (passing.length) {
+        gate.style.background = 'rgba(146,194,92,0.10)';
+        gate.style.border = '1px solid var(--green)';
+        gate.innerHTML = `<strong style="color:var(--green);">✓ ${passing.length} passing run${passing.length>1?'s':''} on file</strong> — approval is unblocked.`;
+      } else {
+        gate.style.background = 'rgba(224,122,79,0.10)';
+        gate.style.border = '1px solid var(--red)';
+        gate.innerHTML = `<strong style="color:var(--red);">⚠ No passing runs on file.</strong> Approval is gated. Either run a test evaluation first (push to corpus → run a Set containing this UC), or tick the override below and explain why.`;
+        overrideRow.style.display = '';
+        notesLabel.textContent = 'Notes (REQUIRED when overriding)';
+      }
+    } catch (e) {
+      gate.innerHTML = `<span style="color:var(--red);">Could not check test history: ${esc(e.message)}</span>`;
+    }
+  }
 }
 function closeLCModal() { document.getElementById('lcModal').classList.remove('open'); }
 
@@ -4061,9 +4105,10 @@ async function confirmLCTransition() {
   const btn = document.getElementById('confirmLCModal'), status = document.getElementById('lcModalStatus');
   btn.disabled = true; status.textContent = 'saving…';
   const notes = document.getElementById('lcModalNotes').value.trim();
+  const override = document.getElementById('lcOverrideCheckbox').checked;
   try {
     await api(`/api/use-cases/${encodeURIComponent(lcPendingUCId)}/transition`, {
-      method:'POST', body:JSON.stringify({to_state:lcPendingTo, notes})
+      method:'POST', body:JSON.stringify({to_state:lcPendingTo, notes, override})
     });
     toast(`UC moved to ${lcPendingTo.replace(/_/g,' ')}`);
     closeLCModal();
@@ -4442,33 +4487,46 @@ function _renderPushToCorpusBtn(data) {
   const uuid = data.uuid;
   const prUrl = data.corpus_pr_url || '';
   const prState = data.corpus_pr_state || '';
-  const synced = data.corpus_synced_at || '';
+  const lcState = data.lifecycle_state || 'draft';
 
-  // Already pushed → show the PR link + a re-push action
+  // Already pushed → show the PR link + a re-push action (re-push allowed
+  // for any state since the PR already exists; updating the YAML is fine)
   if (prUrl) {
     const stateLabel = prState === 'merged' ? '✓ merged' :
                        prState === 'closed' ? '⊘ closed' : '⇡ PR open';
     return `<a href="${esc(prUrl)}" target="_blank" rel="noopener" class="btn ghost" title="Open PR in GitHub" style="text-decoration:none;">${stateLabel}</a>
-            <button class="btn primary" title="Push the latest YAML to the existing PR branch" onclick="pushUCToCorpus('${esc(uuid)}', true)">↻ Update PR</button>`;
+            <button class="btn primary" title="Push the latest YAML to the existing PR branch" onclick="pushUCToCorpus('${esc(uuid)}', true, false)">↻ Update PR</button>`;
   }
 
-  // Not pushed yet — gate on host + token
+  // Not pushed yet — gate on host + token + lifecycle state
   const st = _corpusPushStatus || {configured:false, host:'unknown'};
-  let disabled = '', tip = '';
+  let disabled = '', tip = '', overrideHint = '';
   if (st.host === 'none')        { disabled = 'disabled'; tip = 'No corpus repo URL configured (Config → Sources)'; }
   else if (st.host === 'unsupported') { disabled = 'disabled'; tip = `Corpus host ${st.corpus_url} not supported yet (only GitHub today)`; }
   else if (!st.configured)       { disabled = 'disabled'; tip = `Push token not set — add ${st.env_var || 'DAV_CORPUS_PUSH_TOKEN'} to the consumer Secret`; }
+  else if (lcState !== 'approved') {
+    // Lifecycle gate: show as warning (clickable to override path), not hard-disabled
+    tip = `UC is in '${lcState}'. Push requires 'approved'. Move it through ready → in_review → approved, or use force-push (Shift-click) to override.`;
+    overrideHint = `<button class="btn ghost btn-sm" title="Force-push this UC despite not being approved (will be noted in the PR body)" onclick="pushUCToCorpus('${esc(uuid)}', false, true)" style="font-size:9px;">⚠ Force push</button>`;
+    return `<button class="btn primary" title="${esc(tip)}" disabled style="opacity:0.55;cursor:not-allowed;">↑ Push to corpus</button>
+            ${overrideHint}`;
+  }
   else                           { tip = 'Open a PR adding this UC to the corpus repo'; }
-  return `<button class="btn primary" title="${esc(tip)}" ${disabled} style="${disabled?'opacity:0.55;cursor:not-allowed;':''}" onclick="${disabled?'':`pushUCToCorpus('${esc(uuid)}', false)`}">↑ Push to corpus</button>`;
+  return `<button class="btn primary" title="${esc(tip)}" ${disabled} style="${disabled?'opacity:0.55;cursor:not-allowed;':''}" onclick="${disabled?'':`pushUCToCorpus('${esc(uuid)}', false, false)`}">↑ Push to corpus</button>`;
 }
 
-async function pushUCToCorpus(uuid, isRepush) {
-  if (!isRepush && !confirm('Open a PR adding this UC to the corpus repo?')) return;
+async function pushUCToCorpus(uuid, isRepush, override) {
+  if (!isRepush) {
+    const msg = override
+      ? '⚠ Force-push this UC even though it is not in "approved" state? This will be noted in the PR body.'
+      : 'Open a PR adding this UC to the corpus repo?';
+    if (!confirm(msg)) return;
+  }
   toast(isRepush ? 'Updating PR…' : 'Opening PR…');
   try {
     const resp = await api(`/api/use-cases/${encodeURIComponent(uuid)}/push-to-corpus`, {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify({override: !!override}),
     });
     toast(`PR ${resp.action} — ${resp.pr_url}`, false);
     // Refresh the UC so the button flips to PR-link / Update mode

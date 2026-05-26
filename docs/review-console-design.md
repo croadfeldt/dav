@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.24  
+**Current version:** v0.9.25  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -356,6 +356,17 @@ End-to-end change across engine, Tekton, and console:
 3. Console rebuild + rollout (now safe to send `uc_handles` in PipelineRun specs since the Pipeline accepts the param).
 
 Reverse order would break: an old Pipeline rejects a PipelineRun specifying an unknown param.
+
+**Lifecycle gating (v0.9.25):** The `draft → ready → in_review → approved → deprecated` state machine is now load-bearing for two operations:
+
+1. **Approve transition (`* → approved`)** requires at least one passing run on file — `uc_analyses.status='success' AND verdict IN ('supported', 'partially_supported')`. The lifecycle modal pre-checks this when opened for an approve transition: shows a green "✓ N passing runs on file" banner when good, or a red "⚠ No passing runs" banner with an **override checkbox + required reason** when not. Override is recorded as `[OVERRIDE: no passing run] <reason>` in the lifecycle event, and the modal's notes label switches to "REQUIRED when overriding."
+2. **Push to corpus** requires `lifecycle_state == 'approved'`. The button on the UC detail header is disabled with an explanatory tooltip when the UC is in any other state; a small **⚠ Force push** button next to it lets reviewers override with a confirmation prompt. Force-pushed UCs get an explicit note in the PR body so the corpus reviewer can see what happened.
+
+API:
+- `LifecycleTransitionIn` gains `override: bool = False`. `POST /api/use-cases/{uuid}/transition` returns **409** when approving without a passing run and no override; **400** when override is set but notes are empty.
+- `PushToCorpusIn` gains `override: bool = False`. `POST /api/use-cases/{uuid}/push-to-corpus` returns **409** when the UC isn't approved and override isn't set.
+
+Why this is soft (override available) rather than hard: the design note from 2026-05-26 — "Mitigation for trivial UCs: warn + override with a reason." A reviewer who needs to ship a one-line glossary UC shouldn't be blocked by the "needs a passing run" rule; they record the override + reason and move on. The override is visible in lifecycle history and in any pushed PR, so the trail is preserved.
 
 ---
 

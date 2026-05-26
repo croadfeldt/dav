@@ -282,6 +282,11 @@ class ManagedUCIn(BaseModel):
 class LifecycleTransitionIn(BaseModel):
     to_state: str
     notes: Optional[str] = None
+    # When to_state == "approved", the API requires at least one passing run
+    # attached to the UC (status='success' AND verdict IN ('supported',
+    # 'partially_supported')). Set `override=True` plus a non-empty `notes`
+    # reason to approve anyway (e.g. trivial UC that doesn't merit a test run).
+    override: bool = False
 
 
 class SetIn(BaseModel):
@@ -1279,9 +1284,19 @@ async def delete_use_case(uuid: str, request: Request):
     return {"ok": True, "uuid": uuid}
 
 
+_PASSING_VERDICTS = ("supported", "partially_supported")
+
+
 @app.post("/api/use-cases/{uuid}/transition")
 async def transition_use_case(uuid: str, payload: LifecycleTransitionIn, request: Request):
-    """Advance or retract a managed UC's lifecycle state."""
+    """Advance or retract a managed UC's lifecycle state.
+
+    Approval gate: transitioning to `approved` requires at least one
+    passing run on file (uc_analyses.status='success' AND verdict IN
+    'supported' / 'partially_supported'). Soft override available via
+    `override=True` + a non-empty `notes` reason — the override and
+    reason are recorded in the lifecycle event.
+    """
     user = get_user(request)
     if payload.to_state not in UC_STATES:
         raise HTTPException(400, f"invalid state; must be one of {sorted(UC_STATES)}")
@@ -1299,6 +1314,33 @@ async def transition_use_case(uuid: str, payload: LifecycleTransitionIn, request
                 f"cannot transition from '{from_state}' to '{payload.to_state}'; "
                 f"allowed: {sorted(allowed) or 'none'}",
             )
+
+        # Approval gate
+        if payload.to_state == "approved":
+            passing_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM uc_analyses "
+                "WHERE uc_uuid=$1 AND status='success' AND verdict = ANY($2::text[])",
+                uuid, list(_PASSING_VERDICTS),
+            )
+            if not passing_count:
+                if not payload.override:
+                    raise HTTPException(
+                        409,
+                        "Cannot approve: no passing run on file. Run a test "
+                        "evaluation first, OR set override=true with a notes "
+                        "reason to approve anyway (e.g. trivial UC).",
+                    )
+                if not (payload.notes or "").strip():
+                    raise HTTPException(
+                        400,
+                        "Override requires a non-empty notes reason explaining "
+                        "why this UC is being approved without a passing run.",
+                    )
+
+        notes = payload.notes or ""
+        if payload.override and payload.to_state == "approved":
+            # Tag override in the notes so it's discoverable in lifecycle history
+            notes = f"[OVERRIDE: no passing run] {notes}"
         async with conn.transaction():
             await conn.execute(
                 "UPDATE managed_use_cases SET lifecycle_state=$2, updated_by=$3, updated_at=now() WHERE uuid=$1",
@@ -1307,9 +1349,10 @@ async def transition_use_case(uuid: str, payload: LifecycleTransitionIn, request
             await conn.execute(
                 "INSERT INTO lifecycle_events(uc_uuid, from_state, to_state, actor, notes) "
                 "VALUES ($1, $2, $3, $4, $5)",
-                uuid, from_state, payload.to_state, user, payload.notes or "",
+                uuid, from_state, payload.to_state, user, notes,
             )
-    log.info("UC %s: %s → %s by %s", uuid, from_state, payload.to_state, user)
+    log.info("UC %s: %s → %s by %s%s", uuid, from_state, payload.to_state, user,
+             " (override)" if payload.override else "")
     return {"ok": True, "uuid": uuid, "from_state": from_state, "to_state": payload.to_state}
 
 
@@ -1361,6 +1404,9 @@ class PushToCorpusIn(BaseModel):
     commit_message: Optional[str] = None   # default: derived from title + action
     pr_title:       Optional[str] = None
     pr_body:        Optional[str] = None
+    # Push is gated on lifecycle_state == 'approved'. Set override=True to
+    # force-push an unapproved UC (recorded in the PR body for transparency).
+    override:       bool = False
 
 
 @app.get("/api/corpus-push/status")
@@ -1405,6 +1451,16 @@ async def push_use_case_to_corpus(uuid: str, payload: PushToCorpusIn, request: R
     if not row:
         raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
     uc = dict(row)
+
+    # Lifecycle gate: only `approved` UCs may be pushed (soft override available).
+    lc_state = uc.get("lifecycle_state") or "draft"
+    if lc_state != "approved" and not payload.override:
+        raise HTTPException(
+            409,
+            f"UC is in '{lc_state}'. Push requires lifecycle 'approved' "
+            f"(move it through ready → in_review → approved), OR set "
+            f"override=true to push anyway (will be noted in the PR body).",
+        )
 
     # Resolve corpus repo config from the consumer's source ConfigMap
     try:
@@ -1452,12 +1508,20 @@ async def push_use_case_to_corpus(uuid: str, payload: PushToCorpusIn, request: R
     action_verb = "Update" if uc.get("corpus_pr_url") else "Add"
     commit_message = payload.commit_message or f"{action_verb} UC: {title}"
     pr_title = payload.pr_title or commit_message
+    override_note = ""
+    if lc_state != "approved" and payload.override:
+        override_note = (
+            f"\n\n> ⚠ **Override:** UC is in `{lc_state}` state, not `approved`. "
+            f"Pushed via the override path — reviewer should confirm intent."
+        )
     pr_body = payload.pr_body or (
         f"Pushed from the DAV review console by `{user}`.\n\n"
         f"- UUID: `{uuid}`\n"
         f"- Handle: `{handle or '—'}`\n"
-        f"- Path: `{file_path}`\n\n"
+        f"- Path: `{file_path}`\n"
+        f"- Lifecycle state at push: `{lc_state}`\n\n"
         f"This PR was opened or refreshed via the **Push to corpus** action."
+        f"{override_note}"
     )
 
     existing_pr_number = None
