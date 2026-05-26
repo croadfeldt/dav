@@ -2057,11 +2057,34 @@ function toggleNav() {
 }
 
 // ── Tab routing ──────────────────────────────────────────────
+// Background poll that keeps the runs list live while the user is on the
+// Runs tab. Triggers from elsewhere (API direct, CLI) show up within
+// _RUNS_LIST_POLL_MS; in-flight phase transitions repaint without refresh.
+let _runsListPollTimer = null;
+const _RUNS_LIST_POLL_MS = 5000;
+function _startRunsListPoll() {
+  _stopRunsListPoll();
+  _runsListPollTimer = setInterval(() => {
+    // Only poll while the Runs view is the active one — protects against
+    // background tabs / hidden pages spinning needless requests.
+    if (document.visibilityState === 'visible'
+        && document.getElementById('view-runs')?.classList.contains('active')) {
+      loadRuns().catch(() => {});
+    }
+  }, _RUNS_LIST_POLL_MS);
+}
+function _stopRunsListPoll() {
+  if (_runsListPollTimer) { clearInterval(_runsListPollTimer); _runsListPollTimer = null; }
+}
+
 function switchView(name) {
   document.querySelectorAll('.pf-nav-item').forEach(b =>
     b.classList.toggle('active', b.dataset.view === name));
   document.querySelectorAll('.pf-view').forEach(v =>
     v.classList.toggle('active', v.id === 'view-' + name));
+  // Start/stop the runs-list poll based on whether we're on that tab
+  if (name === 'runs') _startRunsListPoll();
+  else                 _stopRunsListPoll();
   if (name === 'runs')     loadRuns();
   if (name === 'results')  loadResults();
   if (name === 'usecases') { loadUCs(); loadSets(); }

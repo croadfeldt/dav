@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.41  
+**Current version:** v0.9.42  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -514,6 +514,8 @@ The prepend approach is more reliable than relying on the buried system-prompt d
 Replaces the prior single-purpose toggle that only flipped `color` between accent and faint and didn't react to user scrolling. Future tail panes should call `_setupAutoFollow(...)` with their state get/set closures.
 
 **Anti-fishing threshold tightened to 2 (v0.9.41):** Empirical: v0.9.39 reduced tool-call waste by 22% across a 3-sample run, but the engine still allowed 4 attempts of the same `section_title` (counter increments on each miss; 3rd miss got the prepend, 4th was the call after the prepend). User asked for tighter gating — threshold dropped from 3 to 2 misses. Now the 2nd attempt of the same `section_title` returns the STOP directive, capping fishing at roughly 1 useless retry instead of 3.
+
+**Live runs list (v0.9.42):** Runs list now polls every 5s while the Runs tab is the active view. Triggers from outside the UI (direct API call, CLI, webhook, etc.) appear in the list within one poll cycle without a manual refresh; in-flight phase transitions (Pending → Running → Succeeded/Failed) repaint live. The poll self-gates on `document.visibilityState === 'visible'` and the tab being active, so a hidden tab or a user on a different view doesn't burn requests. Implementation: `_startRunsListPoll` / `_stopRunsListPoll` are toggled by `switchView`.
 
 **Results tab — persistent run-summary header (v0.9.31):** Same shape as the Runs detail v0.9.30 work: stats stay above the output, output bounded to the panel. Previously `renderRunSummaryHeader` rendered the run-level stats into `analysisDetail`; picking a UC replaced them with the per-UC analysis and the run context disappeared. Now a dedicated `runResultsHeader` strip sits above `analysisDetail`, populated on `selectRunResult` and never overwritten by per-UC rendering. Compact single-row layout: session name + run_id + mode on the left; `N/M UCs (X%) · failed · samples · ⏱ wall · finished_at` on the right. Wraps at narrow widths. `analysisDetail` gets `flex:1; overflow-y:auto; min-height:0` so the per-UC content scrolls *within* the panel — the page never grows beyond the viewport.
 
