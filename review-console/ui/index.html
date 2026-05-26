@@ -2864,17 +2864,21 @@ async function openNewRun(banner, subpath, ucFilter, branchOverride) {
   loadRunCategories();
 }
 
-// Build {handles, uuids} arrays from a Set's members[]. Prefers handle when
-// present, falls back to uuid otherwise. Skips managed members since they're
-// not in the corpus the engine reads — they require Push-to-corpus first.
+// Build {handles, uuids, managed} arrays from a Set's members[]. Corpus
+// members go to handles/uuids for the engine's corpus filter; managed
+// members go to `managed` and are fetched from the console API at run start.
 function _filterFromSetMembers(members) {
-  const handles = [], uuids = [];
+  const handles = [], uuids = [], managed = [];
   for (const m of members) {
-    if (m.uc_source !== 'corpus') continue;
-    if (m.uc_handle) handles.push(m.uc_handle);
-    else if (m.uc_uuid) uuids.push(m.uc_uuid);
+    if (m.uc_source === 'managed') {
+      managed.push(m.uc_uuid);
+    } else {
+      if (m.uc_handle) handles.push(m.uc_handle);
+      else if (m.uc_uuid) uuids.push(m.uc_uuid);
+    }
   }
-  return (handles.length || uuids.length) ? {handles, uuids} : null;
+  return (handles.length || uuids.length || managed.length)
+    ? {handles, uuids, managed} : null;
 }
 
 async function loadRunCategories() {
@@ -2930,8 +2934,11 @@ async function submitNewRun() {
     category:           document.getElementById('nrCategory').value || 'ad-hoc',
     // Optional engine-side UC filter — set by runSet / testRunUC. When
     // present, engine processes only these UCs from within corpus_subpath.
-    uc_handles:         _pendingRunFilter?.handles || null,
-    uc_uuids:           _pendingRunFilter?.uuids   || null,
+    uc_handles:         (_pendingRunFilter?.handles?.length ? _pendingRunFilter.handles : null),
+    uc_uuids:           (_pendingRunFilter?.uuids?.length   ? _pendingRunFilter.uuids   : null),
+    // Managed UCs are fetched from the console API by the engine at run
+    // start; lets reviewers test pre-promotion without pushing first.
+    managed_uc_uuids:   (_pendingRunFilter?.managed?.length ? _pendingRunFilter.managed : null),
   };
   try {
     const resp = await api('/api/runs', {method:'POST', body:JSON.stringify(payload)});
@@ -3821,17 +3828,18 @@ function _renderUCSelectionToolbar() {
   }
   const n = _selectedUCs.size;
   if (!n) { bar.style.display = 'none'; return; }
-  // Split managed vs corpus for the warning
   const selected = allUCs.filter(u => _selectedUCs.has(u.uuid));
   const managedCount = selected.filter(u => u.source === 'managed').length;
   const corpusCount  = selected.length - managedCount;
   bar.style.display = 'flex';
+  // All UCs are testable now — managed via console-API fetch, corpus via the
+  // usual handle filter. Surface the split so reviewers understand the scope.
   let label = `${n} selected`;
-  if (managedCount && corpusCount)      label += ` (${corpusCount} testable, ${managedCount} managed will be skipped)`;
-  else if (managedCount && !corpusCount) label += ` · ⚠ all managed — none can be tested until pushed to corpus`;
+  if (managedCount && corpusCount)       label += ` (${corpusCount} corpus + ${managedCount} managed — fetched from API)`;
+  else if (managedCount && !corpusCount) label += ` (managed — fetched from API)`;
   count.textContent = label;
-  document.getElementById('ucSelTestBtn').disabled = corpusCount === 0;
-  document.getElementById('ucSelTestBtn').style.opacity = corpusCount === 0 ? '0.55' : '';
+  document.getElementById('ucSelTestBtn').disabled = false;
+  document.getElementById('ucSelTestBtn').style.opacity = '';
 }
 
 function _clearUCSelection() {
@@ -3840,22 +3848,28 @@ function _clearUCSelection() {
 }
 
 async function _batchTestSelectedUCs() {
-  const selected = allUCs.filter(u => _selectedUCs.has(u.uuid) && u.source === 'corpus');
+  const selected = allUCs.filter(u => _selectedUCs.has(u.uuid));
   if (!selected.length) {
-    toast('No corpus UCs in selection — nothing to test', true);
+    toast('Nothing selected to test', true);
     return;
   }
-  const handles = [], uuids = [], paths = [];
+  const handles = [], uuids = [], managed = [], paths = [];
   for (const u of selected) {
-    if (u.handle) handles.push(u.handle);
-    else          uuids.push(u.uuid);
-    if (u.path)   paths.push(u.path);
+    if (u.source === 'managed') {
+      managed.push(u.uuid);
+    } else {
+      if (u.handle) handles.push(u.handle);
+      else          uuids.push(u.uuid);
+      if (u.path)   paths.push(u.path);
+    }
   }
-  const subpath = _narrowestSubpath(paths);
-  const skipped = _selectedUCs.size - selected.length;
-  const banner = `Batch test eval: ${selected.length} UC${selected.length>1?'s':''} (engine-filtered)${skipped ? ` · ${skipped} managed UC(s) skipped` : ''}`;
-  await openNewRun(banner, subpath, {handles, uuids});
-  // Pre-fill a session name that hints at the scope
+  const subpath = paths.length ? _narrowestSubpath(paths) : '';
+  const counts = [
+    handles.length || uuids.length ? `${handles.length+uuids.length} corpus` : null,
+    managed.length ? `${managed.length} managed (fetched from API)` : null,
+  ].filter(Boolean).join(' + ');
+  const banner = `Batch test eval: ${counts} · engine-filtered`;
+  await openNewRun(banner, subpath, {handles, uuids, managed});
   const sn = document.getElementById('nrSessionName');
   if (sn && !sn.value) sn.value = `batch test: ${selected.length} UCs`.slice(0, 120);
 }
@@ -4193,20 +4207,33 @@ function _narrowestSubpath(ucPaths) {
 }
 
 async function testRunUC(uuid, ucPath, title, branchOverride) {
-  if (!ucPath) {
-    toast('No corpus path on this UC — cannot scope a test run.', true);
-    return;
-  }
-  const subpath = _narrowestSubpath([ucPath]);
-  // Look up the UC's handle from allUCs (UC list already loaded)
+  // Three paths converge here:
+  //   • Corpus UC: ucPath is the corpus file path → engine filters within
+  //     that directory.
+  //   • Managed UC, never pushed: ucPath empty → engine fetches the YAML
+  //     from the console API via the managed_uc_uuids materialize path.
+  //   • Managed UC pushed: ucPath = corpus_synced_path + branchOverride =
+  //     the PR branch → engine clones at that branch and filters to the UC.
   const uc = (allUCs || []).find(u => u.uuid === uuid);
-  const filter = (uc && uc.handle)
-    ? {handles: [uc.handle], uuids: []}
-    : {handles: [], uuids: [uuid]};
+  const isManagedDirect = !ucPath && uc && uc.source === 'managed';
+
+  let subpath = '';
+  let filter = null;
+  if (isManagedDirect) {
+    // Managed direct: no corpus filter, no subpath — engine fetches the UC
+    // from the console API via managed_uc_uuids.
+    filter = {handles: [], uuids: [], managed: [uuid]};
+  } else {
+    subpath = _narrowestSubpath([ucPath]);
+    filter = (uc && uc.handle)
+      ? {handles: [uc.handle], uuids: [], managed: []}
+      : {handles: [], uuids: [uuid], managed: []};
+  }
   const branchSuffix = branchOverride ? ` · branch '${branchOverride}'` : '';
-  const banner = `Test evaluation: ${title} · scope ${subpath || '/'} (engine-filtered to this UC only)${branchSuffix}`;
+  const banner = isManagedDirect
+    ? `Test evaluation (managed): ${title} · engine fetches YAML from the console API at run start`
+    : `Test evaluation: ${title} · scope ${subpath || '/'} (engine-filtered to this UC only)${branchSuffix}`;
   await openNewRun(banner, subpath, filter, branchOverride);
-  // Pre-fill session name so it's clear what this run is for
   const sn = document.getElementById('nrSessionName');
   if (sn && !sn.value) sn.value = `test: ${title}`.slice(0, 120);
 }
@@ -4674,26 +4701,27 @@ async function _loadCorpusPushStatus() {
 }
 
 function _renderManagedTestBtn(data, titleText) {
-  // Three states for managed UCs:
-  //  1. Already pushed (has corpus_synced_path + corpus_branch) → enable
-  //     Test evaluation, scoped to the PR branch.
-  //  2. Never pushed → offer ↑↦▶ Push & test (single click: push then test
-  //     on the resulting PR branch).
-  //  3. Push not configured (no token / unsupported host) → disabled, with
-  //     the same tooltip the push button surfaces.
+  // Managed-UC test eval (v0.9.29+): the engine fetches the UC YAML from
+  // the console API at run start, so no push or branch is required. Two
+  // states presented:
+  //   1. Direct test (always available for managed UCs) — engine
+  //      materializes the UC from the console API and runs gap analysis.
+  //   2. Push & test (offered as a secondary action if push is configured)
+  //      — push to a PR branch AND test against that branch. Useful when
+  //      the reviewer wants the test recorded against a corpus path.
   const uuid = data.uuid;
-  if (data.corpus_synced_path && data.corpus_branch) {
-    const tip = `Test on the push branch '${data.corpus_branch}' — engine clones the corpus at that branch and runs only this UC`;
-    return `<button class="btn primary" title="${esc(tip)}" onclick="testRunUC('${esc(uuid)}', ${JSON.stringify(data.corpus_synced_path)}, ${JSON.stringify(titleText)}, ${JSON.stringify(data.corpus_branch)})">▶ Test evaluation</button>`;
-  }
-  // Not pushed yet — gate the push-and-test chain on the same conditions as
-  // the standalone Push button.
+  const direct = `<button class="btn primary" title="Run gap analysis against this managed UC — engine fetches the YAML from the console API at run start, no push required" onclick="testRunUC('${esc(uuid)}', '', ${JSON.stringify(titleText)})">▶ Test evaluation</button>`;
   const st = _corpusPushStatus || {configured:false, host:'unknown'};
-  let disabled = '', tip = 'Push this UC to the corpus repo and immediately test the PR branch';
-  if (st.host === 'none')        { disabled = 'disabled'; tip = 'No corpus repo URL configured (Config → Sources)'; }
-  else if (st.host === 'unsupported') { disabled = 'disabled'; tip = `Corpus host ${st.corpus_url} not supported yet (only GitHub today)`; }
-  else if (!st.configured)       { disabled = 'disabled'; tip = `Push token not set — add ${st.env_var || 'DAV_CORPUS_PUSH_TOKEN'} to the consumer Secret`; }
-  return `<button class="btn primary" title="${esc(tip)}" ${disabled} style="${disabled?'opacity:0.55;cursor:not-allowed;':''}" onclick="${disabled?'':`pushAndTestUC('${esc(uuid)}')`}">↑↦▶ Push & test</button>`;
+  const pushReady = st.host === 'github' && st.configured;
+  if (data.corpus_synced_path && data.corpus_branch) {
+    // Already pushed — surface the PR-branch test path as the secondary
+    const branchBtn = `<button class="btn ghost btn-sm" title="Test on the existing PR branch '${esc(data.corpus_branch)}'" onclick="testRunUC('${esc(uuid)}', ${JSON.stringify(data.corpus_synced_path)}, ${JSON.stringify(titleText)}, ${JSON.stringify(data.corpus_branch)})">▶ on PR branch</button>`;
+    return direct + branchBtn;
+  }
+  if (pushReady) {
+    return direct + `<button class="btn ghost btn-sm" title="Push to corpus AND test the PR branch — useful when you want the test recorded against a corpus path" onclick="pushAndTestUC('${esc(uuid)}')">↑↦▶ Push &amp; test</button>`;
+  }
+  return direct;
 }
 
 function _renderPushToCorpusBtn(data) {
@@ -5013,21 +5041,17 @@ async function runSet(setId, setName) {
     const info = await api(`/api/sets/${setId}/corpus-subpath`);
     const set  = await api(`/api/sets/${setId}`);
     const filter = _filterFromSetMembers(set.members || []);
-    // Refuse to run when there are no corpus members — the engine reads from
-    // the corpus repo and would otherwise fall back to running the whole
-    // detected subpath (since the filter would be null). Tell the user how
-    // to fix it: push managed UCs first via ↑↦▶ Push & test on each UC.
-    if (!info.corpus_count) {
-      const detail = info.managed_count
-        ? `This Set has ${info.managed_count} managed UC${info.managed_count>1?'s':''} but 0 corpus UCs — the engine reads from the corpus repo. Push the managed UC${info.managed_count>1?'s':''} to corpus first (↑↦▶ Push & test on each UC), then re-run the Set.`
-        : `This Set is empty — add UCs first (drag from the UC list, or use + UC in the Manage Sets modal).`;
-      toast(`"${setName}" has no testable UCs. ${detail}`, true);
+    // Set is "runnable" if it has ANY members now — managed UCs are fetched
+    // from the console API at run start (v0.9.29+). Refuse only when empty.
+    const total = (set.members || []).length;
+    if (!total) {
+      toast(`"${setName}" is empty — add UCs first (drag from the UC list, or use + UC in the Manage Sets modal).`, true);
       return;
     }
-    const msg = info.managed_count > 0
-      ? `⚠ ${info.managed_count} managed UC(s) in this set will be skipped (push to corpus first).`
-      : null;
-    const banner = `Running set "${setName}" — ${info.corpus_count} corpus UC${info.corpus_count!==1?'s':''} (engine-filtered to exactly these UCs)${msg ? '. '+msg : ''}`;
+    const bits = [];
+    if (info.corpus_count) bits.push(`${info.corpus_count} corpus`);
+    if (info.managed_count) bits.push(`${info.managed_count} managed (fetched from API)`);
+    const banner = `Running set "${setName}" — ${bits.join(' + ')} · engine-filtered to exactly these UCs`;
     openNewRun(banner, info.subpath || '', filter);
   } catch (e) { toast('Could not compute set scope: ' + e.message, true); }
 }

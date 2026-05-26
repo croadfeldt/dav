@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.28  
+**Current version:** v0.9.29  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -379,7 +379,27 @@ Why this is soft (override available) rather than hard: the design note from 202
 1. **Push & test (managed UCs)** — new `↑↦▶ Push & test` button on managed UCs that haven't been pushed. Single click does both: opens a PR on a side branch (using the override path so it doesn't trip the approval gate, since this loop exists precisely to validate UCs *before* approval), then immediately opens the New Run modal scoped to the resulting PR branch + the UC's handle. After push, the regular **▶ Test evaluation** button on the same UC stays enabled and re-tests on the same branch — useful for iteration. Implementation: `pushAndTestUC` → `POST /push-to-corpus` with `override:true` → re-fetch UC → call `testRunUC(uuid, path, title, branchOverride)`. `openNewRun` accepts an optional `branchOverride` that pre-fills `nrCorpusBranch` after `loadNewRunDefaults` populates the form.
 2. **Per-row × on the UC list when filtered to a Set** — when `activeSetId` is a number, each UC row shows a small red × at the right edge. Click removes the UC from *that* set in-place without leaving the list (calls the existing `_removeUCFromSet`, which also refreshes the rail counts and the Manage modal). Click is `stopPropagation`'d so it doesn't also trigger row select. Hidden when "All UCs" or "(No set)" is the active filter.
 
-**Run-Set gate on zero corpus members (v0.9.28):** Real bug fix. When a Set contained only managed UCs (`corpus_count=0`), the engine filter built by `_filterFromSetMembers` came back `null` (it skips managed members since they're not in the corpus). `openNewRun` then ran with an empty subpath that auto-detected to `dav/use-cases`, and with no engine filter, it processed the whole corpus subtree — the opposite of what the banner promised. Now `runSet` refuses to open the modal when `corpus_count===0`, with a toast pointing the user at the fix: push managed UCs to corpus first (via **↑↦▶ Push & test** on each one), then re-run the Set. The toast distinguishes the all-managed case ("push first") from the truly-empty Set case ("add UCs first").
+**Run-Set gate on zero corpus members (v0.9.28):** Real bug fix. When a Set contained only managed UCs (`corpus_count=0`), the engine filter built by `_filterFromSetMembers` came back `null` (it skips managed members since they're not in the corpus). `openNewRun` then ran with an empty subpath that auto-detected to `dav/use-cases`, and with no engine filter, it processed the whole corpus subtree — the opposite of what the banner promised. Now `runSet` refuses to open the modal when `corpus_count===0`, with a toast pointing the user at the fix: push managed UCs to corpus first (via **↑↦▶ Push & test** on each one), then re-run the Set. The toast distinguishes the all-managed case ("push first") from the truly-empty Set case ("add UCs first"). *(Superseded by v0.9.29 — managed UCs can now be tested directly without push.)*
+
+**Managed-UC test eval — engine fetches from console API (v0.9.29):** Closes the "test before promote" loop. Managed UCs can now be run through the same gap analysis as corpus UCs without being pushed to the corpus repo first. End-to-end change across engine, Tekton, and console:
+
+- **Engine (`run_corpus.py`)** — two new args: `--managed-uc-uuids` (comma-separated UUIDs) and `--console-api-url` (e.g. `http://dav-review-api.dav.svc.cluster.local:8000`). After `gather_corpus`, the engine fetches each UUID via `GET {console_api_url}/api/use-cases/<uuid>`, extracts `yaml_content`, writes to a temp dir (`/tmp/dav-managed-ucs-XXXX/<uuid>.yaml`), and appends those paths to `corpus_files`. From that point on, materialized managed UCs are indistinguishable from corpus UCs — same filters, same processing, same `uc_analyses` rows. The empty-corpus error is now lenient when managed UCs are being added (it's fine if the corpus_path has nothing as long as there are managed UCs to fetch).
+- **Tekton Task `dav-run-corpus`** — two new params `managed-uc-uuids` and `console-api-url` (the latter defaulting to the in-cluster Service DNS at template-render time). Engine call gets both when `managed-uc-uuids` is non-empty.
+- **Tekton Pipeline `dav-stage2`** — declares the same params, passes through.
+- **Console API** — `RunTriggerIn.managed_uc_uuids: list[str] | None`. `validations._mk_pipelinerun` serializes the UUIDs comma-joined as the `managed-uc-uuids` param plus `console-api-url` derived from `DAV_CONSOLE_INTERNAL_URL` env var (default: in-cluster Service DNS for the API).
+- **Console UI** —
+  - `testRunUC` now handles three shapes: corpus UC (existing handle filter), managed UC never-pushed (new — fetched via API), managed UC already pushed (PR-branch test path retained as a secondary action).
+  - "▶ Test evaluation" is **active for all managed UCs** now, not just pushed ones. The button calls `testRunUC` with no path → triggers the managed-fetch flow.
+  - "↑↦▶ Push & test" stays as a *secondary* action (small btn-sm) when push is configured — useful when the reviewer specifically wants the test recorded against a corpus path.
+  - `_filterFromSetMembers` now collects managed UUIDs into a third bucket (`managed`); previously managed members were silently dropped. Set runs and batch test selections now run their managed members alongside corpus members.
+  - `runSet` no longer refuses on `corpus_count===0` (v0.9.28 gate); it only refuses on a truly empty Set. The banner cleanly shows the split `N corpus + M managed (fetched from API)`.
+  - `submitNewRun` includes `managed_uc_uuids` in the payload when `_pendingRunFilter.managed` is non-empty.
+
+Lifecycle interaction: managed UCs can be tested in any state (draft, ready, in_review). The resulting `uc_analyses` rows are visible in **Test history** on the UC detail. The existing **approval gate** (v0.9.25) still requires at least one passing run to move to `approved`, so the test-before-approve loop now actually works for managed UCs — previously it was a chicken-and-egg situation (couldn't approve without a test, couldn't test without push, couldn't push without approval). The **push gate** (also v0.9.25) still requires `approved` state, so pre-promotion test results don't bypass the approval workflow.
+
+**Deploy ordering** (same as v0.9.24):
+1. Engine + Tekton via `ansible-playbook --tags engine,tekton` (engine binary accepts new flags; Pipeline + Task declare new params with empty defaults).
+2. Console rebuild + rollout (now safe to send `managed_uc_uuids` in PipelineRun specs).
 
 ---
 

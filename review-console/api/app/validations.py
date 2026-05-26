@@ -86,6 +86,7 @@ def _mk_pipelinerun(
     halt_on_error: bool = False,
     uc_handles: Optional[list[str]] = None,
     uc_uuids: Optional[list[str]] = None,
+    managed_uc_uuids: Optional[list[str]] = None,
 ) -> dict:
     """Build a PipelineRun object targeting the DAV Pipeline."""
     suffix = str(int(time.time()))[-6:]
@@ -120,6 +121,15 @@ def _mk_pipelinerun(
         params.append({"name": "uc-handles", "value": ",".join(uc_handles)})
     if uc_uuids:
         params.append({"name": "uc-uuids", "value": ",".join(uc_uuids)})
+    if managed_uc_uuids:
+        params.append({"name": "managed-uc-uuids", "value": ",".join(managed_uc_uuids)})
+        # The engine needs to know where to fetch the YAML from. Default to
+        # the in-cluster Service for the API; can be overridden via env var.
+        console_url = os.environ.get(
+            "DAV_CONSOLE_INTERNAL_URL",
+            f"http://dav-review-api.{NAMESPACE}.svc.cluster.local:8000",
+        )
+        params.append({"name": "console-api-url", "value": console_url})
 
     return {
         "apiVersion": f"{_TEKTON_GROUP}/{_TEKTON_VERSION}",
@@ -168,6 +178,7 @@ def trigger_run(
     halt_on_error: bool = False,
     uc_handles: Optional[list[str]] = None,
     uc_uuids: Optional[list[str]] = None,
+    managed_uc_uuids: Optional[list[str]] = None,
 ) -> dict:
     """Create a PipelineRun. Returns the created object's status summary."""
     if not ENABLED:
@@ -190,6 +201,7 @@ def trigger_run(
         halt_on_error=halt_on_error,
         uc_handles=uc_handles,
         uc_uuids=uc_uuids,
+        managed_uc_uuids=managed_uc_uuids,
     )
 
     try:

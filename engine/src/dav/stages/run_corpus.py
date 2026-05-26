@@ -570,6 +570,20 @@ def _cli():
              "stable handle.",
     )
     parser.add_argument(
+        "--managed-uc-uuids", type=str, default=None,
+        help="Comma-separated list of managed UC UUIDs to fetch from the "
+             "console API and include alongside corpus UCs. Used by the "
+             "console's Test evaluation flow for unpushed managed UCs — "
+             "they're materialized into a temp dir at run start and treated "
+             "like any other UC. Requires --console-api-url.",
+    )
+    parser.add_argument(
+        "--console-api-url", type=str, default=None,
+        help="Base URL of the DAV review console API (e.g. "
+             "http://dav-review-api.dav.svc.cluster.local:8000). Required "
+             "when --managed-uc-uuids is set.",
+    )
+    parser.add_argument(
         "--log-level", default="INFO",
     )
     args = parser.parse_args()
@@ -592,10 +606,55 @@ def _cli():
 
     # Gather corpus
     corpus_files = gather_corpus(args.corpus_path)
-    if not corpus_files:
-        print(f"ERROR: no UC YAMLs found under {args.corpus_path}", file=sys.stderr)
-        return 2
     log.info("corpus: %d files at %s", len(corpus_files), args.corpus_path)
+
+    # Optional managed-UC materialization — driven by the console's
+    # Test evaluation flow for unpushed managed UCs. Fetches each
+    # uuid's YAML from the console API and writes to a scratch dir so
+    # the engine processes them like any corpus UC. Doesn't require
+    # the UC to be in the corpus repo yet.
+    managed_uuids = [u.strip() for u in (args.managed_uc_uuids or "").split(",") if u.strip()]
+    if managed_uuids:
+        if not args.console_api_url:
+            print("ERROR: --managed-uc-uuids requires --console-api-url",
+                  file=sys.stderr)
+            return 2
+        import tempfile, httpx
+        scratch = Path(tempfile.mkdtemp(prefix="dav-managed-ucs-"))
+        log.info("managed-ucs: fetching %d UC(s) from %s → %s",
+                 len(managed_uuids), args.console_api_url, scratch)
+        base = args.console_api_url.rstrip("/")
+        fetched = 0
+        with httpx.Client(timeout=30.0) as cx:
+            for uid in managed_uuids:
+                try:
+                    r = cx.get(f"{base}/api/use-cases/{uid}")
+                    if r.status_code != 200:
+                        log.warning(
+                            "managed-ucs: skip %s (HTTP %s: %s)",
+                            uid, r.status_code, r.text[:200],
+                        )
+                        continue
+                    data = r.json() or {}
+                    yaml_content = data.get("yaml_content") or ""
+                    if not yaml_content:
+                        log.warning("managed-ucs: skip %s (empty yaml_content)", uid)
+                        continue
+                    p = scratch / f"{uid}.yaml"
+                    p.write_text(yaml_content)
+                    corpus_files.append(p)
+                    fetched += 1
+                except Exception as e:
+                    log.warning("managed-ucs: fetch failed for %s: %s", uid, e)
+        log.info("managed-ucs: materialized %d / %d UC(s)", fetched, len(managed_uuids))
+
+    if not corpus_files:
+        print(
+            f"ERROR: no UC YAMLs found (corpus_path={args.corpus_path}, "
+            f"managed-uc-uuids={len(managed_uuids)})",
+            file=sys.stderr,
+        )
+        return 2
 
     # Optional UC filtering — driven by console "Run this Set" / single-UC
     # test eval flows. When set, only UCs whose handle or uuid is in the

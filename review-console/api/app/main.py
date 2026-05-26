@@ -264,6 +264,12 @@ class RunTriggerIn(BaseModel):
     # single-UC test eval. Empty/None = whole subpath (legacy).
     uc_handles: Optional[list[str]] = None
     uc_uuids: Optional[list[str]] = None
+    # Managed UCs to materialize from the console API at run start (engine
+    # fetches each UUID via GET /api/use-cases/<uuid>, writes the YAML to a
+    # temp dir, processes alongside corpus UCs). Lets reviewers test
+    # unpushed UCs without touching the corpus repo. Pairs with the existing
+    # uc_handles / uc_uuids filter — managed UCs always run when listed here.
+    managed_uc_uuids: Optional[list[str]] = None
     # User-facing session metadata (persisted to run_sessions)
     name: str = ""
     description: str = ""
@@ -485,6 +491,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             halt_on_error=payload.halt_on_error,
             uc_handles=payload.uc_handles,
             uc_uuids=payload.uc_uuids,
+            managed_uc_uuids=payload.managed_uc_uuids,
         )
     except Exception as e:
         log.exception("run trigger failed")

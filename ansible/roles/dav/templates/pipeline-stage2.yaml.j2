@@ -75,6 +75,14 @@ spec:
     - name: uc-uuids
       type: string
       default: ""
+    # Managed-UC test eval: fetch UC YAML from the console API instead
+    # of requiring the UC to be in the corpus repo. Used pre-promotion.
+    - name: managed-uc-uuids
+      type: string
+      default: ""
+    - name: console-api-url
+      type: string
+      default: ""
 
     # Inference + MCP
     - name: inference-endpoint
@@ -211,6 +219,10 @@ spec:
           value: $(params.uc-handles)
         - name: uc-uuids
           value: $(params.uc-uuids)
+        - name: managed-uc-uuids
+          value: $(params.managed-uc-uuids)
+        - name: console-api-url
+          value: $(params.console-api-url)
         - name: inference-endpoint
           value: $(params.inference-endpoint)
         - name: inference-model

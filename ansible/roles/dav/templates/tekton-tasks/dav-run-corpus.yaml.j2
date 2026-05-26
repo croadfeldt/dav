@@ -143,6 +143,24 @@ spec:
         uc-handles but matches on UUID. Combined with uc-handles via OR.
       default: ""
 
+    - name: managed-uc-uuids
+      type: string
+      description: |
+        Comma-separated managed-UC UUIDs to fetch from the console API
+        and include alongside corpus UCs. Used by the console's Test
+        evaluation for unpushed managed UCs — the engine materializes
+        them into a temp dir at run start and processes them like any
+        corpus UC. Requires console-api-url.
+      default: ""
+
+    - name: console-api-url
+      type: string
+      description: |
+        Base URL of the DAV review console API used to fetch managed
+        UCs. In-cluster default points at the API Service. Only used
+        when managed-uc-uuids is non-empty.
+      default: "http://dav-review-api.{{ dav_namespace }}.svc.cluster.local:8000"
+
   workspaces:
     - name: source
       description: |
@@ -194,6 +212,9 @@ spec:
         fi
         if [ -n "$(params.uc-uuids)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --uc-uuids $(params.uc-uuids)"
+        fi
+        if [ -n "$(params.managed-uc-uuids)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --managed-uc-uuids $(params.managed-uc-uuids) --console-api-url $(params.console-api-url)"
         fi
 
         # Note: --no-enable-thinking is the recommended default for
