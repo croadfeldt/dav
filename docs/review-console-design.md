@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.35  
+**Current version:** v0.9.36  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -467,6 +467,16 @@ Future enhancement: also surface a structured form under `metadata.assist_prompt
 - **UI surface**: the persistent Results header now has a "Lineage:" row showing the Set (clickable to switch to the UC tab filtered to that Set) + the selection mode. Each UC row in the result list shows a small color-coded `LIFECYCLE_STATE_AT_RUN` badge for managed UCs (draft / ready / in_review / approved / deprecated) — reviewers can tell at a glance which results came from a pre-promotion test vs an approved UC.
 
 What it doesn't (yet) do: enforce R3 (block enhancement PR generation when any source UC is non-approved). That's the next commit.
+
+**R3 implementation — approval gate before enhancement PR (v0.9.36):** Implements R3 from the canonical requirements section. Both client AND server enforce.
+
+- **`PrCreateIn`** gains `override: bool = False` and `override_reason: Optional[str] = None`.
+- **`POST /api/pr/create`** queries `uc_analyses` for the run's source UCs and collects those whose `source_kind == 'managed'` AND `lifecycle_state_at_run != 'approved'`. If any exist and `override` is false → **409** with a structured detail: `{detail: 'approval_gate', message, non_approved: [...], hint}`. If `override=true` but `override_reason` is empty → **400**. When override is used, the PR body gets a blockquote callout listing the non-approved UCs, the override user, and the reason — visible to the corpus reviewer.
+- **`api(path, opts)`** UI helper now attaches `status` and parsed `body` to thrown `Error` so callers can branch on structured 409s.
+- **New `createPrWithApprovalGate(payload)`** UI wrapper: posts the payload; on 409 with `approval_gate`, opens the approval-gate modal listing the offending UCs (color-coded state badges), requires a non-empty reason, then re-posts with `override=true` + reason. Cancel returns `null` and the caller surfaces "Cancelled."
+- **Both PR-create button paths** (`rpPrCreateBtn` in the run-detail Review pane, and the matching button in the Review & Plan view) now route through the wrapper — single chokepoint, consistent UX.
+
+Corpus-source UCs are deliberately not gated (no lifecycle on those). Future enhancement: also gate Arch Review generation similarly.
 
 **Results tab — persistent run-summary header (v0.9.31):** Same shape as the Runs detail v0.9.30 work: stats stay above the output, output bounded to the panel. Previously `renderRunSummaryHeader` rendered the run-level stats into `analysisDetail`; picking a UC replaced them with the per-UC analysis and the run context disappeared. Now a dedicated `runResultsHeader` strip sits above `analysisDetail`, populated on `selectRunResult` and never overwritten by per-UC rendering. Compact single-row layout: session name + run_id + mode on the left; `N/M UCs (X%) · failed · samples · ⏱ wall · finished_at` on the right. Wraps at narrow widths. `analysisDetail` gets `flex:1; overflow-y:auto; min-height:0` so the per-UC content scrolls *within* the panel — the page never grows beyond the viewport.
 

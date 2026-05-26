@@ -1577,6 +1577,31 @@
   </div>
 </div>
 
+<!-- ══════════════════════════ APPROVAL-GATE CONFIRM MODAL (R3) ══════════════════════════ -->
+<div class="modal-overlay" id="approvalGateModal">
+  <div class="modal" style="width:560px;max-width:96vw;">
+    <div class="modal-header">
+      <div class="modal-title" style="color:var(--red);">⚠ Approval gate</div>
+      <button class="btn ghost btn-icon" id="closeApprovalGateModal">✕</button>
+    </div>
+    <div class="modal-body">
+      <div style="font-size:12px;line-height:1.6;margin-bottom:10px;">
+        This PR would be generated from results that include UCs <strong>not in the <code>approved</code> state</strong> at run time. Approved UCs are the source of record for the corpus; using non-approved UCs as the basis for architecture changes weakens the audit trail.
+      </div>
+      <div id="approvalGateList" style="max-height:200px;overflow-y:auto;font-size:11px;font-family:var(--mono,monospace);background:var(--bg-input);border:1px solid var(--border);border-radius:2px;padding:8px;margin-bottom:12px;"></div>
+      <div class="form-field"><label>Reason for override (required)</label>
+        <textarea id="approvalGateReason" rows="3" placeholder="e.g. 'Verified manually; pushing now for review parallelism'"></textarea>
+        <div class="form-hint">The reason and the list of non-approved UCs will be recorded in the PR body for the corpus reviewer to see.</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <span id="approvalGateStatus" style="flex:1;font-size:11px;color:var(--text-faint);"></span>
+      <button class="btn ghost" id="approvalGateCancel">Cancel</button>
+      <button class="btn danger" id="approvalGateConfirm">⚠ Override + create PR</button>
+    </div>
+  </div>
+</div>
+
 <!-- ══════════════════════════ MANAGE SETS MODAL ══════════════════════════ -->
 <div class="modal-overlay" id="manageSetsModal">
   <div class="modal" style="width:780px;max-width:96vw;">
@@ -1772,8 +1797,72 @@ async function api(path, opts = {}) {
     headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
     ...opts,
   });
-  if (!res.ok) { const txt = await res.text(); throw new Error(`${res.status}: ${txt}`); }
+  if (!res.ok) {
+    const txt = await res.text();
+    const err = new Error(`${res.status}: ${txt}`);
+    err.status = res.status;
+    // Try to parse JSON body so callers can branch on structured detail
+    // (FastAPI HTTPException with a dict detail surfaces as {detail: {...}}).
+    try { err.body = JSON.parse(txt); } catch { err.body = null; }
+    throw err;
+  }
   return res.json();
+}
+
+// ── R3: PR-create wrapper that handles the approval gate ────────────────────
+// Centralized so both PR-create button paths (rpPrCreateBtn / rdRevPrCreateBtn)
+// share the same gate UX. POSTs the payload; on 409 with detail==approval_gate,
+// opens the override modal and re-submits with override+reason on confirm.
+async function createPrWithApprovalGate(payload) {
+  try {
+    return await api('/api/pr/create', { method: 'POST', body: JSON.stringify(payload) });
+  } catch (e) {
+    const gate = e.status === 409 && e.body
+      && (e.body.detail?.detail === 'approval_gate' ? e.body.detail
+          : (e.body.detail === 'approval_gate' ? e.body : null));
+    if (!gate) throw e;
+    // Show override modal; wait for user decision
+    const reason = await _showApprovalGateModal(gate.non_approved || []);
+    if (!reason) return null;   // user cancelled
+    return await api('/api/pr/create', {
+      method: 'POST',
+      body: JSON.stringify({ ...payload, override: true, override_reason: reason }),
+    });
+  }
+}
+function _showApprovalGateModal(nonApproved) {
+  return new Promise(resolve => {
+    const modal = document.getElementById('approvalGateModal');
+    const list = document.getElementById('approvalGateList');
+    const reasonEl = document.getElementById('approvalGateReason');
+    const status = document.getElementById('approvalGateStatus');
+    reasonEl.value = ''; status.textContent = '';
+    const stateColors = { draft:'var(--text-faint)', ready:'var(--blue)', in_review:'var(--accent)', approved:'var(--green)', deprecated:'var(--red)' };
+    list.innerHTML = nonApproved.length
+      ? nonApproved.map(n => {
+          const c = stateColors[n.state || 'draft'] || 'var(--text-faint)';
+          return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;">
+            <span style="font-size:9px;text-transform:uppercase;color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;">${esc(n.state || 'draft')}</span>
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(n.uc_handle || n.uc_uuid)}</span>
+          </div>`;
+        }).join('')
+      : '<em>(no UCs returned — server logic edge case)</em>';
+    modal.classList.add('open');
+    const cleanup = () => {
+      modal.classList.remove('open');
+      document.getElementById('approvalGateConfirm').onclick = null;
+      document.getElementById('approvalGateCancel').onclick = null;
+      document.getElementById('closeApprovalGateModal').onclick = null;
+    };
+    document.getElementById('approvalGateConfirm').onclick = () => {
+      const r = (reasonEl.value || '').trim();
+      if (!r) { status.textContent = 'Reason is required to override the gate.'; status.style.color = 'var(--red)'; return; }
+      cleanup(); resolve(r);
+    };
+    document.getElementById('approvalGateCancel').onclick = () => { cleanup(); resolve(null); };
+    document.getElementById('closeApprovalGateModal').onclick = () => { cleanup(); resolve(null); };
+    setTimeout(() => reasonEl.focus(), 50);
+  });
 }
 
 // ── Toast ────────────────────────────────────────────────────
@@ -6510,9 +6599,10 @@ document.getElementById('rpPrCreateBtn')?.addEventListener('click', async () => 
   if (!payload.branch || !payload.title) { toast('Branch and title required'); return; }
   btn.disabled = true; msgEl.textContent = 'Creating…'; msgEl.style.color = 'var(--text-faint)';
   try {
-    const result = await api('/api/pr/create', { method:'POST', body: JSON.stringify(payload) });
-    msgEl.textContent = '✓ PR created'; msgEl.style.color = 'var(--ok)';
-    if (result.pr_url) window.open(result.pr_url, '_blank');
+    const result = await createPrWithApprovalGate(payload);
+    if (!result) { msgEl.textContent = 'Cancelled.'; msgEl.style.color = 'var(--text-faint)'; }
+    else { msgEl.textContent = '✓ PR created'; msgEl.style.color = 'var(--ok)';
+           if (result.pr_url) window.open(result.pr_url, '_blank'); }
   } catch(e) { msgEl.textContent = 'Failed: ' + e.message; msgEl.style.color = 'var(--error)'; }
   finally { btn.disabled = false; }
 });
@@ -6835,9 +6925,10 @@ document.getElementById('rdPrCreateBtn').addEventListener('click', async () => {
   btn.disabled = true;
   msgEl.textContent = 'Creating…'; msgEl.style.color = 'var(--text-faint)';
   try {
-    const result = await api('/api/pr/create', { method:'POST', body: JSON.stringify(payload) });
-    msgEl.textContent = '✓ PR created'; msgEl.style.color = 'var(--ok)';
-    if (result.pr_url) window.open(result.pr_url, '_blank');
+    const result = await createPrWithApprovalGate(payload);
+    if (!result) { msgEl.textContent = 'Cancelled.'; msgEl.style.color = 'var(--text-faint)'; }
+    else { msgEl.textContent = '✓ PR created'; msgEl.style.color = 'var(--ok)';
+           if (result.pr_url) window.open(result.pr_url, '_blank'); }
   } catch(e) {
     msgEl.textContent = 'Failed: ' + e.message; msgEl.style.color = 'var(--error)';
   } finally { btn.disabled = false; }
