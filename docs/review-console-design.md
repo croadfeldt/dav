@@ -350,7 +350,7 @@ Existing managed UCs are all currently in `draft` (or whatever lifecycle was las
 - **Engine image rebuild** — the `dav-engine:latest` image must be rebuilt and redeployed after engine code changes. Console-triggered runs always use `dav-engine:latest` from the OCP image registry.
 - **DCM / data model rework (planned)** — next major design effort. Scope to be defined in the next session (2026-05-26). Will revisit the underlying DAV domain capability model and the schemas / contracts it implies between engine, console, and consumer corpora.
 - **UC review pipeline (planned, 2026-05-25 / 2026-05-26)** — full design captured above in **Planned design: UC review pipeline**. Bundles five previously per-feature requests into one coherent lifecycle: (1) human-readable Name field, (2) Run test evaluation from UC editor/detail with inline results, (3) multi-select UC list → batch test run, (4) Default Set + `is_default` flag for partitioning, (5) Push to corpus as commit/PR gated on `approved` state with a passing run attached. Replaces the need for private UC repos — Sets do the partitioning, lifecycle state does the gating.
-- **Reorder top-level tabs: Use Cases + Sets first (planned, requested 2026-05-25)** — Use Cases and Sets are the *starting point* of the DAV workflow (UC → Set → Run → Result). Today the tab order is Runs / Results / Use Cases / Sets / Review & Plan / Config. Reorder to put Use Cases and Sets first so the IA reflects the actual workflow and makes the review pipeline discoverable as the primary path.
+- ~~**Reorder top-level tabs: Use Cases + Sets first**~~ — done in v0.9.16; default landing tab is now Use Cases. New order: Use Cases / Sets / Runs / Results / Review & Plan / Config.
 
 ---
 

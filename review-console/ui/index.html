@@ -702,17 +702,17 @@
   <!-- ── Left sidebar nav ── -->
   <nav class="pf-nav" id="pfNav">
     <div class="pf-nav-items">
-      <a class="pf-nav-item active" data-view="runs" href="javascript:void(0)">
-        <span class="nav-icon">▶</span><span class="nav-label">Runs <span class="badge" id="badgeRuns" style="font-size:9px;"></span></span>
-      </a>
-      <a class="pf-nav-item" data-view="results" href="javascript:void(0)">
-        <span class="nav-icon">≡</span><span class="nav-label">Results <span class="badge" id="badgeResults" style="font-size:9px;"></span></span>
-      </a>
-      <a class="pf-nav-item" data-view="usecases" href="javascript:void(0)">
+      <a class="pf-nav-item active" data-view="usecases" href="javascript:void(0)">
         <span class="nav-icon">✎</span><span class="nav-label">Use Cases <span class="badge" id="badgeUC" style="font-size:9px;"></span></span>
       </a>
       <a class="pf-nav-item" data-view="sets" href="javascript:void(0)">
         <span class="nav-icon">⊞</span><span class="nav-label">Sets <span class="badge" id="badgeSets" style="font-size:9px;"></span></span>
+      </a>
+      <a class="pf-nav-item" data-view="runs" href="javascript:void(0)">
+        <span class="nav-icon">▶</span><span class="nav-label">Runs <span class="badge" id="badgeRuns" style="font-size:9px;"></span></span>
+      </a>
+      <a class="pf-nav-item" data-view="results" href="javascript:void(0)">
+        <span class="nav-icon">≡</span><span class="nav-label">Results <span class="badge" id="badgeResults" style="font-size:9px;"></span></span>
       </a>
       <a class="pf-nav-item" data-view="review" href="javascript:void(0)">
         <span class="nav-icon">✦</span><span class="nav-label">Review &amp; Plan</span>
@@ -1829,7 +1829,7 @@ async function init() {
     _populateModelSel('nrModelSel', 'nrLastModel');
     _populateUCAssistModelSel();
   }).catch(() => {});
-  switchView('runs');
+  switchView('usecases');
 }
 
 async function loadMe() {
