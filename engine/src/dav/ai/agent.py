@@ -276,7 +276,7 @@ class Stage2Agent:
             if st:
                 self._section_title_misses[st] = self._section_title_misses.get(st, 0) + 1
                 count = self._section_title_misses[st]
-                if count >= 3:
+                if count >= 2:
                     return (
                         f"⛔ ANTI-FISHING STOP: you have tried "
                         f"section_title='{st}' {count} times across different "
