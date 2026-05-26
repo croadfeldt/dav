@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.22  
+**Current version:** v0.9.23  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -323,6 +323,22 @@ Why this shape: Sets are functionally tags on UCs. Treating them as a sibling ta
 All three paths share `_addUCToSet` / `_removeUCFromSet` / `_toggleUCSetMembership` helpers, which re-fetch sets + UCs and re-render the Manage Sets modal so all surfaces stay consistent.
 
 **Run identifiers — session names everywhere (v0.9.22):** Run dropdowns and the Results-tab run list now show the human-readable session name (entered in the New Run modal as "Name"), not just the workspace `run_id` string. `GET /api/results` enriches each row with `session_name` / `session_description` / `session_category` by joining `analysis_runs` (which carries the Tekton `run_name`) to `run_sessions`. The workspace `run_id` remains the canonical key (used in URLs, history rows, etc.) and is shown as a small mono-spaced sub-line so reviewers can correlate when they need to. Result-list filter now matches name / description / category in addition to run_id. The Review & Plan and comparison dropdowns format options as `<session name> (<run_id prefix>…)` with the full run_id in the `title` for hover.
+
+**Push to corpus as PR (v0.9.23):** Managed UCs can be pushed to the consumer's corpus repo as a GitHub PR — closes the loop from "drafted in the console" to "shipped to the engine's source of truth."
+
+- **Migration 005** adds `corpus_pr_url`, `corpus_pr_state` (`open|merged|closed`), `corpus_commit_sha`, `corpus_synced_at`, `corpus_synced_by`, `corpus_synced_path`, `corpus_branch` to `managed_use_cases`.
+- **`corpus_push.py`** module: GitHub-first provider via the REST API (Contents + Refs + Pulls), no `git` binary needed in the container. Detects host from the configured corpus URL; raises clear errors for non-GitHub hosts (gitlab.*, etc.). Auth: `DAV_CORPUS_PUSH_TOKEN` env var (PAT with `repo` scope) — set in the consumer Secret per [[feedback-consumer-config]].
+- **API endpoints:**
+  - `GET /api/corpus-push/status` — returns `{configured, corpus_url, host, env_var}`. UI calls this once per UC-tab session to decide button state.
+  - `POST /api/use-cases/{uuid}/push-to-corpus` — opens or refreshes a PR. Strategy: resolve base-branch HEAD SHA → ensure side branch exists → write file via Contents API (creates a commit) → open PR if one isn't already open from this branch. Idempotent on re-push (same branch is reused; PR auto-updates with new commits).
+  - File path: `<corpus_subpath>/<handle>.yaml` (subpath auto-detected from disk: `dav/use-cases/` or `use-cases/`); falls back to `<uuid>.yaml` when the UC has no handle. Branch name: `dav-push/<uuid-prefix>`.
+- **UI:** UC detail header gets a state-aware button —
+  - Never pushed → `↑ Push to corpus` (disabled with tooltip when host/token missing)
+  - PR open → linked badge `⇡ PR open` + `↻ Update PR`
+  - PR merged → `✓ merged`
+- **Hands-off note:** the Secret carrying `DAV_CORPUS_PUSH_TOKEN` is updated by the user in the consumer namespace per [[feedback-consumer-config]]; the console only reads it from the API pod's env.
+
+**Manage Sets — per-member × (v0.9.23):** Each set row in the Manage Sets modal now has an expander (▶) that fetches the set's members and renders them with a per-UC × to remove. The user reported the modal was the natural place to remove members and the UC chip × wasn't discoverable enough.
 
 ---
 

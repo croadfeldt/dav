@@ -35,6 +35,7 @@ from . import sources
 from . import metrics
 from . import results as _results
 from . import uc_assist
+from . import corpus_push
 
 log = logging.getLogger("dav-review-api")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -49,6 +50,7 @@ SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 MIGRATE_002_PATH = Path(__file__).parent / "migrate_002_model_configs.sql"
 MIGRATE_003_PATH = Path(__file__).parent / "migrate_003_model_defaults.sql"
 MIGRATE_004_PATH = Path(__file__).parent / "migrate_004_default_set.sql"
+MIGRATE_005_PATH = Path(__file__).parent / "migrate_005_corpus_push.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -137,6 +139,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_003_PATH.read_text())
         log.info("Applying migration 004 (default set marker)...")
         await conn.execute(MIGRATE_004_PATH.read_text())
+        log.info("Applying migration 005 (corpus push state)...")
+        await conn.execute(MIGRATE_005_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -1340,6 +1344,165 @@ async def get_use_case_runs(uuid: str, limit: int = 20):
             }
             for r in rows
         ],
+    }
+
+
+class PushToCorpusIn(BaseModel):
+    target_path:    Optional[str] = None   # default: <corpus_subpath>/<handle>.yaml
+    branch_name:    Optional[str] = None   # default: dav-push/<uc-uuid>
+    base_branch:    Optional[str] = None   # default: configured corpus branch (or 'main')
+    commit_message: Optional[str] = None   # default: derived from title + action
+    pr_title:       Optional[str] = None
+    pr_body:        Optional[str] = None
+
+
+@app.get("/api/corpus-push/status")
+async def corpus_push_status():
+    """Tell the UI whether push-to-corpus is configured + which host it targets.
+
+    The UI uses this to enable/disable the Push button and surface the
+    right message when something's missing (no token, unsupported host,
+    no corpus URL set yet).
+    """
+    corpus_url = ""
+    try:
+        corpus = sources.get_source_state("corpus")
+        corpus_url = (corpus or {}).get("repo_url", "") or ""
+    except Exception:
+        pass
+    host = "github" if corpus_push.is_github(corpus_url) else \
+           ("none" if not corpus_url else "unsupported")
+    return {
+        "configured":  corpus_push.is_configured(),
+        "corpus_url":  corpus_url,
+        "host":        host,
+        "env_var":     corpus_push.GITHUB_TOKEN_ENV,
+    }
+
+
+@app.post("/api/use-cases/{uuid}/push-to-corpus")
+async def push_use_case_to_corpus(uuid: str, payload: PushToCorpusIn, request: Request):
+    """Open or refresh a PR that adds/updates this UC's YAML in the corpus repo.
+
+    Reads the corpus repo URL + branch from the configured sources. Uses
+    the GitHub Contents/Refs/Pulls API server-side; no shell-out to git.
+    Updates managed_use_cases.corpus_* state so the UI can render the
+    PR link and re-push action.
+    """
+    user = get_user(request)
+    # Pull the UC
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM managed_use_cases WHERE uuid = $1", uuid
+        )
+    if not row:
+        raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
+    uc = dict(row)
+
+    # Resolve corpus repo config from the consumer's source ConfigMap
+    try:
+        corpus = sources.get_source_state("corpus")
+    except Exception as e:
+        raise HTTPException(500, f"Could not read corpus source state: {e}")
+    corpus_url = (corpus or {}).get("repo_url", "")
+    if not corpus_url:
+        raise HTTPException(400, "No corpus repo URL configured (Config → Sources)")
+    if not corpus_push.is_github(corpus_url):
+        raise HTTPException(400, f"Unsupported corpus host (only GitHub today): {corpus_url}")
+    if not corpus_push.is_configured():
+        raise HTTPException(
+            400,
+            f"Push token not set — add {corpus_push.GITHUB_TOKEN_ENV} to the consumer Secret",
+        )
+    base_branch = payload.base_branch or corpus.get("repo_branch") or "main"
+    owner, repo = corpus_push.parse_github_url(corpus_url)
+
+    # Compute file path: <corpus_subpath>/<handle>.yaml; fall back to <uuid>.yaml.
+    # Subpath is detected from the on-disk corpus clone (matches what the engine reads).
+    try:
+        parsed = _parse_uc_yaml(uc.get("yaml_content") or "")
+    except ValueError as e:
+        raise HTTPException(400, f"UC YAML invalid: {e}")
+    handle = (parsed.get("handle") or "").strip().strip("/")
+    subpath = ""
+    for c in ("dav/use-cases", "use-cases"):
+        if (Path(CORPUS_DIR) / c).is_dir():
+            subpath = c
+            break
+    if not subpath:
+        subpath = "dav/use-cases"   # DAV convention fallback
+    if payload.target_path:
+        file_path = payload.target_path.strip("/")
+    elif handle:
+        file_path = f"{subpath + '/' if subpath else ''}{handle}.yaml"
+    else:
+        file_path = f"{subpath + '/' if subpath else ''}{uuid}.yaml"
+
+    # Branch + commit defaults
+    branch_name = payload.branch_name or uc.get("corpus_branch") \
+                  or f"dav-push/{uuid[:32]}"
+    title = _derive_uc_title(parsed, uuid)
+    action_verb = "Update" if uc.get("corpus_pr_url") else "Add"
+    commit_message = payload.commit_message or f"{action_verb} UC: {title}"
+    pr_title = payload.pr_title or commit_message
+    pr_body = payload.pr_body or (
+        f"Pushed from the DAV review console by `{user}`.\n\n"
+        f"- UUID: `{uuid}`\n"
+        f"- Handle: `{handle or '—'}`\n"
+        f"- Path: `{file_path}`\n\n"
+        f"This PR was opened or refreshed via the **Push to corpus** action."
+    )
+
+    existing_pr_number = None
+    if uc.get("corpus_pr_url"):
+        m = re.search(r"/pull/(\d+)", uc["corpus_pr_url"])
+        if m:
+            existing_pr_number = int(m.group(1))
+
+    try:
+        result = await corpus_push.push_uc_to_github(
+            owner=owner,
+            repo=repo,
+            base_branch=base_branch,
+            file_path=file_path,
+            file_content=uc.get("yaml_content") or "",
+            branch_name=branch_name,
+            commit_message=commit_message,
+            pr_title=pr_title,
+            pr_body=pr_body,
+            author_name=user or "dav-review-console",
+            author_email=f"{user or 'dav-review-console'}@dav.local",
+            existing_pr_number=existing_pr_number,
+        )
+    except RuntimeError as e:
+        log.warning("push_to_corpus uuid=%s: %s", uuid, e)
+        raise HTTPException(502, f"GitHub push failed: {e}")
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """UPDATE managed_use_cases
+                  SET corpus_pr_url      = $2,
+                      corpus_pr_state    = 'open',
+                      corpus_commit_sha  = $3,
+                      corpus_synced_at   = now(),
+                      corpus_synced_by   = $4,
+                      corpus_synced_path = $5,
+                      corpus_branch      = $6
+                WHERE uuid = $1""",
+            uuid, result["pr_url"], result["commit_sha"], user,
+            result["path"], result["branch"],
+        )
+    log.info("UC %s pushed to %s/%s on %s (PR #%s, %s)",
+             uuid, owner, repo, result["branch"], result.get("pr_number"), result["action"])
+    return {
+        "ok":         True,
+        "uuid":       uuid,
+        "pr_url":     result["pr_url"],
+        "pr_number":  result.get("pr_number"),
+        "branch":     result["branch"],
+        "commit_sha": result["commit_sha"],
+        "path":       result["path"],
+        "action":     result["action"],   # "created" | "updated"
     }
 
 

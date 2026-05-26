@@ -3642,6 +3642,9 @@ function renderExploreAnalysis(data, ucUuid) {
 async function loadUCs() {
   document.getElementById('ucList').innerHTML = '<div class="empty">loading…</div>';
   const src = document.getElementById('ucSourceFilter').value;
+  // Lazy-fetch corpus-push status once per tab session so the Push button
+  // can render with the right disabled/tooltip state.
+  if (_corpusPushStatus === null) _loadCorpusPushStatus();
   try {
     const q = src ? `?source=${src}` : '';
     const resp = await api('/api/use-cases' + q);
@@ -3766,7 +3769,8 @@ function renderUCDetail(data, lifecycle) {
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;margin-top:4px">
         ${isManaged
-          ? `<button class="btn primary" title="Managed UCs aren't in the corpus repo the engine reads from — promote / Push to corpus first (coming)" disabled style="opacity:0.55;cursor:not-allowed;">▶ Test evaluation</button>
+          ? `${_renderPushToCorpusBtn(data)}
+             <button class="btn primary" title="Managed UCs aren't in the corpus repo the engine reads from — push to corpus first, then re-open this UC and the button will be active" disabled style="opacity:0.55;cursor:not-allowed;">▶ Test evaluation</button>
              <button class="btn ghost" onclick="editUC('${esc(uuid)}')">Edit</button>
              <button class="btn danger" onclick="deleteUC('${esc(uuid)}',this)">Delete</button>`
           : `<button class="btn primary" onclick="testRunUC('${esc(uuid)}', ${JSON.stringify(data.path||'')}, ${JSON.stringify(titleText)})">▶ Test evaluation</button>
@@ -4389,6 +4393,57 @@ function renderSetFilterRail() {
   });
 }
 
+// ── Push to corpus (managed UC → PR in corpus repo) ──────────────────────────
+
+let _corpusPushStatus = null;  // {configured, corpus_url, host, env_var}
+
+async function _loadCorpusPushStatus() {
+  try { _corpusPushStatus = await api('/api/corpus-push/status'); }
+  catch { _corpusPushStatus = null; }
+}
+
+function _renderPushToCorpusBtn(data) {
+  // Called inside renderUCDetail for managed UCs.
+  // _corpusPushStatus is loaded lazily on UC tab init; treat null as "unknown — show but disabled with hint".
+  const uuid = data.uuid;
+  const prUrl = data.corpus_pr_url || '';
+  const prState = data.corpus_pr_state || '';
+  const synced = data.corpus_synced_at || '';
+
+  // Already pushed → show the PR link + a re-push action
+  if (prUrl) {
+    const stateLabel = prState === 'merged' ? '✓ merged' :
+                       prState === 'closed' ? '⊘ closed' : '⇡ PR open';
+    return `<a href="${esc(prUrl)}" target="_blank" rel="noopener" class="btn ghost" title="Open PR in GitHub" style="text-decoration:none;">${stateLabel}</a>
+            <button class="btn primary" title="Push the latest YAML to the existing PR branch" onclick="pushUCToCorpus('${esc(uuid)}', true)">↻ Update PR</button>`;
+  }
+
+  // Not pushed yet — gate on host + token
+  const st = _corpusPushStatus || {configured:false, host:'unknown'};
+  let disabled = '', tip = '';
+  if (st.host === 'none')        { disabled = 'disabled'; tip = 'No corpus repo URL configured (Config → Sources)'; }
+  else if (st.host === 'unsupported') { disabled = 'disabled'; tip = `Corpus host ${st.corpus_url} not supported yet (only GitHub today)`; }
+  else if (!st.configured)       { disabled = 'disabled'; tip = `Push token not set — add ${st.env_var || 'DAV_CORPUS_PUSH_TOKEN'} to the consumer Secret`; }
+  else                           { tip = 'Open a PR adding this UC to the corpus repo'; }
+  return `<button class="btn primary" title="${esc(tip)}" ${disabled} style="${disabled?'opacity:0.55;cursor:not-allowed;':''}" onclick="${disabled?'':`pushUCToCorpus('${esc(uuid)}', false)`}">↑ Push to corpus</button>`;
+}
+
+async function pushUCToCorpus(uuid, isRepush) {
+  if (!isRepush && !confirm('Open a PR adding this UC to the corpus repo?')) return;
+  toast(isRepush ? 'Updating PR…' : 'Opening PR…');
+  try {
+    const resp = await api(`/api/use-cases/${encodeURIComponent(uuid)}/push-to-corpus`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    toast(`PR ${resp.action} — ${resp.pr_url}`, false);
+    // Refresh the UC so the button flips to PR-link / Update mode
+    if (activeUCId === uuid) selectUC(uuid);
+  } catch (e) {
+    toast('Push failed: ' + e.message, true);
+  }
+}
+
 // ── Add-to-Set picker (popover on UC detail's Sets section) ───────────────────
 function _openAddSetPicker(ucUuid, ucSource, ucHandle, ucPath, anchorEl) {
   const pop = document.getElementById('ucDetailAddSetPopover');
@@ -4551,30 +4606,84 @@ function renderManageSetsList() {
     const defBtn = s.is_default
       ? `<button class="btn ghost btn-sm" title="Clear default" onclick="clearDefaultSet(${s.id}).then(renderManageSetsList)">Clear default</button>`
       : `<button class="btn ghost btn-sm" title="Mark as project default" onclick="setDefaultSet(${s.id}).then(renderManageSetsList)">★ Default</button>`;
-    h += `<div style="display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--border);">
-      <div style="flex:1;min-width:0;">
-        <div style="font-size:13px;font-weight:500;">${esc(s.name)}${defBadge}</div>
-        <div style="font-size:11px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-          ${esc(s.description || '—')} · ${s.member_count} UC${s.member_count !== 1 ? 's' : ''}
+    h += `<div data-set-row="${s.id}" style="border-top:1px solid var(--border);">
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 16px;">
+        <button class="btn ghost btn-icon" title="Show / hide members" onclick="_toggleSetMembers(${s.id}, this)" style="min-width:18px;padding:2px 6px;">▶</button>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:500;">${esc(s.name)}${defBadge}</div>
+          <div style="font-size:11px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            ${esc(s.description || '—')} · ${s.member_count} UC${s.member_count !== 1 ? 's' : ''}
+          </div>
         </div>
-      </div>
-      <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${JSON.stringify(s.name)})">▶ Run</button>
-      ${defBtn}
-      <button class="btn ghost btn-sm" onclick="openSetModal(${s.id})">Edit</button>
-      <button class="btn ghost btn-sm" onclick="openPromoteModal(${s.id}, ${JSON.stringify(s.name)})">↑ Promote</button>
-      <div style="position:relative;display:inline-block;">
-        <button class="btn ghost btn-sm" onclick="toggleExportSetMenu(${s.id}, event)">↓ Export</button>
-        <div id="exportSetMenu-${s.id}" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:140px;">
-          <button class="dropdown-item" onclick="exportSet(${s.id},'tar.gz')">tar.gz (gzip)</button>
-          <button class="dropdown-item" onclick="exportSet(${s.id},'zip')">zip</button>
-          <button class="dropdown-item" onclick="exportSet(${s.id},'tar')">tar (uncompressed)</button>
+        <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${JSON.stringify(s.name)})">▶ Run</button>
+        ${defBtn}
+        <button class="btn ghost btn-sm" onclick="openSetModal(${s.id})">Edit</button>
+        <button class="btn ghost btn-sm" onclick="openPromoteModal(${s.id}, ${JSON.stringify(s.name)})">↑ Promote</button>
+        <div style="position:relative;display:inline-block;">
+          <button class="btn ghost btn-sm" onclick="toggleExportSetMenu(${s.id}, event)">↓ Export</button>
+          <div id="exportSetMenu-${s.id}" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:140px;">
+            <button class="dropdown-item" onclick="exportSet(${s.id},'tar.gz')">tar.gz (gzip)</button>
+            <button class="dropdown-item" onclick="exportSet(${s.id},'zip')">zip</button>
+            <button class="dropdown-item" onclick="exportSet(${s.id},'tar')">tar (uncompressed)</button>
+          </div>
         </div>
+        <button class="btn ghost btn-sm" onclick="openAddMember(${s.id})" title="Add a UC to this Set">+ UC</button>
+        <button class="btn danger btn-sm" onclick="deleteSet(${s.id}, this)">×</button>
       </div>
-      <button class="btn ghost btn-sm" onclick="openAddMember(${s.id})" title="Add a UC to this Set">+ UC</button>
-      <button class="btn danger btn-sm" onclick="deleteSet(${s.id}, this)">×</button>
+      <div id="setMembers-${s.id}" style="display:none;padding:0 0 10px 50px;"></div>
     </div>`;
   });
   el.innerHTML = h;
+}
+
+async function _toggleSetMembers(setId, btn) {
+  const box = document.getElementById(`setMembers-${setId}`);
+  if (!box) return;
+  if (box.style.display !== 'none') {
+    box.style.display = 'none';
+    btn.textContent = '▶';
+    return;
+  }
+  btn.textContent = '▼';
+  box.style.display = 'block';
+  box.innerHTML = '<div style="padding:4px 8px;color:var(--text-faint);font-size:11px;">loading…</div>';
+  try {
+    const data = await api(`/api/sets/${setId}`);
+    const members = data.members || [];
+    if (!members.length) {
+      box.innerHTML = '<div style="padding:4px 8px;color:var(--text-faint);font-size:11px;">No members. Use + UC to add.</div>';
+      return;
+    }
+    const rows = members.map(m => {
+      // Best-effort title: look up in allUCs to get the human-readable name
+      const uc = (allUCs || []).find(u => u.uuid === m.uc_uuid);
+      const title = (uc && uc.title) || m.uc_handle || m.uc_uuid;
+      return `<div style="display:flex;align-items:center;gap:6px;padding:3px 8px;border-bottom:1px solid var(--border);font-size:11px;">
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:var(--accent);"
+              onclick="closeManageSetsModal();selectUC('${esc(m.uc_uuid)}');"
+              title="${esc(m.uc_uuid)}">${esc(title)}</span>
+        <span class="src-badge src-${m.uc_source}" style="font-size:9px;">${m.uc_source}</span>
+        <button class="btn danger btn-icon" style="font-size:11px;padding:0 6px;" title="Remove from set"
+                onclick="_removeMemberFromManage(${setId}, '${esc(m.uc_uuid)}', ${JSON.stringify(data.name)})">×</button>
+      </div>`;
+    }).join('');
+    box.innerHTML = `<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:2px;">${rows}</div>`;
+  } catch (e) {
+    box.innerHTML = `<div style="padding:4px 8px;color:var(--red);font-size:11px;">Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+
+async function _removeMemberFromManage(setId, ucUuid, setName) {
+  try {
+    await api(`/api/sets/${setId}/members/${encodeURIComponent(ucUuid)}`, {method:'DELETE'});
+    toast(`Removed from "${setName}"`);
+    await loadSets();
+    await loadUCs();
+    renderManageSetsList();
+    // Auto-re-expand the same set so the change is visible
+    const btn = document.querySelector(`[data-set-row="${setId}"] button[onclick^="_toggleSetMembers"]`);
+    if (btn) _toggleSetMembers(setId, btn);
+  } catch (e) { toast('Remove failed: ' + e.message, true); }
 }
 
 async function setDefaultSet(setId) {
