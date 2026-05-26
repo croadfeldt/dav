@@ -818,12 +818,39 @@ async def metrics_timeseries(
 
 @app.get("/api/results")
 async def list_results():
-    """List all run result directories found on the workspace PVC."""
+    """List all run result directories found on the workspace PVC.
+
+    Each result is enriched with the human-readable `session_name` /
+    `session_description` / `session_category` from `run_sessions` when
+    the workspace run_id has been correlated to a Tekton PipelineRun
+    (via `analysis_runs.run_name` ↔ `run_sessions.run_name`).
+    """
     if not _results.is_available():
         return {"results": [], "available": False,
                 "workspace_path": _results.WORKSPACE_PATH}
     try:
         runs = _results.list_runs()
+        if runs and pool is not None:
+            run_ids = [r["run_id"] for r in runs]
+            async with pool.acquire() as conn:
+                meta_rows = await conn.fetch(
+                    """SELECT ar.run_id, ar.run_name,
+                              rs.name AS session_name,
+                              rs.description AS session_description,
+                              rs.category AS session_category
+                       FROM analysis_runs ar
+                       LEFT JOIN run_sessions rs ON rs.run_name = ar.run_name
+                       WHERE ar.run_id = ANY($1::text[])""",
+                    run_ids,
+                )
+            meta_by_id = {m["run_id"]: m for m in meta_rows}
+            for r in runs:
+                m = meta_by_id.get(r["run_id"])
+                if m:
+                    r["run_name"]            = m["run_name"]
+                    r["session_name"]        = m["session_name"] or None
+                    r["session_description"] = m["session_description"] or None
+                    r["session_category"]    = m["session_category"] or None
         return {"results": runs, "available": True,
                 "workspace_path": _results.WORKSPACE_PATH}
     except Exception as e:

@@ -2912,15 +2912,23 @@ async function loadResults() {
 function renderResultList() {
   const el = document.getElementById('resultList');
   const filter = (document.getElementById('resultFilter').value||'').toLowerCase();
-  const filtered = allResults.filter(r => !filter || (r.run_id||'').toLowerCase().includes(filter));
+  // Filter matches run_id, session name, description, or category
+  const filtered = allResults.filter(r => !filter
+    || (r.run_id||'').toLowerCase().includes(filter)
+    || (r.session_name||'').toLowerCase().includes(filter)
+    || (r.session_description||'').toLowerCase().includes(filter)
+    || (r.session_category||'').toLowerCase().includes(filter)
+  );
   if (!filtered.length) { el.innerHTML = '<div class="empty">No results found.</div>'; return; }
   el.innerHTML = '';
   filtered.forEach(r => {
     const item = document.createElement('div');
     item.className = 'list-item' + (activeRunResultId === r.run_id ? ' active' : '');
     const statusColor = r.failed > 0 ? 'var(--red)' : 'var(--green)';
+    const titleText = r.session_name || r.run_id;
     item.innerHTML = `<div class="li-main">
-      <div class="li-title">${esc(r.run_id)}</div>
+      <div class="li-title" title="${esc(r.run_id)}">${esc(titleText)}</div>
+      <div class="li-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.7;">${esc(r.run_id)}</div>
       <div class="li-sub">
         <span style="color:var(--text-dim)">${esc(r.mode||'?')}</span>
         · <span style="color:${statusColor}">${r.successful}/${r.total_ucs} passed</span>
@@ -3179,10 +3187,15 @@ document.getElementById('cmpToggleBtn').addEventListener('click', () => {
     if (r.run_id === activeRunResultId) return;
     const opt = document.createElement('option');
     opt.value = r.run_id;
-    opt.textContent = r.run_id;
+    opt.textContent = r.session_name
+      ? `${r.session_name} (${r.run_id.slice(0,16)}…)`
+      : r.run_id;
+    opt.title = r.run_id;
     sel.appendChild(opt);
   });
-  document.getElementById('cmpRunALabel').textContent = activeRunResultId;
+  const activeRun = allResults.find(r => r.run_id === activeRunResultId);
+  document.getElementById('cmpRunALabel').textContent = activeRun?.session_name || activeRunResultId;
+  document.getElementById('cmpRunALabel').title = activeRunResultId;
   document.getElementById('cmpPickerRow').style.display = 'flex';
 });
 
@@ -5718,14 +5731,20 @@ const _rpRevRaw = { text: '' };
 const _rpEnhRaw = { text: '' };
 
 async function loadReviewTab() {
-  // Populate run dropdown from allResults
+  // Populate run dropdown from allResults; prefer the human-readable session name
+  // (falls back to the workspace run_id if no session is correlated).
   const sel = document.getElementById('rpRunSel');
   if (!sel) return;
   const prev = sel.value;
   sel.innerHTML = '<option value="">— select a run —</option>';
   allResults.forEach(r => {
     const o = document.createElement('option');
-    o.value = r.run_id; o.textContent = r.run_id;
+    o.value = r.run_id;
+    const label = r.session_name
+      ? `${r.session_name} (${r.run_id.slice(0, 16)}…)`
+      : r.run_id;
+    o.textContent = label;
+    o.title = r.run_id;
     sel.appendChild(o);
   });
   if (prev) sel.value = prev;

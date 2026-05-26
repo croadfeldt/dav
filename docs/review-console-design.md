@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.21  
+**Current version:** v0.9.22  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -321,6 +321,8 @@ Why this shape: Sets are functionally tags on UCs. Treating them as a sibling ta
 3. **Per-chip × remove** — each Set chip in the UC detail has an inline × that removes that single membership without confirmation (set memberships are cheap; full Set delete still uses the two-click arm pattern).
 
 All three paths share `_addUCToSet` / `_removeUCFromSet` / `_toggleUCSetMembership` helpers, which re-fetch sets + UCs and re-render the Manage Sets modal so all surfaces stay consistent.
+
+**Run identifiers — session names everywhere (v0.9.22):** Run dropdowns and the Results-tab run list now show the human-readable session name (entered in the New Run modal as "Name"), not just the workspace `run_id` string. `GET /api/results` enriches each row with `session_name` / `session_description` / `session_category` by joining `analysis_runs` (which carries the Tekton `run_name`) to `run_sessions`. The workspace `run_id` remains the canonical key (used in URLs, history rows, etc.) and is shown as a small mono-spaced sub-line so reviewers can correlate when they need to. Result-list filter now matches name / description / category in addition to run_id. The Review & Plan and comparison dropdowns format options as `<session name> (<run_id prefix>…)` with the full run_id in the `title` for hover.
 
 ---
 
