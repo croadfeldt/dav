@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.13  
+**Current version:** v0.9.14  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -287,7 +287,11 @@ Overlay background uses `var(--bg-panel)` — `var(--surface)` is not a defined 
 
 **UC editor UUID auto-generation:** When the New UC modal is opened with no YAML content (fresh template), `crypto.randomUUID()` replaces the `uc-<your-uuid-here>` placeholder with a real UUID, preventing 409 collisions on repeated new-UC creation.
 
-**Model selector layout:** All model selectors use an inline flex row: `[selector][Browse…]`. Selectors in narrow sidebar panels (e.g. Run Profile) also use this pattern for consistency.
+**Model selector layout:** All model selectors use an inline flex row: `[selector][Browse…]`. Selectors in narrow sidebar panels (e.g. Run Profile) also use this pattern for consistency. The option label is `${name} (${local|frontier})` unless `name` already contains the suffix (case-insensitive), in which case the suffix is omitted to avoid "Qwen3-32B (local) (local)" duplication.
+
+**Empty api_key handling:** Local model endpoints (e.g. vLLM, llama.cpp) often have no API key. The Authorization header is only sent when `api_key` is non-empty; otherwise the request goes unauthenticated. Anthropic endpoints raise a clear error when the key is missing, since they always require one. (`uc_assist.py` matched `arch_review.py` for this behavior in v0.9.14.)
+
+**UC modal layout:** The UC editor modal-body uses `display:flex; flex-direction:row` to put the YAML editor pane and the AI Assist panel side-by-side. The base `.modal-body` class is `flex-direction:column`, so the row direction must be set explicitly on the inline style — forgetting this stacks the panels vertically.
 
 ---
 

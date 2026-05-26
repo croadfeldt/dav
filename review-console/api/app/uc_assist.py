@@ -130,6 +130,8 @@ async def chat(
 
 
 async def _call_anthropic(user_message: str, timeout: float, cfg: dict) -> str:
+    if not cfg.get("api_key"):
+        raise RuntimeError("Anthropic endpoint requires an API key — set one on the model endpoint in Config → Models.")
     url = f"{cfg['endpoint_url'].rstrip('/')}/v1/messages"
     headers = {
         "x-api-key": cfg["api_key"],
@@ -152,11 +154,13 @@ async def _call_anthropic(user_message: str, timeout: float, cfg: dict) -> str:
 
 
 async def _call_openai_compat(user_message: str, timeout: float, cfg: dict) -> str:
-    url = f"{cfg['endpoint_url'].rstrip('/')}/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {cfg['api_key']}",
-        "content-type": "application/json",
-    }
+    base = cfg["endpoint_url"].rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    url = f"{base}/v1/chat/completions"
+    headers: dict[str, str] = {"content-type": "application/json"}
+    if cfg.get("api_key"):
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
     body = {
         "model": cfg["model_id"],
         "max_tokens": 4096,

@@ -1496,7 +1496,7 @@
         <button class="btn ghost btn-icon" id="closeUCModal">✕</button>
       </div>
     </div>
-    <div class="modal-body" style="display:flex; gap:0; padding:0; overflow:hidden; max-height:calc(90vh - 100px);">
+    <div class="modal-body" style="display:flex; flex-direction:row; gap:0; padding:0; overflow:hidden; max-height:calc(90vh - 100px);">
       <!-- YAML editor pane -->
       <div style="flex:1; min-width:0; padding:16px 20px; overflow-y:auto; display:flex; flex-direction:column; gap:12px;">
         <div class="form-field"><label>YAML content</label>
@@ -4854,9 +4854,11 @@ function _populateModelSel(selId, storageKey) {
   if (!sel) return;
   const enabled = _reviewModels.filter(m => m.enabled);
   sel.innerHTML = '<option value="">— select a model —</option>' +
-    enabled.map(m =>
-      `<option value="${m.id}">${esc(m.name)} (${m.is_local ? 'local' : 'frontier'})</option>`
-    ).join('');
+    enabled.map(m => {
+      const suffix = m.is_local ? 'local' : 'frontier';
+      const label = m.name.toLowerCase().includes(`(${suffix})`) ? m.name : `${m.name} (${suffix})`;
+      return `<option value="${m.id}">${esc(label)}</option>`;
+    }).join('');
   const stored = localStorage.getItem(storageKey);
   if (stored === '__custom__') {
     const ep = localStorage.getItem(storageKey + '_ep');
@@ -4917,7 +4919,11 @@ function _populateEvalDefaultSel(modelId) {
   if (!sel) return;
   const enabled = _reviewModels.filter(m => m.enabled);
   sel.innerHTML = '<option value="">— no default set —</option>' +
-    enabled.map(m => `<option value="${m.id}">${esc(m.name)} (${m.is_local ? 'local' : 'frontier'})</option>`).join('');
+    enabled.map(m => {
+      const suffix = m.is_local ? 'local' : 'frontier';
+      const label = m.name.toLowerCase().includes(`(${suffix})`) ? m.name : `${m.name} (${suffix})`;
+      return `<option value="${m.id}">${esc(label)}</option>`;
+    }).join('');
   if (modelId) sel.value = String(modelId);
 }
 
