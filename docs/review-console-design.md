@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.38  
+**Current version:** v0.9.39  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -489,6 +489,20 @@ Corpus-source UCs are deliberately not gated (no lifecycle on those). Future enh
 What this doesn't do (yet): retroactively fix existing bad UCs. The user's path for a single bad UC is delete + recreate; a `/api/use-cases/{uuid}/repair-uuid` endpoint that cascades the rename across set members + lifecycle events + uc_analyses is a noted follow-on if more accrue.
 
 **Auto-navigate to the new run on trigger (v0.9.38):** After `submitNewRun` succeeds, the UI now switches to the Runs tab, refreshes the run list so the new PipelineRun is in `allRuns`, then calls `selectRun(name)` so the run detail pane opens automatically. Users watching for run progress no longer have to manually navigate and click — the live polling starts immediately on the just-triggered run.
+
+**Anti-fishing for MCP tool calls (v0.9.39):** Two layered fixes after observing the model wasting 23 of 26 tool calls on a single run by retrying the same `section_title` across every document, ignoring the "Available sections" list the MCP server returned each time.
+
+1. **MCP server (`dav-docs-mcp/server.py`)** — both `get_document` and `get_document_section` now return forceful directives when the request is malformed:
+   - **Section not found** response gets a `⚠ Section '<X>' NOT FOUND in '<doc>'.` header plus a "REQUIRED NEXT ACTION (pick exactly one)" block explicitly forbidding the model from retrying the same `section_title` in a different document. The list of actual sections in the queried doc still follows.
+   - **Document too large** response gets a `⚠ DOCUMENT TOO LARGE TO RETURN IN FULL` header plus a "DO NOT call `get_document(...)` again — you will get this same response" directive pointing at `get_document_section`.
+2. **Engine (`dav.ai.agent`)** — per-run state tracking:
+   - `_section_title_misses` dict counts misses per `section_title`. On the 3rd+ miss with the same title, the tool response is prepended with a `⛔ ANTI-FISHING STOP` directive forcing a `search_docs(query=<DIFFERENT keywords>)`.
+   - `_too_large_handles` set tracks docs already returned as too large. A 2nd `get_document(handle)` call on a seen handle gets the same `⛔` prepend forcing a section call.
+   - State resets at the start of each `analyze()` so it's per-sample, not global.
+
+The prepend approach is more reliable than relying on the buried system-prompt directive because the model reads tool responses fresh each turn, while system prompts can be skimmed. The original tool response is preserved after the directive for context.
+
+**Tekton task already wires the MCP server URL via `mcp-url` param**, so no infra change is needed beyond the engine + MCP image rebuilds (`ansible-playbook --tags engine,mcp`).
 
 **Results tab — persistent run-summary header (v0.9.31):** Same shape as the Runs detail v0.9.30 work: stats stay above the output, output bounded to the panel. Previously `renderRunSummaryHeader` rendered the run-level stats into `analysisDetail`; picking a UC replaced them with the per-UC analysis and the run context disappeared. Now a dedicated `runResultsHeader` strip sits above `analysisDetail`, populated on `selectRunResult` and never overwritten by per-UC rendering. Compact single-row layout: session name + run_id + mode on the left; `N/M UCs (X%) · failed · samples · ⏱ wall · finished_at` on the right. Wraps at narrow widths. `analysisDetail` gets `flex:1; overflow-y:auto; min-height:0` so the per-UC content scrolls *within* the panel — the page never grows beyond the viewport.
 

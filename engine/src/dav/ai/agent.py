@@ -230,6 +230,13 @@ class Stage2Agent:
         self.turns_log_path = turns_log_path
         self._tool_trace: list[ToolCall] = []
         self._total_tokens: int = 0
+        # Anti-fishing state — models routinely ignore "section not found"
+        # results and just try the same section_title in another document, or
+        # re-fetch a document already returned as "too large". When patterns
+        # recur, we PREPEND a directive to the tool response so the model sees
+        # reinforced guidance fresh on its next turn. Reset per agent run.
+        self._section_title_misses: dict[str, int] = {}   # section_title -> miss count
+        self._too_large_handles: set[str] = set()
         # wall-time tracking for AnalysisMetadata.wall_time_seconds
         self._wall_time_start: float = 0.0
         # per-sample seed override. When None, falls back to
@@ -243,6 +250,62 @@ class Stage2Agent:
     # prompts (30-50 KB) and tool results (1-5 KB). Override via env var
     # DAV_TURNS_MAX_FIELD_BYTES for stress tests.
     _TURNS_MAX_FIELD_BYTES = int(os.environ.get("DAV_TURNS_MAX_FIELD_BYTES", "262144"))
+
+    def _anti_fishing_wrap(
+        self, tool_name: str, args: dict, result: str, ok: bool,
+    ) -> str:
+        """Detect recurring tool-call mistakes and prepend a forceful directive
+        to the result so the model sees reinforced guidance on its next turn.
+
+        Two patterns handled today:
+
+        1. **Repeated section_title not-found across documents** — model is
+           "fishing" for a section name in every document instead of picking
+           from the "Available sections" list the MCP returns. After the 3rd
+           attempt with the same section_title, prepend a STOP directive.
+        2. **Re-fetching a document already returned as too-large** — model
+           tries `get_document(handle)` after being told it was over the
+           response budget. On the 2nd attempt for the same handle, prepend a
+           STOP directive forcing a section call.
+        """
+        if not ok:
+            return result
+        # Pattern 1: section_title misses
+        if tool_name == "get_document_section" and "not found" in result.lower():
+            st = (args.get("section_title") or "").strip()
+            if st:
+                self._section_title_misses[st] = self._section_title_misses.get(st, 0) + 1
+                count = self._section_title_misses[st]
+                if count >= 3:
+                    return (
+                        f"⛔ ANTI-FISHING STOP: you have tried "
+                        f"section_title='{st}' {count} times across different "
+                        f"documents and it was not found in any of them. "
+                        f"This section title does not exist with that wording. "
+                        f"Your NEXT action MUST be `search_docs(query=<DIFFERENT "
+                        f"keywords>)` — pick alternative terms. Do not retry "
+                        f"this section_title in another document.\n\n"
+                        f"--- Original tool response below for context ---\n\n"
+                        f"{result}"
+                    )
+        # Pattern 2: re-fetching too-large documents
+        if tool_name == "get_document":
+            handle = (args.get("handle") or "").strip()
+            if "too large" in result.lower() or "document too large" in result.lower():
+                already_seen = handle in self._too_large_handles
+                self._too_large_handles.add(handle)
+                if already_seen:
+                    return (
+                        f"⛔ ANTI-FISHING STOP: you already fetched "
+                        f"get_document('{handle}') and were told it was too "
+                        f"large. Calling it again returns the same outline. "
+                        f"Your NEXT action MUST be "
+                        f"`get_document_section(handle='{handle}', "
+                        f"section_title='<a title from the outline>')`.\n\n"
+                        f"--- Original tool response below for context ---\n\n"
+                        f"{result}"
+                    )
+        return result
 
     def _emit_turn(self, turn: int, kind: str, **fields) -> None:
         """Append a single structured-turn record to turns_log_path (JSONL).
@@ -297,6 +360,9 @@ class Stage2Agent:
         # is populated for ensemble merging and explore-mode cost reporting.
         import time as _time
         self._wall_time_start = _time.monotonic()
+        # Reset anti-fishing state for this run
+        self._section_title_misses = {}
+        self._too_large_handles = set()
 
         tool_defs = get_tool_definitions()
         sys_prompt = build_stage2_system_prompt(self.consumer_profile)
@@ -386,6 +452,12 @@ class Stage2Agent:
                         mcp_result.result if mcp_result.ok
                         else f"ERROR: {mcp_result.error}"
                     )
+                    # Anti-fishing pattern detection — prepend reinforcement to
+                    # the tool response when the model keeps making the same
+                    # mistake. The model reads the tool result fresh each turn,
+                    # so prepending here is more reliable than relying on the
+                    # buried system-prompt directive.
+                    full_result = self._anti_fishing_wrap(tool_name, args, full_result, mcp_result.ok)
                     self._tool_trace.append(ToolCall(
                         tool=tool_name,
                         args=args,
@@ -398,12 +470,12 @@ class Stage2Agent:
                         args=args,
                         ok=mcp_result.ok,
                         result=full_result,
-                        result_length=len(mcp_result.result or "") if mcp_result.ok else len(full_result),
+                        result_length=len(full_result),
                     )
 
                     messages.append(ChatMessage(
                         role="tool",
-                        content=mcp_result.result if mcp_result.ok
+                        content=full_result if mcp_result.ok
                                  else f"Tool error: {mcp_result.error}",
                         tool_call_id=tc["id"],
                         name=tool_name,

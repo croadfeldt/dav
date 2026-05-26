@@ -232,9 +232,13 @@ def get_document(handle: str) -> str:
     )
     return (
         f"# {doc['title']}\n\n"
-        f"(Document too large to return in full: {len(content):,} characters, "
-        f"{doc['word_count']:,} words. Use `get_document_section(handle='{handle}', "
-        f"section_title='<title>')` to retrieve a specific section.)\n\n"
+        f"⚠ DOCUMENT TOO LARGE TO RETURN IN FULL ({len(content):,} characters, "
+        f"{doc['word_count']:,} words).\n\n"
+        f"REQUIRED NEXT ACTION: call "
+        f"`get_document_section(handle='{handle}', section_title='<exact title from list below>')` "
+        f"with one of the titles listed under \"Available Sections\". "
+        f"DO NOT call `get_document('{handle}')` again — you will get this same "
+        f"response. Pick a specific section from the outline below instead.\n\n"
         f"## Available Sections\n\n{sections_list}\n"
     )
 
@@ -265,7 +269,21 @@ def get_document_section(handle: str, section_title: str) -> str:
 
     if start_line is None:
         sections_list = "\n".join(f"  - {s['title']}" for s in doc["sections"])
-        return f"Section '{section_title}' not found in {handle}. Available sections:\n{sections_list}"
+        return (
+            f"⚠ Section '{section_title}' NOT FOUND in '{handle}'.\n\n"
+            f"REQUIRED NEXT ACTION (pick exactly one):\n"
+            f"  (a) Call `get_document_section(handle='{handle}', section_title='<title>')` "
+            f"with one of the EXACT titles listed below — this document does contain "
+            f"the listed sections.\n"
+            f"  (b) Call `search_docs(query='<different keywords>')` if the topic "
+            f"you want isn't in this document — try broader or different terms.\n\n"
+            f"DO NOT retry section_title='{section_title}' in a different document. "
+            f"That section title was not in this document; trying it in another "
+            f"document without first checking the section list is unlikely to help. "
+            f"The same content might be under a different section name — read the "
+            f"list below or search with different terms.\n\n"
+            f"Available sections in '{handle}':\n{sections_list}"
+        )
 
     # Find the section end (next heading at same or higher level)
     end_line = len(lines)
