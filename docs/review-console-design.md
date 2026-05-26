@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.16  
+**Current version:** v0.9.17  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -294,6 +294,8 @@ Overlay background uses `var(--bg-panel)` — `var(--surface)` is not a defined 
 **UC Assist timeout:** Default httpx timeout in `uc_assist.chat()` is **300s** (was 60s, bumped in v0.9.15). Local 32B models doing multi-paragraph YAML drafting routinely exceed 60s — especially when current_yaml is large and the model has to revise rather than draft from scratch. The 5-minute ceiling matches what's reasonable for a single-turn assist response on local hardware; if a request takes longer than 5 minutes, something else is wrong (model unhealthy, GPU contention).
 
 **UC modal layout:** The UC editor modal-body uses `display:flex; flex-direction:row` to put the YAML editor pane and the AI Assist panel side-by-side. The base `.modal-body` class is `flex-direction:column`, so the row direction must be set explicitly on the inline style — forgetting this stacks the panels vertically.
+
+**UC Name / title field (v0.9.17):** UCs carry a human-readable name in the YAML's top-level `title:` field. The UC editor surfaces it as a dedicated **Name** input above the YAML editor. On save, the input value is injected into the YAML's `title:` line via `_injectTitleIntoYaml()` so the two halves of the editor never disagree. On open, `_extractTitleFromYaml()` pulls the current value into the input. The API's `_derive_uc_title()` helper prefers top-level `title:` > `scenario.description` > `handle` > `uuid`, with a 120-char cap. UC list and detail render the title prominently; UUID and handle move to a small monospaced ID line. UC Assist's system prompt teaches the model to populate `title:`, and the "Apply to editor" button syncs the title from the assistant's YAML into the Name input.
 
 ---
 

@@ -29,6 +29,8 @@ ASSIST_MODEL = os.environ.get(
 _UC_SCHEMA_HINT = """
 A DAV use case (UC) is a YAML document with this top-level structure:
 
+  title: <short human-readable name>   # REQUIRED. Shown in lists and detail headers.
+                                       # 1-120 chars. E.g. "VM provisioning — happy path"
   uuid: <uuid-string>               # globally unique, kebab-case
   handle: <prefix>/<category>/<descriptor>   # e.g. test/standard/vm-provision-happy
   scenario:

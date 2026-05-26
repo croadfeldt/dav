@@ -1499,8 +1499,12 @@
     <div class="modal-body" style="display:flex; flex-direction:row; gap:0; padding:0; overflow:hidden; max-height:calc(90vh - 100px);">
       <!-- YAML editor pane -->
       <div style="flex:1; min-width:0; padding:16px 20px; overflow-y:auto; display:flex; flex-direction:column; gap:12px;">
+        <div class="form-field"><label>Name</label>
+          <input id="ucNameInput" placeholder="Short, human-readable name (e.g. VM provisioning — happy path)" maxlength="120" />
+          <div class="form-hint">Stored as the top-level <code>title:</code> field in the YAML.</div>
+        </div>
         <div class="form-field"><label>YAML content</label>
-          <textarea class="yaml-editor" id="ucYamlEditor" rows="22" spellcheck="false"></textarea>
+          <textarea class="yaml-editor" id="ucYamlEditor" rows="20" spellcheck="false"></textarea>
         </div>
         <div class="form-field"><label>Tags (comma-separated)</label>
           <input id="ucTagsInput" placeholder="e.g. happy-path, auth, regression" />
@@ -3625,10 +3629,12 @@ function renderUCList() {
       const item = document.createElement('div');
       item.className = 'list-item' + (activeUCId===u.uuid ? ' active' : '');
       const tags = (u.tags||[]).slice(0,2).map(t => `<span class="tag">${esc(t)}</span>`).join('');
+      const titleText = u.title || u.handle || u.uuid || '?';
+      const subText = (u.handle && u.handle !== titleText) ? u.handle : u.uuid;
       item.innerHTML = `
         <div class="li-main">
-          <div class="li-title">${esc(u.uuid||u.handle||'?')}</div>
-          <div class="li-sub">${esc(u.title||u.handle||'')}</div>
+          <div class="li-title">${esc(titleText)}</div>
+          <div class="li-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.7;">${esc(subText || '')}</div>
           ${tags ? `<div style="margin-top:3px">${tags}</div>` : ''}
         </div>
         ${u.lifecycle_state ? lcHtml(u.lifecycle_state) : `<span class="src-badge src-${u.source}">${u.source}</span>`}`;
@@ -3673,12 +3679,16 @@ function renderUCDetail(data, lifecycle) {
   const uuid = data.uuid;
   const state = data.lifecycle_state || 'draft';
   const sets = data.sets || [];
+  const titleText = parsed.title || data.title || parsed.handle || uuid;
+  const handleText = parsed.handle || data.handle || '';
 
   let html = `<div class="detail-pane">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px">
-      <div>
-        <div class="detail-title">Use <em>case</em></div>
-        <div class="detail-sub">${esc(uuid)}</div>
+      <div style="min-width:0;flex:1">
+        <div class="detail-title" style="font-family:var(--serif);font-size:18px;line-height:1.25;">${esc(titleText)}</div>
+        <div class="detail-sub" style="font-family:var(--mono,monospace);font-size:11px;color:var(--text-faint);margin-top:4px;">
+          ${handleText ? `<span title="handle">⌘ ${esc(handleText)}</span> · ` : ''}<span title="UUID">id ${esc(uuid)}</span>
+        </div>
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;margin-top:4px">
         ${isManaged
@@ -3852,6 +3862,36 @@ async function confirmLCTransition() {
 }
 
 // ── UC CRUD ──────────────────────────────────────────────────
+
+// Top-level `title:` extraction / injection. Regex-based to avoid a
+// YAML-parsing dependency in the browser. Matches only at column 0 so
+// nested `title:` keys inside block scalars or sub-mappings are left alone.
+function _extractTitleFromYaml(yaml) {
+  const m = /^title:[ \t]*(.+?)[ \t]*$/m.exec(yaml || '');
+  if (!m) return '';
+  let v = m[1];
+  // strip inline comment
+  const hash = v.indexOf(' #');
+  if (hash !== -1) v = v.slice(0, hash).trim();
+  // strip wrapping quotes (single or double)
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+    v = v.slice(1, -1);
+  }
+  return v;
+}
+function _injectTitleIntoYaml(yaml, title) {
+  const safe = title ? JSON.stringify(title) : '""';  // double-quoted, escapes embedded quotes/newlines
+  const line = `title: ${safe}`;
+  const re = /^title:[ \t]*.*$/m;
+  if (re.test(yaml)) return yaml.replace(re, line);
+  // No existing title — prepend after any leading comment block
+  const lines = (yaml || '').split('\n');
+  let i = 0;
+  while (i < lines.length && (lines[i].trimStart().startsWith('#') || lines[i].trim() === '')) i++;
+  lines.splice(i, 0, line);
+  return lines.join('\n');
+}
+
 function openUCModal(uuid, yamlContent, tags) {
   editingUCId = uuid || null;
   document.getElementById('ucModalTitle').textContent = uuid ? 'Edit use case' : 'New use case';
@@ -3863,10 +3903,13 @@ function openUCModal(uuid, yamlContent, tags) {
     content = UC_TEMPLATE.replace('uc-<your-uuid-here>', newUuid);
   }
   document.getElementById('ucYamlEditor').value = content;
+  document.getElementById('ucNameInput').value = _extractTitleFromYaml(content);
   document.getElementById('ucTagsInput').value = (tags||[]).join(', ');
   document.getElementById('ucModalStatus').textContent = '';
   document.getElementById('saveUCModal').disabled = false;
   document.getElementById('ucModal').classList.add('open');
+  // Focus the Name field on new UC; on edit, leave focus on the modal
+  if (!uuid) setTimeout(() => document.getElementById('ucNameInput').focus(), 50);
 }
 async function editUC(uuid) {
   try { const d = await api(`/api/use-cases/${encodeURIComponent(uuid)}`); openUCModal(uuid, d.yaml_content, d.tags); }
@@ -3956,6 +3999,8 @@ function _ucAssistAppendMessage(role, text, yaml, error) {
     applyBtn.textContent = '↑ Apply to editor';
     applyBtn.addEventListener('click', () => {
       document.getElementById('ucYamlEditor').value = yaml;
+      const titleFromYaml = _extractTitleFromYaml(yaml);
+      if (titleFromYaml) document.getElementById('ucNameInput').value = titleFromYaml;
       applyBtn.textContent = '✓ Applied';
       applyBtn.disabled = true;
     });
@@ -4019,7 +4064,11 @@ document.getElementById('ucAssistClearBtn').addEventListener('click', () => {
 async function saveUC() {
   const btn = document.getElementById('saveUCModal'), status = document.getElementById('ucModalStatus');
   btn.disabled = true; status.textContent = 'saving…';
-  const yamlContent = document.getElementById('ucYamlEditor').value;
+  const nameInput = (document.getElementById('ucNameInput').value || '').trim();
+  let yamlContent = document.getElementById('ucYamlEditor').value;
+  // Sync the Name field into the YAML's top-level title: before persisting,
+  // so the editor's two halves never disagree.
+  if (nameInput) yamlContent = _injectTitleIntoYaml(yamlContent, nameInput);
   const tags = document.getElementById('ucTagsInput').value.split(',').map(t => t.trim()).filter(Boolean);
   const payload = {yaml_content: yamlContent, tags};
   try {
@@ -4036,6 +4085,7 @@ async function saveUC() {
 }
 
 const UC_TEMPLATE = `# DAV Use Case — v1.0
+title: ""
 uuid: uc-<your-uuid-here>
 handle: <category>/<descriptor>
 

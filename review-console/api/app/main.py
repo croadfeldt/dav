@@ -1024,6 +1024,26 @@ def _parse_uc_yaml(yaml_content: str) -> dict:
     return data
 
 
+def _derive_uc_title(parsed: dict, fallback_id: str) -> str:
+    """Derive a human-readable title for a managed UC.
+
+    Priority: top-level `title:` field > scenario.description > handle > uuid.
+    Always truncated to 120 chars (matches the column constraint pragma).
+    """
+    raw = parsed.get("title")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()[:120]
+    scenario = parsed.get("scenario")
+    if isinstance(scenario, dict):
+        desc = scenario.get("description")
+        if isinstance(desc, str) and desc.strip():
+            return desc.strip()[:120]
+    handle = parsed.get("handle")
+    if isinstance(handle, str) and handle.strip():
+        return handle.strip()[:120]
+    return fallback_id
+
+
 @app.get("/api/use-cases")
 async def list_use_cases(
     source: Optional[str] = Query(None, description="'managed', 'corpus', or None for both"),
@@ -1138,12 +1158,7 @@ async def create_use_case(payload: ManagedUCIn, request: Request):
     if not uc_uuid or not isinstance(uc_uuid, str):
         raise HTTPException(400, "UC YAML must have a non-empty 'uuid' field")
 
-    title = ""
-    if isinstance(data.get("scenario"), dict):
-        title = (data["scenario"].get("description") or "")[:120]
-    if not title:
-        title = data.get("handle", uc_uuid)
-
+    title = _derive_uc_title(data, uc_uuid)
     tags = payload.tags or data.get("tags", [])
 
     async with pool.acquire() as conn:
@@ -1176,12 +1191,7 @@ async def update_use_case(uuid: str, payload: ManagedUCIn, request: Request):
     if yaml_uuid and yaml_uuid != uuid:
         raise HTTPException(400, f"UUID in YAML ({yaml_uuid!r}) does not match URL ({uuid!r})")
 
-    title = ""
-    if isinstance(data.get("scenario"), dict):
-        title = (data["scenario"].get("description") or "")[:120]
-    if not title:
-        title = data.get("handle", uuid)
-
+    title = _derive_uc_title(data, uuid)
     tags = payload.tags or data.get("tags", [])
 
     async with pool.acquire() as conn:
