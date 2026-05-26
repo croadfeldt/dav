@@ -925,9 +925,12 @@
           <div class="scrollable" id="ucResultList"><div class="empty">select a run</div></div>
         </div>
         <div class="split-resizer" data-rs-left="ucListPanel" data-rs-storage="rsUcsW"></div>
-        <div class="split-right" id="analysisPanel" style="display:flex;flex-direction:column">
+        <div class="split-right" id="analysisPanel" style="display:flex;flex-direction:column;min-height:0;">
+          <!-- Persistent run-summary header: stays visible whenever a run is selected,
+               so the run-level context stays present while drilling into per-UC output. -->
+          <div id="runResultsHeader" style="display:none;flex-shrink:0;border-bottom:1px solid var(--border);background:var(--bg-panel);padding:10px 16px;"></div>
           <div id="analysisActionBar" style="display:none;flex-shrink:0;border-bottom:1px solid var(--border);background:var(--bg-panel)"></div>
-          <div id="analysisDetail" style="flex:1;overflow-y:auto">
+          <div id="analysisDetail" style="flex:1;overflow-y:auto;min-height:0;">
             <div class="detail-pane"><div class="detail-empty">Select a run, then a use case to view its analysis.</div></div>
           </div>
         </div>
@@ -3043,26 +3046,35 @@ document.getElementById('ingestResultBtn').addEventListener('click', async () =>
 });
 
 function renderRunSummaryHeader(s) {
+  // Renders into the persistent runResultsHeader strip — stays visible while
+  // the user drills into per-UC analysis. Compact one-row layout: title,
+  // mode, key counts, pass rate, wall time. The analysisDetail pane below
+  // gets the placeholder "← pick a use case" hint.
   const pct = s.total_ucs > 0 ? Math.round((s.successful/s.total_ucs)*100) : 0;
+  const passColor = s.failed > 0 ? 'var(--red)' : 'var(--green)';
+  // Prefer the session name when available (joined onto allResults at /api/results)
+  const meta = (allResults || []).find(r => r.run_id === s.run_id) || {};
+  const title = meta.session_name || s.run_id;
+  const header = document.getElementById('runResultsHeader');
+  header.innerHTML = `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+      <div style="min-width:0;flex:1;">
+        <div style="font-family:var(--serif);font-size:14px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(s.run_id)}">${esc(title)}</div>
+        <div style="font-family:var(--mono,monospace);font-size:10px;color:var(--text-faint);margin-top:2px;">${esc(s.run_id)} · ${esc(s.mode || '?')}</div>
+      </div>
+      <div style="display:flex;gap:14px;align-items:baseline;font-size:11px;flex-wrap:wrap;">
+        <span><strong style="color:${passColor};font-size:13px;">${s.successful}/${s.total_ucs}</strong> <span style="color:var(--text-faint);">UCs (${pct}%)</span></span>
+        ${s.failed > 0 ? `<span style="color:var(--red);">${s.failed} failed</span>` : ''}
+        <span style="color:var(--text-faint);">${s.total_samples || 0} samples</span>
+        <span style="color:var(--text-faint);">⏱ ${s.runner_total_seconds ? s.runner_total_seconds+'s' : '—'}</span>
+        <span style="color:var(--text-faint);">${esc(fmtTs(s.finished_at || s.started_at))}</span>
+      </div>
+    </div>`;
+  header.style.display = '';
+  // Clear the per-UC area to its empty state — header stays
   const bar = document.getElementById('analysisActionBar'); bar.innerHTML=''; bar.style.display='none';
-  document.getElementById('analysisDetail').innerHTML = `<div class="detail-pane">
-    <div class="detail-title">Run <em>summary</em></div>
-    <div class="detail-sub">${esc(s.run_id)} · ${esc(s.mode)}</div>
-    <div class="stat-row">
-      <div class="stat-box"><div class="sv">${s.total_ucs}</div><div class="sl">Total UCs</div></div>
-      <div class="stat-box green"><div class="sv">${s.successful}</div><div class="sl">Succeeded</div></div>
-      <div class="stat-box red"><div class="sv">${s.failed}</div><div class="sl">Failed</div></div>
-      <div class="stat-box blue"><div class="sv">${s.total_samples}</div><div class="sl">Samples</div></div>
-      <div class="stat-box"><div class="sv">${pct}%</div><div class="sl">Pass rate</div></div>
-    </div>
-    <div class="kv-grid">
-      <div class="kv-label">Started</div><div class="kv-val">${esc(fmtTs(s.started_at))}</div>
-      <div class="kv-label">Finished</div><div class="kv-val">${esc(fmtTs(s.finished_at))}</div>
-      <div class="kv-label">Wall time</div><div class="kv-val">${s.runner_total_seconds ? s.runner_total_seconds+'s' : '—'}</div>
-    </div>
-    <div style="margin-top:20px;color:var(--text-faint);font-family:var(--serif);font-style:italic;font-size:13px;">
-      ← Select a use case to view its analysis.
-    </div></div>`;
+  document.getElementById('analysisDetail').innerHTML =
+    '<div class="detail-pane"><div class="detail-empty">← Select a use case to view its analysis.</div></div>';
 }
 
 // Order in which verdict groups render (top → bottom). 'failed' = stage-2
