@@ -1,8 +1,8 @@
 # DAV Review Console — Design & Feature Inventory
 
 **Status:** Living document  
-**Last updated:** 2026-05-26  
-**Current version:** v0.9.12  
+**Last updated:** 2026-05-25  
+**Current version:** v0.9.13  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -118,7 +118,7 @@ The SPA is a single `index.html` with no build step. All state lives in JS globa
 
 **UC sets:** Named collections of UCs (`use_case_sets` + `use_case_set_members`). Used for targeted runs.
 
-**UC Assist:** NL prompt → YAML suggestion via configured model (selected from `model_configs` rows with `use_uc_assist=true`, or env-var fallback). Streaming SSE. The **Clear** button wipes both the conversation history and the compose textarea.
+**UC Assist:** NL prompt → YAML suggestion via configured model (any enabled model, or env-var fallback). The **Clear** button wipes both the conversation history and the compose textarea. When the assist panel is opened with no model selected, focus moves to the model selector so the user knows what to do first.
 
 ---
 
@@ -130,7 +130,7 @@ Two-pane layout: left nav (category list), right content (selected category).
 
 **Categories:**
 - **Sources** — spec repo URL/branch, corpus repo URL/branch. Updates `dav-source-spec` ConfigMap + rolls `dav-docs-mcp` deployment. Evaluation endpoint: selects inference model from `model_configs` dropdown (replaces free-text endpoint/model inputs); applied via `POST /api/sources/inference` after optional Test validation.
-- **Model Endpoints** — all LLM endpoints in one `model_configs` table with per-endpoint use-flags: `use_arch_review` (default true) and `use_uc_assist` (default false). `api_key` masked on GET. All selectors across the console draw from the same enabled-model list via `_populateModelSel(selId, storageKey)`; selections persisted in localStorage per selector. Each selector has a **Browse…** button that opens the model browser overlay (see §Model browser below).
+- **Model Endpoints** — all LLM endpoints in one `model_configs` table with per-endpoint use-flags: `use_arch_review` (default true) and `use_uc_assist` (default false, informational only — any enabled model can now be used for UC Assist). `api_key` masked on GET. All selectors across the console draw from the same enabled-model list via `_populateModelSel(selId, storageKey)`; selections persisted in localStorage per selector. Each selector has a **Browse…** button inline with the selector that opens the model browser overlay (see §Model browser below).
 - **Default evaluation model** — project-scoped default for new analysis runs. Stored in `model_defaults` table (`key='evaluation'`). Set in Config → AI Models; applies to all users. New Run modal reads from `GET /api/model-defaults` on open and pre-selects this model when no user override is stored in localStorage. Only registered model_config rows can be set as project defaults (custom endpoint+model pairs are user-scoped only).
 - **Default UC Assist model** — user-scoped personal default for UC Assist authoring. Stored in localStorage under `ucAssistModelId`. Configurable both in Config → AI Models and inline in the UC Assist panel (both selectors share the same storage key and mirror each other). Falls back to env-var config (`DAV_UC_ASSIST_*`) if no DB rows exist.
 - **MCP Integrations** — registered MCP servers (`mcp_server_configs` table) with `use_uc_assist` flag. Health polled on demand. Servers flagged `use_uc_assist` displayed with amber badge.
@@ -283,7 +283,11 @@ Overlay background uses `var(--bg-panel)` — `var(--surface)` is not a defined 
 - **Project-scoped** (DB, `model_defaults` table): evaluation model only. Set in Config → AI Models. Applies to all users. New Run modal reads this as its default; user can override per-session via localStorage (`nrLastModel`). Custom endpoint+model pairs cannot be project defaults.
 - **User-scoped** (localStorage): arch review (`reviewLastModel`), enhancement (`enhanceLastModel`), UC Assist (`ucAssistModelId`), standalone review panel (`reviewLastModel`). Per-browser, not shared across users.
 
-**UC Assist panel:** The UC Assist slide-in panel (in the UC editor modal) contains its own model selector (`ucAssistPanelModelSel`) using the same `ucAssistModelId` localStorage key as the Config selector. Both mirrors write to the same key; changing either one is reflected in the other on next populate. The compose textarea is 6 rows tall, user-resizable vertically, with ⌘↵ as the keyboard shortcut to send. `_ucAssistCheckAvail()` and `_ucAssistSend()` resolve the model via `_resolveFromStorage` to remain DOM-agnostic.
+**UC Assist panel:** The UC Assist slide-in panel (in the UC editor modal) contains its own model selector (`ucAssistPanelModelSel`) using the same `ucAssistModelId` localStorage key as the Config selector. Both mirrors write to the same key; changing either one is reflected in the other on next populate. The compose textarea is 6 rows tall, user-resizable vertically, with ⌘↵ as the keyboard shortcut to send. `_ucAssistCheckAvail()` and `_ucAssistSend()` resolve the model via `_resolveFromStorage` to remain DOM-agnostic. When the panel is opened with no model selected, focus moves to the model selector automatically. The error message when no model is configured directs users to the inline selector, not Config.
+
+**UC editor UUID auto-generation:** When the New UC modal is opened with no YAML content (fresh template), `crypto.randomUUID()` replaces the `uc-<your-uuid-here>` placeholder with a real UUID, preventing 409 collisions on repeated new-UC creation.
+
+**Model selector layout:** All model selectors use an inline flex row: `[selector][Browse…]`. Selectors in narrow sidebar panels (e.g. Run Profile) also use this pattern for consistency.
 
 ---
 

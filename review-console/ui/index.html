@@ -1030,10 +1030,12 @@
           </div>
           <div>
             <label>Model</label>
-            <select id="rpModelSel" style="width:100%;font-size:11px;">
-              <option value="">— no models —</option>
-            </select>
-            <button class="btn ghost btn-sm" type="button" style="width:100%;margin-top:4px;" onclick="_openModelBrowser('rpModelSel','reviewLastModel')">Browse…</button>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <select id="rpModelSel" style="flex:1;font-size:11px;">
+                <option value="">— no models —</option>
+              </select>
+              <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('rpModelSel','reviewLastModel')">Browse…</button>
+            </div>
           </div>
           <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
           <button class="btn primary" id="rpRevRunBtn" style="width:100%;">▶ Run Review</button>
@@ -1505,7 +1507,7 @@
         </div>
       </div>
       <!-- AI assist panel (hidden until toggled) -->
-      <div id="ucAssistPanel" style="display:none; width:360px; min-width:280px; border-left:1px solid var(--border); background:var(--bg-raised); display:none; flex-direction:column; overflow:hidden;">
+      <div id="ucAssistPanel" style="display:none; width:360px; min-width:280px; border-left:1px solid var(--border); background:var(--bg-raised); flex-direction:column; overflow:hidden;">
         <div style="padding:10px 14px; border-bottom:1px solid var(--border); font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); display:flex; justify-content:space-between; align-items:center;">
           <span>✦ AI Assist</span>
           <span id="ucAssistStatus" style="color:var(--text-faint); font-size:9px; letter-spacing:0"></span>
@@ -3853,7 +3855,14 @@ async function confirmLCTransition() {
 function openUCModal(uuid, yamlContent, tags) {
   editingUCId = uuid || null;
   document.getElementById('ucModalTitle').textContent = uuid ? 'Edit use case' : 'New use case';
-  document.getElementById('ucYamlEditor').value = yamlContent || UC_TEMPLATE;
+  let content = yamlContent;
+  if (!content) {
+    const newUuid = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : 'uc-' + Math.random().toString(36).slice(2, 10);
+    content = UC_TEMPLATE.replace('uc-<your-uuid-here>', newUuid);
+  }
+  document.getElementById('ucYamlEditor').value = content;
   document.getElementById('ucTagsInput').value = (tags||[]).join(', ');
   document.getElementById('ucModalStatus').textContent = '';
   document.getElementById('saveUCModal').disabled = false;
@@ -3913,7 +3922,12 @@ function _ucAssistOpen() {
   _populateModelSel('ucAssistPanelModelSel', _ucAssistModelKey);
   _ucAssistAvailable = null; // re-check on open
   _ucAssistCheckAvail();
-  document.getElementById('ucAssistInput').focus();
+  const modelSel = document.getElementById('ucAssistPanelModelSel');
+  if (!modelSel.value) {
+    modelSel.focus();
+  } else {
+    document.getElementById('ucAssistInput').focus();
+  }
 }
 
 function _ucAssistClose() {
@@ -3957,7 +3971,8 @@ async function _ucAssistSend() {
   if (!msg) return;
   const avail = await _ucAssistCheckAvail();
   if (!avail) {
-    _ucAssistAppendMessage('assistant', 'UC Assist is not configured. Enable "UC assist" on a model endpoint in Config → Models.', null, true);
+    _ucAssistAppendMessage('assistant', 'No model selected. Use the selector at the top of this panel to pick a model, then try again.', null, true);
+    document.getElementById('ucAssistPanelModelSel').focus();
     return;
   }
   const ucResolved = _resolveFromStorage(_ucAssistModelKey);
