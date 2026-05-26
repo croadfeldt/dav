@@ -221,6 +221,43 @@ def _build_enhancement_run_prompt(run_id: str, uc_analyses: list[dict]) -> str:
     return "\n".join(parts)
 
 
+async def _strip_think_blocks(source: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Strip <think>...</think> blocks from a streaming text source.
+
+    Handles tags split across chunk boundaries. Safe to apply to any provider;
+    models that don't emit think blocks pass through unmodified.
+    """
+    OPEN, CLOSE = "<think>", "</think>"
+    in_think = False
+    buf = ""
+
+    async for chunk in source:
+        buf += chunk
+        while True:
+            if not in_think:
+                idx = buf.find(OPEN)
+                if idx == -1:
+                    safe = max(0, len(buf) - (len(OPEN) - 1))
+                    if safe:
+                        yield buf[:safe]
+                        buf = buf[safe:]
+                    break
+                if idx > 0:
+                    yield buf[:idx]
+                buf = buf[idx + len(OPEN):]
+                in_think = True
+            else:
+                idx = buf.find(CLOSE)
+                if idx == -1:
+                    buf = buf[-(len(CLOSE) - 1):] if len(buf) >= len(CLOSE) else buf
+                    break
+                buf = buf[idx + len(CLOSE):].lstrip("\n")
+                in_think = False
+
+    if not in_think and buf:
+        yield buf
+
+
 async def stream_review(
     provider: str,
     endpoint_url: str,
@@ -232,15 +269,15 @@ async def stream_review(
 ) -> AsyncIterator[str]:
     endpoint_url = endpoint_url.rstrip("/")
     if provider == "anthropic":
-        async for chunk in _stream_anthropic(
+        inner = _stream_anthropic(
             endpoint_url, model_id, api_key, system_prompt, user_prompt, timeout
-        ):
-            yield chunk
+        )
     else:
-        async for chunk in _stream_openai(
+        inner = _stream_openai(
             endpoint_url, model_id, api_key, system_prompt, user_prompt, timeout
-        ):
-            yield chunk
+        )
+    async for chunk in _strip_think_blocks(inner):
+        yield chunk
 
 
 async def _stream_openai(
