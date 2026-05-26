@@ -141,8 +141,12 @@
   .rd-tail-header .ctl { display:flex; gap:8px; align-items:center; font-size:10px; color:var(--text-faint); }
   .rd-tail-header .ctl button { padding:2px 6px; font-size:10px; color:var(--text-faint); background:transparent; border:1px solid transparent; border-radius:2px; }
   .rd-tail-header .ctl button:hover { color:var(--text); border-color:var(--border); }
-  .rd-tail-body { border:1px solid var(--border); border-top:none; background:var(--bg); overflow-y:auto; font-family:var(--mono); font-size:11px; line-height:1.5; padding:8px 10px; }
+  .rd-tail-body { border:1px solid var(--border); border-top:none; background:var(--bg); overflow-y:auto; font-family:var(--mono); font-size:11px; line-height:1.5; padding:8px 10px; max-height:48vh; }
   .rd-tail-section.collapsed .rd-tail-body { display:none; }
+  /* GPU + Inference side-by-side on wide screens (≥1100px panel width), stack on narrow */
+  .rd-stats-grid { display:grid; grid-template-columns:1fr; gap:18px; margin-bottom:18px; }
+  @media (min-width:1100px) { .rd-stats-grid { grid-template-columns:1fr 1fr; } }
+  .rd-stats-grid > .run-section { margin-bottom:0; }
   .rd-tail-section.collapsed .rd-tail-header { border-radius:2px; }
   /* Compact tile rows */
   .rd-compact-row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; padding:8px 10px; background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; margin-bottom:8px; font-size:11px; }
@@ -2196,6 +2200,21 @@ function selectRun(name) {
       <div class="run-section-title">UC progress (live)</div>
       <div id="rdProgress"></div>
     </div>
+    <!-- Operational stats: GPU + Inference side-by-side on wide screens (≥1100px) -->
+    <div class="rd-stats-grid">
+      <div class="run-section" id="rdGpusSection">
+        <div class="run-section-title">GPUs (live)<span id="rdGpuFresh" class="freshness-chip"></span></div>
+        <div id="rdGpus"><div class="empty" style="font-size:11px">loading metrics…</div></div>
+        <div style="font-size:10px;color:var(--text-faint);margin-top:6px;line-height:1.6;">
+          <b>VRAM</b> stays near 100% (vLLM pre-allocates). AMD <b>GFX activity</b> on RDNA4 latches at 100% under light load — use <b>power</b> and <b>KV cache %</b> as the real busy signal.
+        </div>
+      </div>
+      <div class="run-section" id="rdVllmSection">
+        <div class="run-section-title">Inference (vLLM, live)<span id="rdVllmFresh" class="freshness-chip"></span></div>
+        <div id="rdVllm" class="vllm-grid"></div>
+      </div>
+    </div>
+    <!-- Pipeline output + prompt stream below the operational stats -->
     <div class="rd-tail-section" id="rdTasksSection">
       <div class="rd-tail-header" data-toggle="rdTasksSection" style="cursor:pointer;user-select:none;">
         <span class="lbl">Pipeline tasks <span id="rdTasksCount" style="text-transform:none;letter-spacing:0;color:var(--text-faint)"></span></span>
@@ -2213,17 +2232,6 @@ function selectRun(name) {
         </span>
       </div>
       <div class="rd-tail-body" id="rdPrompts"><div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet</div></div>
-    </div>
-    <div class="run-section" id="rdGpusSection">
-      <div class="run-section-title">GPUs (live)<span id="rdGpuFresh" class="freshness-chip"></span></div>
-      <div id="rdGpus"><div class="empty" style="font-size:11px">loading metrics…</div></div>
-      <div style="font-size:10px;color:var(--text-faint);margin-top:6px;line-height:1.6;">
-        <b>VRAM</b> stays near 100% (vLLM pre-allocates). AMD <b>GFX activity</b> on RDNA4 latches at 100% under light load — use <b>power</b> and <b>KV cache %</b> as the real busy signal.
-      </div>
-    </div>
-    <div class="run-section" id="rdVllmSection">
-      <div class="run-section-title">Inference (vLLM, live)<span id="rdVllmFresh" class="freshness-chip"></span></div>
-      <div id="rdVllm" class="vllm-grid"></div>
     </div>
     <div class="run-section">
       <div class="run-section-title">Params</div>

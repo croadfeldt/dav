@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.29  
+**Current version:** v0.9.30  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -18,6 +18,7 @@ Update this doc whenever a feature is added, changed, or removed.
 - **Consistency** — UI/UX patterns and process flows must be consistent across all features. If a pattern is used in one place (model selector + Browse button, two-click delete, streaming output with status indicator), it must be applied the same way everywhere. Users should never need to learn a different interaction model for the same type of action.
 - **Scope clarity** — configuration that affects all users belongs in Config and is stored server-side; personal preferences belong in localStorage and are never shown as shared settings.
 - **Least surprise** — defaults are always visible and editable; overrides are always scoped to the current session and do not mutate the shared default.
+- **Efficient use of screen real estate** — operational views (Runs detail, Results, Review & Plan) must use the available width and height. Stats that fit side-by-side should sit side-by-side at wide widths and stack only when the viewport forces it. Tail panes (live log-like streams) must bound their height so they never blow past the viewport — scroll *within* the pane, not the whole page. The Runs detail panel is the canonical example: GPU + Inference live tiles render as a 2-column grid at ≥1100px; Prompts/Tasks panes cap at `max-height: 48vh` and scroll internally.
 
 ---
 
@@ -400,6 +401,33 @@ Lifecycle interaction: managed UCs can be tested in any state (draft, ready, in_
 **Deploy ordering** (same as v0.9.24):
 1. Engine + Tekton via `ansible-playbook --tags engine,tekton` (engine binary accepts new flags; Pipeline + Task declare new params with empty defaults).
 2. Console rebuild + rollout (now safe to send `managed_uc_uuids` in PipelineRun specs).
+
+**Runs detail layout (v0.9.30):** Re-ordered + densified per the design principle above. New section order in `rdRunBody`:
+1. Session (identifying info)
+2. UC progress (live)
+3. **GPUs + Inference** in a `.rd-stats-grid` — 2-column grid at ≥1100px, stacks at narrower widths
+4. Pipeline tasks (collapsible tail, `max-height: 48vh`)
+5. Prompts & responses (collapsible tail, `max-height: 48vh`)
+6. Params
+
+Stats now sit ABOVE the tail panes (was the reverse). Prompts/Tasks panes cap their height so the page doesn't grow past the viewport — scroll happens within each pane.
+
+**Note on the 4-layout drawer (v0.9.3):** The original slide-out run-detail drawer carried a 4-layout picker (Detailed / Stacked+tails / Side-by-side dense / Prompts dominant). When the drawer was refactored into the inline run-detail panel in v1.0 (commit `1f2c429`), the layouts came along as a *single* fixed layout. v0.9.30 brings back two of the four (Detailed + Side-by-side dense — the latter is now automatic via the `.rd-stats-grid` media query). The other two (Stacked+tails, Prompts dominant) can be reintroduced as a picker if needed; they're not gone-on-principle, just unrendered.
+
+**Push-to-corpus token wiring (v0.9.30):** The API Deployment now does `envFrom: secretRef: dav-review-api-tokens, optional: true`. The user creates the Secret out-of-band with the GitHub PAT (and any other future runtime tokens) and the API picks it up on next rollout. Documented inline in the Deployment template comment.
+
+Setup:
+```sh
+# 1. Create a GitHub PAT with `repo` scope (or `public_repo` if the corpus is public):
+#    https://github.com/settings/tokens
+# 2. Create the Secret in the dav namespace:
+oc create secret generic dav-review-api-tokens -n dav \
+  --from-literal=DAV_CORPUS_PUSH_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxx
+# 3. Restart the API so the new env var lands in the container:
+oc rollout restart deploy/dav-review-api -n dav
+```
+
+To rotate later: `oc set data secret/dav-review-api-tokens DAV_CORPUS_PUSH_TOKEN=ghp_…` + restart.
 
 ---
 

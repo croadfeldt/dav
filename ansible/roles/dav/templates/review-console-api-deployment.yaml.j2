@@ -109,6 +109,17 @@ spec:
               value: "/workspace"
             - name: DAV_METRICS_CA_PATH
               value: "/var/run/configmaps/service-ca/service-ca.crt"
+          # Optional Secret for tokens the API needs at runtime — currently:
+          #   DAV_CORPUS_PUSH_TOKEN   GitHub PAT (repo scope) used by Push-to-corpus
+          #   DAV_UC_ASSIST_API_KEY   fallback for UC Assist when no DB-backed
+          #                           model_config has use_uc_assist=true
+          # Create with: oc create secret generic dav-review-api-tokens
+          #   --from-literal=DAV_CORPUS_PUSH_TOKEN=ghp_... -n {{ dav_namespace }}
+          # then `oc rollout restart deploy/dav-review-api -n {{ dav_namespace }}`.
+          envFrom:
+            - secretRef:
+                name: dav-review-api-tokens
+                optional: true
           volumeMounts:
             - name: corpus
               mountPath: /data
