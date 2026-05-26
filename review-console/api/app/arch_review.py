@@ -276,7 +276,7 @@ async def stream_review(
         inner = _stream_openai(
             endpoint_url, model_id, api_key, system_prompt, user_prompt, timeout
         )
-    async for chunk in _strip_think_blocks(inner):
+    async for chunk in inner:
         yield chunk
 
 

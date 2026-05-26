@@ -26,6 +26,7 @@
   :root {
     --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
     --serif: 'Newsreader', 'Iowan Old Style', Georgia, serif;
+    --sans: ui-sans-serif, system-ui, -apple-system, sans-serif;
   }
 
   /* ── Amber · Dark (default) ── */
@@ -438,8 +439,15 @@
   .modal-banner { background:var(--accent-bg); border:1px solid var(--accent-soft); border-radius:2px; padding:8px 12px; font-size:12px; color:var(--accent); }
 
   /* ── Arch-review / enhancement stream ── */
-  .arch-review-stream { flex:1; min-height:220px; max-height:46vh; overflow-y:auto; background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:14px 16px; font-size:13px; font-family:var(--serif); line-height:1.75; white-space:pre-wrap; word-break:break-word; color:var(--text); }
+  .arch-review-stream { flex:1; min-height:220px; max-height:46vh; overflow-y:auto; background:var(--bg-raised); border:1px solid var(--border); border-radius:2px; padding:14px 16px; font-size:var(--arch-font-size,15px); font-family:var(--arch-font-family,var(--serif)); line-height:1.8; white-space:pre-wrap; word-break:break-word; color:var(--text); }
   .arch-review-stream.streaming { border-color:var(--accent-soft); }
+  .arch-font-bar { display:flex; align-items:center; gap:6px; margin-top:6px; }
+  .arch-font-bar button { background:none; border:1px solid var(--border); border-radius:2px; color:var(--text-dim); cursor:pointer; font-size:11px; padding:1px 6px; line-height:1.6; }
+  .arch-font-bar button:hover { color:var(--text); border-color:var(--border-bright); }
+  .arch-font-bar select { background:var(--bg-input); border:1px solid var(--border); border-radius:2px; color:var(--text); font-size:11px; padding:1px 4px; }
+  .arch-font-bar .font-size-lbl { font-size:10px; color:var(--text-faint); min-width:28px; text-align:center; }
+  @keyframes think-pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+  .thinking-status { animation:think-pulse 1.4s ease-in-out infinite; color:var(--accent) !important; }
   /* ── Drawer tab strip ── */
   .rd-tab-strip { display:flex; border-bottom:1px solid var(--border); padding:0 20px; background:var(--bg-raised); flex-shrink:0; }
   .rd-tab { background:none; border:none; border-bottom:2px solid transparent; padding:7px 14px; font-size:12px; color:var(--text-dim); cursor:pointer; margin-bottom:-1px; }
@@ -779,7 +787,17 @@
               </div>
               <div id="rdRevHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
               <div id="rdRevStatus" style="font-size:11px;color:var(--text-faint);margin-top:4px;display:none;"></div>
-              <div id="rdRevStream" class="arch-review-stream" style="display:none;margin-top:8px;"></div>
+              <div class="arch-font-bar" id="rdRevFontBar" style="display:none;">
+                <button id="rdRevFontDown">A−</button>
+                <span class="font-size-lbl" id="rdRevFontLbl">15px</span>
+                <button id="rdRevFontUp">A+</button>
+                <select id="rdRevFontFam">
+                  <option value="serif">Serif</option>
+                  <option value="sans">Sans</option>
+                  <option value="mono">Mono</option>
+                </select>
+              </div>
+              <div id="rdRevStream" class="arch-review-stream" style="display:none;margin-top:6px;"></div>
               <div id="rdRevNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
                 <span style="font-size:11px;color:var(--text-faint);">Review complete —</span>
                 <button class="btn ghost btn-sm" id="rdRevToEnhBtn">Plan enhancements →</button>
@@ -802,6 +820,16 @@
               </div>
               <div id="rdEnhHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
               <div id="rdEnhStatus" style="font-size:11px;color:var(--text-faint);margin-top:4px;display:none;"></div>
+              <div class="arch-font-bar" id="rdEnhFontBar" style="display:none;">
+                <button id="rdEnhFontDown">A−</button>
+                <span class="font-size-lbl" id="rdEnhFontLbl">15px</span>
+                <button id="rdEnhFontUp">A+</button>
+                <select id="rdEnhFontFam">
+                  <option value="serif">Serif</option>
+                  <option value="sans">Sans</option>
+                  <option value="mono">Mono</option>
+                </select>
+              </div>
               <div id="rdEnhStream" class="arch-review-stream" style="display:none;margin-top:8px;"></div>
               <div id="rdEnhNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
                 <span style="font-size:11px;color:var(--text-faint);">Spec complete —</span>
@@ -5363,13 +5391,16 @@ function _stripThink(raw) {
 
 // ── Generic SSE stream runner ─────────────────────────────────────────────────
 async function _runStream({ endpoint, body, streamEl, statusEl, copyBtn, runBtn,
-                            reasoningBtn, nextRow, rawHolder, showReasoningKey }) {
+                            reasoningBtn, nextRow, rawHolder, showReasoningKey, fontBar }) {
   streamEl.textContent = '';
   rawHolder.text = '';
   streamEl.style.display = '';
+  if (fontBar) fontBar.style.display = '';
   streamEl.classList.add('streaming');
   statusEl.style.display = '';
   statusEl.textContent = 'Generating…';
+  statusEl.classList.remove('thinking-status');
+  statusEl.style.color = '';
   if (copyBtn) copyBtn.style.display = 'none';
   if (nextRow) nextRow.style.display = 'none';
   if (reasoningBtn) reasoningBtn.style.display = 'none';
@@ -5408,6 +5439,19 @@ async function _runStream({ endpoint, body, streamEl, statusEl, copyBtn, runBtn,
             rawHolder.text += obj.text;
             const hasThink = rawHolder.text.includes('<think>');
             if (reasoningBtn && hasThink) reasoningBtn.style.display = '';
+            // Think-state pulsing indicator
+            const lastOpen = rawHolder.text.lastIndexOf('<think>');
+            const lastClose = rawHolder.text.lastIndexOf('</think>');
+            const inThink = lastOpen > lastClose;
+            if (inThink) {
+              if (!statusEl.classList.contains('thinking-status')) {
+                statusEl.classList.add('thinking-status');
+                statusEl.textContent = 'Thinking…';
+              }
+            } else if (statusEl.classList.contains('thinking-status')) {
+              statusEl.classList.remove('thinking-status');
+              statusEl.textContent = 'Generating…';
+            }
             streamEl.textContent = hasThink && !showReasoning()
               ? _stripThink(rawHolder.text) : rawHolder.text;
             streamEl.scrollTop = streamEl.scrollHeight;
@@ -5416,11 +5460,13 @@ async function _runStream({ endpoint, body, streamEl, statusEl, copyBtn, runBtn,
       }
     }
 
+    statusEl.classList.remove('thinking-status');
     statusEl.textContent = 'Complete.';
     streamEl.classList.remove('streaming');
     if (copyBtn) copyBtn.style.display = '';
     if (nextRow) nextRow.style.display = '';
   } catch(e) {
+    statusEl.classList.remove('thinking-status');
     statusEl.style.color = 'var(--red)';
     statusEl.textContent = 'Error: ' + e.message;
     streamEl.classList.remove('streaming');
@@ -5460,6 +5506,7 @@ document.getElementById('rdRevRunBtn').addEventListener('click', async () => {
     nextRow:      document.getElementById('rdRevNextRow'),
     rawHolder:    _rdRevRaw,
     showReasoningKey: 'rdRevShowReasoning',
+    fontBar:      document.getElementById('rdRevFontBar'),
   });
 });
 
@@ -5532,6 +5579,7 @@ document.getElementById('rdEnhRunBtn').addEventListener('click', async () => {
     nextRow:      document.getElementById('rdEnhNextRow'),
     rawHolder:    _rdEnhRaw,
     showReasoningKey: 'rdEnhShowReasoning',
+    fontBar:      document.getElementById('rdEnhFontBar'),
   });
 });
 
@@ -5966,6 +6014,39 @@ function setupConfigNav() {
 }
 
 // Config tab data is loaded via loadConfig() called from switchView('config').
+
+// ── Arch review font bar ──────────────────────────────────────────────────────
+
+(function() {
+  const MIN = 11, MAX = 22;
+  const LS_SIZE = 'archFontSize', LS_FAM = 'archFontFamily';
+  const famMap = { serif: 'var(--serif)', sans: 'var(--sans)', mono: 'var(--mono)' };
+  let curSize = Math.max(MIN, Math.min(MAX, parseInt(localStorage.getItem(LS_SIZE) || '15', 10)));
+  let curFam  = localStorage.getItem(LS_FAM) || 'serif';
+
+  function applySize(px) {
+    curSize = Math.max(MIN, Math.min(MAX, px));
+    document.documentElement.style.setProperty('--arch-font-size', curSize + 'px');
+    document.querySelectorAll('.font-size-lbl').forEach(el => { el.textContent = curSize + 'px'; });
+    localStorage.setItem(LS_SIZE, String(curSize));
+  }
+
+  function applyFamily(fam) {
+    curFam = fam;
+    document.documentElement.style.setProperty('--arch-font-family', famMap[fam] || famMap.serif);
+    document.querySelectorAll('#rdRevFontFam,#rdEnhFontFam').forEach(sel => { sel.value = fam; });
+    localStorage.setItem(LS_FAM, fam);
+  }
+
+  applySize(curSize);
+  applyFamily(curFam);
+
+  ['Rev', 'Enh'].forEach(w => {
+    document.getElementById('rd' + w + 'FontDown').addEventListener('click', () => applySize(curSize - 1));
+    document.getElementById('rd' + w + 'FontUp').addEventListener('click',   () => applySize(curSize + 1));
+    document.getElementById('rd' + w + 'FontFam').addEventListener('change', function() { applyFamily(this.value); });
+  });
+})();
 
 init();
 </script>
