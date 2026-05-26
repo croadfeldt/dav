@@ -1548,6 +1548,7 @@
     </div>
     <div class="modal-footer">
       <span id="ucModalStatus" style="flex:1; font-size:11px; color:var(--text-faint);"></span>
+      <button class="btn ghost" id="validateUCBtn" title="Lint the YAML against engine rules without saving">✓ Validate</button>
       <button class="btn ghost" id="cancelUCModal">Cancel</button>
       <button class="btn primary" id="saveUCModal">Save</button>
     </div>
@@ -4762,9 +4763,46 @@ async function saveUC() {
     toast(`Saved ${resp.uuid}`); closeUCModal(); activeUCId = resp.uuid;
     await loadUCs(); selectUC(resp.uuid);
   } catch (e) {
-    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; btn.disabled = false;
+    // Parse structured 400s from _validate_uc_yaml into a friendlier list
+    const vd = (e.status === 400 && e.body)
+      && (e.body.detail?.detail === 'uc_validation_failed' ? e.body.detail
+          : (e.body.detail === 'uc_validation_failed' ? e.body : null));
+    if (vd && vd.errors) {
+      status.innerHTML = `<span style="color:var(--red)">${esc(vd.message)}</span>
+        <ul style="margin:6px 0 0 16px;padding:0;font-size:11px;color:var(--red);">
+          ${vd.errors.map(err => `<li>${esc(err)}</li>`).join('')}
+        </ul>`;
+    } else {
+      status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    }
+    btn.disabled = false;
   }
 }
+
+async function validateUC() {
+  const status = document.getElementById('ucModalStatus');
+  const nameInput = (document.getElementById('ucNameInput').value || '').trim();
+  let yamlContent = document.getElementById('ucYamlEditor').value;
+  if (nameInput) yamlContent = _injectTitleIntoYaml(yamlContent, nameInput);
+  status.textContent = 'validating…'; status.style.color = '';
+  try {
+    const resp = await api('/api/use-cases/validate', {
+      method: 'POST',
+      body: JSON.stringify({ yaml_content: yamlContent, tags: [] }),
+    });
+    if (resp.ok) {
+      status.innerHTML = '<span style="color:var(--green)">✓ Validation passed — ready to save.</span>';
+    } else {
+      status.innerHTML = `<span style="color:var(--red)">⚠ ${resp.errors.length} error${resp.errors.length>1?'s':''}:</span>
+        <ul style="margin:6px 0 0 16px;padding:0;font-size:11px;color:var(--red);">
+          ${resp.errors.map(err => `<li>${esc(err)}</li>`).join('')}
+        </ul>`;
+    }
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">Validate failed: ${esc(e.message)}</span>`;
+  }
+}
+document.getElementById('validateUCBtn').addEventListener('click', validateUC);
 
 const UC_TEMPLATE = `# DAV Use Case — v1.0
 title: ""

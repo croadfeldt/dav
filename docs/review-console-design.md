@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.36  
+**Current version:** v0.9.37  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -477,6 +477,16 @@ What it doesn't (yet) do: enforce R3 (block enhancement PR generation when any s
 - **Both PR-create button paths** (`rpPrCreateBtn` in the run-detail Review pane, and the matching button in the Review & Plan view) now route through the wrapper — single chokepoint, consistent UX.
 
 Corpus-source UCs are deliberately not gated (no lifecycle on those). Future enhancement: also gate Arch Review generation similarly.
+
+**Pre-flight UC validation (v0.9.37):** Catches engine validation errors at save time instead of at run time — surfaced after the previous version's bug where an existing UC with bad enum values + missing `uc-` prefix kept failing the engine even after the template/Assist were fixed.
+
+- **`_validate_uc_yaml(parsed)`** in `main.py` mirrors the engine's validation against the DCM consumer profile: uuid `uc-` prefix; `generated_by.mode` / `source` enums; `actor.profile` / `scenario.profile` / `dimensions.*` against the DCM enum sets (`_DCM_*` constants); required non-empty fields (`scenario.description`, `intent`, `actor.persona`, `success_criteria` non-empty list).
+- **`create_use_case` and `update_use_case`** now call `_validate_uc_yaml` after parsing. On failure they return **400** with a structured detail: `{detail: 'uc_validation_failed', message, errors: [...]}`.
+- **`POST /api/use-cases/validate`** — standalone lint endpoint that returns `{ok, errors}` without saving. Used by the UC editor's new **✓ Validate** button (in the modal footer) so authors can check before clicking Save.
+- **UI** — `saveUC` parses the structured 400 and renders the error list under the status line in red; `validateUC` shows a green ✓ when the YAML passes or the same red list when it doesn't.
+- Hardcoded to DCM constants (single-consumer install). Future enhancement when multi-consumer ships: fetch enums from the active consumer profile.
+
+What this doesn't do (yet): retroactively fix existing bad UCs. The user's path for a single bad UC is delete + recreate; a `/api/use-cases/{uuid}/repair-uuid` endpoint that cascades the rename across set members + lifecycle events + uc_analyses is a noted follow-on if more accrue.
 
 **Results tab — persistent run-summary header (v0.9.31):** Same shape as the Runs detail v0.9.30 work: stats stay above the output, output bounded to the panel. Previously `renderRunSummaryHeader` rendered the run-level stats into `analysisDetail`; picking a UC replaced them with the per-UC analysis and the run context disappeared. Now a dedicated `runResultsHeader` strip sits above `analysisDetail`, populated on `selectRunResult` and never overwritten by per-UC rendering. Compact single-row layout: session name + run_id + mode on the left; `N/M UCs (X%) · failed · samples · ⏱ wall · finished_at` on the right. Wraps at narrow widths. `analysisDetail` gets `flex:1; overflow-y:auto; min-height:0` so the per-UC content scrolls *within* the panel — the page never grows beyond the viewport.
 

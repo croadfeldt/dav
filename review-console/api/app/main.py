@@ -1151,6 +1151,113 @@ def _parse_uc_yaml(yaml_content: str) -> dict:
     return data
 
 
+# Engine-side validation rules for managed UCs, mirrored here so authors see
+# errors at save time instead of at run time. Hardcoded to the DCM consumer
+# profile for now (single-consumer install). When multi-consumer ships, this
+# should fetch from a per-consumer profile API.
+_DCM_LIFECYCLE_PHASES = {
+    "new_request", "modification", "decommission",
+    "drift_detection", "brownfield_ingestion",
+    "rehydration_faithful", "rehydration_provider_portable",
+    "rehydration_historical_exact", "rehydration_historical_portable",
+    "expiry_enforcement",
+}
+_DCM_RESOURCE_COMPLEXITIES = {
+    "single_no_deps", "hard_dependencies", "composite_service",
+    "conditional_soft_deps", "process_resource", "cross_dependency_payload",
+}
+_DCM_POLICY_COMPLEXITIES = {
+    "system_defaults_only", "single_gatekeeper", "multi_policy_chain",
+    "conflicting_policies", "orchestration_flow_static",
+    "dynamic_conditional_flow", "cross_domain_constraint",
+    "human_escalation_required", "governance_matrix_enforcement",
+    "recovery_policy",
+}
+_DCM_PROVIDER_LANDSCAPES = {
+    "single_eligible", "multiple_eligible", "none_eligible",
+    "peer_dcm_required", "process_provider", "mixed",
+}
+_DCM_GOVERNANCE_CONTEXTS = {
+    "no_governance", "standard_governance", "audit_heavy",
+    "compliance_gated", "sovereignty_enforced",
+}
+_DCM_FAILURE_MODES = {
+    "happy_path", "provider_failure", "policy_violation",
+    "peer_dcm_disconnect", "data_inconsistency", "rollback_required",
+    "partial_fulfillment", "timeout", "resource_exhaustion",
+}
+_DCM_PROFILES = {"minimal", "dev", "standard", "prod", "fsi", "sovereign"}
+_VALID_GEN_MODES = {"regression", "pr-targeted", "authoring"}
+_VALID_GEN_SOURCES = {"corpus", "llm-unguided", "llm-guided", "human-authored"}
+
+
+def _validate_uc_yaml(parsed: dict) -> list[str]:
+    """Return a list of human-readable validation errors for a parsed UC YAML.
+
+    Mirrors the engine's UseCase.validate() against the DCM consumer profile
+    so authors see issues at save time, not at run time. Empty list = valid.
+    """
+    errors: list[str] = []
+    # uuid
+    uid = parsed.get("uuid")
+    if not isinstance(uid, str) or not uid.strip():
+        errors.append("uuid is required and must be a non-empty string")
+    elif not uid.startswith("uc-"):
+        errors.append(f"uuid '{uid}' must start with 'uc-'")
+    # generated_by
+    gb = parsed.get("generated_by") or {}
+    if not isinstance(gb, dict):
+        errors.append("generated_by must be a mapping")
+    else:
+        m = gb.get("mode")
+        if m not in _VALID_GEN_MODES:
+            errors.append(f"generated_by.mode '{m}' not in {sorted(_VALID_GEN_MODES)}")
+        s = gb.get("source")
+        if s not in _VALID_GEN_SOURCES:
+            errors.append(f"generated_by.source '{s}' not in {sorted(_VALID_GEN_SOURCES)}")
+    # scenario
+    sc = parsed.get("scenario") or {}
+    if not isinstance(sc, dict):
+        errors.append("scenario must be a mapping")
+        return errors  # cascading checks below need a mapping
+    for key in ("description", "intent"):
+        v = sc.get(key)
+        if not isinstance(v, str) or not v.strip():
+            errors.append(f"scenario.{key} must not be empty")
+    crit = sc.get("success_criteria")
+    if not isinstance(crit, list) or not crit:
+        errors.append("scenario.success_criteria must have at least one item")
+    # actor
+    actor = sc.get("actor") or {}
+    if not isinstance(actor, dict):
+        errors.append("scenario.actor must be a mapping")
+    else:
+        if not (actor.get("persona") or "").strip():
+            errors.append("actor.persona must not be empty")
+        if actor.get("profile") not in _DCM_PROFILES:
+            errors.append(f"actor.profile '{actor.get('profile')}' not in {sorted(_DCM_PROFILES)}")
+    # scenario.profile
+    if sc.get("profile") not in _DCM_PROFILES:
+        errors.append(f"scenario.profile '{sc.get('profile')}' not in {sorted(_DCM_PROFILES)}")
+    # dimensions
+    dims = sc.get("dimensions") or {}
+    if not isinstance(dims, dict):
+        errors.append("scenario.dimensions must be a mapping")
+    else:
+        for name, allowed in (
+            ("lifecycle_phase",      _DCM_LIFECYCLE_PHASES),
+            ("resource_complexity",  _DCM_RESOURCE_COMPLEXITIES),
+            ("policy_complexity",    _DCM_POLICY_COMPLEXITIES),
+            ("provider_landscape",   _DCM_PROVIDER_LANDSCAPES),
+            ("governance_context",   _DCM_GOVERNANCE_CONTEXTS),
+            ("failure_mode",         _DCM_FAILURE_MODES),
+        ):
+            v = dims.get(name)
+            if v not in allowed:
+                errors.append(f"dimensions.{name} '{v}' not in {sorted(allowed)}")
+    return errors
+
+
 def _derive_uc_title(parsed: dict, fallback_id: str) -> str:
     """Derive a human-readable title for a managed UC.
 
@@ -1288,6 +1395,20 @@ async def get_use_case(uuid: str):
     raise HTTPException(404, f"use case {uuid!r} not found")
 
 
+@app.post("/api/use-cases/validate")
+async def validate_use_case(payload: ManagedUCIn):
+    """Lint a UC YAML against engine validation rules without saving.
+
+    Used by the UC editor's Validate button. Returns {ok, errors[]}.
+    """
+    try:
+        data = _parse_uc_yaml(payload.yaml_content)
+    except ValueError as e:
+        return {"ok": False, "errors": [str(e)]}
+    errors = _validate_uc_yaml(data)
+    return {"ok": not errors, "errors": errors}
+
+
 @app.post("/api/use-cases")
 async def create_use_case(payload: ManagedUCIn, request: Request):
     """Create a managed use case. UUID is taken from the YAML content."""
@@ -1300,6 +1421,16 @@ async def create_use_case(payload: ManagedUCIn, request: Request):
     uc_uuid = data.get("uuid")
     if not uc_uuid or not isinstance(uc_uuid, str):
         raise HTTPException(400, "UC YAML must have a non-empty 'uuid' field")
+
+    # Pre-flight engine validation — catch bad enum values / missing uc-
+    # prefix / etc. now instead of at run time. Returns 400 with a list.
+    val_errors = _validate_uc_yaml(data)
+    if val_errors:
+        raise HTTPException(400, {
+            "detail": "uc_validation_failed",
+            "message": "UC YAML failed engine validation; fix and resubmit.",
+            "errors": val_errors,
+        })
 
     title = _derive_uc_title(data, uc_uuid)
     tags = payload.tags or data.get("tags", [])
@@ -1333,6 +1464,14 @@ async def update_use_case(uuid: str, payload: ManagedUCIn, request: Request):
     yaml_uuid = data.get("uuid")
     if yaml_uuid and yaml_uuid != uuid:
         raise HTTPException(400, f"UUID in YAML ({yaml_uuid!r}) does not match URL ({uuid!r})")
+
+    val_errors = _validate_uc_yaml(data)
+    if val_errors:
+        raise HTTPException(400, {
+            "detail": "uc_validation_failed",
+            "message": "UC YAML failed engine validation; fix and resubmit.",
+            "errors": val_errors,
+        })
 
     title = _derive_uc_title(data, uuid)
     tags = payload.tags or data.get("tags", [])
