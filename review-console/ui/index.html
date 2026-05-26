@@ -3934,6 +3934,7 @@ document.getElementById('ucAssistInput').addEventListener('keydown', e => {
 });
 document.getElementById('ucAssistClearBtn').addEventListener('click', () => {
   document.getElementById('ucAssistHistory').innerHTML = '';
+  document.getElementById('ucAssistInput').value = '';
 });
 async function saveUC() {
   const btn = document.getElementById('saveUCModal'), status = document.getElementById('ucModalStatus');
