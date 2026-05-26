@@ -4470,18 +4470,59 @@ function _ucAssistCheckAvail() {
   return Promise.resolve(_ucAssistAvailable);
 }
 
+// R4: track prompts the user sends during this Assist session so we can
+// stamp them into the UC YAML as a comment header when the user applies a
+// suggestion. Reset on panel open so each editing session is its own trail.
+let _ucAssistPrompts = [];
+
 function _ucAssistOpen() {
   const panel = document.getElementById('ucAssistPanel');
   panel.style.display = 'flex';
   _populateModelSel('ucAssistPanelModelSel', _ucAssistModelKey);
   _ucAssistAvailable = null; // re-check on open
   _ucAssistCheckAvail();
+  _ucAssistPrompts = [];   // reset prompt trail for this session
   const modelSel = document.getElementById('ucAssistPanelModelSel');
   if (!modelSel.value) {
     modelSel.focus();
   } else {
     document.getElementById('ucAssistInput').focus();
   }
+}
+
+// Build a top-of-YAML comment block that preserves the prompts that produced
+// the applied content. If the YAML already has an "# UC Assist prompts:" header
+// (e.g. from a prior session that was applied + re-edited), replace it. Other
+// leading comments are preserved.
+function _injectAssistPromptsAsComment(yaml, prompts) {
+  if (!prompts || !prompts.length) return yaml;
+  const header = '# UC Assist prompts (this UC was iterated from these messages):';
+  const block = [
+    header,
+    ...prompts.map((p, i) => {
+      const lines = String(p).split('\n');
+      return lines.map((ln, j) =>
+        j === 0 ? `#   ${i + 1}. ${ln}` : `#      ${ln}`
+      ).join('\n');
+    }),
+    '#',
+  ].join('\n');
+
+  // Strip any existing block from a previous Apply
+  const lines = yaml.split('\n');
+  let i = 0, end = -1;
+  while (i < lines.length && lines[i].startsWith(header)) {
+    // Find the end of an existing block (first line not starting with `#` or first blank `#`-only line)
+    let j = i + 1;
+    while (j < lines.length && lines[j].startsWith('#')) j++;
+    end = j;
+    i = j;
+    break;
+  }
+  if (end >= 0) {
+    return block + '\n' + lines.slice(end).join('\n');
+  }
+  return block + '\n' + yaml;
 }
 
 function _ucAssistClose() {
@@ -4509,8 +4550,11 @@ function _ucAssistAppendMessage(role, text, yaml, error) {
     applyBtn.style.cssText = 'font-size:9px; padding:3px 10px; align-self:flex-start;';
     applyBtn.textContent = '↑ Apply to editor';
     applyBtn.addEventListener('click', () => {
-      document.getElementById('ucYamlEditor').value = yaml;
-      const titleFromYaml = _extractTitleFromYaml(yaml);
+      // R4: stamp the prompts that produced this YAML as a top-of-file
+      // comment block so reviewers can see what the author asked for.
+      const stamped = _injectAssistPromptsAsComment(yaml, _ucAssistPrompts);
+      document.getElementById('ucYamlEditor').value = stamped;
+      const titleFromYaml = _extractTitleFromYaml(stamped);
       if (titleFromYaml) document.getElementById('ucNameInput').value = titleFromYaml;
       applyBtn.textContent = '✓ Applied';
       applyBtn.disabled = true;
@@ -4532,6 +4576,7 @@ async function _ucAssistSend() {
     return;
   }
   const ucResolved = _resolveFromStorage(_ucAssistModelKey);
+  _ucAssistPrompts.push(msg);   // R4: record for later YAML stamping
   _ucAssistAppendMessage('user', msg);
   input.value = '';
   const btn = document.getElementById('ucAssistSendBtn');

@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.33  
+**Current version:** v0.9.34  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -441,6 +441,22 @@ To rotate later: `oc set data secret/dav-review-api-tokens DAV_CORPUS_PUSH_TOKEN
 
 Follow-on: the API should pre-validate UC YAML on create/update against the same engine schema so authors see errors in the editor instead of at run time.
 
+**R4 implementation — UC Assist prompt capture (v0.9.34):** Implements R4 from the requirements section. Prompts the user sends during a UC Assist session are tracked in a module-level `_ucAssistPrompts` array (reset on panel open). When the user clicks **↑ Apply to editor** on any assistant turn, `_injectAssistPromptsAsComment` prepends a comment block to the YAML:
+
+```yaml
+# UC Assist prompts (this UC was iterated from these messages):
+#   1. <first prompt>
+#   2. <second prompt>
+#
+title: ""
+uuid: uc-...
+...
+```
+
+The block is recognized by its header, so re-applying a later turn (or applying multiple times in a session) replaces the existing block rather than stacking duplicates. The engine's `safe_load` ignores comments, so this has zero impact on validation. The UC Assist system prompt was updated to instruct the model to preserve any existing `# UC Assist prompts:` comment block when refining, so iterating on an already-applied UC keeps the original provenance.
+
+Future enhancement: also surface a structured form under `metadata.assist_prompts` for queryability, and a "Replay these prompts against a different model" action on the UC detail.
+
 **Results tab — persistent run-summary header (v0.9.31):** Same shape as the Runs detail v0.9.30 work: stats stay above the output, output bounded to the panel. Previously `renderRunSummaryHeader` rendered the run-level stats into `analysisDetail`; picking a UC replaced them with the per-UC analysis and the run context disappeared. Now a dedicated `runResultsHeader` strip sits above `analysisDetail`, populated on `selectRunResult` and never overwritten by per-UC rendering. Compact single-row layout: session name + run_id + mode on the left; `N/M UCs (X%) · failed · samples · ⏱ wall · finished_at` on the right. Wraps at narrow widths. `analysisDetail` gets `flex:1; overflow-y:auto; min-height:0` so the per-UC content scrolls *within* the panel — the page never grows beyond the viewport.
 
 ---
@@ -476,6 +492,18 @@ The Plan enhancements / Generate enhancement PR flow must:
 2. If any UC is **not in `approved` state** (`draft` / `ready` / `in_review` / `deprecated`), show a warning modal listing the non-approved UCs and require explicit confirmation before proceeding with PR generation
 3. **Enforce** both client-side (the warning + confirmation) AND server-side in the enhancement PR endpoint (defense in depth — pure UI gating is bypassable)
 4. The confirmation override is recorded in the resulting PR body with the list of non-approved UCs and the user who confirmed
+
+**R4 — UC Assist prompts must be captured on the UC:**
+
+Every prompt text sent to UC Assist during the session that produced an applied YAML is preserved with the UC. Goals:
+
+- **Provenance** — a future reviewer can see exactly what the author asked for
+- **Reproducibility** — the same prompts can be re-played against a different model later to compare
+- **Trail** — when a reviewer questions a UC, the conversation that birthed it is right there
+
+Capture target: a YAML comment block at the top of the file (e.g. `# UC Assist prompts:` followed by numbered prompt lines). Comments survive `_yaml.safe_load` (engine ignores them) and survive round-trips through the editor. A future structured form under `metadata.assist_prompts` may be added, but the comment block is the immediate, no-schema-change capture.
+
+When UC Assist refines an existing UC, the system prompt must instruct the model to preserve any existing comment-block prompt history at the top of the YAML.
 
 Implementation status of these requirements lives in the per-version notes below.
 

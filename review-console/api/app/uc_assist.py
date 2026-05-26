@@ -99,6 +99,13 @@ and end with exactly: ```
 
 If the user's request is ambiguous, make reasonable assumptions and note them in your explanation.
 
+When refining an existing UC YAML the user supplied, **preserve any existing
+top-of-file comment block** that starts with `# UC Assist prompts:` exactly as
+it appears — this is provenance metadata the console maintains. Don't reformat
+those lines or move them; just keep them and add your changes below. If the
+existing YAML has no such comment block, don't invent one — the console
+stamps it on apply.
+
 {_UC_SCHEMA_HINT}
 """
 
