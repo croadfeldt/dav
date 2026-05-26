@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-05-25  
-**Current version:** v0.9.39  
+**Current version:** v0.9.40  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -503,6 +503,15 @@ What this doesn't do (yet): retroactively fix existing bad UCs. The user's path 
 The prepend approach is more reliable than relying on the buried system-prompt directive because the model reads tool responses fresh each turn, while system prompts can be skimmed. The original tool response is preserved after the directive for context.
 
 **Tekton task already wires the MCP server URL via `mcp-url` param**, so no infra change is needed beyond the engine + MCP image rebuilds (`ansible-playbook --tags engine,mcp`).
+
+**Auto-follow tail panes — shared behavior (v0.9.40):** Standardized auto-scroll-on-new-content for any tail pane (Prompts & Responses today; future streams reuse). One helper `_setupAutoFollow(scrollEl, btn, get, set)` owns the full contract:
+
+- **Scroll-away pauses** — scrolling more than 24px above the bottom flips the state to OFF; the button repaints to the inactive (outline + grey) style.
+- **Scroll-back resumes** — scrolling all the way back to the bottom flips the state ON again; button repaints to the active (filled accent background) style.
+- **Click toggles** — same paint logic; resume also snaps to the bottom immediately.
+- **Visual convention** — `_renderAutoFollowBtn(btn, on)`: ON = accent fill + panel-bg text + accent border; OFF = transparent + faint text + border. Tooltip rewrites to reflect state.
+
+Replaces the prior single-purpose toggle that only flipped `color` between accent and faint and didn't react to user scrolling. Future tail panes should call `_setupAutoFollow(...)` with their state get/set closures.
 
 **Results tab — persistent run-summary header (v0.9.31):** Same shape as the Runs detail v0.9.30 work: stats stay above the output, output bounded to the panel. Previously `renderRunSummaryHeader` rendered the run-level stats into `analysisDetail`; picking a UC replaced them with the per-UC analysis and the run context disappeared. Now a dedicated `runResultsHeader` strip sits above `analysisDetail`, populated on `selectRunResult` and never overwritten by per-UC rendering. Compact single-row layout: session name + run_id + mode on the left; `N/M UCs (X%) · failed · samples · ⏱ wall · finished_at` on the right. Wraps at narrow widths. `analysisDetail` gets `flex:1; overflow-y:auto; min-height:0` so the per-UC content scrolls *within* the panel — the page never grows beyond the viewport.
 

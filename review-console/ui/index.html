@@ -1810,6 +1810,55 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+// ── Auto-follow helper ──────────────────────────────────────────────────────
+// Standard "follow new content as it streams" behavior shared by every tail
+// pane in the UI (prompts/responses today; future streams should reuse this).
+// Contract:
+//   - scrolling up disables auto-follow (state := false, button reflects)
+//   - clicking the button re-enables auto-follow AND jumps to the bottom
+//   - button is "filled" (dark accent background) when active, "outline" (grey)
+//     when inactive — consistent visual language across all auto-follow tails
+//   - the caller is responsible for actually scrolling to the bottom when new
+//     content arrives, gated on get() returning true. This helper only owns
+//     state + button + scroll-away detection.
+const _AUTO_FOLLOW_BOTTOM_SLACK = 24;   // px from bottom that still counts as "at bottom"
+function _renderAutoFollowBtn(btn, on) {
+  btn.classList.toggle('auto-follow-active', on);
+  // Inline styles (the codebase doesn't use a stylesheet entry for this btn).
+  btn.style.background = on ? 'var(--accent)'      : 'transparent';
+  btn.style.color      = on ? 'var(--bg-panel)'    : 'var(--text-faint)';
+  btn.style.borderColor = on ? 'var(--accent)'     : 'var(--border)';
+  btn.title = on ? 'Auto-follow ON — click to pause (or just scroll up)'
+                 : 'Auto-follow OFF — click to resume and jump to bottom';
+}
+function _setupAutoFollow(scrollEl, btn, get, set) {
+  if (!scrollEl || !btn) return;
+  _renderAutoFollowBtn(btn, get());
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const newState = !get();
+    set(newState);
+    _renderAutoFollowBtn(btn, newState);
+    if (newState) {
+      // Resuming → snap to bottom
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+    }
+  });
+  scrollEl.addEventListener('scroll', () => {
+    const dist = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+    const atBottom = dist <= _AUTO_FOLLOW_BOTTOM_SLACK;
+    if (get() && !atBottom) {
+      // User scrolled away from the bottom → pause
+      set(false);
+      _renderAutoFollowBtn(btn, false);
+    } else if (!get() && atBottom) {
+      // User scrolled BACK to the bottom → re-engage
+      set(true);
+      _renderAutoFollowBtn(btn, true);
+    }
+  });
+}
+
 // ── R3: PR-create wrapper that handles the approval gate ────────────────────
 // Centralized so both PR-create button paths (rpPrCreateBtn / rdRevPrCreateBtn)
 // share the same gate UX. POSTs the payload; on 409 with detail==approval_gate,
@@ -2386,11 +2435,16 @@ function stopRunPolling() {
 
 function _wirePromptButtons() {
   const autoBtn = document.getElementById('rdPromptsAutoBtn');
-  if (autoBtn) autoBtn.addEventListener('click', e => {
-    e.stopPropagation();
-    _rdPromptsState.autoScroll = !_rdPromptsState.autoScroll;
-    e.target.style.color = _rdPromptsState.autoScroll ? 'var(--accent)' : 'var(--text-faint)';
-  });
+  if (autoBtn) {
+    _setupAutoFollow(
+      document.getElementById('rdPrompts'),
+      autoBtn,
+      // Get/set are wired against the existing _rdPromptsState global so the
+      // rest of the prompt-rendering code is unchanged.
+      () => _rdPromptsState.autoScroll,
+      v => { _rdPromptsState.autoScroll = v; },
+    );
+  }
   const clearBtn = document.getElementById('rdPromptsClearBtn');
   if (clearBtn) clearBtn.addEventListener('click', e => {
     e.stopPropagation();
