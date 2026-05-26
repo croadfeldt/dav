@@ -5013,8 +5013,19 @@ async function runSet(setId, setName) {
     const info = await api(`/api/sets/${setId}/corpus-subpath`);
     const set  = await api(`/api/sets/${setId}`);
     const filter = _filterFromSetMembers(set.members || []);
+    // Refuse to run when there are no corpus members — the engine reads from
+    // the corpus repo and would otherwise fall back to running the whole
+    // detected subpath (since the filter would be null). Tell the user how
+    // to fix it: push managed UCs first via ↑↦▶ Push & test on each UC.
+    if (!info.corpus_count) {
+      const detail = info.managed_count
+        ? `This Set has ${info.managed_count} managed UC${info.managed_count>1?'s':''} but 0 corpus UCs — the engine reads from the corpus repo. Push the managed UC${info.managed_count>1?'s':''} to corpus first (↑↦▶ Push & test on each UC), then re-run the Set.`
+        : `This Set is empty — add UCs first (drag from the UC list, or use + UC in the Manage Sets modal).`;
+      toast(`"${setName}" has no testable UCs. ${detail}`, true);
+      return;
+    }
     const msg = info.managed_count > 0
-      ? `⚠ ${info.managed_count} managed UC(s) in this set will be skipped (promote to corpus first).`
+      ? `⚠ ${info.managed_count} managed UC(s) in this set will be skipped (push to corpus first).`
       : null;
     const banner = `Running set "${setName}" — ${info.corpus_count} corpus UC${info.corpus_count!==1?'s':''} (engine-filtered to exactly these UCs)${msg ? '. '+msg : ''}`;
     openNewRun(banner, info.subpath || '', filter);
