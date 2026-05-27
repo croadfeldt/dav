@@ -231,3 +231,168 @@ def _parse_response(raw: str) -> dict:
         "yaml_suggestion": yaml_suggestion,
         "raw": raw,
     }
+
+
+# ────────────────────────── Bulk extract (M12a) ──────────────────────────
+
+_BULK_SYSTEM_PROMPT = f"""You are an expert at extracting distinct DAV use cases from unstructured text.
+
+The user will paste free-form text — typically a conversation transcript, meeting
+notes, a design discussion, or a customer requirements doc. Your job is to
+identify each *distinct* use case latent in that text and emit one valid DAV
+UC YAML document per discovered use case.
+
+OUTPUT FORMAT (strict — the console parses this):
+
+For each extracted UC, emit:
+
+  ----UC-START----
+  rationale: <1-2 sentences explaining what in the text led you to extract this UC>
+  source_excerpt: <a short verbatim quote from the input that motivated this UC, ≤200 chars>
+  ```yaml
+  <complete valid UC YAML matching the schema below>
+  ```
+  ----UC-END----
+
+Rules:
+- Each extracted UC must be DISTINCT — don't emit the same scenario twice in
+  different words. If two snippets of the transcript describe the same UC,
+  merge them.
+- If the text contains nothing UC-shaped, emit zero UCs and a single line:
+  ----NO-UCS---- followed by a one-line explanation.
+- Cap output at 12 UCs even if you see more — surface the most distinct ones.
+- Each UC gets a fresh `uuid: uc-<random>` — invent UUIDs, don't reuse any.
+- `generated_by.source` MUST be `llm-guided` for every extracted UC.
+- `generated_by.mode` SHOULD be `authoring` (these are drafts for review).
+- Set `lifecycle_state` is the console's concern, not yours — don't emit it.
+
+{_UC_SCHEMA_HINT}
+"""
+
+
+async def extract_bulk(
+    text: str,
+    context: Optional[str] = None,
+    timeout: float = 600.0,
+    cfg: Optional[dict] = None,
+) -> dict:
+    """Extract N distinct UC drafts from a free-form text blob.
+
+    Returns {"items": [{"rationale", "source_excerpt", "yaml_content"}, ...],
+             "raw": str} on success, or {"error": str} on failure.
+
+    Caller is responsible for persisting each item via the normal
+    POST /api/use-cases path — extract_bulk only proposes, never writes.
+    """
+    effective_cfg = cfg or _env_fallback_config()
+    if not effective_cfg:
+        return {"error": "UC assist not configured — add a model endpoint with UC assist enabled in Config → Models"}
+
+    parts = [f"Source text to extract UCs from:\n```\n{text.strip()}\n```\n"]
+    if context and context.strip():
+        parts.append(f"Additional context:\n{context.strip()}\n")
+    parts.append("Extract every distinct UC you find, one block per UC, using the format above.")
+    full_user = "\n".join(parts)
+
+    try:
+        if effective_cfg.get("provider") == "anthropic":
+            raw = await _call_anthropic_with_system(full_user, _BULK_SYSTEM_PROMPT, timeout, effective_cfg)
+        else:
+            raw = await _call_openai_compat_with_system(full_user, _BULK_SYSTEM_PROMPT, timeout, effective_cfg)
+    except Exception as e:
+        log.exception("UC bulk extract API call failed")
+        return {"error": str(e)}
+
+    return _parse_bulk_response(raw)
+
+
+async def _call_anthropic_with_system(user_message: str, system: str, timeout: float, cfg: dict) -> str:
+    if not cfg.get("api_key"):
+        raise RuntimeError("Anthropic endpoint requires an API key.")
+    url = f"{cfg['endpoint_url'].rstrip('/')}/v1/messages"
+    headers = {
+        "x-api-key": cfg["api_key"],
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    body = {
+        "model": cfg["model_id"],
+        "max_tokens": 8192,
+        "system": system,
+        "messages": [{"role": "user", "content": user_message}],
+    }
+    async with httpx.AsyncClient(timeout=timeout) as cx:
+        resp = await cx.post(url, headers=headers, json=body)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Anthropic API error {resp.status_code}: {resp.text[:400]}")
+    data = resp.json()
+    content = data.get("content") or []
+    return "".join(c.get("text", "") for c in content if c.get("type") == "text")
+
+
+async def _call_openai_compat_with_system(user_message: str, system: str, timeout: float, cfg: dict) -> str:
+    base = cfg["endpoint_url"].rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    url = f"{base}/v1/chat/completions"
+    headers: dict[str, str] = {"content-type": "application/json"}
+    if cfg.get("api_key"):
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+    body = {
+        "model": cfg["model_id"],
+        "max_tokens": 8192,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_message},
+        ],
+    }
+    async with httpx.AsyncClient(timeout=timeout) as cx:
+        resp = await cx.post(url, headers=headers, json=body)
+    if resp.status_code != 200:
+        raise RuntimeError(f"API error {resp.status_code}: {resp.text[:400]}")
+    data = resp.json()
+    choices = data.get("choices") or []
+    return (choices[0].get("message") or {}).get("content", "") if choices else ""
+
+
+def _parse_bulk_response(raw: str) -> dict:
+    """Parse the model's multi-UC output. Tolerates extra prose between blocks.
+
+    Each UC block looks like:
+        ----UC-START----
+        rationale: <text>
+        source_excerpt: <text>
+        ```yaml
+        <yaml>
+        ```
+        ----UC-END----
+    """
+    import re
+    if "----NO-UCS----" in raw:
+        msg = raw.split("----NO-UCS----", 1)[1].strip()
+        return {"items": [], "raw": raw, "no_ucs_reason": msg}
+
+    items = []
+    block_re = re.compile(
+        r"----UC-START----(.*?)----UC-END----",
+        re.DOTALL,
+    )
+    yaml_re = re.compile(r"```yaml\s*\n(.*?)```", re.DOTALL)
+    rationale_re = re.compile(r"^rationale:\s*(.+)$", re.MULTILINE)
+    excerpt_re = re.compile(r"^source_excerpt:\s*(.+)$", re.MULTILINE)
+
+    for m in block_re.finditer(raw):
+        block = m.group(1)
+        ym = yaml_re.search(block)
+        if not ym:
+            continue
+        yaml_content = ym.group(1).strip()
+        rm = rationale_re.search(block)
+        em = excerpt_re.search(block)
+        items.append({
+            "yaml_content": yaml_content,
+            "rationale": rm.group(1).strip() if rm else "",
+            "source_excerpt": em.group(1).strip() if em else "",
+        })
+
+    return {"items": items, "raw": raw}

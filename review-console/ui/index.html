@@ -973,6 +973,7 @@
               <button class="dropdown-item" onclick="exportUCs('tar')">tar (uncompressed)</button>
             </div>
           </div>
+          <button class="btn ghost" style="font-size:10px; padding:4px 10px;" id="bulkImportUCBtn" title="Paste a transcript / notes and extract multiple UCs at once (M12a)">📋 Bulk import</button>
           <button class="btn primary" style="font-size:10px; padding:4px 10px;" id="newUCBtn">+ New</button>
         </div>
       </div>
@@ -1685,6 +1686,77 @@
       <button class="btn ghost" id="validateUCBtn" title="Lint the YAML against engine rules without saving">✓ Validate</button>
       <button class="btn ghost" id="cancelUCModal">Cancel</button>
       <button class="btn primary" id="saveUCModal">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════ BULK UC IMPORT MODAL (M12a / ADR-008) ══════════════════════════ -->
+<div class="modal-overlay" id="bulkImportModal">
+  <div class="modal" style="width:860px; max-width:96vw;">
+    <div class="modal-header">
+      <div class="modal-title" id="bulkImportTitle">📋 Bulk import — paste transcript, extract UCs</div>
+      <button class="btn ghost btn-icon" id="closeBulkImport">✕</button>
+    </div>
+    <div class="modal-body" style="display:flex; flex-direction:column; gap:12px; padding:14px 18px;">
+      <!-- Step 1: paste -->
+      <div id="biStep1">
+        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:6px;">Step 1 — paste source text</div>
+        <div class="form-field">
+          <label>Transcript / notes / requirements text</label>
+          <textarea id="biSourceText" rows="10" spellcheck="false" placeholder="Paste a conversation transcript, meeting notes, or any text containing latent use cases. The LLM will read the whole thing and propose one UC per distinct scenario." style="width:100%; font-family:inherit; resize:vertical; line-height:1.5;"></textarea>
+        </div>
+        <div class="form-field">
+          <label>Optional context (audience, profile, area of focus)</label>
+          <input id="biContext" placeholder="e.g. customer is a regulated FSI, focus on compliance-gated UCs" />
+        </div>
+        <div class="form-field">
+          <label>Model</label>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <select id="biModelSel" style="flex:1;"><option value="">— select a model —</option></select>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('biModelSel','biLastModel')">Browse…</button>
+          </div>
+        </div>
+      </div>
+      <!-- Step 2: review extracted UCs -->
+      <div id="biStep2" style="display:none;">
+        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:6px;">Step 2 — review &amp; select drafts</div>
+        <div id="biExtractStatus" style="font-size:11px; color:var(--text-faint); margin-bottom:6px;"></div>
+        <div id="biResults" style="display:flex; flex-direction:column; gap:8px; max-height:50vh; overflow-y:auto;"></div>
+      </div>
+      <!-- Step 3: post-save Set assignment -->
+      <div id="biStep3" style="display:none;">
+        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:6px;">Step 3 — assign to a Set (optional)</div>
+        <div id="biSavedSummary" style="font-size:11px; color:var(--green); margin-bottom:8px;"></div>
+        <div class="form-field" style="margin-bottom:4px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="biSetMode" value="skip" checked style="width:auto;height:auto;accent-color:var(--accent);" /> Skip — leave drafts unassigned
+          </label>
+        </div>
+        <div class="form-field" style="margin-bottom:4px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="biSetMode" value="new" style="width:auto;height:auto;accent-color:var(--accent);" /> Create a new Set named:
+            <input id="biSetNewName" placeholder="e.g. acme-2026-04-onboarding" style="flex:1;" />
+          </label>
+        </div>
+        <div class="form-field" style="margin-bottom:4px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="biSetMode" value="existing" style="width:auto;height:auto;accent-color:var(--accent);" /> Add all to existing Set:
+            <select id="biSetExistingSel" style="flex:1;"><option value="">— pick a set —</option></select>
+          </label>
+        </div>
+        <div class="form-field" style="margin-bottom:4px;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="radio" name="biSetMode" value="individual" style="width:auto;height:auto;accent-color:var(--accent);" /> Assign each individually (opens per-UC pickers)
+          </label>
+          <div id="biIndividualPickers" style="display:none; margin-top:6px; padding:8px; background:var(--bg-input); border:1px solid var(--border); border-radius:2px; max-height:220px; overflow-y:auto; display:flex; flex-direction:column; gap:6px;"></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <span id="biStatus" style="flex:1; font-size:11px; color:var(--text-faint);"></span>
+      <button class="btn ghost" id="biBackBtn" style="display:none;">← Back</button>
+      <button class="btn ghost" id="cancelBulkImport">Cancel</button>
+      <button class="btn primary" id="biPrimaryBtn">Extract UCs</button>
     </div>
   </div>
 </div>
@@ -5213,6 +5285,260 @@ tags:
   - <tag>
 `;
 
+// ══════════════════════════ BULK IMPORT (M12a / ADR-008) ══════════════════════════
+//
+// Paste a transcript / notes; the LLM extracts N distinct UC drafts; reviewer
+// trims and saves; then chooses Set assignment (skip / new / existing / individual).
+//
+// State lives only on the modal — no globals — so reopening starts fresh.
+
+let _biExtracted = [];   // [{yaml_content, rationale, source_excerpt, _keep, _ucUuid?}]
+let _biSavedUCs = [];    // [{uuid, title}] populated after Step 2 save
+
+function openBulkImport() {
+  document.getElementById('bulkImportModal').classList.add('open');
+  document.getElementById('biStep1').style.display = '';
+  document.getElementById('biStep2').style.display = 'none';
+  document.getElementById('biStep3').style.display = 'none';
+  document.getElementById('biSourceText').value = '';
+  document.getElementById('biContext').value = '';
+  document.getElementById('biStatus').textContent = '';
+  document.getElementById('biExtractStatus').textContent = '';
+  document.getElementById('biResults').innerHTML = '';
+  document.getElementById('biSavedSummary').textContent = '';
+  document.getElementById('biSetNewName').value = '';
+  document.getElementById('biBackBtn').style.display = 'none';
+  const primary = document.getElementById('biPrimaryBtn');
+  primary.textContent = 'Extract UCs';
+  primary.disabled = false;
+  primary.onclick = biRunExtract;
+  _biExtracted = [];
+  _biSavedUCs = [];
+  _populateModelSel('biModelSel', 'biLastModel');
+  // Default to env UC-assist model if user has nothing pinned
+  const sel = document.getElementById('biModelSel');
+  if (!sel.value) {
+    const stored = localStorage.getItem('ucAssistModelId');
+    if (stored && [...sel.options].some(o => o.value === stored)) sel.value = stored;
+  }
+}
+
+function closeBulkImport() {
+  document.getElementById('bulkImportModal').classList.remove('open');
+}
+
+async function biRunExtract() {
+  const text = document.getElementById('biSourceText').value.trim();
+  if (!text) { toast('Paste some text first', true); return; }
+  const resolved = _resolveEndpointModel('biModelSel', 'biLastModel');
+  if (!resolved) { toast('Pick a model first', true); return; }
+  const primary = document.getElementById('biPrimaryBtn');
+  primary.disabled = true;
+  document.getElementById('biStatus').textContent = 'extracting…';
+  const payload = {
+    text,
+    context: document.getElementById('biContext').value.trim() || null,
+    ...resolved,
+  };
+  try {
+    const resp = await api('/api/use-cases/bulk-from-text', {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+    const items = resp.items || [];
+    if (!items.length) {
+      const why = resp.no_ucs_reason || 'Model found nothing UC-shaped in the source text.';
+      document.getElementById('biStatus').innerHTML =
+        `<span style="color:var(--text-faint)">${esc(why)}</span>`;
+      primary.disabled = false;
+      return;
+    }
+    _biExtracted = items.map(it => ({...it, _keep: true}));
+    biRenderResults();
+    document.getElementById('biStep1').style.display = 'none';
+    document.getElementById('biStep2').style.display = '';
+    document.getElementById('biBackBtn').style.display = '';
+    document.getElementById('biBackBtn').onclick = () => {
+      document.getElementById('biStep1').style.display = '';
+      document.getElementById('biStep2').style.display = 'none';
+      document.getElementById('biBackBtn').style.display = 'none';
+      primary.textContent = 'Extract UCs';
+      primary.onclick = biRunExtract;
+    };
+    primary.textContent = 'Save selected →';
+    primary.disabled = false;
+    primary.onclick = biSaveSelected;
+    document.getElementById('biStatus').textContent = '';
+    document.getElementById('biExtractStatus').textContent =
+      `${items.length} draft${items.length===1?'':'s'} proposed — uncheck the ones to skip, then click Save selected.`;
+  } catch (e) {
+    document.getElementById('biStatus').innerHTML =
+      `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    primary.disabled = false;
+  }
+}
+
+function biRenderResults() {
+  const el = document.getElementById('biResults');
+  el.innerHTML = '';
+  _biExtracted.forEach((it, idx) => {
+    const card = document.createElement('div');
+    card.style.cssText = 'border:1px solid var(--border); border-radius:2px; background:var(--bg-input); padding:8px 10px;';
+    // Best-effort title extraction
+    const titleMatch = /^title:\s*(.+)$/m.exec(it.yaml_content || '');
+    const title = titleMatch ? titleMatch[1].trim().replace(/^["']|["']$/g, '') : '(untitled draft)';
+    card.innerHTML = `
+      <div style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" data-idx="${idx}" class="bi-keep" ${it._keep ? 'checked' : ''}
+               style="width:auto; height:auto; accent-color:var(--accent);" />
+        <strong style="flex:1; font-size:13px;">${esc(title)}</strong>
+        <button class="btn ghost btn-sm" data-idx="${idx}" data-act="toggle" style="font-size:10px;">▾ details</button>
+      </div>
+      <div data-detail="${idx}" style="display:none; margin-top:6px;">
+        ${it.rationale ? `<div style="font-size:11px; color:var(--text-faint); margin-bottom:4px;"><strong>why:</strong> ${esc(it.rationale)}</div>` : ''}
+        ${it.source_excerpt ? `<div style="font-size:11px; color:var(--text-faint); margin-bottom:4px; font-style:italic;">"${esc(it.source_excerpt)}"</div>` : ''}
+        <textarea data-idx="${idx}" class="bi-yaml" rows="10" spellcheck="false" style="width:100%; font-family:ui-monospace, monospace; font-size:11px; line-height:1.5;">${esc(it.yaml_content || '')}</textarea>
+      </div>`;
+    el.appendChild(card);
+  });
+  el.querySelectorAll('input.bi-keep').forEach(box => {
+    box.addEventListener('change', e => {
+      _biExtracted[parseInt(e.target.dataset.idx, 10)]._keep = e.target.checked;
+    });
+  });
+  el.querySelectorAll('textarea.bi-yaml').forEach(t => {
+    t.addEventListener('input', e => {
+      _biExtracted[parseInt(e.target.dataset.idx, 10)].yaml_content = e.target.value;
+    });
+  });
+  el.querySelectorAll('button[data-act="toggle"]').forEach(b => {
+    b.addEventListener('click', e => {
+      const idx = e.currentTarget.dataset.idx;
+      const detail = el.querySelector(`[data-detail="${idx}"]`);
+      detail.style.display = detail.style.display === 'none' ? '' : 'none';
+    });
+  });
+}
+
+async function biSaveSelected() {
+  const toSave = _biExtracted.filter(it => it._keep);
+  if (!toSave.length) { toast('Nothing selected to save', true); return; }
+  const primary = document.getElementById('biPrimaryBtn');
+  primary.disabled = true;
+  const status = document.getElementById('biStatus');
+  _biSavedUCs = [];
+  const failures = [];
+  for (let i = 0; i < toSave.length; i++) {
+    const it = toSave[i];
+    status.textContent = `saving ${i+1}/${toSave.length}…`;
+    try {
+      const resp = await api('/api/use-cases', {
+        method: 'POST',
+        body: JSON.stringify({yaml_content: it.yaml_content, tags: []}),
+      });
+      const uuid = resp.uuid || resp.use_case?.uuid;
+      const titleMatch = /^title:\s*(.+)$/m.exec(it.yaml_content || '');
+      const title = titleMatch ? titleMatch[1].trim().replace(/^["']|["']$/g, '') : '(untitled)';
+      _biSavedUCs.push({uuid, title, yaml_content: it.yaml_content});
+      it._ucUuid = uuid;
+    } catch (e) {
+      failures.push({title: '(item ' + (i+1) + ')', error: e.message});
+    }
+  }
+  status.textContent = '';
+  document.getElementById('biSavedSummary').innerHTML =
+    `<strong>${_biSavedUCs.length}</strong> UC${_biSavedUCs.length===1?'':'s'} saved as drafts.` +
+    (failures.length ? ` <span style="color:var(--red)">${failures.length} failed.</span>` : '');
+  // Step 3 — Set assignment
+  document.getElementById('biStep2').style.display = 'none';
+  document.getElementById('biStep3').style.display = '';
+  await biPrepStep3();
+  document.getElementById('biBackBtn').style.display = 'none';   // no going back after save
+  primary.textContent = 'Finish';
+  primary.disabled = false;
+  primary.onclick = biApplySetAssignment;
+}
+
+async function biPrepStep3() {
+  // Populate existing-Set dropdown
+  if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
+  const sel = document.getElementById('biSetExistingSel');
+  sel.innerHTML = '<option value="">— pick a set —</option>' +
+    (allSets || []).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
+  // Individual-pickers grid
+  const grid = document.getElementById('biIndividualPickers');
+  grid.innerHTML = '';
+  _biSavedUCs.forEach(uc => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; gap:6px; font-size:11px;';
+    const opts = '<option value="">— none —</option>' +
+      (allSets || []).map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+    row.innerHTML = `<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(uc.title)}</span>
+      <select data-ucuuid="${esc(uc.uuid)}" class="bi-indiv-sel" style="flex:0 0 200px;">${opts}</select>`;
+    grid.appendChild(row);
+  });
+  // Wire radio→subfield visibility
+  document.querySelectorAll('input[name="biSetMode"]').forEach(r => {
+    r.addEventListener('change', () => {
+      const mode = document.querySelector('input[name="biSetMode"]:checked').value;
+      document.getElementById('biIndividualPickers').style.display = (mode === 'individual') ? '' : 'none';
+    });
+  });
+}
+
+async function biApplySetAssignment() {
+  const mode = document.querySelector('input[name="biSetMode"]:checked').value;
+  const primary = document.getElementById('biPrimaryBtn');
+  primary.disabled = true;
+  const status = document.getElementById('biStatus');
+  try {
+    let targetSetId = null;
+    if (mode === 'new') {
+      const name = document.getElementById('biSetNewName').value.trim();
+      if (!name) { toast('Name the new Set or pick another option', true); primary.disabled = false; return; }
+      status.textContent = 'creating set…';
+      const created = await api('/api/sets', {method:'POST', body:JSON.stringify({name, description: 'created from bulk import'})});
+      targetSetId = created.id || created.set?.id;
+    } else if (mode === 'existing') {
+      const v = document.getElementById('biSetExistingSel').value;
+      if (!v) { toast('Pick an existing Set', true); primary.disabled = false; return; }
+      targetSetId = parseInt(v, 10);
+    }
+    if (mode === 'skip') {
+      // Nothing to do — drafts already saved
+    } else if (mode === 'individual') {
+      const sels = document.querySelectorAll('select.bi-indiv-sel');
+      for (const s of sels) {
+        const sid = s.value ? parseInt(s.value, 10) : null;
+        if (!sid) continue;
+        status.textContent = `assigning ${s.dataset.ucuuid.slice(0,8)}…`;
+        await api(`/api/sets/${sid}/members`, {
+          method: 'POST',
+          body: JSON.stringify({uc_uuid: s.dataset.ucuuid, uc_source: 'managed'}),
+        }).catch(e => log_failures(s.dataset.ucuuid, e));
+      }
+    } else if (targetSetId) {
+      for (const uc of _biSavedUCs) {
+        status.textContent = `adding ${uc.title.slice(0,30)}…`;
+        await api(`/api/sets/${targetSetId}/members`, {
+          method: 'POST',
+          body: JSON.stringify({uc_uuid: uc.uuid, uc_source: 'managed'}),
+        }).catch(e => console.warn('bulk: add to set failed', uc.uuid, e));
+      }
+    }
+    toast(`Bulk import complete: ${_biSavedUCs.length} UC(s) saved`);
+    closeBulkImport();
+    try { await loadUCs(); } catch(_) {}
+    try { await loadSets(); } catch(_) {}
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    primary.disabled = false;
+  }
+}
+
+function log_failures(uuid, e) {
+  console.warn('bulk: set assignment failed for', uuid, e);
+}
+
 // ══════════════════════════ SETS ══════════════════════════
 
 async function loadSets() {
@@ -6297,6 +6623,9 @@ try {
 })();
 
 document.getElementById('newUCBtn').addEventListener('click', () => openUCModal());
+document.getElementById('bulkImportUCBtn').addEventListener('click', () => openBulkImport());
+document.getElementById('closeBulkImport').addEventListener('click', closeBulkImport);
+document.getElementById('cancelBulkImport').addEventListener('click', closeBulkImport);
 document.getElementById('closeUCModal').addEventListener('click', closeUCModal);
 document.getElementById('cancelUCModal').addEventListener('click', closeUCModal);
 document.getElementById('saveUCModal').addEventListener('click', saveUC);
@@ -6370,7 +6699,7 @@ document.getElementById('memberSearchInput').addEventListener('blur', () => {
 });
 
 // Close modals on overlay click
-['newRunModal','ucModal','setModal','addMemberModal','lcModal','importModal','promoteModal'].forEach(id => {
+['newRunModal','ucModal','setModal','addMemberModal','lcModal','importModal','promoteModal','bulkImportModal'].forEach(id => {
   document.getElementById(id).addEventListener('click', e => {
     if (e.target===document.getElementById(id)) document.getElementById(id).classList.remove('open');
   });

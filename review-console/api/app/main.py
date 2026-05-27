@@ -1259,6 +1259,16 @@ class UCAssistIn(BaseModel):
     model_id: Optional[str] = None
 
 
+class UCBulkExtractIn(BaseModel):
+    # M12a / ADR-008: paste a transcript / notes / requirements doc; the
+    # endpoint returns proposed UC stubs. Client decides which to save.
+    text: str = Field(..., min_length=1, max_length=120000)
+    context: Optional[str] = Field(None, max_length=4000)
+    model_config_id: Optional[int] = None
+    endpoint_url: Optional[str] = None
+    model_id: Optional[str] = None
+
+
 class MCPServerIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     sse_url: str = Field(..., min_length=1, max_length=512)
@@ -1390,6 +1400,52 @@ async def uc_assist_chat(payload: UCAssistIn, request: Request):
         pool=pool,
     )
     if "error" in result and not result.get("explanation"):
+        raise HTTPException(503, result["error"])
+    return result
+
+
+@app.post("/api/use-cases/bulk-from-text")
+async def uc_bulk_extract(payload: UCBulkExtractIn, request: Request):
+    """M12a / ADR-008 — extract N distinct UC drafts from free-form text.
+
+    Returns {"items": [{yaml_content, rationale, source_excerpt}, ...]}.
+    The client is responsible for iterating POST /api/use-cases to persist
+    the items the reviewer keeps. This endpoint never writes to the DB.
+    """
+    get_user(request)
+    cfg: Optional[dict] = None
+    if payload.model_config_id is not None:
+        if pool is None:
+            raise HTTPException(503, "pool not initialized")
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM model_configs WHERE id=$1 AND enabled",
+                payload.model_config_id,
+            )
+        if not row:
+            raise HTTPException(404, "Model config not found or disabled")
+        cfg = dict(row)
+    elif payload.endpoint_url and payload.model_id:
+        if pool is not None:
+            async with pool.acquire() as conn:
+                base = await conn.fetchrow(
+                    "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND enabled ORDER BY id LIMIT 1",
+                    payload.endpoint_url,
+                )
+        else:
+            base = None
+        cfg = {
+            "provider":     base["provider"] if base else "openai",
+            "endpoint_url": payload.endpoint_url,
+            "model_id":     payload.model_id,
+            "api_key":      base["api_key"] if base else "",
+        }
+    result = await uc_assist.extract_bulk(
+        text=payload.text,
+        context=payload.context,
+        cfg=cfg,
+    )
+    if "error" in result:
         raise HTTPException(503, result["error"])
     return result
 
