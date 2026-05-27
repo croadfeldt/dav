@@ -1,18 +1,31 @@
 """
-DCM Architecture Docs MCP Server
+DAV Docs MCP Server — multi-source spec indexer.
 
-Serves the 57 data model documents + 15 specifications as structured,
-queryable resources via the Model Context Protocol (MCP).
+Indexes one or more spec source trees and exposes them as MCP tools the
+DAV stage 2 analyzer calls during analysis.
 
-Usage:
-    python server.py --docs-path /path/to/dcm-project/data-model
+Two source modes:
 
-The server indexes all .md files at startup and exposes them via MCP tools.
-Both local LLMs (via orchestrator) and Claude API (via tool definitions)
-consume the same interface.
+1. Single-source (legacy / single-consumer single-repo):
+     python server.py --docs-path /path/to/docs
+
+   Handles are relative paths with .md extension, e.g.
+   `00-foundations.md`, `subdir/topic.md`. The minimal-consumer example
+   uses this mode.
+
+2. Multi-source (new, supports peer repos like udlm + dcm):
+     python server.py \
+         --source udlm:/data/udlm \
+         --source dcm:/data/dcm/architecture
+
+   Handles are `<namespace>/<relpath_with_md>`, e.g.
+   `udlm/contracts/provider-contract.md`,
+   `dcm/architecture/credentials-and-auth/credentials.md`.
+
+Either mode can serve to stdio or SSE transports; the in-cluster deployment
+uses SSE on port 8080.
 """
 
-import os
 import re
 import json
 import hashlib
@@ -38,45 +51,84 @@ _STOPWORDS = {
 # --- Document Index ---
 
 class DocumentIndex:
-    """Indexes DCM architecture documents for search and retrieval."""
+    """Indexes spec documents from one or more source trees.
 
-    def __init__(self, docs_path: str):
-        self.docs_path = Path(docs_path)
+    Each source is a (namespace, root_path) pair. A document's handle is
+    `<namespace>/<relpath>` for multi-source mode, or just `<relpath>` for
+    single-source mode (the legacy default).
+    """
+
+    def __init__(self, sources: list[tuple[str, Path]], multi_source: bool):
+        """
+        Args:
+            sources: list of (namespace, root_path) tuples. In single-source
+                mode the namespace is unused for handle construction.
+            multi_source: if True, handles are prefixed with the namespace.
+                If False, handles are just relpath (legacy behavior).
+        """
+        self.sources = [(ns, Path(p)) for ns, p in sources]
+        self.multi_source = multi_source
         self.documents: dict[str, dict] = {}
         self.system_policies: dict[str, dict] = {}
         self._index()
 
+    def _make_handle(self, namespace: str, rel_path: Path) -> str:
+        rel_str = str(rel_path).replace("\\", "/")  # normalize for Windows
+        if self.multi_source:
+            # Multi-source: namespace + relpath including .md extension.
+            # Example: 'udlm/contracts/provider-contract.md'.
+            return f"{namespace}/{rel_str}"
+        # Single-source (legacy): stem only (no .md, no subdir prefix).
+        # Preserves back-compat with consumers whose UCs reference docs
+        # by stem (the historical convention from when the DCM data-model/
+        # tree was flat).
+        return rel_path.stem
+
     def _index(self):
-        """Walk the docs directory and index all markdown files."""
-        if not self.docs_path.exists():
-            raise FileNotFoundError(f"Docs path not found: {self.docs_path}")
+        """Walk every source's docs directory and index all markdown files."""
+        for namespace, root in self.sources:
+            if not root.exists():
+                raise FileNotFoundError(
+                    f"Source root not found: {root} (namespace={namespace})"
+                )
 
-        for md_file in sorted(self.docs_path.rglob("*.md")):
-            rel_path = md_file.relative_to(self.docs_path)
-            handle = md_file.stem  # e.g., "00-foundations", "A-provider-contract"
+            count = 0
+            for md_file in sorted(root.rglob("*.md")):
+                rel_path = md_file.relative_to(root)
+                handle = self._make_handle(namespace, rel_path)
 
-            content = md_file.read_text(encoding="utf-8")
-            sections = self._extract_sections(content)
-            policies = self._extract_system_policies(content)
+                content = md_file.read_text(encoding="utf-8")
+                sections = self._extract_sections(content)
+                policies = self._extract_system_policies(content)
 
-            self.documents[handle] = {
-                "handle": handle,
-                "path": str(rel_path),
-                "title": self._extract_title(content),
-                "content": content,
-                "sections": sections,
-                "policies": [p["id"] for p in policies],
-                "word_count": len(content.split()),
-                "hash": hashlib.sha256(content.encode()).hexdigest()[:12],
-            }
-
-            for policy in policies:
-                self.system_policies[policy["id"]] = {
-                    **policy,
-                    "source_document": handle,
+                self.documents[handle] = {
+                    "handle": handle,
+                    "namespace": namespace,
+                    "path": str(rel_path),
+                    "title": self._extract_title(content),
+                    "content": content,
+                    "sections": sections,
+                    "policies": [p["id"] for p in policies],
+                    "word_count": len(content.split()),
+                    "hash": hashlib.sha256(content.encode()).hexdigest()[:12],
                 }
 
-        print(f"Indexed {len(self.documents)} documents, {len(self.system_policies)} system policies")
+                for policy in policies:
+                    # Policies indexed globally; collisions across sources
+                    # keep the last (deterministic given sorted source order).
+                    self.system_policies[policy["id"]] = {
+                        **policy,
+                        "source_document": handle,
+                        "source_namespace": namespace,
+                    }
+                count += 1
+
+            print(f"Indexed {count} documents from {namespace} ({root})")
+
+        print(
+            f"Total: {len(self.documents)} documents, "
+            f"{len(self.system_policies)} system policies"
+        )
 
     def _extract_title(self, content: str) -> str:
         """Extract the first heading as the document title."""
@@ -107,7 +159,6 @@ class DocumentIndex:
             policy_id = match.group(1)
             if policy_id not in seen:
                 seen.add(policy_id)
-                # Try to find context around the policy reference
                 start = max(0, match.start() - 200)
                 end = min(len(content), match.end() + 200)
                 context = content[start:end].replace("\n", " ").strip()
@@ -117,8 +168,9 @@ class DocumentIndex:
                 })
         return policies
 
-    def search(self, query: str, max_results: int = 5) -> list[dict]:
-        """Full-text search across all documents.
+    def search(self, query: str, max_results: int = 5,
+               namespace: Optional[str] = None) -> list[dict]:
+        """Full-text search across indexed documents.
 
         Tokenizes the query, matches documents containing ANY term
         (OR semantics), ranks by:
@@ -126,14 +178,10 @@ class DocumentIndex:
           2. Total occurrences across all terms
           3. Bonus for terms appearing in the document title
 
-        A doc matching 3 of 3 terms always outranks one matching 1 of 3,
-        regardless of repetition count.
+        If `namespace` is provided, restricts search to that source.
         """
-        # Tokenize: lowercase, split on non-word chars, drop short/stopwords
         raw_terms = re.findall(r"\w+", query.lower())
         terms = [t for t in raw_terms if len(t) >= 3 and t not in _STOPWORDS]
-
-        # Fallback if stopword filtering left nothing (e.g. "id" alone)
         if not terms:
             terms = [t for t in raw_terms if len(t) >= 2]
         if not terms:
@@ -141,11 +189,14 @@ class DocumentIndex:
 
         scored = []
         for handle, doc in self.documents.items():
+            if namespace and doc["namespace"] != namespace:
+                continue
+
             content_lower = doc["content"].lower()
             title_lower = doc["title"].lower()
 
-            term_hits = {}   # term -> total occurrences in body
-            title_hits = 0   # distinct terms appearing in title
+            term_hits = {}
+            title_hits = 0
 
             for term in terms:
                 body_count = content_lower.count(term)
@@ -159,12 +210,11 @@ class DocumentIndex:
 
             distinct_matched = len(term_hits)
             total_occurrences = sum(term_hits.values())
-
-            # Distinct-terms dominates; occurrences tie-break; title boosts
             score = (distinct_matched * 1000) + total_occurrences + (title_hits * 50)
 
             scored.append({
                 "handle": handle,
+                "namespace": doc["namespace"],
                 "title": doc["title"],
                 "matches": total_occurrences,
                 "distinct_terms_matched": distinct_matched,
@@ -174,8 +224,6 @@ class DocumentIndex:
             })
 
         scored.sort(key=lambda x: x["_score"], reverse=True)
-
-        # Strip internal score before returning
         for r in scored:
             r.pop("_score", None)
 
@@ -190,18 +238,81 @@ mcp = FastMCP("dav-docs-mcp")
 index: Optional[DocumentIndex] = None
 
 
+def _resolve_handle(handle: str) -> Optional[dict]:
+    """Look up a document by handle.
+
+    In multi-source mode, accepts both:
+      - The full handle (e.g., `udlm/contracts/provider-contract.md`)
+      - An unqualified relpath, IF unambiguous across sources
+
+    Returns the document dict or None.
+    """
+    if handle in index.documents:
+        return index.documents[handle]
+
+    if not index.multi_source:
+        return None
+
+    # Try unqualified lookup — useful for users who don't remember the
+    # namespace. Disambiguates only if exactly one match exists.
+    matches = [
+        doc for doc in index.documents.values()
+        if doc["path"] == handle or doc["path"].replace("\\", "/") == handle
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 @mcp.tool()
-def list_documents() -> str:
-    """List all available DCM architecture documents with their handles and titles."""
-    docs = []
+def list_documents(namespace: Optional[str] = None) -> str:
+    """List indexed documents with their handles and titles.
+
+    Args:
+        namespace: Optional source namespace to filter by (e.g., 'udlm', 'dcm').
+            If omitted, lists all documents from all sources.
+    """
+    grouped: dict[str, list[str]] = {}
     for handle, doc in sorted(index.documents.items()):
-        docs.append(f"- **{handle}** — {doc['title']} ({doc['word_count']} words, {len(doc['policies'])} policies)")
-    return "\n".join(docs)
+        if namespace and doc["namespace"] != namespace:
+            continue
+        ns = doc["namespace"]
+        grouped.setdefault(ns, []).append(
+            f"- **{handle}** — {doc['title']} "
+            f"({doc['word_count']} words, {len(doc['policies'])} policies)"
+        )
+
+    if not grouped:
+        return f"No documents found (namespace filter: {namespace or 'none'})."
+
+    output = []
+    for ns in sorted(grouped.keys()):
+        if index.multi_source:
+            output.append(f"## Source: {ns}\n")
+        output.extend(grouped[ns])
+        output.append("")
+    return "\n".join(output).strip()
+
+
+@mcp.tool()
+def list_sources() -> str:
+    """List the configured spec sources (namespaces and their roots)."""
+    out = []
+    for ns, root in index.sources:
+        doc_count = sum(
+            1 for d in index.documents.values() if d["namespace"] == ns
+        )
+        out.append(f"- **{ns}** — {doc_count} docs at `{root}`")
+    if not index.multi_source:
+        out.append("\n_(single-source mode — handles are unprefixed relpath)_")
+    else:
+        out.append("\n_(multi-source mode — handles are `<namespace>/<relpath>`)_")
+    return "\n".join(out)
 
 
 @mcp.tool()
 def get_document(handle: str) -> str:
-    """Retrieve a DCM architecture document by its handle.
+    """Retrieve a spec document by its handle.
 
     Returns the full document for short docs. For documents larger than
     ~8000 characters (a context-budget guardrail), returns the table of
@@ -210,22 +321,24 @@ def get_document(handle: str) -> str:
     the entire context window.
 
     Args:
-        handle: Document handle, e.g., '00-foundations', 'A-provider-contract'
+        handle: Document handle. Format depends on server mode:
+            - Single-source: relative path with .md, e.g. 'subdir/topic.md'
+            - Multi-source: '<namespace>/<relpath_with_md>',
+              e.g., 'udlm/contracts/provider-contract.md'
+            In multi-source mode an unqualified relpath also works if
+            unambiguous across sources.
     """
-    doc = index.documents.get(handle)
+    doc = _resolve_handle(handle)
     if not doc:
         available = ", ".join(sorted(index.documents.keys())[:20])
-        return f"Document '{handle}' not found. Available: {available}..."
+        return f"Document '{handle}' not found. Available (first 20): {available}..."
 
     content = doc["content"]
-    # ~8000 chars is roughly 2000 tokens — a reasonable upper bound for a
-    # single tool response. DCM architecture docs routinely exceed 50k chars.
     MAX_DOC_CHARS = 8000
 
     if len(content) <= MAX_DOC_CHARS:
         return content
 
-    # Too large — return outline + pointer to get_document_section
     sections_list = "\n".join(
         f"  - {'  ' * (s['level'] - 1)}{s['title']}"
         for s in doc["sections"]
@@ -235,9 +348,9 @@ def get_document(handle: str) -> str:
         f"⚠ DOCUMENT TOO LARGE TO RETURN IN FULL ({len(content):,} characters, "
         f"{doc['word_count']:,} words).\n\n"
         f"REQUIRED NEXT ACTION: call "
-        f"`get_document_section(handle='{handle}', section_title='<exact title from list below>')` "
+        f"`get_document_section(handle='{doc['handle']}', section_title='<exact title from list below>')` "
         f"with one of the titles listed under \"Available Sections\". "
-        f"DO NOT call `get_document('{handle}')` again — you will get this same "
+        f"DO NOT call `get_document('{doc['handle']}')` again — you will get this same "
         f"response. Pick a specific section from the outline below instead.\n\n"
         f"## Available Sections\n\n{sections_list}\n"
     )
@@ -245,20 +358,19 @@ def get_document(handle: str) -> str:
 
 @mcp.tool()
 def get_document_section(handle: str, section_title: str) -> str:
-    """Retrieve a specific section from a DCM architecture document.
+    """Retrieve a specific section from a spec document.
 
     Args:
-        handle: Document handle
-        section_title: Section heading text (partial match supported)
+        handle: Document handle (see get_document for format).
+        section_title: Section heading text (partial match supported).
     """
-    doc = index.documents.get(handle)
+    doc = _resolve_handle(handle)
     if not doc:
         return f"Document '{handle}' not found."
 
     lines = doc["content"].split("\n")
     section_lower = section_title.lower()
 
-    # Find the section start
     start_line = None
     start_level = None
     for section in doc["sections"]:
@@ -270,9 +382,9 @@ def get_document_section(handle: str, section_title: str) -> str:
     if start_line is None:
         sections_list = "\n".join(f"  - {s['title']}" for s in doc["sections"])
         return (
-            f"⚠ Section '{section_title}' NOT FOUND in '{handle}'.\n\n"
+            f"⚠ Section '{section_title}' NOT FOUND in '{doc['handle']}'.\n\n"
             f"REQUIRED NEXT ACTION (pick exactly one):\n"
-            f"  (a) Call `get_document_section(handle='{handle}', section_title='<title>')` "
+            f"  (a) Call `get_document_section(handle='{doc['handle']}', section_title='<title>')` "
             f"with one of the EXACT titles listed below — this document does contain "
             f"the listed sections.\n"
             f"  (b) Call `search_docs(query='<different keywords>')` if the topic "
@@ -282,10 +394,9 @@ def get_document_section(handle: str, section_title: str) -> str:
             f"document without first checking the section list is unlikely to help. "
             f"The same content might be under a different section name — read the "
             f"list below or search with different terms.\n\n"
-            f"Available sections in '{handle}':\n{sections_list}"
+            f"Available sections in '{doc['handle']}':\n{sections_list}"
         )
 
-    # Find the section end (next heading at same or higher level)
     end_line = len(lines)
     for section in doc["sections"]:
         if section["line"] - 1 > start_line and section["level"] <= start_level:
@@ -296,22 +407,27 @@ def get_document_section(handle: str, section_title: str) -> str:
 
 
 @mcp.tool()
-def search_docs(query: str, max_results: int = 5) -> str:
-    """Full-text search across all DCM architecture documents.
+def search_docs(query: str, max_results: int = 5,
+                namespace: Optional[str] = None) -> str:
+    """Full-text search across indexed spec documents.
 
     Args:
         query: Search query string. Multiple terms are OR-matched; results
             ranked by distinct terms matched, then total occurrences.
-        max_results: Maximum number of results to return (default 5)
+        max_results: Maximum number of results to return (default 5).
+        namespace: Optional source namespace to filter by ('udlm', 'dcm', etc.).
+            If omitted, searches all sources.
     """
-    results = index.search(query, max_results)
+    results = index.search(query, max_results, namespace=namespace)
     if not results:
-        return f"No documents match '{query}'."
+        scope = f" in namespace '{namespace}'" if namespace else ""
+        return f"No documents match '{query}'{scope}."
 
     output = []
     for r in results:
+        prefix = f"[{r['namespace']}] " if index.multi_source else ""
         output.append(
-            f"- **{r['handle']}** — {r['title']} "
+            f"- {prefix}**{r['handle']}** — {r['title']} "
             f"({r['distinct_terms_matched']}/{r['total_terms']} terms, "
             f"{r['matches']} total matches)"
         )
@@ -323,11 +439,10 @@ def get_system_policy(policy_id: str) -> str:
     """Retrieve a specific system policy definition by its ID.
 
     Args:
-        policy_id: System policy ID, e.g., 'GRP-001', 'PLC-003', 'DPO-005'
+        policy_id: System policy ID, e.g., 'GRP-001', 'PLC-003', 'DPO-005'.
     """
     policy = index.system_policies.get(policy_id)
     if not policy:
-        # Try to find similar
         prefix = policy_id.split("-")[0] if "-" in policy_id else ""
         similar = [pid for pid in index.system_policies if pid.startswith(prefix)]
         if similar:
@@ -337,6 +452,7 @@ def get_system_policy(policy_id: str) -> str:
     return json.dumps({
         "id": policy["id"],
         "source_document": policy["source_document"],
+        "source_namespace": policy.get("source_namespace"),
         "context": policy["context"],
     }, indent=2)
 
@@ -346,7 +462,7 @@ def get_profile(name: str) -> str:
     """Retrieve a DCM deployment profile definition and its characteristics.
 
     Args:
-        name: Profile name: minimal, dev, standard, prod, fsi, or sovereign
+        name: Profile name: minimal, dev, standard, prod, fsi, or sovereign.
     """
     profiles = {
         "minimal": {
@@ -414,33 +530,52 @@ def get_profile(name: str) -> str:
 
 @mcp.tool()
 def get_capability_count() -> str:
-    """Return current DCM capability and document counts."""
+    """Return indexed document and policy counts, broken down by source."""
+    by_ns: dict[str, int] = {}
+    for doc in index.documents.values():
+        by_ns[doc["namespace"]] = by_ns.get(doc["namespace"], 0) + 1
     return json.dumps({
-        "capabilities": 322,
-        "domains": 39,
-        "data_model_documents": 57,
-        "specifications": 15,
-        "consumer_api_paths": 72,
-        "admin_api_paths": 57,
-        "events": 82,
-        "event_domains": 26,  
-        "provider_types": 6,
-        "policy_evaluation_modes": 2,
-        "control_plane_services": 9,
         "indexed_documents": len(index.documents),
         "indexed_policies": len(index.system_policies),
+        "documents_by_source": by_ns,
+        "multi_source": index.multi_source,
     }, indent=2)
 
 
 # --- Entry Point ---
 
+def _parse_source_arg(arg: str) -> tuple[str, Path]:
+    """Parse a --source value of the form `namespace:path`."""
+    if ":" not in arg:
+        raise ValueError(
+            f"--source value must be 'namespace:path', got: {arg!r}"
+        )
+    ns, path = arg.split(":", 1)
+    ns = ns.strip()
+    path = path.strip()
+    if not ns or not path:
+        raise ValueError(
+            f"--source value must have non-empty namespace and path, got: {arg!r}"
+        )
+    return ns, Path(path)
+
+
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="DCM Architecture Docs MCP Server")
+    parser = argparse.ArgumentParser(
+        description="DAV Docs MCP Server — multi-source spec indexer"
+    )
     parser.add_argument(
         "--docs-path",
-        required=True,
-        help="Path to the DCM data-model directory containing .md files",
+        help="Single source path (legacy mode). Handles are relpath without "
+             "namespace prefix. Mutually exclusive with --source.",
+    )
+    parser.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="Multi-source spec root, format `namespace:path`. Repeatable. "
+             "Example: --source udlm:/data/udlm --source dcm:/data/dcm/architecture",
     )
     parser.add_argument(
         "--transport",
@@ -461,8 +596,20 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.docs_path and args.source:
+        parser.error("--docs-path and --source are mutually exclusive")
+    if not args.docs_path and not args.source:
+        parser.error("must provide either --docs-path or at least one --source")
+
+    if args.docs_path:
+        sources = [("docs", Path(args.docs_path))]
+        multi_source = False
+    else:
+        sources = [_parse_source_arg(s) for s in args.source]
+        multi_source = True
+
     global index
-    index = DocumentIndex(args.docs_path)
+    index = DocumentIndex(sources, multi_source=multi_source)
 
     if args.transport == "sse":
         mcp.run(transport="sse", host=args.host, port=args.port)
