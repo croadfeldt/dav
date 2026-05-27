@@ -7,6 +7,15 @@ LABEL org.opencontainers.image.title="dav-docs-mcp" \
       org.opencontainers.image.revision="${DAV_REPO_COMMIT}" \
       io.dav.repo.dirty="${DAV_REPO_DIRTY}"
 
+# Install git for the init-container role (which clones source repos before
+# the MCP server starts). Use this same image for both init and main
+# containers in the Deployment so the init script has python+yaml+git
+# available without a separate apk/apt install at pod start, and without
+# a separate image pull.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt .
@@ -16,5 +25,7 @@ COPY server.py .
 
 EXPOSE 8080
 
+# Deployment overrides this via `command:` to build per-source args at
+# runtime from the dav-source-spec ConfigMap. The ENTRYPOINT below is for
+# local single-source testing only.
 ENTRYPOINT ["python", "server.py", "--transport", "sse", "--port", "8080"]
-# --docs-path is set via deployment env/args

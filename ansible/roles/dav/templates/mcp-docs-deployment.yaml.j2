@@ -40,8 +40,11 @@ spec:
         component: mcp-server
     spec:
       initContainers:
+        # Uses the MCP image so python3 + pyyaml + git are already installed
+        # (no apk/apt at pod start, no extra image pull, no non-root perms
+        # surprises that bit alpine/git's apk).
         - name: git-clone
-          image: alpine/git:latest
+          image: {{ mcp_docs_image }}
           env:
             # Legacy single-source fallback. With optional=true, these are
             # absent when the ConfigMap is in multi-source mode (no repo_url
@@ -67,10 +70,7 @@ spec:
               rm -f /data/.source-flags
 
               if [ -f /config/sources ]; then
-                # Multi-source mode: parse sources YAML, clone each, and write
-                # `namespace:served_path` lines to /data/.source-flags for the
-                # main container to consume.
-                apk add --no-cache python3 py3-yaml >/dev/null 2>&1
+                echo "[init] /config/sources detected — multi-source mode"
                 python3 <<'PYEOF'
               import yaml, subprocess, sys
               with open('/config/sources') as f:
@@ -85,7 +85,7 @@ spec:
                   branch = src['repo_branch']
                   root = (src.get('root_path') or '').strip('/')
                   dst = f'/data/{ns}'
-                  print(f'Cloning {url}#{branch} -> {dst}', flush=True)
+                  print(f'[init] cloning {url}#{branch} -> {dst}', flush=True)
                   subprocess.run(
                       ['git', 'clone', '--depth', '1', '--branch', branch, url, dst],
                       check=True,
@@ -94,15 +94,15 @@ spec:
                   flag_lines.append(f'{ns}:{served}')
               with open('/data/.source-flags', 'w') as f:
                   f.write('\n'.join(flag_lines) + '\n')
-              print(f'Wrote {len(flag_lines)} source flag(s)', flush=True)
+              print(f'[init] wrote {len(flag_lines)} source flag(s) to /data/.source-flags', flush=True)
               PYEOF
               elif [ -n "${REPO_URL:-}" ] && [ -n "${REPO_BRANCH:-}" ]; then
-                # Legacy single-source mode
+                echo "[init] no /config/sources — legacy single-source mode"
                 git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" /data/repo
-                echo "Cloned single-source: $REPO_URL#$REPO_BRANCH"
-                echo "$(ls /data/repo/architecture/data-model/*.md 2>/dev/null | wc -l) .md files in legacy data-model path"
+                echo "[init] cloned single-source: $REPO_URL#$REPO_BRANCH"
+                echo "[init] $(ls /data/repo/architecture/data-model/*.md 2>/dev/null | wc -l) .md files in legacy data-model path"
               else
-                echo "ERROR: no sources configured (no /config/sources, no REPO_URL/REPO_BRANCH)" >&2
+                echo "[init] ERROR: no sources configured (no /config/sources, no REPO_URL/REPO_BRANCH)" >&2
                 exit 1
               fi
           volumeMounts:
