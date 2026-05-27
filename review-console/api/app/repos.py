@@ -1,0 +1,400 @@
+"""Managed repos registry — CRUD over the managed_repos table.
+
+The managed_repos table is the first-class source-of-truth for which repos
+DAV operates on. Each row carries a namespace (URL-safe identifier used as
+the doc-handle prefix in multi-source MCP and as the clone directory name),
+a clone URL + branch, an optional root_path subdirectory, and a roles[]
+array indicating what the repo is used for.
+
+Roles in v1:
+  - 'spec'         — served by dav-docs-mcp (projected into dav-source-spec
+                     ConfigMap by sources.py / M2)
+  - 'corpus'       — cloned by the pipeline at run start (UCs read from here)
+  - 'issue-source' — polled / webhook'd for PR comments (M5/M6)
+
+The dav-source-spec and dav-source-corpus ConfigMaps become projections
+over this table: filter rows by role, render as the ConfigMap's `sources`
+YAML list. Projection logic lands in M2.
+
+Seeding: on first startup, if the registry is empty, we read the existing
+dav-source-spec / dav-source-corpus ConfigMaps and create one managed_repos
+row per source declared there. This preserves the operator's existing
+configuration without manual reseeding after upgrade.
+"""
+from __future__ import annotations
+
+import logging
+import re
+from typing import Optional
+
+import asyncpg
+import yaml
+
+log = logging.getLogger("dav-review-api.repos")
+
+# v1 closed vocabulary. Open for extension — adding a role here is the only
+# change needed to make the registry accept it.
+VALID_ROLES = {"spec", "corpus", "issue-source"}
+
+# Match the migration's CHECK constraint exactly.
+_NAMESPACE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$")
+
+
+def _validate_namespace(namespace: str) -> None:
+    if not namespace or not _NAMESPACE_RE.match(namespace):
+        raise ValueError(
+            f"invalid namespace {namespace!r}: must be lowercase alphanumeric "
+            "with hyphens, 2-63 chars, not starting or ending with hyphen"
+        )
+
+
+def _validate_repo_url(repo_url: str) -> None:
+    if not repo_url or not repo_url.startswith(("http://", "https://", "git@")):
+        raise ValueError(f"invalid repo_url: {repo_url!r}")
+    if len(repo_url) > 512:
+        raise ValueError("repo_url too long (max 512)")
+
+
+def _validate_branch(branch: str) -> None:
+    if not branch or any(c.isspace() for c in branch):
+        raise ValueError(f"invalid branch: {branch!r}")
+    if len(branch) > 256:
+        raise ValueError("branch too long (max 256)")
+
+
+def _validate_roles(roles: list[str]) -> list[str]:
+    if not isinstance(roles, list):
+        raise ValueError(f"roles must be a list, got {type(roles).__name__}")
+    unknown = [r for r in roles if r not in VALID_ROLES]
+    if unknown:
+        raise ValueError(
+            f"unknown role(s) {unknown}; valid roles are {sorted(VALID_ROLES)}"
+        )
+    # Dedupe while preserving order
+    seen = set()
+    out = []
+    for r in roles:
+        if r not in seen:
+            seen.add(r)
+            out.append(r)
+    return out
+
+
+DEFAULT_TENANT = "default"
+
+
+def _row_to_dict(row: asyncpg.Record) -> dict:
+    """Convert a managed_repos row to a JSON-serialisable dict."""
+    return {
+        "uuid": str(row["uuid"]),
+        "namespace": row["namespace"],
+        "display_name": row["display_name"] or row["namespace"],
+        "repo_url": row["repo_url"],
+        "repo_branch": row["repo_branch"],
+        "root_path": row["root_path"],
+        "roles": list(row["roles"] or []),
+        "tenant_id": row["tenant_id"],
+        "ingestion_config": dict(row["ingestion_config"] or {}),
+        "metadata": dict(row["metadata"] or {}),
+        "created_at": row["created_at"].isoformat(),
+        "created_by": row["created_by"],
+        "updated_at": row["updated_at"].isoformat(),
+        "updated_by": row["updated_by"],
+    }
+
+
+# ------------------------- CRUD -------------------------
+
+
+async def list_repos(
+    conn: asyncpg.Connection,
+    role: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> list[dict]:
+    """List managed repos.
+
+    Optional filters:
+    - `role`: only repos that carry this role in their roles[] array.
+    - `tenant_id`: only repos in this tenant. If omitted, ALL tenants
+      are returned (intended for operator/admin use; per-tenant UI views
+      pass tenant_id explicitly).
+    """
+    if role is not None and role not in VALID_ROLES:
+        raise ValueError(f"unknown role: {role!r}")
+
+    where = []
+    args: list = []
+    if role is not None:
+        args.append(role)
+        where.append(f"${len(args)} = ANY(roles)")
+    if tenant_id is not None:
+        args.append(tenant_id)
+        where.append(f"tenant_id = ${len(args)}")
+    where_clause = (" WHERE " + " AND ".join(where)) if where else ""
+
+    rows = await conn.fetch(
+        f"SELECT * FROM managed_repos{where_clause} ORDER BY namespace ASC",
+        *args,
+    )
+    return [_row_to_dict(r) for r in rows]
+
+
+async def get_repo(conn: asyncpg.Connection, uuid_or_namespace: str) -> Optional[dict]:
+    """Fetch one repo by UUID or namespace (UI/operator convenience)."""
+    row = await conn.fetchrow(
+        "SELECT * FROM managed_repos "
+        "WHERE uuid::text = $1 OR namespace = $1 LIMIT 1",
+        uuid_or_namespace,
+    )
+    return _row_to_dict(row) if row else None
+
+
+async def create_repo(
+    conn: asyncpg.Connection,
+    *,
+    namespace: str,
+    repo_url: str,
+    repo_branch: str = "main",
+    display_name: Optional[str] = None,
+    root_path: str = "",
+    roles: Optional[list[str]] = None,
+    tenant_id: str = DEFAULT_TENANT,
+    ingestion_config: Optional[dict] = None,
+    metadata: Optional[dict] = None,
+    created_by: str = "system",
+) -> dict:
+    """Insert a new managed repo. Returns the created row as a dict."""
+    _validate_namespace(namespace)
+    _validate_repo_url(repo_url)
+    _validate_branch(repo_branch)
+    roles = _validate_roles(roles or [])
+    root_path = (root_path or "").strip("/")
+    if not tenant_id:
+        tenant_id = DEFAULT_TENANT
+
+    try:
+        row = await conn.fetchrow(
+            "INSERT INTO managed_repos "
+            "(namespace, display_name, repo_url, repo_branch, root_path, "
+            " roles, tenant_id, ingestion_config, metadata, created_by, updated_by) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $10) "
+            "RETURNING *",
+            namespace, display_name, repo_url, repo_branch, root_path,
+            roles, tenant_id, _to_jsonb(ingestion_config), _to_jsonb(metadata),
+            created_by,
+        )
+    except asyncpg.UniqueViolationError as e:
+        raise ValueError(
+            f"namespace {namespace!r} is already in use by another repo"
+        ) from e
+    return _row_to_dict(row)
+
+
+async def update_repo(
+    conn: asyncpg.Connection,
+    uuid_or_namespace: str,
+    *,
+    repo_url: Optional[str] = None,
+    repo_branch: Optional[str] = None,
+    display_name: Optional[str] = None,
+    root_path: Optional[str] = None,
+    roles: Optional[list[str]] = None,
+    ingestion_config: Optional[dict] = None,
+    metadata: Optional[dict] = None,
+    updated_by: str = "system",
+) -> Optional[dict]:
+    """Update one or more fields on an existing repo. Namespace is immutable.
+
+    Returns the updated row, or None if no repo matched.
+    """
+    existing = await get_repo(conn, uuid_or_namespace)
+    if not existing:
+        return None
+
+    set_clauses = []
+    args: list = []
+
+    if repo_url is not None:
+        _validate_repo_url(repo_url)
+        args.append(repo_url)
+        set_clauses.append(f"repo_url = ${len(args)}")
+    if repo_branch is not None:
+        _validate_branch(repo_branch)
+        args.append(repo_branch)
+        set_clauses.append(f"repo_branch = ${len(args)}")
+    if display_name is not None:
+        args.append(display_name)
+        set_clauses.append(f"display_name = ${len(args)}")
+    if root_path is not None:
+        args.append((root_path or "").strip("/"))
+        set_clauses.append(f"root_path = ${len(args)}")
+    if roles is not None:
+        validated_roles = _validate_roles(roles)
+        args.append(validated_roles)
+        set_clauses.append(f"roles = ${len(args)}")
+    # tenant_id is intentionally NOT settable through update_repo: moving
+    # a repo between tenants is a higher-privilege operation that lands
+    # as its own dedicated transfer_repo endpoint when multi-tenant
+    # filtering ships.
+    if ingestion_config is not None:
+        args.append(_to_jsonb(ingestion_config))
+        set_clauses.append(f"ingestion_config = ${len(args)}::jsonb")
+    if metadata is not None:
+        args.append(_to_jsonb(metadata))
+        set_clauses.append(f"metadata = ${len(args)}::jsonb")
+
+    if not set_clauses:
+        # No-op update — return existing without touching updated_at.
+        return existing
+
+    args.append(updated_by)
+    set_clauses.append(f"updated_by = ${len(args)}")
+
+    args.append(existing["uuid"])
+    row = await conn.fetchrow(
+        f"UPDATE managed_repos SET {', '.join(set_clauses)} "
+        f"WHERE uuid::text = ${len(args)} RETURNING *",
+        *args,
+    )
+    return _row_to_dict(row) if row else None
+
+
+async def delete_repo(
+    conn: asyncpg.Connection, uuid_or_namespace: str
+) -> bool:
+    """Delete a managed repo. Returns True if a row was deleted, False otherwise.
+
+    Caller is responsible for projection-side effects (regenerating
+    dav-source-spec ConfigMap, etc.) — those land in M2.
+    """
+    result = await conn.execute(
+        "DELETE FROM managed_repos WHERE uuid::text = $1 OR namespace = $1",
+        uuid_or_namespace,
+    )
+    # asyncpg returns "DELETE <n>"
+    return result.endswith(" 1") or result.startswith("DELETE 1")
+
+
+# ------------------------- Seeding -------------------------
+
+
+async def seed_from_existing_configmaps(
+    conn: asyncpg.Connection,
+    spec_sources_yaml: Optional[str] = None,
+    spec_legacy_url: Optional[str] = None,
+    spec_legacy_branch: Optional[str] = None,
+    corpus_url: Optional[str] = None,
+    corpus_branch: Optional[str] = None,
+) -> int:
+    """First-run seed: populate managed_repos from the existing source
+    ConfigMaps so the operator's current config carries forward into the
+    registry without manual reseeding.
+
+    Caller passes the ConfigMap contents (since this module avoids importing
+    the kubernetes client directly — the caller does that). All args are
+    optional; the function inserts whatever it has.
+
+    Returns the number of rows inserted. If the registry already has any
+    rows, this is a no-op (returns 0) — we don't overwrite operator-managed
+    state on later startups.
+    """
+    count = await conn.fetchval("SELECT COUNT(*) FROM managed_repos")
+    if count > 0:
+        return 0
+
+    inserted = 0
+
+    # Spec multi-source: parse YAML list and insert one row per source
+    if spec_sources_yaml:
+        try:
+            sources = yaml.safe_load(spec_sources_yaml) or []
+        except Exception as e:
+            log.warning("seed: failed to parse spec sources YAML: %s", e)
+            sources = []
+        for src in sources:
+            ns = src.get("namespace")
+            url = src.get("repo_url")
+            branch = src.get("repo_branch", "main")
+            root = (src.get("root_path") or "").strip("/")
+            if not ns or not url:
+                continue
+            try:
+                # If this repo is also the corpus, we'll add 'corpus' role
+                # in the next block. For now mark it as spec only.
+                await create_repo(
+                    conn,
+                    namespace=ns,
+                    repo_url=url,
+                    repo_branch=branch,
+                    root_path=root,
+                    roles=["spec"],
+                    created_by="seed:configmap",
+                )
+                inserted += 1
+                log.info("seeded spec source: ns=%s url=%s branch=%s", ns, url, branch)
+            except ValueError as e:
+                log.warning("seed: skipping spec source ns=%s: %s", ns, e)
+
+    # Spec legacy single-source: insert as ns='spec' if no multi-source
+    if not spec_sources_yaml and spec_legacy_url and spec_legacy_branch:
+        try:
+            await create_repo(
+                conn,
+                namespace="spec",
+                repo_url=spec_legacy_url,
+                repo_branch=spec_legacy_branch,
+                roles=["spec"],
+                created_by="seed:configmap:legacy",
+            )
+            inserted += 1
+            log.info("seeded legacy spec single-source: %s", spec_legacy_url)
+        except ValueError as e:
+            log.warning("seed: skipping legacy spec source: %s", e)
+
+    # Corpus (single-source today). If the URL matches an existing spec
+    # entry (by URL — namespace may differ), add 'corpus' to its roles.
+    # Otherwise insert as its own ns='corpus' entry.
+    if corpus_url and corpus_branch:
+        existing = await conn.fetchrow(
+            "SELECT uuid, namespace, roles FROM managed_repos "
+            "WHERE repo_url = $1 LIMIT 1",
+            corpus_url,
+        )
+        if existing:
+            existing_roles = list(existing["roles"] or [])
+            if "corpus" not in existing_roles:
+                existing_roles.append("corpus")
+                await conn.execute(
+                    "UPDATE managed_repos SET roles = $1, updated_by = $2 "
+                    "WHERE uuid = $3",
+                    existing_roles, "seed:configmap", existing["uuid"],
+                )
+                log.info(
+                    "seeded corpus role onto existing repo ns=%s url=%s",
+                    existing["namespace"], corpus_url,
+                )
+        else:
+            try:
+                await create_repo(
+                    conn,
+                    namespace="corpus",
+                    repo_url=corpus_url,
+                    repo_branch=corpus_branch,
+                    roles=["corpus"],
+                    created_by="seed:configmap",
+                )
+                inserted += 1
+                log.info("seeded corpus single-source: %s", corpus_url)
+            except ValueError as e:
+                log.warning("seed: skipping corpus source: %s", e)
+
+    return inserted
+
+
+# ------------------------- Helpers -------------------------
+
+
+def _to_jsonb(value: Optional[dict]) -> str:
+    """asyncpg + jsonb prefers explicit JSON strings to avoid implicit casts."""
+    import json
+    return json.dumps(value if value is not None else {})

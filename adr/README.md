@@ -8,6 +8,7 @@ Decisions that shape DAV's architecture. Each ADR is immutable once accepted (ch
 |--------|-------|--------|
 | 001 | [DAV is a Consumer-Agnostic Framework](001-dav-consumer-agnostic-framework.md) | Accepted |
 | 002 | [DCM Integration Model: DAV as a DCM-Managed Capability](002-dcm-integration-model.md) | Proposed (forward-looking, deferred 6-12 months) |
+| 003 | [Multi-Repo Registry and MCP Source-of-Truth](003-multi-repo-registry-and-mcp-source-of-truth.md) | Accepted |
 
 ## Authoring
 

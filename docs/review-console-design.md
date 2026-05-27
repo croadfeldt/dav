@@ -130,7 +130,8 @@ The SPA is a single `index.html` with no build step. All state lives in JS globa
 Two-pane layout: left nav (category list), right content (selected category).
 
 **Categories:**
-- **Sources** — spec repo URL/branch, corpus repo URL/branch. Updates `dav-source-spec` ConfigMap + rolls `dav-docs-mcp` deployment. Evaluation endpoint: selects inference model from `model_configs` dropdown (replaces free-text endpoint/model inputs); applied via `POST /api/sources/inference` after optional Test validation.
+- **Repos** *(M3, in progress)* — managed_repos registry view. Lists every repo DAV operates on with namespace, URL/branch, roles (spec / corpus / issue-source), and tenant. Add/edit/delete via `POST/PUT/DELETE /api/repos`. The registry is the source-of-truth per [ADR-003](../adr/003-multi-repo-registry-and-mcp-source-of-truth.md); the Sources and Corpus panels below become read-only filtered views over it.
+- **Sources** — spec repo(s) projection. After M2 lands, this becomes a read-only view of `managed_repos` rows with `role=spec`; edits go through the Repos panel. Today (M1) it still reads `dav-source-spec` ConfigMap multi-source state and shows the list. Updates `dav-source-spec` ConfigMap + rolls `dav-docs-mcp` deployment. Evaluation endpoint: selects inference model from `model_configs` dropdown (replaces free-text endpoint/model inputs); applied via `POST /api/sources/inference` after optional Test validation.
 - **Model Endpoints** — all LLM endpoints in one `model_configs` table with per-endpoint use-flags: `use_arch_review` (default true) and `use_uc_assist` (default false, informational only — any enabled model can now be used for UC Assist). `api_key` masked on GET. All selectors across the console draw from the same enabled-model list via `_populateModelSel(selId, storageKey)`; selections persisted in localStorage per selector. Each selector has a **Browse…** button inline with the selector that opens the model browser overlay (see §Model browser below).
 - **Default evaluation model** — project-scoped default for new analysis runs. Stored in `model_defaults` table (`key='evaluation'`). Set in Config → AI Models; applies to all users. New Run modal reads from `GET /api/model-defaults` on open and pre-selects this model when no user override is stored in localStorage. Only registered model_config rows can be set as project defaults (custom endpoint+model pairs are user-scoped only).
 - **Default UC Assist model** — user-scoped personal default for UC Assist authoring. Stored in localStorage under `ucAssistModelId`. Configurable both in Config → AI Models and inline in the UC Assist panel (both selectors share the same storage key and mirror each other). Falls back to env-var config (`DAV_UC_ASSIST_*`) if no DB rows exist.
@@ -235,6 +236,42 @@ If any link in this chain is broken (e.g., `turns_log_path` not passed, `_emit_t
 Current: `"1.5"` — gap title field added, `spec_refs_missing` as list.
 
 ---
+
+## Managed repos registry (M1+, ADR-003)
+
+The `managed_repos` table is the source-of-truth for which repos DAV
+operates on. Each row:
+
+- `namespace` — URL-safe identifier; used as the MCP doc-handle prefix
+  and as the clone directory name
+- `repo_url`, `repo_branch` — git target
+- `root_path` — optional subdirectory served as the source root (e.g.,
+  `dcm` uses `architecture` so the MCP serves from `/data/dcm/architecture/*`)
+- `roles[]` — open vocabulary (v1: `spec`, `corpus`, `issue-source`);
+  one repo may carry multiple roles
+- `tenant_id` — default `'default'`; multi-tenant filtering pathway
+  (ungated in v1)
+- `ingestion_config` — JSONB; per-role config (e.g., polling interval
+  for issue-source)
+- `metadata` — JSONB free-form
+- audit: `created_at`, `created_by`, `updated_at`, `updated_by`
+
+CRUD via `GET/POST/PUT/DELETE /api/repos` (Repos UI is M3). Role filter
+on list: `GET /api/repos?role=spec`. Role vocabulary at
+`GET /api/repos/roles/vocabulary`.
+
+Seeding (first-run only): on startup, if `managed_repos` is empty, the
+API reads the existing `dav-source-spec` and `dav-source-corpus`
+ConfigMaps and inserts one row per declared source (multi-source list
+or legacy single-source). Operators with existing config carry forward
+without manual reseeding.
+
+Projection contract (M2): when rows with `role=spec` change, the API
+regenerates the `dav-source-spec` ConfigMap `sources` field from the
+registry and triggers a `dav-docs-mcp` rollout. The ConfigMap remains
+the transport mechanism for the MCP init container; it is no longer
+the source-of-truth. Direct `oc edit` of the ConfigMap is reverted on
+the next projection run.
 
 ## DB migrations
 

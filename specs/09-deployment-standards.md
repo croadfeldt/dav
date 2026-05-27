@@ -18,9 +18,18 @@ Topics this spec will cover when authored:
 - RBAC: service accounts, role bindings, which permissions each pod needs
 - Ansible deployment (today):
   - Playbook structure
-  - Required variables: consumer repo URL, content path, inference endpoint URL, model name
+  - Required variables: consumer repo URL(s), content path, inference endpoint URL, model name
+  - Single-source legacy: `consumer_spec_repo_url` + `consumer_spec_repo_branch`
+  - Multi-source: `consumer_spec_sources: [{namespace, repo_url, repo_branch, root_path}]`
   - Running the playbook
   - Reconfiguring / redeploying
+- Managed repos registry (M1+, [ADR-003](../adr/003-multi-repo-registry-and-mcp-source-of-truth.md)):
+  - `managed_repos` table is source-of-truth for which repos DAV operates on
+  - Roles: `spec` (served by MCP), `corpus` (cloned per run by pipeline), `issue-source` (polled / webhook'd for PR comments)
+  - Projection contract: when rows with `role=spec` change, the API regenerates the `dav-source-spec` ConfigMap and triggers a `dav-docs-mcp` rollout. The ConfigMap is downstream cache, not source-of-truth.
+  - Seeding: first-run only, the API seeds the registry from existing source ConfigMaps so operators don't lose their config across upgrade
+  - CRUD via `GET/POST/PUT/DELETE /api/repos`; UI lands in M3 (Config → Repos)
+  - `tenant_id` column ungated in v1 (multi-tenant request filtering deferred per ADR-003 §3.A)
 - Tekton pipeline (today):
   - Pipeline structure
   - Triggering: manual, scheduled, or webhook-based

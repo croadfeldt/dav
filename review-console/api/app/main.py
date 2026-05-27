@@ -36,6 +36,7 @@ from . import metrics
 from . import results as _results
 from . import uc_assist
 from . import corpus_push
+from . import repos as _repos
 
 log = logging.getLogger("dav-review-api")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -52,6 +53,7 @@ MIGRATE_003_PATH = Path(__file__).parent / "migrate_003_model_defaults.sql"
 MIGRATE_004_PATH = Path(__file__).parent / "migrate_004_default_set.sql"
 MIGRATE_005_PATH = Path(__file__).parent / "migrate_005_corpus_push.sql"
 MIGRATE_006_PATH = Path(__file__).parent / "migrate_006_run_lineage.sql"
+MIGRATE_007_PATH = Path(__file__).parent / "migrate_007_managed_repos.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -144,9 +146,12 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_005_PATH.read_text())
         log.info("Applying migration 006 (run lineage + state)...")
         await conn.execute(MIGRATE_006_PATH.read_text())
+        log.info("Applying migration 007 (managed_repos registry)...")
+        await conn.execute(MIGRATE_007_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
+        await _seed_managed_repos(conn)
     log.info("Ready.")
     import asyncio
     finalizer_task = asyncio.create_task(_finalizer_loop())
@@ -203,6 +208,58 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
             await _upsert_file(conn, entry["path"], entry["content"])
     else:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
+
+
+async def _seed_managed_repos(conn: asyncpg.Connection) -> None:
+    """First-run seed of the managed_repos registry from the existing
+    dav-source-spec / dav-source-corpus ConfigMaps.
+
+    No-op if the registry already has rows (we don't overwrite operator-
+    managed state on subsequent startups). See ADR-003 for the migration
+    contract.
+    """
+    # Pre-check: skip the ConfigMap reads if the table already has rows.
+    count = await conn.fetchval("SELECT COUNT(*) FROM managed_repos")
+    if count > 0:
+        return
+    # Pull the current ConfigMap contents via the sources module (which
+    # already knows how to talk to k8s with our SA permissions). If k8s
+    # isn't reachable, log and skip — the operator can seed manually via
+    # the Repos UI / API.
+    try:
+        spec_state = sources.get_source_state("spec")
+        corpus_state = sources.get_source_state("corpus")
+    except Exception as e:
+        log.info(
+            "managed_repos seed: ConfigMap read failed (%s); leaving registry "
+            "empty — operator will populate via Repos UI", e,
+        )
+        return
+
+    spec_data = spec_state.get("data") or {}
+    sources_yaml = spec_state.get("sources")
+    # `spec_state['sources']` is the parsed list (if multi-source); but
+    # repos.seed_from_existing_configmaps expects the YAML text so it can
+    # do its own parsing/validation. Re-stringify if needed.
+    if isinstance(sources_yaml, list):
+        import yaml as _yaml_local
+        sources_yaml = _yaml_local.safe_dump(sources_yaml)
+
+    inserted = await _repos.seed_from_existing_configmaps(
+        conn,
+        spec_sources_yaml=sources_yaml if isinstance(sources_yaml, str) else None,
+        spec_legacy_url=spec_data.get("repo_url"),
+        spec_legacy_branch=spec_data.get("repo_branch"),
+        corpus_url=(corpus_state.get("data") or {}).get("repo_url"),
+        corpus_branch=(corpus_state.get("data") or {}).get("repo_branch"),
+    )
+    if inserted:
+        log.info("managed_repos seeded %d row(s) from existing ConfigMaps", inserted)
+    else:
+        log.info(
+            "managed_repos seed: nothing to seed (no spec or corpus ConfigMaps "
+            "had usable data)"
+        )
 
 
 app = FastAPI(title="DAV Console API", version="0.9.5", lifespan=lifespan)
@@ -2789,6 +2846,128 @@ async def list_ingested_runs(limit: int = Query(50, ge=1, le=500)):
             for r in rows
         ]
     }
+
+
+# ------------------------- Managed Repos Registry (M1) -------------------------
+# See ADR-003. The managed_repos table is the source-of-truth for repos DAV
+# knows about. These endpoints provide CRUD over it. M2 wires the projection
+# step (registry → dav-source-spec ConfigMap regeneration); right now writes
+# update the DB only.
+
+
+class RepoCreateIn(BaseModel):
+    namespace: str = Field(..., min_length=2, max_length=63)
+    repo_url: str = Field(..., max_length=512)
+    repo_branch: str = Field("main", max_length=256)
+    display_name: Optional[str] = Field(None, max_length=256)
+    root_path: str = Field("", max_length=256)
+    roles: list[str] = Field(default_factory=list)
+    tenant_id: str = Field("default", max_length=64)
+    ingestion_config: Optional[dict] = None
+    metadata: Optional[dict] = None
+
+
+class RepoUpdateIn(BaseModel):
+    repo_url: Optional[str] = Field(None, max_length=512)
+    repo_branch: Optional[str] = Field(None, max_length=256)
+    display_name: Optional[str] = Field(None, max_length=256)
+    root_path: Optional[str] = Field(None, max_length=256)
+    roles: Optional[list[str]] = None
+    ingestion_config: Optional[dict] = None
+    metadata: Optional[dict] = None
+
+
+@app.get("/api/repos")
+async def list_repos_api(
+    role: Optional[str] = Query(None, description="filter by role (spec, corpus, issue-source)"),
+    tenant_id: Optional[str] = Query(None, description="filter by tenant_id"),
+):
+    """List managed repos, optionally filtered by role and/or tenant_id."""
+    try:
+        async with pool.acquire() as conn:
+            return {"repos": await _repos.list_repos(conn, role=role, tenant_id=tenant_id)}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/repos/{uuid_or_namespace}")
+async def get_repo_api(uuid_or_namespace: str):
+    """Fetch one managed repo by UUID or namespace."""
+    async with pool.acquire() as conn:
+        repo = await _repos.get_repo(conn, uuid_or_namespace)
+    if not repo:
+        raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
+    return repo
+
+
+@app.post("/api/repos")
+async def create_repo_api(payload: RepoCreateIn, request: Request):
+    """Create a new managed repo."""
+    reviewer = get_user(request)
+    try:
+        async with pool.acquire() as conn:
+            return await _repos.create_repo(
+                conn,
+                namespace=payload.namespace,
+                repo_url=payload.repo_url,
+                repo_branch=payload.repo_branch,
+                display_name=payload.display_name,
+                root_path=payload.root_path,
+                roles=payload.roles,
+                tenant_id=payload.tenant_id,
+                ingestion_config=payload.ingestion_config,
+                metadata=payload.metadata,
+                created_by=reviewer,
+            )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/repos/{uuid_or_namespace}")
+async def update_repo_api(uuid_or_namespace: str, payload: RepoUpdateIn, request: Request):
+    """Update fields on an existing managed repo. namespace and tenant_id are
+    immutable through this endpoint; tenant transfers land as a dedicated
+    endpoint later (see ADR-003)."""
+    reviewer = get_user(request)
+    try:
+        async with pool.acquire() as conn:
+            updated = await _repos.update_repo(
+                conn,
+                uuid_or_namespace,
+                repo_url=payload.repo_url,
+                repo_branch=payload.repo_branch,
+                display_name=payload.display_name,
+                root_path=payload.root_path,
+                roles=payload.roles,
+                ingestion_config=payload.ingestion_config,
+                metadata=payload.metadata,
+                updated_by=reviewer,
+            )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not updated:
+        raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
+    return updated
+
+
+@app.delete("/api/repos/{uuid_or_namespace}")
+async def delete_repo_api(uuid_or_namespace: str):
+    """Delete a managed repo. Caller is responsible for understanding the
+    consequences for any role this repo carried (e.g., removing a role=spec
+    repo will, after M2 lands, regenerate the dav-source-spec ConfigMap
+    without that repo)."""
+    async with pool.acquire() as conn:
+        ok = await _repos.delete_repo(conn, uuid_or_namespace)
+    if not ok:
+        raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
+    return {"deleted": uuid_or_namespace}
+
+
+@app.get("/api/repos/roles/vocabulary")
+async def list_repo_roles():
+    """Closed vocabulary of role names a repo can carry. Add a role in
+    repos.py VALID_ROLES to extend; UI picks it up automatically."""
+    return {"roles": sorted(_repos.VALID_ROLES)}
 
 
 @app.get("/api/analysis/gaps")
