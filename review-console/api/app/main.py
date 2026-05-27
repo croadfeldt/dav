@@ -39,6 +39,7 @@ from . import corpus_push
 from . import repos as _repos
 from . import projector as _projector
 from . import pr_comments as _pr_comments
+from . import credentials as _credentials
 
 log = logging.getLogger("dav-review-api")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -58,6 +59,7 @@ MIGRATE_006_PATH = Path(__file__).parent / "migrate_006_run_lineage.sql"
 MIGRATE_007_PATH = Path(__file__).parent / "migrate_007_managed_repos.sql"
 MIGRATE_008_PATH = Path(__file__).parent / "migrate_008_pr_comments.sql"
 MIGRATE_009_PATH = Path(__file__).parent / "migrate_009_repo_credentials.sql"
+MIGRATE_010_PATH = Path(__file__).parent / "migrate_010_shared_credentials.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -156,6 +158,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_008_PATH.read_text())
         log.info("Applying migration 009 (per-repo credentials)...")
         await conn.execute(MIGRATE_009_PATH.read_text())
+        log.info("Applying migration 010 (shared credentials)...")
+        await conn.execute(MIGRATE_010_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -3094,10 +3098,14 @@ class RepoCreateIn(BaseModel):
     tenant_id: str = Field("default", max_length=64)
     ingestion_config: Optional[dict] = None
     metadata: Optional[dict] = None
-    # Per-repo credentials (ADR-004). Write-only — never returned by GET.
+    # Per-repo credentials (ADR-004 inline). Write-only — never returned by GET.
     # Pass plaintext; encrypted at write via crypto.encrypt().
     github_pat: Optional[str] = Field(None, max_length=512)
     github_webhook_secret: Optional[str] = Field(None, max_length=512)
+    # Shared credentials (ADR-005). Reference an existing credentials row
+    # by UUID or name. Wins over inline if both are set.
+    github_pat_credential_ref: Optional[str] = Field(None, max_length=128)
+    github_webhook_secret_credential_ref: Optional[str] = Field(None, max_length=128)
 
 
 class RepoUpdateIn(BaseModel):
@@ -3109,9 +3117,38 @@ class RepoUpdateIn(BaseModel):
     ingestion_config: Optional[dict] = None
     metadata: Optional[dict] = None
     # Per-repo credentials (ADR-004). None = don't touch; pass plaintext
-    # to rotate. To explicitly clear, use DELETE /api/repos/{x}/secrets/{field}.
+    # to rotate. To explicitly clear inline + FK, use
+    # DELETE /api/repos/{x}/secrets/{field}.
     github_pat: Optional[str] = Field(None, max_length=512)
     github_webhook_secret: Optional[str] = Field(None, max_length=512)
+    # Shared credential FK (ADR-005):
+    #   None or omitted        — don't touch
+    #   string UUID/name       — link to that credential
+    #   empty string ""        — unlink (set FK to NULL; inline column untouched)
+    github_pat_credential_ref: Optional[str] = Field(None, max_length=128)
+    github_webhook_secret_credential_ref: Optional[str] = Field(None, max_length=128)
+
+
+class CredentialCreateIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=63)
+    credential_type: str = Field(..., min_length=1, max_length=64)
+    value: str = Field(..., min_length=1, max_length=4096)  # plaintext, encrypted at write
+    description: Optional[str] = Field(None, max_length=512)
+    tenant_id: str = Field("default", max_length=64)
+    metadata: Optional[dict] = None
+
+
+class CredentialUpdateIn(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=63)
+    description: Optional[str] = Field(None, max_length=512)
+    value: Optional[str] = Field(None, min_length=1, max_length=4096)
+    metadata: Optional[dict] = None
+
+
+class ConvertToSharedIn(BaseModel):
+    field: str = Field(..., min_length=1, max_length=64)  # 'github_pat' | 'github_webhook_secret'
+    credential_name: str = Field(..., min_length=1, max_length=63)
+    description: Optional[str] = Field(None, max_length=512)
 
 
 @app.get("/api/repos")
@@ -3158,6 +3195,8 @@ async def create_repo_api(payload: RepoCreateIn, request: Request):
                 metadata=payload.metadata,
                 github_pat=payload.github_pat,
                 github_webhook_secret=payload.github_webhook_secret,
+                github_pat_credential_ref=payload.github_pat_credential_ref,
+                github_webhook_secret_credential_ref=payload.github_webhook_secret_credential_ref,
                 created_by=reviewer,
             )
             if _projector.repo_touches_spec(created):
@@ -3181,6 +3220,14 @@ async def update_repo_api(uuid_or_namespace: str, payload: RepoUpdateIn, request
     try:
         async with pool.acquire() as conn:
             before = await _repos.get_repo(conn, uuid_or_namespace)
+            # Translate empty-string credential_ref to the unlink sentinel
+            # (None = don't touch; "" = explicit unlink; "<name>" = link)
+            pat_ref = payload.github_pat_credential_ref
+            if pat_ref == "":
+                pat_ref = _repos._SENTINEL_UNLINK
+            ws_ref = payload.github_webhook_secret_credential_ref
+            if ws_ref == "":
+                ws_ref = _repos._SENTINEL_UNLINK
             updated = await _repos.update_repo(
                 conn,
                 uuid_or_namespace,
@@ -3193,6 +3240,8 @@ async def update_repo_api(uuid_or_namespace: str, payload: RepoUpdateIn, request
                 metadata=payload.metadata,
                 github_pat=payload.github_pat,
                 github_webhook_secret=payload.github_webhook_secret,
+                github_pat_credential_ref=pat_ref,
+                github_webhook_secret_credential_ref=ws_ref,
                 updated_by=reviewer,
             )
             if not updated:
@@ -3262,6 +3311,140 @@ async def clear_repo_secret_api(uuid_or_namespace: str, field: str, request: Req
     if not updated:
         raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
     return updated
+
+
+# ------------------------- Shared Credentials (M9 of #28, ADR-005) -------------------------
+
+
+@app.get("/api/credentials")
+async def list_credentials_api(
+    credential_type: Optional[str] = Query(None, alias="type", description="filter by credential_type"),
+    tenant_id: Optional[str] = Query(None, description="filter by tenant_id"),
+):
+    """List credentials (metadata only — values are never returned).
+    Each row includes a `used_by_count` for the UI's "used by N repo(s)" chip.
+    """
+    try:
+        async with pool.acquire() as conn:
+            return {"credentials": await _credentials.list_credentials(
+                conn, credential_type=credential_type, tenant_id=tenant_id,
+            )}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/credentials/types/vocabulary")
+async def list_credential_types_api():
+    """Closed vocabulary of credential_type values."""
+    return {"credential_types": sorted(_credentials.VALID_TYPES)}
+
+
+@app.get("/api/credentials/{uuid_or_name}")
+async def get_credential_api(
+    uuid_or_name: str,
+    credential_type: Optional[str] = Query(None, alias="type"),
+):
+    """Fetch one credential with `used_by_repos` provenance. Value is
+    never returned. Use the dependent repo list to plan rotation /
+    deletion impact."""
+    async with pool.acquire() as conn:
+        c = await _credentials.get_credential(conn, uuid_or_name, credential_type=credential_type)
+    if not c:
+        raise HTTPException(404, f"credential {uuid_or_name!r} not found")
+    return c
+
+
+@app.post("/api/credentials")
+async def create_credential_api(payload: CredentialCreateIn, request: Request):
+    """Create a new shared credential. `value` is plaintext in the
+    request body, Fernet-encrypted before write. Never returned."""
+    reviewer = get_user(request)
+    try:
+        async with pool.acquire() as conn:
+            return await _credentials.create_credential(
+                conn,
+                name=payload.name,
+                credential_type=payload.credential_type,
+                value=payload.value,
+                description=payload.description,
+                tenant_id=payload.tenant_id,
+                metadata=payload.metadata,
+                created_by=reviewer,
+            )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/credentials/{uuid_or_name}")
+async def update_credential_api(
+    uuid_or_name: str, payload: CredentialUpdateIn, request: Request,
+):
+    """Update a credential. `value` rotation propagates to all dependent
+    repos automatically (next poll / webhook). credential_type and
+    tenant_id are immutable through this endpoint."""
+    reviewer = get_user(request)
+    try:
+        async with pool.acquire() as conn:
+            updated = await _credentials.update_credential(
+                conn,
+                uuid_or_name,
+                name=payload.name,
+                description=payload.description,
+                value=payload.value,
+                metadata=payload.metadata,
+                updated_by=reviewer,
+            )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not updated:
+        raise HTTPException(404, f"credential {uuid_or_name!r} not found")
+    return updated
+
+
+@app.delete("/api/credentials/{uuid_or_name}")
+async def delete_credential_api(uuid_or_name: str):
+    """Delete a credential. Refuses with 409 if any repo references it;
+    response body lists the dependent repos so the operator can
+    reassign or unlink first."""
+    try:
+        async with pool.acquire() as conn:
+            ok = await _credentials.delete_credential(conn, uuid_or_name)
+    except _credentials.CredentialInUseError as e:
+        raise HTTPException(
+            409,
+            detail={
+                "message": str(e),
+                "dependent_repos": e.dependents,
+            },
+        )
+    if not ok:
+        raise HTTPException(404, f"credential {uuid_or_name!r} not found")
+    return {"deleted": uuid_or_name}
+
+
+@app.post("/api/repos/{uuid_or_namespace}/convert-credential")
+async def convert_repo_inline_to_shared_api(
+    uuid_or_namespace: str, payload: ConvertToSharedIn, request: Request,
+):
+    """Migrate one of a repo's inline credentials to a new shared
+    credentials row. Creates the credential from the decrypted inline
+    value, sets the FK, clears the inline. One-shot per (repo, field).
+    Useful for operators with existing inline credentials wanting to
+    consolidate (ADR-005 §5)."""
+    reviewer = get_user(request)
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                return await _repos.convert_inline_to_shared(
+                    conn,
+                    uuid_or_namespace,
+                    field=payload.field,
+                    credential_name=payload.credential_name,
+                    description=payload.description,
+                    updated_by=reviewer,
+                )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ------------------------- GitHub Webhook Receiver (M6 of #28) -------------------------

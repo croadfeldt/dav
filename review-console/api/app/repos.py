@@ -30,6 +30,7 @@ from typing import Optional
 import asyncpg
 import yaml
 
+from . import credentials as _credentials
 from . import crypto as _crypto
 
 log = logging.getLogger("dav-review-api.repos")
@@ -113,11 +114,32 @@ def _parse_jsonb(value) -> dict:
 def _row_to_dict(row: asyncpg.Record) -> dict:
     """Convert a managed_repos row to a JSON-serialisable dict.
 
-    NEVER returns the encrypted credential columns. Instead exposes
-    boolean `has_*` flags so the UI can render "(set)" / "(none)"
-    indicators. The plaintext values are only available via the
-    internal-use `get_repo_secrets()` helper.
+    NEVER returns encrypted credential columns. Exposes `has_*` flags
+    indicating whether ANY source (shared credential FK OR inline column)
+    has a value, plus `*_source` indicating which one wins per ADR-005
+    resolution order ('shared' | 'inline' | None).
+
+    If the row was fetched with the credential-uuid sub-queries
+    (via _select_repos / _select_repo_one), the linked credentials are
+    surfaced as `github_pat_credential` and `github_webhook_secret_credential`
+    objects ({uuid, name}). Otherwise those keys are None — the integer
+    FK is still available for callers that need it.
     """
+    has_pat_inline = bool(row["github_pat_encrypted"])
+    has_pat_shared = row["github_pat_credential_id"] is not None
+    has_ws_inline = bool(row["github_webhook_secret_encrypted"])
+    has_ws_shared = row["github_webhook_secret_credential_id"] is not None
+
+    def _cred_obj(uuid_key: str, name_key: str):
+        # Sub-query columns are absent if the SELECT didn't request them
+        try:
+            u = row[uuid_key]; n = row[name_key]
+        except (KeyError, IndexError):
+            return None
+        if u and n:
+            return {"uuid": u, "name": n}
+        return None
+
     return {
         "uuid": str(row["uuid"]),
         "namespace": row["namespace"],
@@ -129,13 +151,32 @@ def _row_to_dict(row: asyncpg.Record) -> dict:
         "tenant_id": row["tenant_id"],
         "ingestion_config": _parse_jsonb(row["ingestion_config"]),
         "metadata": _parse_jsonb(row["metadata"]),
-        "has_github_pat": bool(row["github_pat_encrypted"]),
-        "has_github_webhook_secret": bool(row["github_webhook_secret_encrypted"]),
+        "has_github_pat": has_pat_inline or has_pat_shared,
+        "has_github_webhook_secret": has_ws_inline or has_ws_shared,
+        # Per ADR-005: shared FK wins; inline is fallback
+        "github_pat_source": "shared" if has_pat_shared else ("inline" if has_pat_inline else None),
+        "github_webhook_secret_source": "shared" if has_ws_shared else ("inline" if has_ws_inline else None),
+        "github_pat_credential_id": row["github_pat_credential_id"],
+        "github_webhook_secret_credential_id": row["github_webhook_secret_credential_id"],
+        "github_pat_credential": _cred_obj("github_pat_credential_uuid", "github_pat_credential_name"),
+        "github_webhook_secret_credential": _cred_obj("github_webhook_secret_credential_uuid", "github_webhook_secret_credential_name"),
         "created_at": row["created_at"].isoformat(),
         "created_by": row["created_by"],
         "updated_at": row["updated_at"].isoformat(),
         "updated_by": row["updated_by"],
     }
+
+
+# Common SELECT with credential ref sub-queries. Caller appends WHERE clauses
+# and ORDER BY. Sub-queries are cheap (PK indexed lookup on FK).
+_REPO_SELECT_WITH_CREDS = """
+    SELECT mr.*,
+           (SELECT uuid::text FROM credentials WHERE id = mr.github_pat_credential_id) AS github_pat_credential_uuid,
+           (SELECT name        FROM credentials WHERE id = mr.github_pat_credential_id) AS github_pat_credential_name,
+           (SELECT uuid::text FROM credentials WHERE id = mr.github_webhook_secret_credential_id) AS github_webhook_secret_credential_uuid,
+           (SELECT name        FROM credentials WHERE id = mr.github_webhook_secret_credential_id) AS github_webhook_secret_credential_name
+    FROM managed_repos mr
+"""
 
 
 # ------------------------- CRUD -------------------------
@@ -168,7 +209,7 @@ async def list_repos(
     where_clause = (" WHERE " + " AND ".join(where)) if where else ""
 
     rows = await conn.fetch(
-        f"SELECT * FROM managed_repos{where_clause} ORDER BY namespace ASC",
+        f"{_REPO_SELECT_WITH_CREDS} {where_clause} ORDER BY namespace ASC",
         *args,
     )
     return [_row_to_dict(r) for r in rows]
@@ -177,8 +218,8 @@ async def list_repos(
 async def get_repo(conn: asyncpg.Connection, uuid_or_namespace: str) -> Optional[dict]:
     """Fetch one repo by UUID or namespace (UI/operator convenience)."""
     row = await conn.fetchrow(
-        "SELECT * FROM managed_repos "
-        "WHERE uuid::text = $1 OR namespace = $1 LIMIT 1",
+        f"{_REPO_SELECT_WITH_CREDS} "
+        "WHERE mr.uuid::text = $1 OR mr.namespace = $1 LIMIT 1",
         uuid_or_namespace,
     )
     return _row_to_dict(row) if row else None
@@ -198,13 +239,17 @@ async def create_repo(
     metadata: Optional[dict] = None,
     github_pat: Optional[str] = None,
     github_webhook_secret: Optional[str] = None,
+    github_pat_credential_ref: Optional[str] = None,
+    github_webhook_secret_credential_ref: Optional[str] = None,
     created_by: str = "system",
 ) -> dict:
     """Insert a new managed repo. Returns the created row as a dict.
 
     Optional `github_pat` and `github_webhook_secret` are Fernet-encrypted
-    at write time. Pass plaintext; they are never stored or returned in
-    plaintext after this call.
+    at write time (ADR-004 inline). Optional `*_credential_ref` accept a
+    credential UUID or name and link via FK (ADR-005 shared). If both
+    inline and credential_ref are provided for the same field, the FK
+    wins at read time per get_repo_secrets resolution order.
     """
     _validate_namespace(namespace)
     _validate_repo_url(repo_url)
@@ -214,9 +259,29 @@ async def create_repo(
     if not tenant_id:
         tenant_id = DEFAULT_TENANT
 
-    # Encrypt now so a Fernet misconfiguration is caught before INSERT
+    # Encrypt inline now so a Fernet misconfiguration is caught before INSERT
     pat_enc = _crypto.encrypt(github_pat) if github_pat else None
     secret_enc = _crypto.encrypt(github_webhook_secret) if github_webhook_secret else None
+
+    # Resolve credential refs (UUID or name) to integer FKs
+    pat_cred_id = None
+    if github_pat_credential_ref:
+        pat_cred_id = await _credentials.resolve_credential_id(
+            conn, github_pat_credential_ref, "github_pat",
+        )
+        if pat_cred_id is None:
+            raise ValueError(
+                f"github_pat credential {github_pat_credential_ref!r} not found"
+            )
+    ws_cred_id = None
+    if github_webhook_secret_credential_ref:
+        ws_cred_id = await _credentials.resolve_credential_id(
+            conn, github_webhook_secret_credential_ref, "github_webhook_secret",
+        )
+        if ws_cred_id is None:
+            raise ValueError(
+                f"github_webhook_secret credential {github_webhook_secret_credential_ref!r} not found"
+            )
 
     try:
         row = await conn.fetchrow(
@@ -224,19 +289,26 @@ async def create_repo(
             "(namespace, display_name, repo_url, repo_branch, root_path, "
             " roles, tenant_id, ingestion_config, metadata, "
             " github_pat_encrypted, github_webhook_secret_encrypted, "
+            " github_pat_credential_id, github_webhook_secret_credential_id, "
             " created_by, updated_by) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, $12) "
-            "RETURNING *",
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, "
+            " $10, $11, $12, $13, $14, $14) "
+            "RETURNING uuid",
             namespace, display_name, repo_url, repo_branch, root_path,
             roles, tenant_id, _to_jsonb(ingestion_config), _to_jsonb(metadata),
             pat_enc, secret_enc,
+            pat_cred_id, ws_cred_id,
             created_by,
         )
     except asyncpg.UniqueViolationError as e:
         raise ValueError(
             f"namespace {namespace!r} is already in use by another repo"
         ) from e
-    return _row_to_dict(row)
+    # Re-fetch with credential sub-queries so credential refs populate
+    return await get_repo(conn, str(row["uuid"]))
+
+
+_SENTINEL_UNLINK = object()  # marker for "explicitly null the FK" on update
 
 
 async def update_repo(
@@ -252,6 +324,8 @@ async def update_repo(
     metadata: Optional[dict] = None,
     github_pat: Optional[str] = None,
     github_webhook_secret: Optional[str] = None,
+    github_pat_credential_ref=None,           # str | _SENTINEL_UNLINK | None
+    github_webhook_secret_credential_ref=None,  # str | _SENTINEL_UNLINK | None
     updated_by: str = "system",
 ) -> Optional[dict]:
     """Update one or more fields on an existing repo. Namespace is immutable.
@@ -302,6 +376,30 @@ async def update_repo(
     if github_webhook_secret is not None:
         args.append(_crypto.encrypt(github_webhook_secret))
         set_clauses.append(f"github_webhook_secret_encrypted = ${len(args)}")
+    # Credential FK changes:
+    #   None                     → don't touch
+    #   _SENTINEL_UNLINK          → set FK to NULL (explicit unlink)
+    #   str (UUID or name)        → resolve + set FK
+    if github_pat_credential_ref is _SENTINEL_UNLINK:
+        set_clauses.append("github_pat_credential_id = NULL")
+    elif github_pat_credential_ref is not None:
+        cid = await _credentials.resolve_credential_id(
+            conn, github_pat_credential_ref, "github_pat",
+        )
+        if cid is None:
+            raise ValueError(f"github_pat credential {github_pat_credential_ref!r} not found")
+        args.append(cid)
+        set_clauses.append(f"github_pat_credential_id = ${len(args)}")
+    if github_webhook_secret_credential_ref is _SENTINEL_UNLINK:
+        set_clauses.append("github_webhook_secret_credential_id = NULL")
+    elif github_webhook_secret_credential_ref is not None:
+        cid = await _credentials.resolve_credential_id(
+            conn, github_webhook_secret_credential_ref, "github_webhook_secret",
+        )
+        if cid is None:
+            raise ValueError(f"github_webhook_secret credential {github_webhook_secret_credential_ref!r} not found")
+        args.append(cid)
+        set_clauses.append(f"github_webhook_secret_credential_id = ${len(args)}")
 
     if not set_clauses:
         # No-op update — return existing without touching updated_at.
@@ -313,10 +411,12 @@ async def update_repo(
     args.append(existing["uuid"])
     row = await conn.fetchrow(
         f"UPDATE managed_repos SET {', '.join(set_clauses)} "
-        f"WHERE uuid::text = ${len(args)} RETURNING *",
+        f"WHERE uuid::text = ${len(args)} RETURNING uuid",
         *args,
     )
-    return _row_to_dict(row) if row else None
+    if not row:
+        return None
+    return await get_repo(conn, str(row["uuid"]))
 
 
 async def delete_repo(
@@ -344,24 +444,122 @@ async def get_repo_secrets(
     """Fetch + decrypt a repo's stored credentials. Internal use only —
     never exposed via HTTP endpoints.
 
+    Resolution order (per ADR-005):
+      1. Shared credential via FK (github_pat_credential_id / github_webhook_secret_credential_id)
+      2. Inline encrypted column (ADR-004 fallback)
+      3. None
+
     Returns a dict with keys `github_pat` and `github_webhook_secret`
     (each None if not set). Returns None if the repo doesn't exist.
 
     Raises CryptoUnavailableError from the crypto module if a non-NULL
     encrypted value cannot be decrypted (key missing / changed). Callers
-    are expected to handle and log a clear "re-enter the credential" hint.
+    log a clear "re-enter the credential" hint.
     """
     row = await conn.fetchrow(
-        "SELECT github_pat_encrypted, github_webhook_secret_encrypted "
-        "FROM managed_repos "
-        "WHERE uuid::text = $1 OR namespace = $1 LIMIT 1",
+        """
+        SELECT github_pat_encrypted,
+               github_webhook_secret_encrypted,
+               github_pat_credential_id,
+               github_webhook_secret_credential_id
+        FROM managed_repos
+        WHERE uuid::text = $1 OR namespace = $1 LIMIT 1
+        """,
         uuid_or_namespace,
     )
     if not row:
         return None
+
+    # Prefer the shared-credential FK over the inline column.
+    pat = None
+    if row["github_pat_credential_id"] is not None:
+        pat = await _credentials.get_credential_secret(
+            conn, credential_id=row["github_pat_credential_id"],
+        )
+    if pat is None:
+        pat = _crypto.decrypt(row["github_pat_encrypted"])
+
+    webhook_secret = None
+    if row["github_webhook_secret_credential_id"] is not None:
+        webhook_secret = await _credentials.get_credential_secret(
+            conn, credential_id=row["github_webhook_secret_credential_id"],
+        )
+    if webhook_secret is None:
+        webhook_secret = _crypto.decrypt(row["github_webhook_secret_encrypted"])
+
     return {
-        "github_pat": _crypto.decrypt(row["github_pat_encrypted"]),
-        "github_webhook_secret": _crypto.decrypt(row["github_webhook_secret_encrypted"]),
+        "github_pat": pat,
+        "github_webhook_secret": webhook_secret,
+    }
+
+
+async def convert_inline_to_shared(
+    conn: asyncpg.Connection,
+    uuid_or_namespace: str,
+    field: str,
+    credential_name: str,
+    description: Optional[str] = None,
+    updated_by: str = "system",
+) -> dict:
+    """Migrate a repo's inline encrypted credential to a shared credentials
+    row (ADR-005 §5 adoption). Decrypts the inline value, creates a new
+    credentials row, sets the FK, clears the inline column. One-shot.
+
+    Raises ValueError if the repo has no inline value for this field, or
+    if the credential name collides with an existing one.
+    """
+    if field not in SECRET_FIELDS:
+        raise ValueError(f"unknown field {field!r}; valid: {sorted(SECRET_FIELDS)}")
+    inline_col = f"{field}_encrypted"
+    fk_col = f"{field}_credential_id"
+    cred_type = field  # 'github_pat' or 'github_webhook_secret'
+
+    row = await conn.fetchrow(
+        f"SELECT uuid, namespace, tenant_id, {inline_col}, {fk_col} "
+        "FROM managed_repos WHERE uuid::text = $1 OR namespace = $1 LIMIT 1",
+        uuid_or_namespace,
+    )
+    if not row:
+        raise ValueError(f"repo {uuid_or_namespace!r} not found")
+    if row[fk_col] is not None:
+        raise ValueError(
+            f"repo {row['namespace']} already references a shared credential "
+            f"for {field}; nothing to convert"
+        )
+    if not row[inline_col]:
+        raise ValueError(
+            f"repo {row['namespace']} has no inline {field} to convert"
+        )
+
+    plaintext = _crypto.decrypt(row[inline_col])
+    if plaintext is None:
+        raise ValueError(
+            f"inline {field} for repo {row['namespace']} could not be decrypted "
+            f"(Fernet key changed?)"
+        )
+
+    new_cred = await _credentials.create_credential(
+        conn,
+        name=credential_name,
+        credential_type=cred_type,
+        value=plaintext,
+        description=description or f"Migrated from inline {field} on repo {row['namespace']}",
+        tenant_id=row["tenant_id"] or DEFAULT_TENANT,
+        created_by=updated_by,
+    )
+    # Find the integer id (create_credential returns the dict without id)
+    cid = await _credentials.resolve_credential_id(
+        conn, new_cred["uuid"], cred_type,
+    )
+    await conn.execute(
+        f"UPDATE managed_repos "
+        f"SET {fk_col} = $1, {inline_col} = NULL, updated_by = $2 "
+        f"WHERE uuid::text = $3",
+        cid, updated_by, str(row["uuid"]),
+    )
+    return {
+        "repo": await get_repo(conn, str(row["uuid"])),
+        "credential": new_cred,
     }
 
 
@@ -369,7 +567,13 @@ async def clear_repo_secret(
     conn: asyncpg.Connection, uuid_or_namespace: str, field: str,
     updated_by: str = "system",
 ) -> Optional[dict]:
-    """Explicitly clear (set to NULL) one of a repo's credential columns.
+    """Explicitly remove a repo's credential for the given field.
+
+    Clears BOTH the inline encrypted column AND the shared-credential FK
+    in one operation — semantically "this repo no longer has any
+    credential of this type". The shared credential row itself is NOT
+    deleted (other repos may reference it; deletion is a separate
+    DELETE /api/credentials/{uuid} flow that refuses if dependents exist).
 
     `field` must be one of SECRET_FIELDS ('github_pat', 'github_webhook_secret').
     Returns the updated row dict, or None if the repo doesn't exist.
@@ -378,13 +582,17 @@ async def clear_repo_secret(
         raise ValueError(
             f"unknown secret field {field!r}; valid: {sorted(SECRET_FIELDS)}"
         )
-    column = f"{field}_encrypted"
+    inline_col = f"{field}_encrypted"
+    fk_col = f"{field}_credential_id"
     row = await conn.fetchrow(
-        f"UPDATE managed_repos SET {column} = NULL, updated_by = $1 "
-        "WHERE uuid::text = $2 OR namespace = $2 RETURNING *",
+        f"UPDATE managed_repos SET {inline_col} = NULL, {fk_col} = NULL, "
+        f"updated_by = $1 "
+        "WHERE uuid::text = $2 OR namespace = $2 RETURNING uuid",
         updated_by, uuid_or_namespace,
     )
-    return _row_to_dict(row) if row else None
+    if not row:
+        return None
+    return await get_repo(conn, str(row["uuid"]))
 
 
 # ------------------------- Seeding -------------------------
