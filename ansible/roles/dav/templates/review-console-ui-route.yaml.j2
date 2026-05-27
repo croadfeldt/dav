@@ -7,6 +7,13 @@ metadata:
   labels:
     app: dav-review
     component: review-console-ui
+  annotations:
+    # LLM-backed endpoints (/api/uc-assist, /api/use-cases/bulk-from-text)
+    # routinely exceed the 30s default haproxy server timeout when the model
+    # is generating long YAML or extracting many UCs from a transcript. The
+    # uc_assist client uses a 300s timeout; bulk extract uses 600s. Match
+    # the slower one here so the router doesn't 504 before the API replies.
+    haproxy.router.openshift.io/timeout: "600s"
 spec:
   host: {{ review_console_hostname }}
   to:

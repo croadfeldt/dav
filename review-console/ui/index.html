@@ -246,6 +246,11 @@
   .btn { padding:5px 12px; font-size:11px; border:1px solid var(--border-bright); background:var(--bg-input); color:var(--text); border-radius:2px; text-transform:uppercase; letter-spacing:0.1em; transition:background .1s,border-color .1s; white-space:nowrap; }
   .btn:hover:not(:disabled) { background:var(--bg-raised); border-color:var(--accent-soft); }
   .btn:disabled { opacity:0.4; cursor:not-allowed; }
+  /* M12b — wizard step rail */
+  .wz-step { padding:3px 9px; border-radius:10px; border:1px solid var(--border); color:var(--text-faint); background:transparent; font-weight:400; white-space:nowrap; }
+  .wz-step.done { color:var(--text); border-color:var(--accent-soft); background:var(--accent-bg); font-weight:500; }
+  .wz-step.active { color:#1a1305; border-color:var(--accent); background:var(--accent); font-weight:600; box-shadow:0 0 0 2px var(--accent-bg); }
+  .wz-sep { color:var(--text-faint); font-size:14px; }
   .btn.primary { background:var(--accent); border-color:var(--accent); color:#1a1305; font-weight:500; }
   .btn.primary:hover:not(:disabled) { background:#e9a94c; border-color:#e9a94c; }
   .btn.ghost { border-color:transparent; background:transparent; color:var(--text-dim); }
@@ -1770,15 +1775,15 @@
     </div>
     <div class="modal-body" style="display:flex; flex-direction:column; gap:10px; padding:14px 18px;">
       <!-- Step rail -->
-      <div id="wzRail" style="display:flex; gap:4px; align-items:center; font-size:10px; text-transform:uppercase; letter-spacing:0.10em; color:var(--text-faint); margin-bottom:4px;">
+      <div id="wzRail" style="display:flex; gap:6px; align-items:center; font-size:11px; margin-bottom:6px;">
         <span class="wz-step" data-step="1">1. Scenario</span>
-        <span style="color:var(--border);">›</span>
+        <span class="wz-sep">›</span>
         <span class="wz-step" data-step="2">2. Generate</span>
-        <span style="color:var(--border);">›</span>
+        <span class="wz-sep">›</span>
         <span class="wz-step" data-step="3">3. Review</span>
-        <span style="color:var(--border);">›</span>
+        <span class="wz-sep">›</span>
         <span class="wz-step" data-step="4">4. Assign</span>
-        <span style="color:var(--border);">›</span>
+        <span class="wz-sep">›</span>
         <span class="wz-step" data-step="5">5. Save</span>
       </div>
 
@@ -5710,8 +5715,9 @@ function wzShowStep(n) {
   });
   document.querySelectorAll('#ucWizardModal .wz-step').forEach(s => {
     const sn = parseInt(s.dataset.step, 10);
-    s.style.color = (sn === n) ? 'var(--accent)' : (sn < n ? 'var(--text-dim)' : 'var(--text-faint)');
-    s.style.fontWeight = (sn === n) ? '600' : '400';
+    s.classList.remove('active', 'done');
+    if (sn === n) s.classList.add('active');
+    else if (sn < n) s.classList.add('done');
   });
   // Back button visibility
   document.getElementById('wzBackBtn').style.display = (n > 1) ? '' : 'none';
