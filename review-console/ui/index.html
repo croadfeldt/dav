@@ -1190,32 +1190,28 @@
       </div>
 
       <div class="panel-card" id="configSpecPanel">
-        <div class="panel-card-header"><div>
-          <div class="pc-title">Architecture spec</div>
-          <div class="pc-sub">DCM architecture — served by MCP</div>
-        </div></div>
+        <div class="panel-card-header" style="justify-content:space-between;">
+          <div>
+            <div class="pc-title">Architecture spec</div>
+            <div class="pc-sub">Read-only view — projected from Managed repos with role=spec. Edits go through the Repos panel above.</div>
+          </div>
+          <button class="btn ghost btn-sm" id="srcSpecJumpToRepos" title="Scroll to Managed repos panel">↑ Manage in Repos</button>
+        </div>
         <div class="panel-card-body">
           <div class="kv-grid">
-            <div class="kv-label">current repo</div><div class="kv-val" id="srcSpecRepo">—</div>
-            <div class="kv-label">current branch</div><div class="kv-val" id="srcSpecBranch" style="color:var(--accent)">—</div>
-            <div class="kv-label">last applied</div><div class="kv-val" id="srcSpecWhen">—</div>
-            <div class="kv-label">applied by</div><div class="kv-val" id="srcSpecWho">—</div>
+            <div class="kv-label">sources</div><div class="kv-val" id="srcSpecSourceList">—</div>
+            <div class="kv-label">configmap</div><div class="kv-val" style="font-family:var(--mono,monospace);font-size:11px;">dav-source-spec</div>
+            <div class="kv-label">last projected</div><div class="kv-val" id="srcSpecWhen">—</div>
+            <div class="kv-label">last applied by</div><div class="kv-val" id="srcSpecWho">—</div>
             <div class="kv-label">rollout</div><div class="kv-val" id="srcSpecStatus">—</div>
           </div>
-          <hr class="section-sep" style="margin:8px 0;">
-          <div class="form-field"><label>New repo URL</label>
-            <input id="srcSpecRepoInput" placeholder="https://github.com/owner/repo.git" /></div>
-          <div class="form-field"><label>Branch</label>
-            <div style="display:flex; gap:6px;">
-              <select id="srcSpecBranchSelect" style="flex:1"><option value="">(loading…)</option></select>
-              <input id="srcSpecBranchInput" placeholder="or type ref" style="flex:1;" />
-              <button class="btn ghost btn-icon" id="srcSpecRefreshBranches" title="reload">↻</button>
-            </div>
+          <div style="font-size:10px;color:var(--text-faint);margin-top:10px;padding:6px 8px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;line-height:1.5;">
+            ℹ ConfigMap content is regenerated from the Managed repos registry whenever a role=spec row changes.
+            Direct <code>oc edit configmap dav-source-spec</code> is reverted on the next projection
+            (see <a href="https://github.com/croadfeldt/dav/blob/main/adr/003-multi-repo-registry-and-mcp-source-of-truth.md" target="_blank" rel="noopener">ADR-003</a>).
+            Use the <strong>↻ Project</strong> button on the Managed repos panel to force a reconcile.
           </div>
-          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
-            <button class="btn primary" id="srcSpecApplyBtn">Apply &amp; redeploy</button>
-            <span id="srcSpecMsg" style="font-size:11px; color:var(--text-faint);"></span>
-          </div>
+          <span id="srcSpecMsg" style="font-size:11px;color:var(--text-faint);display:none;"></span>
         </div>
       </div>
       <div class="cfg-card panel-card" id="configCorpusPanel">
@@ -5897,7 +5893,13 @@ async function loadConfig() {
 
 
 function renderSourcePanel(kind) {
-  const ui = SOURCE_UI[kind], s = sourcesState[kind]; if (!s) return;
+  const s = sourcesState[kind]; if (!s) return;
+  // Spec is multi-source-aware (read-only view, projected from registry)
+  // as of M4; corpus remains single-source-editable until corpus becomes
+  // multi-source-capable too.
+  if (kind === 'spec') return _renderSpecPanelReadOnly(s);
+
+  const ui = SOURCE_UI[kind];
   document.getElementById(ui.repo).textContent   = s.repo_url    || '—';
   document.getElementById(ui.branch).textContent = s.repo_branch || '—';
   document.getElementById(ui.when).textContent   = fmtTs(s.last_applied_at);
@@ -5921,6 +5923,48 @@ function renderSourcePanel(kind) {
       const sel = document.getElementById(ui.branchSelect);
       for (const opt of sel.options) { if (opt.value===s.repo_branch) { sel.value=s.repo_branch; break; } }
     });
+  }
+}
+
+// Spec is multi-source and managed via the registry (ADR-003). The panel
+// renders a read-only summary; the source list comes from sourcesState.spec
+// which the API populates with the parsed `sources` field of the ConfigMap.
+function _renderSpecPanelReadOnly(s) {
+  const listEl = document.getElementById('srcSpecSourceList');
+  if (s.multi_source && Array.isArray(s.sources) && s.sources.length) {
+    listEl.innerHTML = s.sources.map(src => `
+      <div style="display:flex;gap:6px;align-items:baseline;font-size:11px;margin-bottom:3px;">
+        <span style="font-weight:600;min-width:60px;">${esc(src.namespace || '')}</span>
+        <span style="font-family:var(--mono,monospace);color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${esc(src.repo_url || '')}</span>
+        <span style="color:var(--accent);font-family:var(--mono,monospace);">${esc(src.repo_branch || '')}</span>
+        ${src.root_path ? `<span style="color:var(--text-faint);font-family:var(--mono,monospace);font-size:10px;">/${esc(src.root_path)}</span>` : ''}
+      </div>`).join('');
+  } else if (s.repo_url) {
+    // Legacy single-source ConfigMap shape. Should be rare after the M2
+    // projection has run, but render it so operators on older configs
+    // still see meaningful state.
+    listEl.innerHTML = `
+      <div style="display:flex;gap:6px;align-items:baseline;font-size:11px;">
+        <span style="color:var(--text-faint);font-style:italic;">legacy single-source:</span>
+        <span style="font-family:var(--mono,monospace);color:var(--text-dim);">${esc(s.repo_url)}</span>
+        <span style="color:var(--accent);font-family:var(--mono,monospace);">${esc(s.repo_branch || '')}</span>
+      </div>
+      <div style="font-size:10px;color:var(--accent);margin-top:4px;">
+        ConfigMap is in legacy shape — run <strong>↻ Project</strong> on the Managed repos panel to convert to multi-source.
+      </div>`;
+  } else {
+    listEl.innerHTML = '<span style="color:var(--text-faint);font-style:italic;">no spec sources configured</span>';
+  }
+  document.getElementById('srcSpecWhen').textContent = fmtTs(s.last_applied_at);
+  document.getElementById('srcSpecWho').textContent  = s.last_applied_by || '—';
+  const statusEl = document.getElementById('srcSpecStatus');
+  if (s.rollout) {
+    const r = s.rollout;
+    statusEl.innerHTML = r.rolled_out
+      ? `<span style="color:var(--green)">rolled out</span> · ${r.replicas_ready}/${r.replicas_desired} ready`
+      : `<span style="color:var(--blue)">applying</span> · ${r.replicas_ready}/${r.replicas_desired} ready`;
+  } else {
+    statusEl.textContent = '(deployment not found)';
   }
 }
 
@@ -6161,8 +6205,15 @@ document.getElementById('memberSearchInput').addEventListener('blur', () => {
   });
 });
 
-wireSourcesPanel('spec');
+// Spec is read-only post-M4 (managed via the Repos panel); only corpus
+// still has the editable form inputs that wireSourcesPanel attaches to.
 wireSourcesPanel('corpus');
+
+// Jump-to-Repos button on the read-only spec panel
+document.getElementById('srcSpecJumpToRepos')?.addEventListener('click', () => {
+  const target = document.getElementById('configReposPanel');
+  if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
 
 // ── Review Models ────────────────────────────────────────────────────────────
 
