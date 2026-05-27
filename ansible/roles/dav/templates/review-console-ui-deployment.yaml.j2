@@ -74,6 +74,11 @@ spec:
             - --pass-access-token=false
             - --set-xauthrequest=true
             - --skip-auth-regex=^/healthz$
+            # Webhook endpoints validate their own auth (HMAC-SHA256
+            # against per-repo secrets per ADR-004). OAuth would block
+            # GitHub. /api/webhooks/* is the namespace for all webhook
+            # receivers (currently: github/pr-comments; future: more).
+            - --skip-auth-regex=^/api/webhooks/
           ports:
             - containerPort: 8443
               name: https

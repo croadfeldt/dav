@@ -57,6 +57,7 @@ MIGRATE_005_PATH = Path(__file__).parent / "migrate_005_corpus_push.sql"
 MIGRATE_006_PATH = Path(__file__).parent / "migrate_006_run_lineage.sql"
 MIGRATE_007_PATH = Path(__file__).parent / "migrate_007_managed_repos.sql"
 MIGRATE_008_PATH = Path(__file__).parent / "migrate_008_pr_comments.sql"
+MIGRATE_009_PATH = Path(__file__).parent / "migrate_009_repo_credentials.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -153,6 +154,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_007_PATH.read_text())
         log.info("Applying migration 008 (pr_comments + poll_state)...")
         await conn.execute(MIGRATE_008_PATH.read_text())
+        log.info("Applying migration 009 (per-repo credentials)...")
+        await conn.execute(MIGRATE_009_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -2889,6 +2892,10 @@ class RepoCreateIn(BaseModel):
     tenant_id: str = Field("default", max_length=64)
     ingestion_config: Optional[dict] = None
     metadata: Optional[dict] = None
+    # Per-repo credentials (ADR-004). Write-only — never returned by GET.
+    # Pass plaintext; encrypted at write via crypto.encrypt().
+    github_pat: Optional[str] = Field(None, max_length=512)
+    github_webhook_secret: Optional[str] = Field(None, max_length=512)
 
 
 class RepoUpdateIn(BaseModel):
@@ -2899,6 +2906,10 @@ class RepoUpdateIn(BaseModel):
     roles: Optional[list[str]] = None
     ingestion_config: Optional[dict] = None
     metadata: Optional[dict] = None
+    # Per-repo credentials (ADR-004). None = don't touch; pass plaintext
+    # to rotate. To explicitly clear, use DELETE /api/repos/{x}/secrets/{field}.
+    github_pat: Optional[str] = Field(None, max_length=512)
+    github_webhook_secret: Optional[str] = Field(None, max_length=512)
 
 
 @app.get("/api/repos")
@@ -2943,6 +2954,8 @@ async def create_repo_api(payload: RepoCreateIn, request: Request):
                 tenant_id=payload.tenant_id,
                 ingestion_config=payload.ingestion_config,
                 metadata=payload.metadata,
+                github_pat=payload.github_pat,
+                github_webhook_secret=payload.github_webhook_secret,
                 created_by=reviewer,
             )
             if _projector.repo_touches_spec(created):
@@ -2976,6 +2989,8 @@ async def update_repo_api(uuid_or_namespace: str, payload: RepoUpdateIn, request
                 roles=payload.roles,
                 ingestion_config=payload.ingestion_config,
                 metadata=payload.metadata,
+                github_pat=payload.github_pat,
+                github_webhook_secret=payload.github_webhook_secret,
                 updated_by=reviewer,
             )
             if not updated:
@@ -3023,6 +3038,215 @@ async def project_repos_api(request: Request):
     reviewer = get_user(request)
     async with pool.acquire() as conn:
         return await _projector.project_spec_sources(conn, applied_by=reviewer)
+
+
+@app.delete("/api/repos/{uuid_or_namespace}/secrets/{field}")
+async def clear_repo_secret_api(uuid_or_namespace: str, field: str, request: Request):
+    """Explicitly clear one of a repo's per-repo credential fields.
+
+    `field` must be one of repos.SECRET_FIELDS ('github_pat',
+    'github_webhook_secret'). Setting a field to NULL via this endpoint
+    is distinct from the PUT no-op behavior (where passing None means
+    "don't touch"). Used by the UI's "Clear" button.
+    """
+    reviewer = get_user(request)
+    try:
+        async with pool.acquire() as conn:
+            updated = await _repos.clear_repo_secret(
+                conn, uuid_or_namespace, field, updated_by=reviewer,
+            )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not updated:
+        raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
+    return updated
+
+
+# ------------------------- GitHub Webhook Receiver (M6 of #28) -------------------------
+# Receives issue_comment and pull_request_review_comment events from
+# GitHub webhooks configured on managed_repos rows with role=issue-source.
+# Validates HMAC-SHA256 signature against the repo's github_webhook_secret
+# (ADR-004). Upserts via the same path as the poller — webhook is primary
+# (real-time), poller is fallback for missed deliveries.
+#
+# Path is under /api/webhooks/ which oauth-proxy is configured to skip
+# auth on (no OAuth round-trip for GitHub).
+
+
+def _repo_url_candidates(payload: dict) -> list[str]:
+    """Build the list of possible repo_url strings that could match a
+    managed_repos row, given a GitHub webhook payload. Caller queries
+    `repo_url = ANY($1::text[])` to find the row regardless of which URL
+    form the operator registered (HTTPS, HTTPS-with-.git, or SSH).
+    """
+    repo_info = payload.get("repository") or {}
+    candidates: list[str] = []
+    if repo_info.get("clone_url"):
+        candidates.append(repo_info["clone_url"])
+    if repo_info.get("html_url"):
+        candidates.append(repo_info["html_url"])
+    full = repo_info.get("full_name")
+    if full and "/" in full:
+        candidates.append(f"git@github.com:{full}.git")
+        candidates.append(f"https://github.com/{full}")
+        candidates.append(f"https://github.com/{full}.git")
+    return candidates
+
+
+@app.post("/api/webhooks/github/pr-comments")
+async def github_pr_comments_webhook(request: Request):
+    """Receive GitHub issue_comment + pull_request_review_comment events.
+
+    GitHub webhook setup (per repo with role=issue-source):
+      - Payload URL: https://dav-review.<cluster>/api/webhooks/github/pr-comments
+      - Content type: application/json
+      - Secret: same value as managed_repos.github_webhook_secret for this repo
+      - Events: Issue comments, Pull request review comments
+
+    The endpoint validates the HMAC-SHA256 signature against the repo's
+    per-repo webhook secret (ADR-004), then upserts the comment via the
+    same code path as the poller.
+    """
+    import hashlib, hmac, json
+
+    body_bytes = await request.body()
+    event = request.headers.get("X-GitHub-Event", "")
+    sig_header = request.headers.get("X-Hub-Signature-256", "")
+
+    # Acknowledge GitHub's ping (sent at webhook creation) without
+    # touching the DB. Also accept any event type we don't ingest with
+    # a 200 + "ignored" so GitHub doesn't retry.
+    if event == "ping":
+        return {"status": "pong"}
+    if event not in ("issue_comment", "pull_request_review_comment"):
+        return {"status": "ignored", "reason": f"unhandled event: {event}"}
+
+    try:
+        payload = json.loads(body_bytes)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "body is not valid JSON")
+
+    action = payload.get("action")
+    if action not in ("created", "edited"):
+        # 'deleted' and other actions are not ingested in v1.
+        return {"status": "ignored", "reason": f"unhandled action: {action}"}
+
+    # Resolve the source repo from payload.repository.* against managed_repos
+    url_candidates = _repo_url_candidates(payload)
+    if not url_candidates:
+        raise HTTPException(400, "payload missing repository identifiers")
+
+    async with pool.acquire() as conn:
+        repo_row = await conn.fetchrow(
+            "SELECT uuid, namespace, tenant_id, roles, github_webhook_secret_encrypted "
+            "FROM managed_repos WHERE repo_url = ANY($1::text[]) LIMIT 1",
+            url_candidates,
+        )
+        if not repo_row:
+            raise HTTPException(
+                404,
+                f"no managed_repos row matches the webhook source "
+                f"(tried URLs: {url_candidates}). Add the repo via the "
+                f"Repos UI with role=issue-source before configuring its "
+                f"webhook on GitHub.",
+            )
+        repo_uuid = str(repo_row["uuid"])
+        repo_ns = repo_row["namespace"]
+        tenant_id = repo_row["tenant_id"] or "default"
+        roles = list(repo_row["roles"] or [])
+
+        if "issue-source" not in roles:
+            return {
+                "status": "ignored",
+                "reason": f"repo {repo_ns} has roles={roles}; needs 'issue-source'",
+            }
+
+        # Validate HMAC against per-repo webhook secret (ADR-004)
+        if not repo_row["github_webhook_secret_encrypted"]:
+            raise HTTPException(
+                400,
+                f"repo {repo_ns} has no github_webhook_secret configured. "
+                f"Set one via the Repos UI before enabling the GitHub webhook.",
+            )
+        try:
+            from . import crypto as _crypto
+            webhook_secret = _crypto.decrypt(repo_row["github_webhook_secret_encrypted"])
+        except Exception as e:
+            log.warning("webhook: cannot decrypt secret for %s: %s", repo_ns, e)
+            raise HTTPException(503, f"cannot decrypt webhook secret: {e}")
+
+        if not sig_header.startswith("sha256="):
+            raise HTTPException(400, "missing or malformed X-Hub-Signature-256")
+        expected = "sha256=" + hmac.new(
+            webhook_secret.encode("utf-8"), body_bytes, hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(sig_header, expected):
+            log.warning("webhook: HMAC mismatch for %s (action=%s)", repo_ns, action)
+            raise HTTPException(403, "signature mismatch")
+
+        # Parse comment by event type
+        gh_comment = payload.get("comment") or {}
+        if event == "issue_comment":
+            # issue_comment fires for both regular issues and PRs; only
+            # ingest if there's an attached pull_request.
+            issue = payload.get("issue") or {}
+            if "pull_request" not in issue:
+                return {"status": "ignored", "reason": "issue_comment on a non-PR issue"}
+            pr_number = issue.get("number")
+            pr_title = issue.get("title")
+            pr_url = issue.get("html_url")
+            ctype = "issue_comment"
+        else:  # pull_request_review_comment
+            pr = payload.get("pull_request") or {}
+            pr_number = pr.get("number")
+            pr_title = pr.get("title")
+            pr_url = pr.get("html_url")
+            ctype = "pull_request_review_comment"
+
+        if not pr_number:
+            raise HTTPException(400, "could not determine PR number from payload")
+
+        author = gh_comment.get("user") or {}
+        body_text = gh_comment.get("body") or ""
+        if not body_text.strip():
+            return {"status": "ignored", "reason": "empty comment body"}
+
+        created_at = _pr_comments._parse_ts(gh_comment.get("created_at"))
+        updated_at = _pr_comments._parse_ts(gh_comment.get("updated_at"))
+        if not created_at or not updated_at:
+            raise HTTPException(400, "missing or malformed comment timestamps")
+
+        comment_uuid, inserted = await _pr_comments.upsert_comment(
+            conn,
+            repo_uuid=repo_uuid,
+            tenant_id=tenant_id,
+            github_comment_id=gh_comment["id"],
+            github_comment_type=ctype,
+            pr_number=pr_number,
+            pr_title=pr_title,
+            pr_url=pr_url,
+            author_login=author.get("login") or "unknown",
+            author_url=author.get("html_url"),
+            body=body_text,
+            comment_url=gh_comment.get("html_url"),
+            github_created_at=created_at,
+            github_updated_at=updated_at,
+            ingestion_source="webhook",
+        )
+
+    log.info(
+        "webhook: %s %s %s comment %s (PR#%d, %s)",
+        "inserted" if inserted else "updated", repo_ns, ctype,
+        comment_uuid, pr_number, action,
+    )
+    return {
+        "status": "ingested",
+        "comment_uuid": comment_uuid,
+        "inserted": inserted,
+        "repo_namespace": repo_ns,
+        "event": event,
+        "action": action,
+    }
 
 
 @app.get("/api/repos/roles/vocabulary")

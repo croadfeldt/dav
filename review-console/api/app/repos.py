@@ -30,7 +30,14 @@ from typing import Optional
 import asyncpg
 import yaml
 
+from . import crypto as _crypto
+
 log = logging.getLogger("dav-review-api.repos")
+
+# Per-repo credential columns supported by the registry.
+# Keep this list small + closed — adding a credential type involves a
+# migration (new column), a UI affordance, and per-callsite handling.
+SECRET_FIELDS = ("github_pat", "github_webhook_secret")
 
 # v1 closed vocabulary. Open for extension — adding a role here is the only
 # change needed to make the registry accept it.
@@ -104,7 +111,13 @@ def _parse_jsonb(value) -> dict:
 
 
 def _row_to_dict(row: asyncpg.Record) -> dict:
-    """Convert a managed_repos row to a JSON-serialisable dict."""
+    """Convert a managed_repos row to a JSON-serialisable dict.
+
+    NEVER returns the encrypted credential columns. Instead exposes
+    boolean `has_*` flags so the UI can render "(set)" / "(none)"
+    indicators. The plaintext values are only available via the
+    internal-use `get_repo_secrets()` helper.
+    """
     return {
         "uuid": str(row["uuid"]),
         "namespace": row["namespace"],
@@ -116,6 +129,8 @@ def _row_to_dict(row: asyncpg.Record) -> dict:
         "tenant_id": row["tenant_id"],
         "ingestion_config": _parse_jsonb(row["ingestion_config"]),
         "metadata": _parse_jsonb(row["metadata"]),
+        "has_github_pat": bool(row["github_pat_encrypted"]),
+        "has_github_webhook_secret": bool(row["github_webhook_secret_encrypted"]),
         "created_at": row["created_at"].isoformat(),
         "created_by": row["created_by"],
         "updated_at": row["updated_at"].isoformat(),
@@ -181,9 +196,16 @@ async def create_repo(
     tenant_id: str = DEFAULT_TENANT,
     ingestion_config: Optional[dict] = None,
     metadata: Optional[dict] = None,
+    github_pat: Optional[str] = None,
+    github_webhook_secret: Optional[str] = None,
     created_by: str = "system",
 ) -> dict:
-    """Insert a new managed repo. Returns the created row as a dict."""
+    """Insert a new managed repo. Returns the created row as a dict.
+
+    Optional `github_pat` and `github_webhook_secret` are Fernet-encrypted
+    at write time. Pass plaintext; they are never stored or returned in
+    plaintext after this call.
+    """
     _validate_namespace(namespace)
     _validate_repo_url(repo_url)
     _validate_branch(repo_branch)
@@ -192,15 +214,22 @@ async def create_repo(
     if not tenant_id:
         tenant_id = DEFAULT_TENANT
 
+    # Encrypt now so a Fernet misconfiguration is caught before INSERT
+    pat_enc = _crypto.encrypt(github_pat) if github_pat else None
+    secret_enc = _crypto.encrypt(github_webhook_secret) if github_webhook_secret else None
+
     try:
         row = await conn.fetchrow(
             "INSERT INTO managed_repos "
             "(namespace, display_name, repo_url, repo_branch, root_path, "
-            " roles, tenant_id, ingestion_config, metadata, created_by, updated_by) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $10) "
+            " roles, tenant_id, ingestion_config, metadata, "
+            " github_pat_encrypted, github_webhook_secret_encrypted, "
+            " created_by, updated_by) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, $12, $12) "
             "RETURNING *",
             namespace, display_name, repo_url, repo_branch, root_path,
             roles, tenant_id, _to_jsonb(ingestion_config), _to_jsonb(metadata),
+            pat_enc, secret_enc,
             created_by,
         )
     except asyncpg.UniqueViolationError as e:
@@ -221,6 +250,8 @@ async def update_repo(
     roles: Optional[list[str]] = None,
     ingestion_config: Optional[dict] = None,
     metadata: Optional[dict] = None,
+    github_pat: Optional[str] = None,
+    github_webhook_secret: Optional[str] = None,
     updated_by: str = "system",
 ) -> Optional[dict]:
     """Update one or more fields on an existing repo. Namespace is immutable.
@@ -262,6 +293,15 @@ async def update_repo(
     if metadata is not None:
         args.append(_to_jsonb(metadata))
         set_clauses.append(f"metadata = ${len(args)}::jsonb")
+    # Per-repo credentials: set/rotate via PUT. Pass plaintext; encrypted
+    # at write. To clear, use clear_repo_secret() (DELETE endpoint) —
+    # passing None here means "don't touch", not "delete".
+    if github_pat is not None:
+        args.append(_crypto.encrypt(github_pat))
+        set_clauses.append(f"github_pat_encrypted = ${len(args)}")
+    if github_webhook_secret is not None:
+        args.append(_crypto.encrypt(github_webhook_secret))
+        set_clauses.append(f"github_webhook_secret_encrypted = ${len(args)}")
 
     if not set_clauses:
         # No-op update — return existing without touching updated_at.
@@ -285,7 +325,7 @@ async def delete_repo(
     """Delete a managed repo. Returns True if a row was deleted, False otherwise.
 
     Caller is responsible for projection-side effects (regenerating
-    dav-source-spec ConfigMap, etc.) — those land in M2.
+    dav-source-spec ConfigMap, etc.).
     """
     result = await conn.execute(
         "DELETE FROM managed_repos WHERE uuid::text = $1 OR namespace = $1",
@@ -293,6 +333,58 @@ async def delete_repo(
     )
     # asyncpg returns "DELETE <n>"
     return result.endswith(" 1") or result.startswith("DELETE 1")
+
+
+# ------------------------- Per-repo secrets (internal use) -------------------------
+
+
+async def get_repo_secrets(
+    conn: asyncpg.Connection, uuid_or_namespace: str,
+) -> Optional[dict]:
+    """Fetch + decrypt a repo's stored credentials. Internal use only —
+    never exposed via HTTP endpoints.
+
+    Returns a dict with keys `github_pat` and `github_webhook_secret`
+    (each None if not set). Returns None if the repo doesn't exist.
+
+    Raises CryptoUnavailableError from the crypto module if a non-NULL
+    encrypted value cannot be decrypted (key missing / changed). Callers
+    are expected to handle and log a clear "re-enter the credential" hint.
+    """
+    row = await conn.fetchrow(
+        "SELECT github_pat_encrypted, github_webhook_secret_encrypted "
+        "FROM managed_repos "
+        "WHERE uuid::text = $1 OR namespace = $1 LIMIT 1",
+        uuid_or_namespace,
+    )
+    if not row:
+        return None
+    return {
+        "github_pat": _crypto.decrypt(row["github_pat_encrypted"]),
+        "github_webhook_secret": _crypto.decrypt(row["github_webhook_secret_encrypted"]),
+    }
+
+
+async def clear_repo_secret(
+    conn: asyncpg.Connection, uuid_or_namespace: str, field: str,
+    updated_by: str = "system",
+) -> Optional[dict]:
+    """Explicitly clear (set to NULL) one of a repo's credential columns.
+
+    `field` must be one of SECRET_FIELDS ('github_pat', 'github_webhook_secret').
+    Returns the updated row dict, or None if the repo doesn't exist.
+    """
+    if field not in SECRET_FIELDS:
+        raise ValueError(
+            f"unknown secret field {field!r}; valid: {sorted(SECRET_FIELDS)}"
+        )
+    column = f"{field}_encrypted"
+    row = await conn.fetchrow(
+        f"UPDATE managed_repos SET {column} = NULL, updated_by = $1 "
+        "WHERE uuid::text = $2 OR namespace = $2 RETURNING *",
+        updated_by, uuid_or_namespace,
+    )
+    return _row_to_dict(row) if row else None
 
 
 # ------------------------- Seeding -------------------------

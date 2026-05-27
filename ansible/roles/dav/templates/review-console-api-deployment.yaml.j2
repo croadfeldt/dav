@@ -109,21 +109,33 @@ spec:
               value: "/workspace"
             - name: DAV_METRICS_CA_PATH
               value: "/var/run/configmaps/service-ca/service-ca.crt"
+            # Fernet key for per-repo credential encryption (ADR-004).
+            # Sourced from the Ansible-managed dav-fernet-key Secret.
+            # Without it, the API starts but per-repo PAT / webhook
+            # secret endpoints return 503. Generate once with:
+            #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+            # then put in vars.local.yaml as vault_dav_fernet_key + redeploy.
+            - name: DAV_FERNET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dav-fernet-key
+                  key: key
+                  optional: true
           # Optional Secret for tokens the API needs at runtime — currently:
           #   DAV_CORPUS_PUSH_TOKEN   GitHub PAT (repo scope) used by Push-to-corpus
           #   DAV_UC_ASSIST_API_KEY   fallback for UC Assist when no DB-backed
           #                           model_config has use_uc_assist=true
-          #   GITHUB_TOKEN            PAT used by the PR-comment poller (M5).
-          #                           Scope: repo (private) or public_repo (public-only).
-          #                           Without it, the poller is rate-limited to 60
-          #                           req/hr (anonymous) and effectively unusable
-          #                           for periodic polling.
+          #
+          # Note: GitHub PATs for the PR-comment poller (M5) are now
+          # per-repo (ADR-004), stored Fernet-encrypted in
+          # managed_repos.github_pat_encrypted. Set them via the Repos
+          # UI, not via this Secret. Likewise per-repo webhook secrets
+          # for the M6 receiver (managed_repos.github_webhook_secret_encrypted).
+          #
           # Create / update with:
           #   oc create secret generic dav-review-api-tokens \
           #     --from-literal=DAV_CORPUS_PUSH_TOKEN=ghp_... \
-          #     --from-literal=GITHUB_TOKEN=ghp_... \
           #     -n {{ dav_namespace }}
-          # or `oc patch secret dav-review-api-tokens -p '{"stringData":{"GITHUB_TOKEN":"ghp_..."}}'`
           # then `oc rollout restart deploy/dav-review-api -n {{ dav_namespace }}`.
           envFrom:
             - secretRef:

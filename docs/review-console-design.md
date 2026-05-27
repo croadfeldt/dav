@@ -329,24 +329,60 @@ GitHub client (`review-console/api/app/github_client.py`):
 - Anonymous mode supported but warns; 60 req/hr quota burns out fast
   for periodic polling
 
-Operator setup for production polling:
+Operator setup for production polling (post-M5b, per ADR-004):
 
-1. Generate a GitHub PAT with `repo` scope (or `public_repo` if only
-   public repos will be polled).
-2. Add it to the `dav-review-api-tokens` Secret:
+1. **Generate + set the Fernet encryption key** (one-time):
    ```
-   oc patch secret dav-review-api-tokens -n {{ dav_namespace }} \
-     -p '{"stringData":{"GITHUB_TOKEN":"ghp_..."}}'
-   oc rollout restart deploy/dav-review-api -n {{ dav_namespace }}
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
    ```
-3. In the Repos UI, edit each repo you want polled and check the
-   `issue-source` role checkbox. The poller picks it up within
+   Add the output to `vars.local.yaml` as `vault_dav_fernet_key`, then
+   `ansible-playbook --tags secrets` to create the `dav-fernet-key`
+   Secret + `oc rollout restart deploy/dav-review-api`.
+2. **Add the role + PAT per repo** via the Repos UI: edit each repo,
+   check the `issue-source` role checkbox, paste a GitHub PAT into the
+   "GitHub PAT" field (scope: `repo` for private, `public_repo` for
+   public-only). Save. The poller picks up the repo + token within
    POLL_INTERVAL_SECONDS.
+3. **Optional — webhook setup** (M6): for each role=issue-source repo,
+   set a value in the "GitHub Webhook Secret" field, save, then in
+   GitHub repo Settings → Webhooks add:
+   - Payload URL: `https://dav-review.<cluster>/api/webhooks/github/pr-comments`
+   - Content type: `application/json`
+   - Secret: same value you typed into the UI
+   - Events: Issue comments, Pull request review comments
+
+Webhook events upsert via the same path as the poller with
+`ingestion_source='webhook'`. The poller becomes a fallback for missed
+deliveries. Both code paths validate the per-repo HMAC against
+`managed_repos.github_webhook_secret_encrypted` (decrypted at request time).
+
+## Webhook receiver (M6, ADR-004)
+
+`POST /api/webhooks/github/pr-comments` on the review-console API
+receives GitHub webhook events. oauth-proxy is configured to skip auth
+on `/api/webhooks/` so GitHub doesn't see a redirect to log in.
+
+Flow per request:
+
+1. Read the raw body (HMAC validation needs the byte-exact body).
+2. Check `X-GitHub-Event` — `ping` returns `{status:"pong"}`,
+   unrecognized events return 200 + `ignored`.
+3. Resolve the source repo by querying `managed_repos.repo_url =
+   ANY([clone_url, html_url, git@github.com:owner/repo.git, ...])`.
+4. If the row's roles don't include `issue-source`, return 200 + ignored.
+5. If the row has no `github_webhook_secret_encrypted`, return 400 with
+   operator-actionable text.
+6. Decrypt the secret, compute `HMAC-SHA256(secret, body)`, compare
+   constant-time against the `X-Hub-Signature-256` header. Mismatch → 403.
+7. Parse the comment payload, upsert into `pr_comments` with
+   `ingestion_source='webhook'`.
+
+Webhook is primary (real-time); the poller catches anything the webhook
+missed (network blip, secret rotation in flight, etc.).
 
 The Inbox API (M7) reads from `pr_comments`. The Inbox UI (M8) lets
 operators dismiss comments or draft a UC from one (LLM-assisted draft
-via the UC Assist plumbing). Webhook receiver (M6) pushes individual
-comments via the same upsert path so the poller becomes a fallback.
+via the UC Assist plumbing).
 
 ## DB migrations
 

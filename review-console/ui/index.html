@@ -1176,6 +1176,29 @@
               <span style="font-size:11px;color:var(--text-faint);">(loading vocabulary…)</span>
             </div>
           </div>
+
+          <div style="margin-top:10px;padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:8px;">
+              Per-repo credentials <span style="color:var(--text-faint);font-weight:400;text-transform:none;letter-spacing:0;">(encrypted at rest · <a href="https://github.com/croadfeldt/dav/blob/main/adr/004-per-repo-credentials-in-registry.md" target="_blank" rel="noopener" style="color:var(--text-faint);">ADR-004</a>)</span>
+            </div>
+            <div class="form-field">
+              <label>GitHub PAT <span id="rpfPatStatus" style="color:var(--text-faint);font-weight:400;font-size:10px;"></span></label>
+              <div style="display:flex; gap:6px; align-items:center;">
+                <input id="rpfGithubPat" type="password" placeholder="(none set)" style="flex:1; font-family:var(--mono,monospace);" autocomplete="new-password" />
+                <button class="btn ghost btn-sm" id="rpfClearPatBtn" type="button" style="display:none;color:var(--red);" title="Delete the stored PAT">Clear</button>
+              </div>
+              <div class="form-hint">Used by the PR-comment poller. Scope: <code>repo</code> (private) or <code>public_repo</code> (public-only).</div>
+            </div>
+            <div class="form-field" style="margin-top:8px;">
+              <label>GitHub Webhook Secret <span id="rpfWebhookSecretStatus" style="color:var(--text-faint);font-weight:400;font-size:10px;"></span></label>
+              <div style="display:flex; gap:6px; align-items:center;">
+                <input id="rpfGithubWebhookSecret" type="password" placeholder="(none set)" style="flex:1; font-family:var(--mono,monospace);" autocomplete="new-password" />
+                <button class="btn ghost btn-sm" id="rpfClearWebhookSecretBtn" type="button" style="display:none;color:var(--red);" title="Delete the stored webhook secret">Clear</button>
+              </div>
+              <div class="form-hint">HMAC-SHA256 shared secret matching the value in this repo's GitHub webhook configuration.</div>
+            </div>
+          </div>
+
           <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
             <button class="btn primary" id="saveRepoBtn">Save</button>
             <button class="btn ghost" id="cancelRepoBtn">Cancel</button>
@@ -7399,8 +7422,10 @@ function renderReposList() {
         <div style="font-size:11px;font-family:var(--mono,monospace);color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(r.repo_url)}</div>
         <div style="font-size:10px;color:var(--text-faint);">branch: <span style="color:var(--accent);">${esc(r.repo_branch)}</span> · root_path: ${r.root_path ? esc(r.root_path) : '<span style="color:var(--text-faint);">(repo root)</span>'}</div>
       </div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;">
+      <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;align-items:center;">
         ${(r.roles || []).map(role => `<span style="font-size:10px;padding:2px 6px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">${esc(role)}</span>`).join('') || '<span style="font-size:10px;color:var(--text-faint);font-style:italic;">(no roles)</span>'}
+        ${r.has_github_pat ? '<span style="font-size:10px;padding:2px 6px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;color:var(--green);" title="GitHub PAT configured">🔑 PAT</span>' : ''}
+        ${r.has_github_webhook_secret ? '<span style="font-size:10px;padding:2px 6px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;color:var(--green);" title="GitHub webhook secret configured">📬 WHK</span>' : ''}
       </div>
       <div style="display:flex;gap:4px;">
         <button class="btn ghost btn-sm" onclick="editRepo(${uuidJson})">Edit</button>
@@ -7425,16 +7450,46 @@ function renderRepoRoleCheckboxes() {
 }
 
 function _clearRepoForm() {
-  for (const id of ['rpfNamespace','rpfDisplayName','rpfRepoUrl','rpfRootPath']) {
+  for (const id of ['rpfNamespace','rpfDisplayName','rpfRepoUrl','rpfRootPath','rpfGithubPat','rpfGithubWebhookSecret']) {
     const el = document.getElementById(id);
-    if (el) { el.value = ''; el.disabled = false; }
+    if (el) { el.value = ''; el.disabled = false; el.placeholder = ''; }
   }
   const branchEl = document.getElementById('rpfRepoBranch');
   if (branchEl) branchEl.value = 'main';
   const msg = document.getElementById('repoFormMsg');
   if (msg) { msg.textContent = ''; msg.style.color = ''; }
   document.querySelectorAll('.rpf-role').forEach(cb => cb.checked = false);
+  // Reset credential status indicators
+  for (const id of ['rpfPatStatus','rpfWebhookSecretStatus']) {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = ''; el.style.color = 'var(--text-faint)'; }
+  }
+  for (const id of ['rpfClearPatBtn','rpfClearWebhookSecretBtn']) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  }
   _reposState.editingUuid = null;
+}
+
+// Render the status text + placeholder + Clear button visibility for one
+// of the per-repo credential fields. has=true means a value is currently
+// stored; the operator can rotate by typing or clear via the button.
+function _setRepoCredFieldState(inputId, statusId, clearBtnId, has) {
+  const input = document.getElementById(inputId);
+  const status = document.getElementById(statusId);
+  const clearBtn = document.getElementById(clearBtnId);
+  if (!input || !status || !clearBtn) return;
+  if (has) {
+    input.placeholder = '(set — type a new value to rotate; leave blank to keep)';
+    status.textContent = '· (set)';
+    status.style.color = 'var(--green)';
+    clearBtn.style.display = '';
+  } else {
+    input.placeholder = '(none set)';
+    status.textContent = '· (not set)';
+    status.style.color = 'var(--text-faint)';
+    clearBtn.style.display = 'none';
+  }
 }
 
 function showRepoForm(repo) {
@@ -7449,9 +7504,13 @@ function showRepoForm(repo) {
     document.getElementById('rpfRepoBranch').value = repo.repo_branch;
     document.getElementById('rpfRootPath').value = repo.root_path || '';
     document.querySelectorAll('.rpf-role').forEach(cb => cb.checked = (repo.roles || []).includes(cb.value));
+    _setRepoCredFieldState('rpfGithubPat', 'rpfPatStatus', 'rpfClearPatBtn', !!repo.has_github_pat);
+    _setRepoCredFieldState('rpfGithubWebhookSecret', 'rpfWebhookSecretStatus', 'rpfClearWebhookSecretBtn', !!repo.has_github_webhook_secret);
     _reposState.editingUuid = repo.uuid;
   } else {
     titleEl.textContent = 'Add repo';
+    _setRepoCredFieldState('rpfGithubPat', 'rpfPatStatus', 'rpfClearPatBtn', false);
+    _setRepoCredFieldState('rpfGithubWebhookSecret', 'rpfWebhookSecretStatus', 'rpfClearWebhookSecretBtn', false);
   }
   document.getElementById('repoFormCard').style.display = '';
   setTimeout(() => document.getElementById('rpfNamespace').focus(), 50);
@@ -7498,6 +7557,13 @@ async function saveRepo() {
     root_path: document.getElementById('rpfRootPath').value.trim(),
     roles: roles,
   };
+  // Per-repo credentials: ONLY include when the operator typed a new
+  // value. Empty input means "don't touch" (preserve current state).
+  // Explicit clear uses the Clear button, which calls a different endpoint.
+  const patVal = document.getElementById('rpfGithubPat').value;
+  if (patVal) payload.github_pat = patVal;
+  const wsVal = document.getElementById('rpfGithubWebhookSecret').value;
+  if (wsVal) payload.github_webhook_secret = wsVal;
   try {
     let resp;
     if (_reposState.editingUuid) {
@@ -7560,10 +7626,33 @@ async function projectReposManually() {
   }
 }
 
+async function clearRepoSecret(field) {
+  if (!_reposState.editingUuid) return;
+  const fieldLabel = field === 'github_pat' ? 'GitHub PAT' : 'GitHub webhook secret';
+  if (!confirm(`Clear the stored ${fieldLabel} for this repo?\n\nThis deletes the encrypted value. The poller/webhook will stop working for this repo until you set it again.`)) return;
+  const msgEl = document.getElementById('repoFormMsg');
+  try {
+    await api(`/api/repos/${encodeURIComponent(_reposState.editingUuid)}/secrets/${field}`, { method: 'DELETE' });
+    toast(`Cleared ${fieldLabel}`);
+    // Reflect the change in the form UI immediately
+    if (field === 'github_pat') {
+      _setRepoCredFieldState('rpfGithubPat', 'rpfPatStatus', 'rpfClearPatBtn', false);
+    } else {
+      _setRepoCredFieldState('rpfGithubWebhookSecret', 'rpfWebhookSecretStatus', 'rpfClearWebhookSecretBtn', false);
+    }
+    // Refresh the list in the background so has_* flags update
+    loadRepos();
+  } catch (e) {
+    msgEl.innerHTML = `<span style="color:var(--red);">Clear failed: ${esc(e.message)}</span>`;
+  }
+}
+
 document.getElementById('addRepoBtn')?.addEventListener('click', () => showRepoForm(null));
 document.getElementById('saveRepoBtn')?.addEventListener('click', saveRepo);
 document.getElementById('cancelRepoBtn')?.addEventListener('click', hideRepoForm);
 document.getElementById('reposProjectBtn')?.addEventListener('click', projectReposManually);
+document.getElementById('rpfClearPatBtn')?.addEventListener('click', () => clearRepoSecret('github_pat'));
+document.getElementById('rpfClearWebhookSecretBtn')?.addEventListener('click', () => clearRepoSecret('github_webhook_secret'));
 
 document.getElementById('addMCPBtn').addEventListener('click', () => openMCPForm(null));
 document.getElementById('cancelMCPBtn').addEventListener('click', () => {

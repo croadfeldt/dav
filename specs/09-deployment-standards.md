@@ -30,12 +30,14 @@ Topics this spec will cover when authored:
   - Seeding: first-run only, the API seeds the registry from existing source ConfigMaps so operators don't lose their config across upgrade
   - CRUD via `GET/POST/PUT/DELETE /api/repos`; UI lands in M3 (Config → Repos)
   - `tenant_id` column ungated in v1 (multi-tenant request filtering deferred per ADR-003 §3.A)
-- PR-comment ingestion (M5+):
+- PR-comment ingestion (M5+, [ADR-004](../adr/004-per-repo-credentials-in-registry.md)):
   - role=issue-source repos are polled every 5 min by a background async task in review-api
-  - `GITHUB_TOKEN` env (from the `dav-review-api-tokens` Secret, alongside `DAV_CORPUS_PUSH_TOKEN`): GitHub PAT with `repo` (or `public_repo`) scope. Without it, anonymous mode runs at 60 req/hr per IP — unsuitable for periodic polling.
-  - To add the token: `oc patch secret dav-review-api-tokens -n {{ dav_namespace }} -p '{"stringData":{"GITHUB_TOKEN":"ghp_..."}}'` then rollout-restart review-api.
+  - **Per-repo PATs**, NOT a cluster-wide env var. Stored Fernet-encrypted in `managed_repos.github_pat_encrypted`. Set via the Repos UI per repo. Scope: `repo` (private) or `public_repo` (public-only). Repos without a PAT are skipped by the poller with a clear message.
+  - **Per-repo webhook secrets** for the M6 receiver, same shape (`managed_repos.github_webhook_secret_encrypted`).
+  - **Fernet key**: `DAV_FERNET_KEY` env (from the `dav-fernet-key` Secret, Ansible-managed via `vault_dav_fernet_key`). Generate once with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Safeguard — losing it forces re-entering every per-repo credential.
   - `PR_COMMENTS_POLL_INTERVAL_SECONDS` (default 300) and `PR_COMMENTS_POLL_STARTUP_DELAY_SECONDS` (default 30) env vars tune cadence.
-  - Webhook receiver (M6) pushes individual comments via the same upsert path so the poller becomes a fallback for missed events / repos without webhook configured.
+  - Webhook receiver (M6, `POST /api/webhooks/github/pr-comments`) validates per-repo HMAC and upserts via the same path; oauth-proxy is configured to skip auth on `/api/webhooks/`.
+  - Forward path: HashiCorp Vault replaces Fernet-in-DB in a future ADR (deferred — too much infra for v1; current abstraction localizes the swap to `crypto.py` + `repos.py`).
 - Tekton pipeline (today):
   - Pipeline structure
   - Triggering: manual, scheduled, or webhook-based

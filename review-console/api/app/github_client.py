@@ -1,19 +1,20 @@
 """Thin async GitHub REST client for PR comment ingestion (M5+).
 
-Scope: just what the poller needs — list open PRs, list issue comments on
-a PR, list pull-request review comments on a PR. Uses httpx (already in
-the review-api deps). Auth via Bearer token from the GITHUB_TOKEN env var
-populated by the dav-github-pat Secret (Ansible-managed).
+Scope: just what the poller / webhook needs — list open PRs, list issue
+comments on a PR, list pull-request review comments on a PR. Uses httpx
+(already in the review-api deps).
 
-Anonymous mode (no token) is supported but rate-limited to 60 req/hour
+All functions take an explicit `token` parameter. Per ADR-004, tokens are
+per-repo and stored Fernet-encrypted in managed_repos.github_pat_encrypted;
+callers (poller, webhook self-setup helpers, etc.) fetch via
+repos.get_repo_secrets() and pass through here.
+
+Anonymous mode (`token=None`) is supported but rate-limited to 60 req/hour
 per source IP — fine for one-shot tests, hopeless for periodic polling.
-The poller logs a warning when the token is missing and continues; for
-production polling, set the Secret.
 """
 from __future__ import annotations
 
 import logging
-import os
 import re
 from typing import Optional
 from urllib.parse import urlparse
@@ -36,13 +37,7 @@ class GitHubError(Exception):
         self.url = url
 
 
-def _token() -> Optional[str]:
-    """Read GITHUB_TOKEN from env. Returns None if absent or empty."""
-    t = os.environ.get("GITHUB_TOKEN", "").strip()
-    return t or None
-
-
-def _headers() -> dict[str, str]:
+def _headers(token: Optional[str]) -> dict[str, str]:
     h = {
         "Accept": "application/vnd.github+json",
         "User-Agent": USER_AGENT,
@@ -50,9 +45,8 @@ def _headers() -> dict[str, str]:
         # when GitHub ships a new default.
         "X-GitHub-Api-Version": "2022-11-28",
     }
-    tok = _token()
-    if tok:
-        h["Authorization"] = f"Bearer {tok}"
+    if token:
+        h["Authorization"] = f"Bearer {token}"
     return h
 
 
@@ -87,7 +81,8 @@ def parse_owner_repo(repo_url: str) -> Optional[tuple[str, str]]:
 
 
 async def _get_paginated(
-    client: httpx.AsyncClient, path: str, params: Optional[dict] = None,
+    client: httpx.AsyncClient, path: str, *, token: Optional[str],
+    params: Optional[dict] = None,
     page_size: int = 100, max_pages: int = 20,
 ) -> list[dict]:
     """Walk GitHub's pagination (Link rel="next") until exhausted or
@@ -104,7 +99,7 @@ async def _get_paginated(
     pages = 0
     while url and pages < max_pages:
         resp = await client.get(url, params=params if pages == 0 else None,
-                                headers=_headers(), timeout=30.0)
+                                headers=_headers(token), timeout=30.0)
         pages += 1
         if resp.status_code != 200:
             try:
@@ -135,34 +130,33 @@ async def _get_paginated(
 
 
 async def list_open_pull_requests(
-    client: httpx.AsyncClient, owner: str, repo: str,
+    client: httpx.AsyncClient, owner: str, repo: str, *,
+    token: Optional[str] = None,
 ) -> list[dict]:
     """List open PRs for a repo. Returns raw GitHub PR objects."""
     return await _get_paginated(
-        client, f"/repos/{owner}/{repo}/pulls",
+        client, f"/repos/{owner}/{repo}/pulls", token=token,
         params={"state": "open", "sort": "updated", "direction": "desc"},
     )
 
 
 async def list_issue_comments(
-    client: httpx.AsyncClient, owner: str, repo: str, pr_number: int,
+    client: httpx.AsyncClient, owner: str, repo: str, pr_number: int, *,
+    token: Optional[str] = None,
 ) -> list[dict]:
     """List issue-style comments on a PR (the main PR thread)."""
     return await _get_paginated(
-        client, f"/repos/{owner}/{repo}/issues/{pr_number}/comments",
+        client, f"/repos/{owner}/{repo}/issues/{pr_number}/comments", token=token,
         params={"sort": "updated", "direction": "desc"},
     )
 
 
 async def list_review_comments(
-    client: httpx.AsyncClient, owner: str, repo: str, pr_number: int,
+    client: httpx.AsyncClient, owner: str, repo: str, pr_number: int, *,
+    token: Optional[str] = None,
 ) -> list[dict]:
     """List per-line review comments on a PR."""
     return await _get_paginated(
-        client, f"/repos/{owner}/{repo}/pulls/{pr_number}/comments",
+        client, f"/repos/{owner}/{repo}/pulls/{pr_number}/comments", token=token,
         params={"sort": "updated", "direction": "desc"},
     )
-
-
-def has_token() -> bool:
-    return _token() is not None

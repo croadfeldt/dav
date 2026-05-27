@@ -87,6 +87,17 @@ consumer_spec_repo_url: "https://github.com/your-org/your-spec-repo.git"
 # the analysis baselines used by the regression comparator.
 consumer_corpus_repo_url: "https://github.com/your-org/your-corpus-repo.git"
 
+# --- Per-repo credential encryption (ADR-004) ---
+# Fernet key used to encrypt managed_repos.github_pat_encrypted and
+# managed_repos.github_webhook_secret_encrypted. Generate once and
+# safeguard — losing it means re-entering every per-repo PAT and
+# webhook secret via the Repos UI.
+#
+# Generate with:
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#
+# vault_dav_fernet_key: "..."  # 32-byte URL-safe base64
+
 # --- Webhook Route ---
 # Hostname for the GitHub webhook receiver (Tekton EventListener route).
 # Must be a valid DNS name on your cluster's apps domain.

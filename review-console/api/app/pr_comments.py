@@ -238,7 +238,16 @@ async def _record_poll_state(
 async def _poll_one_repo(
     conn: asyncpg.Connection, http: httpx.AsyncClient, repo: dict,
 ) -> dict:
-    """Poll a single repo's open PRs for comments. Returns a summary dict."""
+    """Poll a single repo's open PRs for comments. Returns a summary dict.
+
+    Per ADR-004, the per-repo PAT is fetched from
+    managed_repos.github_pat_encrypted via repos.get_repo_secrets. A repo
+    with no PAT is skipped (cannot poll anonymously at any useful rate);
+    the skip is recorded on poll_state so the UI can surface it.
+    """
+    from . import repos as _repos
+    from . import crypto as _crypto
+
     repo_uuid = repo["uuid"]
     tenant_id = repo.get("tenant_id") or "default"
     started_at = _now()
@@ -253,6 +262,32 @@ async def _poll_one_repo(
         )
         return {"repo_namespace": repo["namespace"], "ok": False, "reason": msg, "comments_seen": 0}
 
+    # Fetch per-repo PAT. If absent, skip with a clear message — no PAT
+    # means anonymous (60 req/hr per IP) which can't realistically poll.
+    try:
+        secrets = await _repos.get_repo_secrets(conn, repo_uuid)
+    except _crypto.CryptoUnavailableError as e:
+        msg = f"cannot decrypt repo credentials: {e}"
+        log.warning("poll: %s — %s", repo["namespace"], msg)
+        await _record_poll_state(
+            conn, repo_uuid, started_at=started_at, finished_at=_now(),
+            ok=False, error=msg, comments_seen=0, newest_seen_updated_at=None,
+        )
+        return {"repo_namespace": repo["namespace"], "ok": False, "reason": msg, "comments_seen": 0}
+
+    token = (secrets or {}).get("github_pat")
+    if not token:
+        msg = (
+            "no github_pat configured for this repo; skipping. "
+            "Set one via the Repos UI to enable polling."
+        )
+        log.info("poll: %s — %s", repo["namespace"], msg)
+        await _record_poll_state(
+            conn, repo_uuid, started_at=started_at, finished_at=_now(),
+            ok=False, error=msg, comments_seen=0, newest_seen_updated_at=None,
+        )
+        return {"repo_namespace": repo["namespace"], "ok": False, "reason": "no_pat", "comments_seen": 0}
+
     owner, repo_name = parsed
     seen = 0
     inserted = 0
@@ -262,7 +297,7 @@ async def _poll_one_repo(
     ok = True
 
     try:
-        prs = await github_client.list_open_pull_requests(http, owner, repo_name)
+        prs = await github_client.list_open_pull_requests(http, owner, repo_name, token=token)
         log.info("poll: %s/%s — %d open PR(s)", owner, repo_name, len(prs))
 
         for pr in prs:
@@ -275,7 +310,7 @@ async def _poll_one_repo(
                 ("pull_request_review_comment", github_client.list_review_comments),
             ):
                 try:
-                    comments = await fetcher(http, owner, repo_name, pr_number)
+                    comments = await fetcher(http, owner, repo_name, pr_number, token=token)
                 except github_client.GitHubError as e:
                     log.warning(
                         "poll: %s PR#%d %s — %s",
@@ -358,13 +393,6 @@ async def poll_all_issue_source_repos(pool: asyncpg.Pool) -> dict:
     if not repos_list:
         return {"polled": 0, "repos": [], "skipped_reason": "no repos with role=issue-source"}
 
-    if not github_client.has_token():
-        log.warning(
-            "poll: GITHUB_TOKEN not set; anonymous quota (60 req/hr per IP) "
-            "will be exhausted quickly. Set the dav-github-pat Secret for "
-            "production polling."
-        )
-
     results = []
     async with httpx.AsyncClient() as http:
         for repo in repos_list:
@@ -388,10 +416,10 @@ async def poll_all_issue_source_repos(pool: asyncpg.Pool) -> dict:
 async def poller_loop(pool: asyncpg.Pool) -> None:
     """Forever-loop poll task. Started in lifespan, cancelled on shutdown."""
     log.info(
-        "pr_comments poller starting (interval=%ds, startup_delay=%ds, "
-        "token_present=%s)",
+        "pr_comments poller starting (interval=%ds, startup_delay=%ds). "
+        "Per-repo PATs are read from managed_repos.github_pat_encrypted "
+        "(ADR-004). Repos without a PAT are skipped.",
         POLL_INTERVAL_SECONDS, POLL_STARTUP_DELAY_SECONDS,
-        github_client.has_token(),
     )
     try:
         await asyncio.sleep(POLL_STARTUP_DELAY_SECONDS)
