@@ -91,6 +91,19 @@ def _validate_roles(roles: list[str]) -> list[str]:
 DEFAULT_TENANT = "default"
 
 
+def resolve_root_path(repo: dict, role: str) -> str:
+    """Per-ADR-007 resolution: metadata.role_paths.{role} overrides
+    the row's root_path column when present. Used by both projectors
+    so a single repo carrying multiple roles can serve different
+    subdirs to different consumers (e.g., DCM: spec=architecture,
+    corpus=dav/use-cases).
+    """
+    overrides = (repo.get("metadata") or {}).get("role_paths") or {}
+    if role in overrides:
+        return (overrides[role] or "").strip("/")
+    return (repo.get("root_path") or "").strip("/")
+
+
 def _parse_jsonb(value) -> dict:
     """asyncpg returns JSONB columns as raw strings unless a codec is
     registered globally. Parse here to keep the rest of the module simple.

@@ -33,6 +33,9 @@ log = logging.getLogger("dav-review-api.projector")
 
 SPEC_CONFIGMAP = "dav-source-spec"
 MCP_DEPLOYMENT = "dav-docs-mcp"
+CORPUS_CONFIGMAP = "dav-source-corpus"
+# No deployment to roll for corpus: it's consumed by Tekton PipelineRuns,
+# each of which clones from the ConfigMap fresh at run start.
 ANNOTATION_PREFIX = _sources.ANNOTATION_PREFIX
 
 
@@ -40,27 +43,27 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _render_sources_yaml(rows: list[dict]) -> str:
-    """Render the registry's role=spec rows into the ConfigMap sources YAML.
+def _render_sources_yaml(rows: list[dict], role: str) -> str:
+    """Render the registry rows into the ConfigMap sources YAML.
+
+    `role` is used by ADR-007's per-role path resolution: each source's
+    `root_path` in the rendered YAML is `resolve_root_path(repo, role)`
+    so the same managed_repos row can serve different subdirs to spec vs
+    corpus.
 
     Returns empty string if no rows — caller decides whether to project
-    an empty sources list (which would make the MCP unable to serve).
+    an empty sources list.
     """
     if not rows:
         return ""
-    # Match the shape the init container parses + the sources-spec-configmap
-    # template renders. Stable key order so identical content always produces
-    # identical YAML (idempotency check below relies on this).
     items = []
     for r in rows:
         items.append({
             "namespace": r["namespace"],
             "repo_url": r["repo_url"],
             "repo_branch": r["repo_branch"],
-            "root_path": r.get("root_path") or "",
+            "root_path": _repos.resolve_root_path(r, role),
         })
-    # default_flow_style=False for block style; sort_keys=False to preserve
-    # the field order above (matches what humans expect to read).
     return _yaml.safe_dump(items, default_flow_style=False, sort_keys=False)
 
 
@@ -81,7 +84,7 @@ async def project_spec_sources(
     """
     now = _now_iso()
     rows = await _repos.list_repos(conn, role="spec")
-    new_sources = _render_sources_yaml(rows)
+    new_sources = _render_sources_yaml(rows, role="spec")
 
     # Read the current ConfigMap to detect drift.
     try:
@@ -230,3 +233,116 @@ def repo_touches_spec(repo: dict | None) -> bool:
     if not repo:
         return False
     return "spec" in (repo.get("roles") or [])
+
+
+def repo_touches_corpus(repo: dict | None) -> bool:
+    """True if the repo carried role=corpus at any point (before or after
+    a change). Same usage pattern as repo_touches_spec."""
+    if not repo:
+        return False
+    return "corpus" in (repo.get("roles") or [])
+
+
+async def project_corpus_sources(
+    conn: asyncpg.Connection,
+    *,
+    applied_by: str = "system:projector",
+) -> dict:
+    """Sibling of project_spec_sources for the corpus side (ADR-007).
+
+    Regenerates dav-source-corpus.data.sources from all managed_repos
+    rows with role=corpus. Per-row root_path is resolved via
+    resolve_root_path(repo, 'corpus') so the metadata.role_paths.corpus
+    override wins over the row's default root_path.
+
+    Unlike the spec projector, no Deployment is rolled — the corpus is
+    consumed by Tekton PipelineRuns that clone fresh at run start. Each
+    new run picks up the current ConfigMap automatically.
+    """
+    now = _now_iso()
+    rows = await _repos.list_repos(conn, role="corpus")
+    new_sources = _render_sources_yaml(rows, role="corpus")
+
+    try:
+        cm = _sources._core().read_namespaced_config_map(
+            name=CORPUS_CONFIGMAP, namespace=_sources.NAMESPACE,
+        )
+    except ApiException as e:
+        log.warning(
+            "projector: cannot read %s (status=%s); skipping corpus projection",
+            CORPUS_CONFIGMAP, e.status,
+        )
+        return {
+            "status": "skipped",
+            "reason": f"configmap read failed: {e.status}",
+            "source_count": len(rows),
+        }
+
+    existing_data = cm.data or {}
+    old_sources = existing_data.get("sources", "") or ""
+    had_legacy_keys = bool(
+        existing_data.get("repo_url") or existing_data.get("repo_branch")
+    )
+    sources_equal = new_sources.strip() == old_sources.strip()
+    needs_patch = (not sources_equal) or had_legacy_keys
+
+    if not needs_patch:
+        log.info(
+            "projector: %s already current (%d source(s)); no patch needed",
+            CORPUS_CONFIGMAP, len(rows),
+        )
+        return {
+            "status": "unchanged",
+            "source_count": len(rows),
+            "configmap": CORPUS_CONFIGMAP,
+        }
+
+    if not rows:
+        # Refuse to write an empty list — Tekton runs would have nothing to
+        # clone. Operator should keep at least one role=corpus row.
+        log.warning(
+            "projector: refusing to write empty sources list to %s "
+            "(no role=corpus rows in managed_repos); preserving current ConfigMap",
+            CORPUS_CONFIGMAP,
+        )
+        return {
+            "status": "refused",
+            "reason": "no role=corpus rows; Tekton runs would have no corpus",
+            "source_count": 0,
+        }
+
+    data_patch: dict = {"sources": new_sources}
+    if had_legacy_keys:
+        data_patch["repo_url"] = None
+        data_patch["repo_branch"] = None
+
+    cm_patch = {
+        "metadata": {
+            "annotations": {
+                f"{ANNOTATION_PREFIX}/managed-by": "runtime",
+                f"{ANNOTATION_PREFIX}/last-applied-by": applied_by,
+                f"{ANNOTATION_PREFIX}/last-applied-at": now,
+                f"{ANNOTATION_PREFIX}/source-mode": "multi",
+                f"{ANNOTATION_PREFIX}/source-count": str(len(rows)),
+            },
+        },
+        "data": data_patch,
+    }
+    _sources._core().patch_namespaced_config_map(
+        name=CORPUS_CONFIGMAP, namespace=_sources.NAMESPACE, body=cm_patch,
+    )
+    log.info(
+        "projector: patched %s with %d source(s) [%s]",
+        CORPUS_CONFIGMAP, len(rows),
+        ", ".join(r["namespace"] for r in rows),
+    )
+
+    return {
+        "status": "projected",
+        "source_count": len(rows),
+        "sources": [r["namespace"] for r in rows],
+        "configmap": CORPUS_CONFIGMAP,
+        "applied_at": now,
+        # Per ADR-007: no rollout — Tekton reads ConfigMap fresh per run
+        "rolled_out": False,
+    }

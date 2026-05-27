@@ -1223,10 +1223,10 @@
         <div class="panel-card-header" style="justify-content:space-between;">
           <div>
             <div class="pc-title">Managed repos</div>
-            <div class="pc-sub">Namespace, URL, branch, roles. Each role=spec change regenerates the MCP source list.</div>
+            <div class="pc-sub">Namespace, URL, branch, roles, per-role paths. Role changes auto-project to dav-source-spec / dav-source-corpus ConfigMaps and roll the MCP.</div>
           </div>
           <div style="display:flex;align-items:center;gap:10px;">
-            <button class="btn ghost btn-sm" id="reposProjectBtn" title="Manual reconcile: regenerate dav-source-spec from registry">↻ Project</button>
+            <button class="btn ghost btn-sm" id="reposProjectBtn" title="Manual reconcile: regenerate both dav-source-spec and dav-source-corpus ConfigMaps from the registry">↻ Project all</button>
             <button class="btn ghost btn-sm" id="addRepoBtn">+ Add repo</button>
           </div>
         </div>
@@ -1336,33 +1336,30 @@
         </div>
       </div>
       <div class="cfg-card panel-card" id="configCorpusPanel">
-        <div class="panel-card-header"><div>
-          <div class="pc-title">Evaluation corpus</div>
-          <div class="pc-sub">Use cases + baselines</div>
-        </div></div>
+        <div class="panel-card-header" style="justify-content:space-between;">
+          <div>
+            <div class="pc-title">Evaluation corpus</div>
+            <div class="pc-sub">Read-only view — projected from Managed repos with role=corpus. Edits go through the Repos panel above (per-role path: corpus).</div>
+          </div>
+          <button class="btn ghost btn-sm" id="srcCorpusJumpToRepos" title="Scroll to Managed repos panel">↑ Manage in Repos</button>
+        </div>
         <div class="panel-card-body">
           <div class="kv-grid">
-            <div class="kv-label">current repo</div><div class="kv-val" id="srcCorpusRepo">—</div>
-            <div class="kv-label">current branch</div><div class="kv-val" id="srcCorpusBranch" style="color:var(--accent)">—</div>
+            <div class="kv-label">sources</div><div class="kv-val" id="srcCorpusSourceList">—</div>
+            <div class="kv-label">configmap</div><div class="kv-val" style="font-family:var(--mono,monospace);font-size:11px;">dav-source-corpus</div>
             <div class="kv-label">UC subpath</div><div class="kv-val" id="srcCorpusSubpath" style="color:var(--accent)">—</div>
-            <div class="kv-label">last applied</div><div class="kv-val" id="srcCorpusWhen">—</div>
-            <div class="kv-label">applied by</div><div class="kv-val" id="srcCorpusWho">—</div>
+            <div class="kv-label">last projected</div><div class="kv-val" id="srcCorpusWhen">—</div>
+            <div class="kv-label">last applied by</div><div class="kv-val" id="srcCorpusWho">—</div>
             <div class="kv-label">rollout</div><div class="kv-val" id="srcCorpusStatus">—</div>
           </div>
-          <hr class="section-sep" style="margin:8px 0;">
-          <div class="form-field"><label>New repo URL</label>
-            <input id="srcCorpusRepoInput" placeholder="https://github.com/owner/repo.git" /></div>
-          <div class="form-field"><label>Branch</label>
-            <div style="display:flex; gap:6px;">
-              <select id="srcCorpusBranchSelect" style="flex:1"><option value="">(loading…)</option></select>
-              <input id="srcCorpusBranchInput" placeholder="or type ref" style="flex:1;" />
-              <button class="btn ghost btn-icon" id="srcCorpusRefreshBranches" title="reload">↻</button>
-            </div>
+          <div style="font-size:10px;color:var(--text-faint);margin-top:10px;padding:6px 8px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;line-height:1.5;">
+            ℹ ConfigMap content is regenerated from the Managed repos registry whenever a role=corpus row changes.
+            Direct <code>oc edit configmap dav-source-corpus</code> is reverted on the next projection
+            (see <a href="https://github.com/croadfeldt/dav/blob/main/adr/007-per-role-paths-and-corpus-parity.md" target="_blank" rel="noopener">ADR-007</a>).
+            Unlike spec, corpus changes don't roll a Deployment — each Tekton run reads the ConfigMap fresh at start.
+            Use the <strong>↻ Project all</strong> button on the Managed repos panel to force a reconcile.
           </div>
-          <div style="display:flex; gap:8px; align-items:center; margin-top:4px;">
-            <button class="btn primary" id="srcCorpusApplyBtn">Apply &amp; redeploy</button>
-            <span id="srcCorpusMsg" style="font-size:11px; color:var(--text-faint);"></span>
-          </div>
+          <span id="srcCorpusMsg" style="font-size:11px;color:var(--text-faint);display:none;"></span>
         </div>
       </div>
 
@@ -5980,10 +5977,10 @@ async function loadConfig() {
 
 function renderSourcePanel(kind) {
   const s = sourcesState[kind]; if (!s) return;
-  // Spec is multi-source-aware (read-only view, projected from registry)
-  // as of M4; corpus remains single-source-editable until corpus becomes
-  // multi-source-capable too.
-  if (kind === 'spec') return _renderSpecPanelReadOnly(s);
+  // Spec (M4) and corpus (M11) both read-only views projected from the
+  // managed_repos registry.
+  if (kind === 'spec')   return _renderSpecPanelReadOnly(s);
+  if (kind === 'corpus') return _renderCorpusPanelReadOnly(s);
 
   const ui = SOURCE_UI[kind];
   document.getElementById(ui.repo).textContent   = s.repo_url    || '—';
@@ -6052,6 +6049,40 @@ function _renderSpecPanelReadOnly(s) {
   } else {
     statusEl.textContent = '(deployment not found)';
   }
+}
+
+// Corpus is multi-source post-M11 (ADR-007), projected from managed_repos
+// rows with role=corpus. Same shape as the spec read-only renderer; the
+// only differences are no Deployment-rollout (Tekton reads ConfigMap
+// fresh per run) and the namespace-keyed UC subpath display.
+function _renderCorpusPanelReadOnly(s) {
+  const listEl = document.getElementById('srcCorpusSourceList');
+  if (s.multi_source && Array.isArray(s.sources) && s.sources.length) {
+    listEl.innerHTML = s.sources.map(src => `
+      <div style="display:flex;gap:6px;align-items:baseline;font-size:11px;margin-bottom:3px;">
+        <span style="font-weight:600;min-width:60px;">${esc(src.namespace || '')}</span>
+        <span style="font-family:var(--mono,monospace);color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${esc(src.repo_url || '')}</span>
+        <span style="color:var(--accent);font-family:var(--mono,monospace);">${esc(src.repo_branch || '')}</span>
+        ${src.root_path ? `<span style="color:var(--text-faint);font-family:var(--mono,monospace);font-size:10px;">/${esc(src.root_path)}</span>` : ''}
+      </div>`).join('');
+  } else if (s.repo_url) {
+    listEl.innerHTML = `
+      <div style="display:flex;gap:6px;align-items:baseline;font-size:11px;">
+        <span style="color:var(--text-faint);font-style:italic;">legacy single-source:</span>
+        <span style="font-family:var(--mono,monospace);color:var(--text-dim);">${esc(s.repo_url)}</span>
+        <span style="color:var(--accent);font-family:var(--mono,monospace);">${esc(s.repo_branch || '')}</span>
+      </div>
+      <div style="font-size:10px;color:var(--accent);margin-top:4px;">
+        ConfigMap is in legacy shape — run <strong>↻ Project all</strong> on the Managed repos panel to convert to multi-source.
+      </div>`;
+  } else {
+    listEl.innerHTML = '<span style="color:var(--text-faint);font-style:italic;">no corpus sources configured</span>';
+  }
+  document.getElementById('srcCorpusWhen').textContent = fmtTs(s.last_applied_at);
+  document.getElementById('srcCorpusWho').textContent  = s.last_applied_by || '—';
+  const statusEl = document.getElementById('srcCorpusStatus');
+  // Corpus has no Deployment to roll; show static "n/a"
+  statusEl.innerHTML = '<span style="color:var(--text-faint);">no rollout — Tekton reads ConfigMap fresh per run</span>';
 }
 
 async function loadBranches(kind, repoUrl) {
@@ -6291,15 +6322,17 @@ document.getElementById('memberSearchInput').addEventListener('blur', () => {
   });
 });
 
-// Spec is read-only post-M4 (managed via the Repos panel); only corpus
-// still has the editable form inputs that wireSourcesPanel attaches to.
-wireSourcesPanel('corpus');
+// Post-M11: both spec and corpus are read-only views projected from
+// managed_repos. wireSourcesPanel is no longer called for either —
+// inference endpoint is the only remaining editable Sources panel.
 
-// Jump-to-Repos button on the read-only spec panel
-document.getElementById('srcSpecJumpToRepos')?.addEventListener('click', () => {
-  const target = document.getElementById('configReposPanel');
-  if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-});
+// Jump-to-Repos buttons on the read-only spec + corpus panels
+for (const btnId of ['srcSpecJumpToRepos', 'srcCorpusJumpToRepos']) {
+  document.getElementById(btnId)?.addEventListener('click', () => {
+    const target = document.getElementById('configReposPanel');
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
 
 // ── Review Models ────────────────────────────────────────────────────────────
 
@@ -7716,6 +7749,11 @@ function renderReposList() {
   }).join('');
 }
 
+// Roles that care about a content sub-path within the repo. The other
+// roles (issue-source) operate at the repo/API level and don't need a
+// path input. Update here when a new path-aware role lands.
+const _PATH_AWARE_ROLES = new Set(['spec', 'corpus', 'enhancement-target']);
+
 function renderRepoRoleCheckboxes() {
   const el = document.getElementById('rpfRolesContainer');
   if (!el) return;
@@ -7723,11 +7761,31 @@ function renderRepoRoleCheckboxes() {
     el.innerHTML = '<span style="font-size:11px;color:var(--text-faint);">(no roles in vocabulary)</span>';
     return;
   }
-  el.innerHTML = _reposState.roles.map(role => `
-    <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;">
-      <input type="checkbox" class="rpf-role" value="${esc(role)}" /> ${esc(role)}
-    </label>
-  `).join('');
+  // Per-ADR-007: each path-aware role gets an inline override input
+  // beside the checkbox; non-path-aware roles render label-only. The
+  // override input is empty by default and falls back to the row's
+  // root_path on save (resolve_root_path semantics).
+  el.style.display = 'grid';
+  el.style.gridTemplateColumns = '1fr 2fr';
+  el.style.gap = '6px 12px';
+  el.style.alignItems = 'center';
+  const rows = [];
+  for (const role of _reposState.roles) {
+    rows.push(`
+      <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;">
+        <input type="checkbox" class="rpf-role" value="${esc(role)}" /> ${esc(role)}
+      </label>`);
+    if (_PATH_AWARE_ROLES.has(role)) {
+      rows.push(`
+        <input type="text" class="rpf-rolepath" data-role="${esc(role)}"
+               placeholder="(uses default root_path above)"
+               style="font-family:var(--mono,monospace);font-size:11px;padding:3px 6px;" />`);
+    } else {
+      rows.push(`
+        <span style="font-size:10px;color:var(--text-faint);font-style:italic;">no path</span>`);
+    }
+  }
+  el.innerHTML = rows.join('');
 }
 
 function _clearRepoForm() {
@@ -7740,6 +7798,7 @@ function _clearRepoForm() {
   const msg = document.getElementById('repoFormMsg');
   if (msg) { msg.textContent = ''; msg.style.color = ''; }
   document.querySelectorAll('.rpf-role').forEach(cb => cb.checked = false);
+  document.querySelectorAll('.rpf-rolepath').forEach(inp => { inp.value = ''; });
   // Reset credential status indicators + dropdowns + convert buttons
   for (const id of ['rpfPatStatus','rpfWebhookSecretStatus']) {
     const el = document.getElementById(id);
@@ -7811,6 +7870,13 @@ function showRepoForm(repo) {
     document.getElementById('rpfRootPath').value = repo.root_path || '';
     document.querySelectorAll('.rpf-role').forEach(cb => cb.checked = (repo.roles || []).includes(cb.value));
 
+    // Per-role path overrides (ADR-007): hydrate from metadata.role_paths
+    const rolePaths = ((repo.metadata || {}).role_paths) || {};
+    document.querySelectorAll('.rpf-rolepath').forEach(inp => {
+      const role = inp.dataset.role;
+      inp.value = (role in rolePaths) ? (rolePaths[role] || '') : '';
+    });
+
     // Pre-select the linked-credential dropdown. The API returns
     // github_pat_credential = {uuid, name} when set, so the dropdown
     // (whose options are credential UUIDs) selects naturally.
@@ -7873,6 +7939,29 @@ async function saveRepo() {
   msgEl.textContent = 'Saving…';
   msgEl.style.color = '';
   const roles = Array.from(document.querySelectorAll('.rpf-role:checked')).map(cb => cb.value);
+
+  // Per-role path overrides (ADR-007): collect any rpf-rolepath inputs
+  // with a non-empty value into metadata.role_paths.{role}. Empty
+  // overrides aren't sent — operators clear an override by emptying
+  // the input + save (the merge below removes the key).
+  const rolePathInputs = Array.from(document.querySelectorAll('.rpf-rolepath'));
+  const rolePathsObj = {};
+  for (const inp of rolePathInputs) {
+    const v = (inp.value || '').trim().replace(/^\/+|\/+$/g, '');
+    if (v) rolePathsObj[inp.dataset.role] = v;
+  }
+  // Merge with existing metadata so we don't clobber non-role_paths keys
+  const existing = _reposState.editingUuid
+    ? (_reposState.list.find(x => x.uuid === _reposState.editingUuid) || {})
+    : {};
+  const mergedMeta = Object.assign({}, existing.metadata || {});
+  if (Object.keys(rolePathsObj).length) {
+    mergedMeta.role_paths = rolePathsObj;
+  } else if ('role_paths' in mergedMeta) {
+    // All overrides cleared — drop the key entirely
+    delete mergedMeta.role_paths;
+  }
+
   const payload = {
     namespace: document.getElementById('rpfNamespace').value.trim(),
     display_name: document.getElementById('rpfDisplayName').value.trim() || null,
@@ -7880,6 +7969,7 @@ async function saveRepo() {
     repo_branch: document.getElementById('rpfRepoBranch').value.trim() || 'main',
     root_path: document.getElementById('rpfRootPath').value.trim(),
     roles: roles,
+    metadata: mergedMeta,
   };
   // Per-repo credentials: ONLY include inline values when the operator
   // typed a new one. Empty input means "don't touch" (preserve current
@@ -7950,18 +8040,19 @@ async function projectReposManually() {
   const orig = btn.textContent;
   btn.disabled = true; btn.textContent = '…';
   try {
-    const r = await api('/api/repos/project', { method: 'POST' });
-    btn.title = `${r.status} · ${r.source_count} source(s)` + (r.rolled_out ? ' · MCP rolling' : '');
-    btn.textContent = r.status === 'projected'
-      ? `✓ Projected (${r.source_count})`
-      : (r.status === 'unchanged' ? '✓ Already current' : `⚠ ${r.status}`);
-    toast(`Projection: ${_describeRepoProjection(r, true)}`);
+    // ADR-007: ?role=all runs both spec + corpus projectors
+    const r = await api('/api/repos/project?role=all', { method: 'POST' });
+    const specSt = (r.spec || {}).status || '?';
+    const corpSt = (r.corpus || {}).status || '?';
+    btn.title = `spec=${specSt} (${(r.spec || {}).source_count || 0}) · corpus=${corpSt} (${(r.corpus || {}).source_count || 0})`;
+    btn.textContent = `✓ spec:${specSt[0]} corpus:${corpSt[0]}`;
+    toast(`Projection: spec ${_describeRepoProjection(r.spec, true)} · corpus ${_describeRepoProjection(r.corpus, true)}`);
   } catch (e) {
     btn.title = e.message;
     btn.textContent = '⚠ Failed';
     toast('Projection failed: ' + e.message, true);
   } finally {
-    setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 3000);
+    setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 3500);
   }
 }
 

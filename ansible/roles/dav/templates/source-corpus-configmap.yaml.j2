@@ -1,19 +1,26 @@
 ---
-# DCM Corpus Sourcing ConfigMap
+# DAV Corpus Sourcing ConfigMap
 # ---
-# Single source of truth for "which corpus does the review-console API clone?".
+# Mirror of dav-source-spec post-ADR-007 (M11): supports either legacy
+# single-source or multi-source mode. The corpus projector
+# (review-console/api/app/projector.py.project_corpus_sources) regenerates
+# the `sources` field from managed_repos rows with role=corpus on
+# every CRUD touching that role.
 #
-# This ConfigMap is the authoritative state for corpus sourcing. Both the
-# Ansible playbook and the review-console web UI read and write it:
+# Two data shapes supported:
 #
-#   Ansible: creates on first deploy, DOES NOT overwrite thereafter.
-#            See dav-source-spec ConfigMap for the full Ansible/runtime
-#            mutual-exclusion pattern.
+#   1. Multi-source (preferred): a `sources` field carrying a YAML list
+#      of sources. Each: {namespace, repo_url, repo_branch, root_path}.
+#      The Tekton pipeline clones each (optionally filtered by a
+#      per-run namespace selector) into /workspace/corpus/<namespace>/.
 #
-#   Web UI:  POST /api/sources/corpus updates data.repo_url/repo_branch,
-#            stamps `last-applied-by` and `last-applied-at`, then triggers
-#            a fresh review-console-api rollout so the init-container
-#            re-clones the new corpus.
+#   2. Legacy single-source: `repo_url` and `repo_branch` at top-level data.
+#      Pre-projection / fresh deploys. Auto-converted by the projector
+#      on the first role=corpus CRUD.
+#
+# Unlike the spec side, corpus changes do NOT trigger a Deployment rollout.
+# Each Tekton PipelineRun re-reads the ConfigMap at start, so the next
+# run picks up new content automatically.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -27,8 +34,22 @@ metadata:
     dav.dev/managed-by: "ansible"
     dav.dev/last-applied-by: "ansible"
     dav.dev/last-applied-at: "{{ ansible_date_time.iso8601 }}"
+{% if consumer_corpus_sources is defined and consumer_corpus_sources | length > 0 %}
+    dav.dev/ansible-managed-initial-source-count: "{{ consumer_corpus_sources | length }}"
+data:
+  # Multi-source mode. List of {namespace, repo_url, repo_branch, root_path}.
+  sources: |
+{% for src in consumer_corpus_sources %}
+    - namespace: "{{ src.namespace }}"
+      repo_url: "{{ src.repo_url }}"
+      repo_branch: "{{ src.repo_branch }}"
+      root_path: "{{ src.root_path | default('') }}"
+{% endfor %}
+{% else %}
     dav.dev/ansible-managed-initial-url: "{{ consumer_corpus_repo_url }}"
     dav.dev/ansible-managed-initial-branch: "{{ consumer_corpus_repo_branch }}"
 data:
+  # Legacy single-source mode. Maintained for backward compatibility.
   repo_url: "{{ consumer_corpus_repo_url }}"
   repo_branch: "{{ consumer_corpus_repo_branch }}"
+{% endif %}

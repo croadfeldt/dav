@@ -280,15 +280,26 @@ async def _seed_managed_repos(conn: asyncpg.Connection) -> None:
         # was already multi-source with the same data, projection is a
         # no-op (idempotent — projector compares and skips).
         try:
-            result = await _projector.project_spec_sources(
+            spec_result = await _projector.project_spec_sources(
                 conn, applied_by="system:seed",
             )
-            log.info("managed_repos seed: projection result %s", result.get("status"))
+            log.info("managed_repos seed: spec projection %s", spec_result.get("status"))
         except Exception as e:
             log.warning(
-                "managed_repos seed: projection failed (%s); registry is "
+                "managed_repos seed: spec projection failed (%s); registry is "
                 "populated but ConfigMap may differ until next CRUD or "
                 "manual POST /api/repos/project", e,
+            )
+        try:
+            corpus_result = await _projector.project_corpus_sources(
+                conn, applied_by="system:seed",
+            )
+            log.info("managed_repos seed: corpus projection %s", corpus_result.get("status"))
+        except Exception as e:
+            log.warning(
+                "managed_repos seed: corpus projection failed (%s); "
+                "dav-source-corpus ConfigMap may differ until next CRUD "
+                "or manual POST /api/repos/project?role=corpus", e,
             )
     else:
         log.info(
@@ -3344,10 +3355,17 @@ async def create_repo_api(payload: RepoCreateIn, request: Request):
                 github_webhook_secret_credential_ref=payload.github_webhook_secret_credential_ref,
                 created_by=reviewer,
             )
+            projections = {}
             if _projector.repo_touches_spec(created):
-                created["_projection"] = await _projector.project_spec_sources(
+                projections["spec"] = await _projector.project_spec_sources(
                     conn, applied_by=reviewer,
                 )
+            if _projector.repo_touches_corpus(created):
+                projections["corpus"] = await _projector.project_corpus_sources(
+                    conn, applied_by=reviewer,
+                )
+            if projections:
+                created["_projection"] = projections
             return created
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -3391,11 +3409,19 @@ async def update_repo_api(uuid_or_namespace: str, payload: RepoUpdateIn, request
             )
             if not updated:
                 raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
+            projections = {}
             if (_projector.repo_touches_spec(before)
                     or _projector.repo_touches_spec(updated)):
-                updated["_projection"] = await _projector.project_spec_sources(
+                projections["spec"] = await _projector.project_spec_sources(
                     conn, applied_by=reviewer,
                 )
+            if (_projector.repo_touches_corpus(before)
+                    or _projector.repo_touches_corpus(updated)):
+                projections["corpus"] = await _projector.project_corpus_sources(
+                    conn, applied_by=reviewer,
+                )
+            if projections:
+                updated["_projection"] = projections
             return updated
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -3416,24 +3442,47 @@ async def delete_repo_api(uuid_or_namespace: str, request: Request):
         ok = await _repos.delete_repo(conn, uuid_or_namespace)
         if not ok:
             raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
-        projection = None
+        projections = {}
         if _projector.repo_touches_spec(before):
-            projection = await _projector.project_spec_sources(
+            projections["spec"] = await _projector.project_spec_sources(
                 conn, applied_by=reviewer,
             )
-    return {"deleted": uuid_or_namespace, "_projection": projection}
+        if _projector.repo_touches_corpus(before):
+            projections["corpus"] = await _projector.project_corpus_sources(
+                conn, applied_by=reviewer,
+            )
+    return {"deleted": uuid_or_namespace, "_projection": projections or None}
 
 
 @app.post("/api/repos/project")
-async def project_repos_api(request: Request):
-    """Manually trigger registry → dav-source-spec ConfigMap projection.
+async def project_repos_api(
+    request: Request,
+    role: Optional[str] = Query(None, description="'spec' (default), 'corpus', or 'all'"),
+):
+    """Manually trigger registry → ConfigMap projection.
 
-    Useful after operator-side surgery (oc edits, registry-direct DB writes
-    via psql, etc.) or as a smoke test. Idempotent: if the ConfigMap is
-    already current, no patch is written and no rollout is triggered."""
+    `role` param:
+      - 'spec' (default) — regenerate dav-source-spec + roll dav-docs-mcp
+      - 'corpus' — regenerate dav-source-corpus (no rollout; PipelineRuns
+        pick up fresh)
+      - 'all' — both
+
+    Idempotent: each projector skips if its ConfigMap already matches."""
     reviewer = get_user(request)
+    target = (role or "spec").lower()
+    if target not in ("spec", "corpus", "all"):
+        raise HTTPException(400, f"unknown role {role!r}; valid: spec, corpus, all")
     async with pool.acquire() as conn:
-        return await _projector.project_spec_sources(conn, applied_by=reviewer)
+        results: dict = {}
+        if target in ("spec", "all"):
+            results["spec"] = await _projector.project_spec_sources(
+                conn, applied_by=reviewer,
+            )
+        if target in ("corpus", "all"):
+            results["corpus"] = await _projector.project_corpus_sources(
+                conn, applied_by=reviewer,
+            )
+        return results
 
 
 @app.delete("/api/repos/{uuid_or_namespace}/secrets/{field}")
