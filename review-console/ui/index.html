@@ -1269,12 +1269,13 @@
                 <select id="rpfPatCredSel" style="flex:1;background:var(--bg-input,var(--bg-raised));border:1px solid var(--border);padding:6px 8px;font-size:12px;">
                   <option value="">(no shared credential)</option>
                 </select>
+                <button class="btn ghost btn-sm" id="rpfConvertPatBtn" type="button" style="display:none;" title="Promote the inline value to a new shared credential other repos can reference">⇪ Convert to shared</button>
                 <button class="btn ghost btn-sm" id="rpfClearPatBtn" type="button" style="display:none;color:var(--red);" title="Remove credential (clears both inline and shared FK)">Clear</button>
               </div>
               <details id="rpfPatInlineDetails" style="margin-top:6px;">
                 <summary style="font-size:10px;color:var(--text-faint);cursor:pointer;">Or set an inline value (per-repo only — not shared)</summary>
                 <input id="rpfGithubPat" type="password" placeholder="(none set inline; leave blank to keep current)" style="margin-top:6px;font-family:var(--mono,monospace);" autocomplete="new-password" />
-                <div class="form-hint" style="margin-top:4px;">Inline value is used only if no shared credential is selected above. <button class="btn ghost btn-sm" id="rpfConvertPatBtn" type="button" style="display:none;font-size:10px;padding:2px 8px;">⇪ Convert inline → shared</button></div>
+                <div class="form-hint" style="margin-top:4px;">Inline value is used only if no shared credential is selected above.</div>
               </details>
               <div class="form-hint">Used by the PR-comment poller. Scope: <code>repo</code> (private) or <code>public_repo</code> (public-only).</div>
             </div>
@@ -1285,12 +1286,13 @@
                 <select id="rpfWebhookSecretCredSel" style="flex:1;background:var(--bg-input,var(--bg-raised));border:1px solid var(--border);padding:6px 8px;font-size:12px;">
                   <option value="">(no shared credential)</option>
                 </select>
+                <button class="btn ghost btn-sm" id="rpfConvertWebhookSecretBtn" type="button" style="display:none;" title="Promote the inline value to a new shared credential other repos can reference">⇪ Convert to shared</button>
                 <button class="btn ghost btn-sm" id="rpfClearWebhookSecretBtn" type="button" style="display:none;color:var(--red);" title="Remove credential (clears both inline and shared FK)">Clear</button>
               </div>
               <details id="rpfWebhookSecretInlineDetails" style="margin-top:6px;">
                 <summary style="font-size:10px;color:var(--text-faint);cursor:pointer;">Or set an inline value (per-repo only — not shared)</summary>
                 <input id="rpfGithubWebhookSecret" type="password" placeholder="(none set inline; leave blank to keep current)" style="margin-top:6px;font-family:var(--mono,monospace);" autocomplete="new-password" />
-                <div class="form-hint" style="margin-top:4px;">Inline value is used only if no shared credential is selected above. <button class="btn ghost btn-sm" id="rpfConvertWebhookSecretBtn" type="button" style="display:none;font-size:10px;padding:2px 8px;">⇪ Convert inline → shared</button></div>
+                <div class="form-hint" style="margin-top:4px;">Inline value is used only if no shared credential is selected above.</div>
               </details>
               <div class="form-hint">HMAC-SHA256 shared secret matching the value in this repo's GitHub webhook configuration.</div>
             </div>
@@ -7781,13 +7783,18 @@ function _clearRepoForm() {
 // Render status indicators for one of the per-repo credential fields.
 // `source` is 'shared' | 'inline' | null, mirroring the API's
 // github_pat_source / github_webhook_secret_source. `has` summarizes
-// "any source set". Sets placeholder, status text, and button visibility.
-function _setRepoCredFieldState(inputId, statusId, clearBtnId, has, source, convertBtnId) {
+// "any source set". Sets placeholder, status text, button visibility,
+// and auto-expands the inline-details disclosure when source is inline
+// (so operators see + can rotate/clear the inline value without hunting).
+function _setRepoCredFieldState(inputId, statusId, clearBtnId, has, source, convertBtnId, inlineDetailsId) {
   const input = document.getElementById(inputId);
   const status = document.getElementById(statusId);
   const clearBtn = document.getElementById(clearBtnId);
   const convertBtn = convertBtnId ? document.getElementById(convertBtnId) : null;
+  const details = inlineDetailsId ? document.getElementById(inlineDetailsId) : null;
   if (!input || !status || !clearBtn) return;
+  // Default: collapse inline details
+  if (details) details.open = false;
   if (!has) {
     input.placeholder = '(none set inline; leave blank to keep current)';
     status.textContent = '· (not set)';
@@ -7803,12 +7810,13 @@ function _setRepoCredFieldState(inputId, statusId, clearBtnId, has, source, conv
     clearBtn.style.display = '';
     if (convertBtn) convertBtn.style.display = 'none';
   } else {
-    // inline
+    // inline — auto-expand the details so the value field + hint are visible
     input.placeholder = '(inline set — type a new value to rotate inline; leave blank to keep)';
     status.textContent = '· (inline)';
     status.style.color = 'var(--accent)';
     clearBtn.style.display = '';
     if (convertBtn) convertBtn.style.display = '';  // offer the migration
+    if (details) details.open = true;
   }
 }
 
@@ -7839,14 +7847,18 @@ function showRepoForm(repo) {
       if (sel) sel.value = repo.github_webhook_secret_credential.uuid;
     }
     _setRepoCredFieldState('rpfGithubPat', 'rpfPatStatus', 'rpfClearPatBtn',
-                           !!repo.has_github_pat, repo.github_pat_source, 'rpfConvertPatBtn');
+                           !!repo.has_github_pat, repo.github_pat_source,
+                           'rpfConvertPatBtn', 'rpfPatInlineDetails');
     _setRepoCredFieldState('rpfGithubWebhookSecret', 'rpfWebhookSecretStatus', 'rpfClearWebhookSecretBtn',
-                           !!repo.has_github_webhook_secret, repo.github_webhook_secret_source, 'rpfConvertWebhookSecretBtn');
+                           !!repo.has_github_webhook_secret, repo.github_webhook_secret_source,
+                           'rpfConvertWebhookSecretBtn', 'rpfWebhookSecretInlineDetails');
     _reposState.editingUuid = repo.uuid;
   } else {
     titleEl.textContent = 'Add repo';
-    _setRepoCredFieldState('rpfGithubPat', 'rpfPatStatus', 'rpfClearPatBtn', false, null, 'rpfConvertPatBtn');
-    _setRepoCredFieldState('rpfGithubWebhookSecret', 'rpfWebhookSecretStatus', 'rpfClearWebhookSecretBtn', false, null, 'rpfConvertWebhookSecretBtn');
+    _setRepoCredFieldState('rpfGithubPat', 'rpfPatStatus', 'rpfClearPatBtn', false, null,
+                           'rpfConvertPatBtn', 'rpfPatInlineDetails');
+    _setRepoCredFieldState('rpfGithubWebhookSecret', 'rpfWebhookSecretStatus', 'rpfClearWebhookSecretBtn',
+                           false, null, 'rpfConvertWebhookSecretBtn', 'rpfWebhookSecretInlineDetails');
   }
   document.getElementById('repoFormCard').style.display = '';
   setTimeout(() => document.getElementById('rpfNamespace').focus(), 50);
