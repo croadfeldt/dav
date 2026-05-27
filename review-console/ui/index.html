@@ -1761,6 +1761,120 @@
   </div>
 </div>
 
+<!-- ══════════════════════════ UC WIZARD MODAL (M12b / ADR-008) ══════════════════════════ -->
+<div class="modal-overlay" id="ucWizardModal">
+  <div class="modal" style="width:880px; max-width:96vw;">
+    <div class="modal-header">
+      <div class="modal-title">✨ New use case — guided</div>
+      <button class="btn ghost btn-icon" id="closeUcWizard">✕</button>
+    </div>
+    <div class="modal-body" style="display:flex; flex-direction:column; gap:10px; padding:14px 18px;">
+      <!-- Step rail -->
+      <div id="wzRail" style="display:flex; gap:4px; align-items:center; font-size:10px; text-transform:uppercase; letter-spacing:0.10em; color:var(--text-faint); margin-bottom:4px;">
+        <span class="wz-step" data-step="1">1. Scenario</span>
+        <span style="color:var(--border);">›</span>
+        <span class="wz-step" data-step="2">2. Generate</span>
+        <span style="color:var(--border);">›</span>
+        <span class="wz-step" data-step="3">3. Review</span>
+        <span style="color:var(--border);">›</span>
+        <span class="wz-step" data-step="4">4. Assign</span>
+        <span style="color:var(--border);">›</span>
+        <span class="wz-step" data-step="5">5. Save</span>
+      </div>
+
+      <!-- Step 1 -->
+      <div class="wz-pane" data-step="1">
+        <div class="form-field">
+          <label>Model</label>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <select id="wzModelSel" style="flex:1;"><option value="">— select a model —</option></select>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('wzModelSel','wzLastModel')">Browse…</button>
+          </div>
+        </div>
+        <div class="form-field">
+          <label>Scenario — what should this UC exercise?</label>
+          <textarea id="wzScenario" rows="6" spellcheck="false" placeholder="Plain English. Examples:&#10;  • 'VM provisioning happy-path against a single eligible provider, governance-light'&#10;  • 'Drift detection when a peer DCM disconnects mid-reconcile'&#10;  • 'PR comment from upstream requests adding rollback support to the X workflow'" style="width:100%; font-family:inherit; resize:vertical; line-height:1.5;"></textarea>
+          <div class="form-hint">The LLM uses this to draft the UC YAML in the next step. Be specific about lifecycle phase, failure mode, governance posture if you know them — vague scenarios produce vague UCs.</div>
+        </div>
+        <div class="form-field">
+          <label>Optional context (linked PR comment, design doc URL, etc.)</label>
+          <input id="wzContext" placeholder="e.g. issue-source/dcm/comment-1234, design-docs/auth-failover.md" />
+        </div>
+      </div>
+
+      <!-- Step 2 -->
+      <div class="wz-pane" data-step="2" style="display:none;">
+        <div id="wzGenStatus" style="font-size:11px; color:var(--text-faint); margin-bottom:6px;"></div>
+        <div id="wzExplanation" style="font-size:12px; color:var(--text-dim); background:var(--bg-input); border-left:3px solid var(--accent); padding:8px 10px; margin-bottom:8px; display:none;"></div>
+        <div class="form-field">
+          <label>Draft YAML (editable)</label>
+          <textarea id="wzYaml" class="yaml-editor" rows="14" spellcheck="false" placeholder="Click 'Generate draft' below — the LLM will fill this in based on your scenario."></textarea>
+        </div>
+        <div class="form-field">
+          <label>✦ Refine — ask for targeted tweaks (sends the current YAML + your request to the model)</label>
+          <div style="display:flex; gap:6px;">
+            <input id="wzRefineInput" placeholder="e.g. 'change the failure_mode to policy_violation and tighten the success criteria'" style="flex:1;" />
+            <button class="btn ghost btn-sm" id="wzRefineBtn">↻ Refine</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3 -->
+      <div class="wz-pane" data-step="3" style="display:none;">
+        <div id="wzParsed" style="background:var(--bg-input); border:1px solid var(--border); border-radius:2px; padding:10px 12px; margin-bottom:8px; font-size:12px;"></div>
+        <div class="form-field">
+          <label>YAML (edit directly if you need to)</label>
+          <textarea id="wzYamlReview" class="yaml-editor" rows="14" spellcheck="false"></textarea>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <button class="btn ghost btn-sm" id="wzValidateBtn">✓ Validate</button>
+          <span id="wzValidateStatus" style="font-size:11px; color:var(--text-faint);"></span>
+        </div>
+      </div>
+
+      <!-- Step 4 -->
+      <div class="wz-pane" data-step="4" style="display:none;">
+        <div class="form-field">
+          <label>Tags (comma-separated; pre-filled from YAML)</label>
+          <input id="wzTags" placeholder="happy-path, auth, regression" />
+        </div>
+        <div class="form-field" style="margin-top:10px;">
+          <label>Assign to a Set?</label>
+          <div style="display:flex; flex-direction:column; gap:6px;">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="radio" name="wzSetMode" value="skip" checked style="width:auto;height:auto;accent-color:var(--accent);" /> Skip — leave unassigned
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="radio" name="wzSetMode" value="new" style="width:auto;height:auto;accent-color:var(--accent);" /> Create new Set:
+              <input id="wzSetNewName" placeholder="set name" style="flex:1;" />
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+              <input type="radio" name="wzSetMode" value="existing" style="width:auto;height:auto;accent-color:var(--accent);" /> Add to existing:
+              <select id="wzSetExistingSel" style="flex:1;"><option value="">— pick a set —</option></select>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 5 -->
+      <div class="wz-pane" data-step="5" style="display:none;">
+        <div id="wzSummary" style="background:var(--bg-input); border:1px solid var(--border); border-radius:2px; padding:10px 12px; margin-bottom:8px; font-size:12px;"></div>
+        <div class="form-field">
+          <label>Final YAML (read-only preview)</label>
+          <textarea id="wzYamlFinal" class="yaml-editor" rows="12" spellcheck="false" readonly style="opacity:0.85;"></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn ghost btn-sm" id="wzAdvancedBtn" title="Hand off current YAML to the raw editor and close the wizard" style="margin-right:auto;">↓ Advanced YAML editor</button>
+      <span id="wzStatus" style="flex:1; font-size:11px; color:var(--text-faint); text-align:right; padding-right:8px;"></span>
+      <button class="btn ghost" id="wzBackBtn">← Back</button>
+      <button class="btn ghost" id="cancelUcWizard">Cancel</button>
+      <button class="btn primary" id="wzPrimaryBtn">Next →</button>
+    </div>
+  </div>
+</div>
+
 <!-- ══════════════════════════ SET EDITOR MODAL ══════════════════════════ -->
 <div class="modal-overlay" id="setModal">
   <div class="modal" style="width:480px;">
@@ -5539,6 +5653,346 @@ function log_failures(uuid, e) {
   console.warn('bulk: set assignment failed for', uuid, e);
 }
 
+// ══════════════════════════ UC WIZARD (M12b / ADR-008) ══════════════════════════
+//
+// 5-step guided creation: scenario → generate → review → assign → save.
+// State is wholly local to the modal (no globals beyond _wizardState) so
+// re-opening starts fresh. Reuses /api/uc-assist for steps 2+3 refinement
+// and the same POST /api/use-cases + /api/sets/{id}/members endpoints as
+// M12a for the actual persistence.
+
+let _wizardState = null;   // { step, scenario, context, modelResolved, yaml, explanation, tags[], setMode, setNewName, setExistingId, savedUcUuid }
+
+function openUcWizard() {
+  document.getElementById('ucWizardModal').classList.add('open');
+  _wizardState = {
+    step: 1,
+    scenario: '',
+    context: '',
+    modelResolved: null,
+    yaml: '',
+    explanation: '',
+    tags: [],
+    setMode: 'skip',
+    setNewName: '',
+    setExistingId: null,
+    savedUcUuid: null,
+  };
+  document.getElementById('wzScenario').value = '';
+  document.getElementById('wzContext').value = '';
+  document.getElementById('wzYaml').value = '';
+  document.getElementById('wzYamlReview').value = '';
+  document.getElementById('wzYamlFinal').value = '';
+  document.getElementById('wzRefineInput').value = '';
+  document.getElementById('wzTags').value = '';
+  document.getElementById('wzSetNewName').value = '';
+  document.getElementById('wzExplanation').style.display = 'none';
+  document.getElementById('wzValidateStatus').textContent = '';
+  document.getElementById('wzStatus').textContent = '';
+  _populateModelSel('wzModelSel', 'wzLastModel');
+  const sel = document.getElementById('wzModelSel');
+  if (!sel.value) {
+    const stored = localStorage.getItem('ucAssistModelId');
+    if (stored && [...sel.options].some(o => o.value === stored)) sel.value = stored;
+  }
+  wzShowStep(1);
+}
+
+function closeUcWizard() {
+  document.getElementById('ucWizardModal').classList.remove('open');
+  _wizardState = null;
+}
+
+function wzShowStep(n) {
+  _wizardState.step = n;
+  document.querySelectorAll('#ucWizardModal .wz-pane').forEach(p => {
+    p.style.display = (parseInt(p.dataset.step, 10) === n) ? '' : 'none';
+  });
+  document.querySelectorAll('#ucWizardModal .wz-step').forEach(s => {
+    const sn = parseInt(s.dataset.step, 10);
+    s.style.color = (sn === n) ? 'var(--accent)' : (sn < n ? 'var(--text-dim)' : 'var(--text-faint)');
+    s.style.fontWeight = (sn === n) ? '600' : '400';
+  });
+  // Back button visibility
+  document.getElementById('wzBackBtn').style.display = (n > 1) ? '' : 'none';
+  // Primary button label
+  const primary = document.getElementById('wzPrimaryBtn');
+  const labels = {1:'Next: Generate →', 2:'Next: Review →', 3:'Next: Assign →', 4:'Next: Save →', 5:'Save use case'};
+  primary.textContent = labels[n];
+  primary.disabled = false;
+  document.getElementById('wzStatus').textContent = '';
+  // Step-specific entry hooks
+  if (n === 2) wzEnterStep2();
+  else if (n === 3) wzEnterStep3();
+  else if (n === 4) wzEnterStep4();
+  else if (n === 5) wzEnterStep5();
+}
+
+async function wzNext() {
+  const n = _wizardState.step;
+  if (n === 1) {
+    const scenario = document.getElementById('wzScenario').value.trim();
+    if (!scenario) { toast('Describe the scenario first', true); return; }
+    const resolved = _resolveEndpointModel('wzModelSel', 'wzLastModel');
+    if (!resolved) { toast('Pick a model first', true); return; }
+    _wizardState.scenario = scenario;
+    _wizardState.context = document.getElementById('wzContext').value.trim();
+    _wizardState.modelResolved = resolved;
+    wzShowStep(2);
+  } else if (n === 2) {
+    const yaml = document.getElementById('wzYaml').value.trim();
+    if (!yaml) { toast('Generate or paste a draft first', true); return; }
+    _wizardState.yaml = yaml;
+    wzShowStep(3);
+  } else if (n === 3) {
+    _wizardState.yaml = document.getElementById('wzYamlReview').value;
+    wzShowStep(4);
+  } else if (n === 4) {
+    _wizardState.tags = document.getElementById('wzTags').value
+      .split(',').map(t => t.trim()).filter(Boolean);
+    _wizardState.setMode = document.querySelector('input[name="wzSetMode"]:checked').value;
+    _wizardState.setNewName = document.getElementById('wzSetNewName').value.trim();
+    const sv = document.getElementById('wzSetExistingSel').value;
+    _wizardState.setExistingId = sv ? parseInt(sv, 10) : null;
+    wzShowStep(5);
+  } else if (n === 5) {
+    await wzFinalSave();
+  }
+}
+
+function wzBack() {
+  if (_wizardState.step > 1) wzShowStep(_wizardState.step - 1);
+}
+
+// ── Step 2: auto-generate if YAML is empty ─────────────────────────────────────
+async function wzEnterStep2() {
+  if (_wizardState.yaml) {
+    document.getElementById('wzYaml').value = _wizardState.yaml;
+    if (_wizardState.explanation) {
+      const ex = document.getElementById('wzExplanation');
+      ex.textContent = _wizardState.explanation;
+      ex.style.display = '';
+    }
+    return;
+  }
+  await wzGenerate();
+}
+
+async function wzGenerate() {
+  const status = document.getElementById('wzGenStatus');
+  status.textContent = 'generating draft…';
+  const primary = document.getElementById('wzPrimaryBtn');
+  primary.disabled = true;
+  try {
+    const payload = {
+      message: _wizardState.scenario,
+      context: _wizardState.context || null,
+      ...(_wizardState.modelResolved || {}),
+    };
+    const resp = await api('/api/uc-assist', {method:'POST', body:JSON.stringify(payload)});
+    if (resp.yaml_suggestion) {
+      _wizardState.yaml = resp.yaml_suggestion;
+      document.getElementById('wzYaml').value = resp.yaml_suggestion;
+    }
+    _wizardState.explanation = resp.explanation || '';
+    if (resp.explanation) {
+      const ex = document.getElementById('wzExplanation');
+      ex.textContent = resp.explanation;
+      ex.style.display = '';
+    }
+    status.textContent = '';
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+  } finally {
+    primary.disabled = false;
+  }
+}
+
+async function wzRefine() {
+  const req = document.getElementById('wzRefineInput').value.trim();
+  if (!req) { toast('Type a refinement request first', true); return; }
+  const current = document.getElementById('wzYaml').value.trim();
+  if (!current) { toast('Generate a draft first', true); return; }
+  const status = document.getElementById('wzGenStatus');
+  status.textContent = 'refining…';
+  const btn = document.getElementById('wzRefineBtn');
+  btn.disabled = true;
+  try {
+    const payload = {
+      message: req,
+      current_yaml: current,
+      context: _wizardState.context || null,
+      ...(_wizardState.modelResolved || {}),
+    };
+    const resp = await api('/api/uc-assist', {method:'POST', body:JSON.stringify(payload)});
+    if (resp.yaml_suggestion) {
+      _wizardState.yaml = resp.yaml_suggestion;
+      document.getElementById('wzYaml').value = resp.yaml_suggestion;
+    }
+    if (resp.explanation) {
+      const ex = document.getElementById('wzExplanation');
+      ex.textContent = resp.explanation;
+      ex.style.display = '';
+      _wizardState.explanation = resp.explanation;
+    }
+    document.getElementById('wzRefineInput').value = '';
+    status.textContent = '';
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Step 3: parsed fields preview + editable YAML ─────────────────────────────
+function wzEnterStep3() {
+  document.getElementById('wzYamlReview').value = _wizardState.yaml || '';
+  wzRenderParsedPreview();
+  document.getElementById('wzYamlReview').oninput = () => {
+    _wizardState.yaml = document.getElementById('wzYamlReview').value;
+    wzRenderParsedPreview();
+  };
+}
+
+function wzRenderParsedPreview() {
+  const yaml = _wizardState.yaml || '';
+  const fields = {
+    title:             /^title:\s*(.+)$/m,
+    uuid:              /^uuid:\s*(.+)$/m,
+    handle:            /^handle:\s*(.+)$/m,
+    lifecycle_phase:   /lifecycle_phase:\s*(\w+)/,
+    failure_mode:      /failure_mode:\s*(\w+)/,
+    profile:           /^\s*profile:\s*(\w+)/m,
+    'generated_by.mode':   /^\s*mode:\s*(\w+)/m,
+    'generated_by.source': /^\s*source:\s*([\w-]+)/m,
+  };
+  const rows = Object.entries(fields).map(([k, re]) => {
+    const m = re.exec(yaml);
+    const val = m ? m[1].trim().replace(/^["']|["']$/g, '') : '<em style="color:var(--text-faint);">unset</em>';
+    return `<div style="display:flex; gap:8px; padding:2px 0;"><span style="min-width:180px; color:var(--text-faint); font-family:var(--mono,monospace);">${esc(k)}</span><span style="color:var(--text);">${val}</span></div>`;
+  }).join('');
+  document.getElementById('wzParsed').innerHTML =
+    '<div style="font-size:10px; text-transform:uppercase; letter-spacing:0.10em; color:var(--text-faint); margin-bottom:4px;">parsed fields</div>' + rows;
+}
+
+async function wzValidate() {
+  const status = document.getElementById('wzValidateStatus');
+  status.textContent = 'validating…';
+  try {
+    const resp = await api('/api/use-cases/validate', {
+      method:'POST',
+      body: JSON.stringify({yaml_content: document.getElementById('wzYamlReview').value, tags: []}),
+    });
+    if (resp.ok) {
+      status.innerHTML = '<span style="color:var(--green)">✓ valid</span>';
+    } else {
+      const errs = (resp.errors || []).join('; ');
+      status.innerHTML = `<span style="color:var(--red)">✗ ${esc(errs || 'invalid')}</span>`;
+    }
+  } catch (e) {
+    // Endpoint returns 400 with structured errors on invalid YAML
+    let detail = e.message;
+    try {
+      const parsed = JSON.parse(e.message.replace(/^[^{]*/, ''));
+      if (parsed.errors) detail = parsed.errors.join('; ');
+    } catch(_) {}
+    status.innerHTML = `<span style="color:var(--red)">${esc(detail)}</span>`;
+  }
+}
+
+// ── Step 4: tags + Set assignment ─────────────────────────────────────────────
+async function wzEnterStep4() {
+  // Pre-fill tags from YAML
+  const yaml = _wizardState.yaml || '';
+  const tagsMatch = /^tags:\s*\n((?:\s+-\s+.+\n?)+)/m.exec(yaml);
+  let tags = [];
+  if (tagsMatch) {
+    tags = tagsMatch[1].split('\n').map(l => {
+      const t = /^\s+-\s+(.+)$/.exec(l);
+      return t ? t[1].trim().replace(/^["']|["']$/g, '') : '';
+    }).filter(Boolean);
+  }
+  if (!_wizardState.tags.length) _wizardState.tags = tags;
+  document.getElementById('wzTags').value = _wizardState.tags.join(', ');
+  // Populate existing Sets dropdown
+  if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
+  const sel = document.getElementById('wzSetExistingSel');
+  sel.innerHTML = '<option value="">— pick a set —</option>' +
+    (allSets || []).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
+}
+
+// ── Step 5: summary + save ────────────────────────────────────────────────────
+function wzEnterStep5() {
+  document.getElementById('wzYamlFinal').value = _wizardState.yaml || '';
+  const titleMatch = /^title:\s*(.+)$/m.exec(_wizardState.yaml || '');
+  const title = titleMatch ? titleMatch[1].trim().replace(/^["']|["']$/g, '') : '(untitled)';
+  let setDest = 'Skip — leave unassigned';
+  if (_wizardState.setMode === 'new') setDest = `Create new Set "${_wizardState.setNewName || '(name missing)'}"`;
+  else if (_wizardState.setMode === 'existing') {
+    const found = (allSets || []).find(s => s.id === _wizardState.setExistingId);
+    setDest = `Add to existing Set "${found ? found.name : '(none picked)'}"`;
+  }
+  document.getElementById('wzSummary').innerHTML = `
+    <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.10em; color:var(--text-faint); margin-bottom:4px;">ready to save</div>
+    <div style="font-size:13px; font-weight:600; margin-bottom:4px;">${esc(title)}</div>
+    <div style="font-size:11px; color:var(--text-dim);">tags: ${_wizardState.tags.length ? _wizardState.tags.map(esc).join(', ') : '<em>none</em>'}</div>
+    <div style="font-size:11px; color:var(--text-dim);">destination: ${esc(setDest)}</div>`;
+}
+
+async function wzFinalSave() {
+  const primary = document.getElementById('wzPrimaryBtn');
+  primary.disabled = true;
+  const status = document.getElementById('wzStatus');
+  status.textContent = 'saving UC…';
+  try {
+    const resp = await api('/api/use-cases', {
+      method:'POST',
+      body: JSON.stringify({yaml_content: _wizardState.yaml, tags: _wizardState.tags}),
+    });
+    _wizardState.savedUcUuid = resp.uuid || resp.use_case?.uuid;
+    // Set assignment
+    let targetSetId = null;
+    if (_wizardState.setMode === 'new') {
+      if (!_wizardState.setNewName) { toast('New Set needs a name', true); primary.disabled = false; status.textContent = ''; return; }
+      status.textContent = 'creating set…';
+      const created = await api('/api/sets', {method:'POST', body:JSON.stringify({name: _wizardState.setNewName, description: 'created from UC wizard'})});
+      targetSetId = created.id;
+    } else if (_wizardState.setMode === 'existing') {
+      targetSetId = _wizardState.setExistingId;
+    }
+    if (targetSetId) {
+      status.textContent = 'adding to set…';
+      await api(`/api/sets/${targetSetId}/members`, {
+        method:'POST',
+        body: JSON.stringify({uc_uuid: _wizardState.savedUcUuid, uc_source: 'managed'}),
+      });
+    }
+    toast(`UC saved: ${_wizardState.savedUcUuid}`);
+    closeUcWizard();
+    try { await loadUCs(); } catch(_) {}
+    try { await loadSets(); } catch(_) {}
+  } catch (e) {
+    let detail = e.message;
+    try {
+      const parsed = JSON.parse(e.message.replace(/^[^{]*/, ''));
+      if (parsed.errors) detail = 'validation: ' + parsed.errors.join('; ');
+      else if (parsed.message) detail = parsed.message;
+    } catch(_) {}
+    status.innerHTML = `<span style="color:var(--red)">${esc(detail)}</span>`;
+    primary.disabled = false;
+  }
+}
+
+// Hand off the in-progress wizard state to the legacy ucModal for power-user edits
+function wzToAdvanced() {
+  const yaml = document.getElementById('wzYamlReview').value
+    || document.getElementById('wzYaml').value
+    || _wizardState?.yaml || '';
+  const tags = (_wizardState?.tags || []).join(', ');
+  closeUcWizard();
+  openUCModal(null, yaml, tags);
+}
+
 // ══════════════════════════ SETS ══════════════════════════
 
 async function loadSets() {
@@ -6622,10 +7076,17 @@ try {
   document.querySelectorAll('.split-resizer').forEach(attachResizer);
 })();
 
-document.getElementById('newUCBtn').addEventListener('click', () => openUCModal());
+document.getElementById('newUCBtn').addEventListener('click', () => openUcWizard());
 document.getElementById('bulkImportUCBtn').addEventListener('click', () => openBulkImport());
 document.getElementById('closeBulkImport').addEventListener('click', closeBulkImport);
 document.getElementById('cancelBulkImport').addEventListener('click', closeBulkImport);
+document.getElementById('closeUcWizard').addEventListener('click', closeUcWizard);
+document.getElementById('cancelUcWizard').addEventListener('click', closeUcWizard);
+document.getElementById('wzBackBtn').addEventListener('click', wzBack);
+document.getElementById('wzPrimaryBtn').addEventListener('click', wzNext);
+document.getElementById('wzRefineBtn').addEventListener('click', wzRefine);
+document.getElementById('wzValidateBtn').addEventListener('click', wzValidate);
+document.getElementById('wzAdvancedBtn').addEventListener('click', wzToAdvanced);
 document.getElementById('closeUCModal').addEventListener('click', closeUCModal);
 document.getElementById('cancelUCModal').addEventListener('click', closeUCModal);
 document.getElementById('saveUCModal').addEventListener('click', saveUC);
@@ -6699,7 +7160,7 @@ document.getElementById('memberSearchInput').addEventListener('blur', () => {
 });
 
 // Close modals on overlay click
-['newRunModal','ucModal','setModal','addMemberModal','lcModal','importModal','promoteModal','bulkImportModal'].forEach(id => {
+['newRunModal','ucModal','setModal','addMemberModal','lcModal','importModal','promoteModal','bulkImportModal','ucWizardModal'].forEach(id => {
   document.getElementById(id).addEventListener('click', e => {
     if (e.target===document.getElementById(id)) document.getElementById(id).classList.remove('open');
   });
