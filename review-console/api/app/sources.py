@@ -125,12 +125,39 @@ def _cm_to_source_state(cm, data_keys: tuple) -> dict:
     `data_keys` names the fields this source kind stores in ConfigMap.data —
     e.g. ('repo_url','repo_branch') for repo sources, ('endpoint','model')
     for inference. Returned as both flat keys (back-compat) and under 'data'.
+
+    For spec sources, also detects multi-source mode (the ConfigMap has a
+    `sources` key carrying a YAML list of {namespace, repo_url, repo_branch,
+    root_path}). When present, the parsed list is exposed as `sources` and
+    `multi_source: True`. The legacy flat keys remain in the response (as
+    None) for back-compat with the UI's existing read path.
     """
     data = cm.data or {}
     meta = cm.metadata
     ann = meta.annotations or {}
+
+    # Detect multi-source mode (spec ConfigMap with `sources` YAML list)
+    sources_yaml = data.get("sources")
+    parsed_sources = None
+    if sources_yaml:
+        try:
+            import yaml
+            parsed_sources = yaml.safe_load(sources_yaml)
+            if not isinstance(parsed_sources, list):
+                log.warning(
+                    "ConfigMap 'sources' key did not parse to a list "
+                    "(got %s); falling back to single-source view",
+                    type(parsed_sources).__name__,
+                )
+                parsed_sources = None
+        except Exception as e:
+            log.warning("Failed to parse ConfigMap 'sources' YAML: %s", e)
+            parsed_sources = None
+
     out = {
         "data": {k: data.get(k) for k in data_keys},
+        "multi_source": parsed_sources is not None,
+        "sources": parsed_sources,
         "managed_by": ann.get(f"{ANNOTATION_PREFIX}/managed-by"),
         "last_applied_by": ann.get(f"{ANNOTATION_PREFIX}/last-applied-by"),
         "last_applied_at": ann.get(f"{ANNOTATION_PREFIX}/last-applied-at"),
@@ -144,6 +171,7 @@ def _cm_to_source_state(cm, data_keys: tuple) -> dict:
     }
     # Promote each data field to the top level for back-compat with the
     # existing UI / spec/corpus consumers that read repo_url, repo_branch.
+    # In multi-source mode these are None — the UI should consult `sources`.
     for k in data_keys:
         out[k] = data.get(k)
     return out
@@ -419,6 +447,32 @@ def apply_source(
         raise ValueError(f"unknown source kind: {kind}")
     cfg = SOURCES[kind]
     now = _now_iso()
+
+    # If this source kind is in multi-source mode, refuse single-source
+    # writes — they would be silently ignored by the init container (which
+    # prefers /config/sources over repo_url/repo_branch). Multi-source
+    # editing UI lands in a future change (DAV multi-repo management).
+    if kind in ("spec", "corpus"):
+        try:
+            existing = _core().read_namespaced_config_map(
+                name=cfg["configmap"], namespace=NAMESPACE
+            )
+            if (existing.data or {}).get("sources"):
+                raise ValueError(
+                    f"{cfg['configmap']} is in multi-source mode; "
+                    f"single-source updates are not yet supported by the UI. "
+                    f"Edit the ConfigMap's `sources` field directly "
+                    f"(`oc edit configmap {cfg['configmap']} -n {NAMESPACE}`), "
+                    f"then `oc rollout restart deployment/{cfg.get('deployment') or '<deployment>'} "
+                    f"-n {NAMESPACE}` to apply."
+                )
+        except ApiException as e:
+            # If the ConfigMap doesn't exist or we can't read it, fall
+            # through and let the patch attempt below produce its own error.
+            log.warning(
+                "Pre-flight multi-source check failed for %s: %s",
+                cfg["configmap"], e,
+            )
 
     # Build the data patch + validate per source kind.
     if kind == "inference":
