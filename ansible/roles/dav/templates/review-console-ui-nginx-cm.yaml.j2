@@ -41,7 +41,12 @@ data:
 
         proxy_connect_timeout 10s;
         proxy_send_timeout    60s;
-        proxy_read_timeout    60s;
+        # M12 — LLM-backed endpoints (/api/uc-assist long generations,
+        # /api/use-cases/bulk-from-text transcript extraction, the wizard's
+        # refine flow against larger models) routinely exceed 60s. Match
+        # the route's 600s ceiling so the wait propagates end-to-end:
+        # client → route (600s) → nginx (600s) → API → LLM.
+        proxy_read_timeout    600s;
     }
 
     location / {

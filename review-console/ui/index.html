@@ -251,6 +251,13 @@
   .wz-step.done { color:var(--text); border-color:var(--accent-soft); background:var(--accent-bg); font-weight:500; }
   .wz-step.active { color:#1a1305; border-color:var(--accent); background:var(--accent); font-weight:600; box-shadow:0 0 0 2px var(--accent-bg); }
   .wz-sep { color:var(--text-faint); font-size:14px; }
+  /* M12 — inline spinner for LLM-bound waits (wizard generate/refine, bulk extract, validate). */
+  .llm-spinner { display:inline-block; width:12px; height:12px; border:2px solid var(--accent-bg); border-top-color:var(--accent); border-radius:50%; animation: llm-spin 0.8s linear infinite; vertical-align:middle; margin-right:6px; }
+  @keyframes llm-spin { to { transform: rotate(360deg); } }
+  /* Full-pane busy overlay used by step 2/3/save when an LLM round-trip is in flight. */
+  .wz-busy { position:relative; }
+  .wz-busy::after { content:''; position:absolute; inset:0; background:rgba(0,0,0,0.35); border-radius:2px; pointer-events:auto; z-index:10; }
+  .wz-busy-msg { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); z-index:11; background:var(--bg-panel); border:1px solid var(--accent); border-radius:4px; padding:10px 14px; font-size:12px; color:var(--text); box-shadow:0 4px 14px rgba(0,0,0,0.5); display:flex; align-items:center; gap:8px; max-width:80%; text-align:center; }
   .btn.primary { background:var(--accent); border-color:var(--accent); color:#1a1305; font-weight:500; }
   .btn.primary:hover:not(:disabled) { background:#e9a94c; border-color:#e9a94c; }
   .btn.ghost { border-color:transparent; background:transparent; color:var(--text-dim); }
@@ -5453,12 +5460,15 @@ async function biRunExtract() {
   if (!resolved) { toast('Pick a model first', true); return; }
   const primary = document.getElementById('biPrimaryBtn');
   primary.disabled = true;
-  document.getElementById('biStatus').textContent = 'extracting…';
+  document.getElementById('biStatus').innerHTML = '<span class="llm-spinner"></span>extracting UCs…';
   const payload = {
     text,
     context: document.getElementById('biContext').value.trim() || null,
     ...resolved,
   };
+  const pane = document.getElementById('biStep1');
+  const approxMin = Math.max(1, Math.ceil(text.length / 4000));
+  const hideBusy = _showBusy(pane, `Extracting UCs from your text — large transcripts can take ${approxMin}–${approxMin * 2} min on local models. Don't close this window.`);
   try {
     const resp = await api('/api/use-cases/bulk-from-text', {
       method: 'POST', body: JSON.stringify(payload),
@@ -5493,6 +5503,8 @@ async function biRunExtract() {
     document.getElementById('biStatus').innerHTML =
       `<span style="color:var(--red)">${esc(e.message)}</span>`;
     primary.disabled = false;
+  } finally {
+    hideBusy();
   }
 }
 
@@ -5668,6 +5680,21 @@ function log_failures(uuid, e) {
 
 let _wizardState = null;   // { step, scenario, context, modelResolved, yaml, explanation, tags[], setMode, setNewName, setExistingId, savedUcUuid }
 
+// M12 — show / hide a busy overlay over an element while an LLM call is in flight.
+// Returns a function that hides the overlay; call it in a finally{} block.
+function _showBusy(parentEl, msg) {
+  if (!parentEl) return () => {};
+  parentEl.classList.add('wz-busy');
+  const overlay = document.createElement('div');
+  overlay.className = 'wz-busy-msg';
+  overlay.innerHTML = `<span class="llm-spinner"></span><span>${esc(msg || 'working…')}</span>`;
+  parentEl.appendChild(overlay);
+  return () => {
+    parentEl.classList.remove('wz-busy');
+    overlay.remove();
+  };
+}
+
 function openUcWizard() {
   document.getElementById('ucWizardModal').classList.add('open');
   _wizardState = {
@@ -5786,9 +5813,11 @@ async function wzEnterStep2() {
 
 async function wzGenerate() {
   const status = document.getElementById('wzGenStatus');
-  status.textContent = 'generating draft…';
+  status.innerHTML = '<span class="llm-spinner"></span>generating draft…';
   const primary = document.getElementById('wzPrimaryBtn');
   primary.disabled = true;
+  const pane = document.querySelector('#ucWizardModal .wz-pane[data-step="2"]');
+  const hideBusy = _showBusy(pane, 'Generating UC draft via LLM — this can take 30–90s for larger models…');
   try {
     const payload = {
       message: _wizardState.scenario,
@@ -5810,6 +5839,7 @@ async function wzGenerate() {
   } catch (e) {
     status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
   } finally {
+    hideBusy();
     primary.disabled = false;
   }
 }
@@ -5820,9 +5850,11 @@ async function wzRefine() {
   const current = document.getElementById('wzYaml').value.trim();
   if (!current) { toast('Generate a draft first', true); return; }
   const status = document.getElementById('wzGenStatus');
-  status.textContent = 'refining…';
+  status.innerHTML = '<span class="llm-spinner"></span>refining…';
   const btn = document.getElementById('wzRefineBtn');
   btn.disabled = true;
+  const pane = document.querySelector('#ucWizardModal .wz-pane[data-step="2"]');
+  const hideBusy = _showBusy(pane, 'Asking the LLM to refine the draft…');
   try {
     const payload = {
       message: req,
@@ -5846,6 +5878,7 @@ async function wzRefine() {
   } catch (e) {
     status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
   } finally {
+    hideBusy();
     btn.disabled = false;
   }
 }
@@ -5883,7 +5916,7 @@ function wzRenderParsedPreview() {
 
 async function wzValidate() {
   const status = document.getElementById('wzValidateStatus');
-  status.textContent = 'validating…';
+  status.innerHTML = '<span class="llm-spinner"></span>validating…';
   try {
     const resp = await api('/api/use-cases/validate', {
       method:'POST',
@@ -5949,7 +5982,9 @@ async function wzFinalSave() {
   const primary = document.getElementById('wzPrimaryBtn');
   primary.disabled = true;
   const status = document.getElementById('wzStatus');
-  status.textContent = 'saving UC…';
+  status.innerHTML = '<span class="llm-spinner"></span>saving UC…';
+  const pane = document.querySelector('#ucWizardModal .wz-pane[data-step="5"]');
+  const hideBusy = _showBusy(pane, 'Persisting UC + Set assignment…');
   try {
     const resp = await api('/api/use-cases', {
       method:'POST',
@@ -5986,6 +6021,8 @@ async function wzFinalSave() {
     } catch(_) {}
     status.innerHTML = `<span style="color:var(--red)">${esc(detail)}</span>`;
     primary.disabled = false;
+  } finally {
+    hideBusy();
   }
 }
 
