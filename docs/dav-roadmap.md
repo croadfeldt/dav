@@ -212,7 +212,7 @@ Milestone breakdown:
 
 - **M1 — managed_repos table + CRUD API** ✅
 - **M2 — Registry → ConfigMap projection** ✅ (idempotent, role=spec hook, rolls dav-docs-mcp on real change only)
-- **M3 — Repos UI view** (Config → Repos: list/add/edit/delete)
+- **M3 — Repos UI view** ✅ (Config → Managed repos: list with role chips, add/edit/delete dialog, manual "↻ Project" button, projection-status feedback in toasts)
 - **M4 — Sources panel refactor** (read-only view over registry)
 - **M5 — `pr_comments` table + GitHub poller** (role=issue-source)
 - **M6 — Webhook receiver extension** for issue_comment / PR review comment events

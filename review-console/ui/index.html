@@ -1111,6 +1111,10 @@
     <!-- ── Left nav ── -->
     <nav class="config-nav" id="configNav">
       <div class="config-nav-group">
+        <div class="config-nav-cat" data-target="cfgSec-registry">Multi-repo Registry</div>
+        <a class="config-nav-link" data-target="configReposPanel">Managed repos</a>
+      </div>
+      <div class="config-nav-group">
         <div class="config-nav-cat" data-target="cfgSec-pipeline">Pipeline Sources</div>
         <a class="config-nav-link" data-target="configSpecPanel">Architecture spec</a>
         <a class="config-nav-link" data-target="configCorpusPanel">Evaluation corpus</a>
@@ -1129,6 +1133,56 @@
 
     <!-- ── Right content ── -->
     <div class="config-content" id="configContent">
+
+      <div class="cfg-sec-hdr" id="cfgSec-registry">
+        <span class="cfg-sec-title">Multi-repo Registry</span>
+        <span class="cfg-sec-sub">First-class registry of repos DAV operates on — source-of-truth (ADR-003). Spec changes auto-project to dav-source-spec ConfigMap + roll MCP.</span>
+      </div>
+
+      <div class="panel-card" id="configReposPanel">
+        <div class="panel-card-header" style="justify-content:space-between;">
+          <div>
+            <div class="pc-title">Managed repos</div>
+            <div class="pc-sub">Namespace, URL, branch, roles. Each role=spec change regenerates the MCP source list.</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <button class="btn ghost btn-sm" id="reposProjectBtn" title="Manual reconcile: regenerate dav-source-spec from registry">↻ Project</button>
+            <button class="btn ghost btn-sm" id="addRepoBtn">+ Add repo</button>
+          </div>
+        </div>
+        <div id="repoList" style="min-height:32px;"></div>
+      </div>
+
+      <div id="repoFormCard" class="cfg-card panel-card" style="display:none;">
+        <div class="panel-card-header">
+          <div class="pc-title" id="repoFormTitle">Add repo</div>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
+            <div class="form-field"><label>Namespace <span style="color:var(--text-faint);font-weight:400;">(URL-safe; MCP handle prefix; immutable after create)</span></label>
+              <input id="rpfNamespace" placeholder="e.g. udlm" /></div>
+            <div class="form-field"><label>Display name <span style="color:var(--text-faint);font-weight:400;">(optional)</span></label>
+              <input id="rpfDisplayName" placeholder="e.g. UDLM — Universal Data Lifecycle Model" /></div>
+            <div class="form-field" style="grid-column:1/-1;"><label>Repo URL</label>
+              <input id="rpfRepoUrl" placeholder="https://github.com/owner/repo.git" /></div>
+            <div class="form-field"><label>Branch</label>
+              <input id="rpfRepoBranch" value="main" /></div>
+            <div class="form-field"><label>Root path <span style="color:var(--text-faint);font-weight:400;">(optional subdir, no leading slash)</span></label>
+              <input id="rpfRootPath" placeholder="e.g. architecture" /></div>
+          </div>
+          <div style="margin-top:10px;padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:6px;">Roles</div>
+            <div style="display:flex;gap:18px;flex-wrap:wrap;" id="rpfRolesContainer">
+              <span style="font-size:11px;color:var(--text-faint);">(loading vocabulary…)</span>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+            <button class="btn primary" id="saveRepoBtn">Save</button>
+            <button class="btn ghost" id="cancelRepoBtn">Cancel</button>
+            <span id="repoFormMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+        </div>
+      </div>
 
       <div class="cfg-sec-hdr" id="cfgSec-pipeline">
         <span class="cfg-sec-title">Pipeline Sources</span>
@@ -5807,7 +5861,9 @@ const SOURCE_UI = {
 };
 
 async function loadConfig() {
-  // Load review models, MCP, code repos, UC assist, and setup config nav
+  // Load review models, MCP, code repos, UC assist, repos registry, and setup config nav
+  await loadRepos();           // Managed repos registry (M3) — load before sources panels
+                               // since sources are now projections over the registry
   await loadReviewModels();
   renderModelList();
   _populateModelSel('rdRevModelSel', 'reviewLastModel');
@@ -7250,6 +7306,214 @@ async function deleteMCP(id, btn) {
   });
 }
 
+// ── Managed Repos Registry (M3 of #28) ──────────────────────────────────────
+// CRUD over the managed_repos table. Spec/issue-source role changes
+// auto-project to dav-source-spec via the API; the UI surfaces the
+// projection result so the operator sees "saved + MCP rolling" feedback.
+let _reposState = { list: [], roles: [], editingUuid: null };
+
+async function loadRepos() {
+  try {
+    const [reposResp, rolesResp] = await Promise.all([
+      api('/api/repos'),
+      api('/api/repos/roles/vocabulary'),
+    ]);
+    _reposState.list = reposResp.repos || [];
+    _reposState.roles = rolesResp.roles || [];
+    renderReposList();
+    renderRepoRoleCheckboxes();
+  } catch (e) {
+    document.getElementById('repoList').innerHTML =
+      `<div class="empty" style="color:var(--red);padding:10px;">${esc(e.message)}</div>`;
+  }
+}
+
+function renderReposList() {
+  const el = document.getElementById('repoList');
+  if (!_reposState.list.length) {
+    el.innerHTML = '<div class="empty" style="padding:14px;">No repos registered yet. Click + Add repo to register one.</div>';
+    return;
+  }
+  el.innerHTML = _reposState.list.map(r => {
+    const uuidJson = attrJson(r.uuid);
+    const nsJson = attrJson(r.namespace);
+    return `
+    <div class="repo-row" style="display:grid;grid-template-columns:160px 1fr auto auto;gap:12px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);">
+      <div>
+        <div style="font-weight:600;font-size:12px;">${esc(r.namespace)}</div>
+        ${r.display_name && r.display_name !== r.namespace ? `<div style="font-size:10px;color:var(--text-faint);">${esc(r.display_name)}</div>` : ''}
+        <div style="font-size:9px;color:var(--text-faint);font-family:var(--mono,monospace);">tenant: ${esc(r.tenant_id || 'default')}</div>
+      </div>
+      <div style="min-width:0;">
+        <div style="font-size:11px;font-family:var(--mono,monospace);color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(r.repo_url)}</div>
+        <div style="font-size:10px;color:var(--text-faint);">branch: <span style="color:var(--accent);">${esc(r.repo_branch)}</span> · root_path: ${r.root_path ? esc(r.root_path) : '<span style="color:var(--text-faint);">(repo root)</span>'}</div>
+      </div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;">
+        ${(r.roles || []).map(role => `<span style="font-size:10px;padding:2px 6px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">${esc(role)}</span>`).join('') || '<span style="font-size:10px;color:var(--text-faint);font-style:italic;">(no roles)</span>'}
+      </div>
+      <div style="display:flex;gap:4px;">
+        <button class="btn ghost btn-sm" onclick="editRepo(${uuidJson})">Edit</button>
+        <button class="btn ghost btn-sm" onclick="deleteRepoConfirm(${uuidJson}, ${nsJson})" style="color:var(--red);">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderRepoRoleCheckboxes() {
+  const el = document.getElementById('rpfRolesContainer');
+  if (!el) return;
+  if (!_reposState.roles.length) {
+    el.innerHTML = '<span style="font-size:11px;color:var(--text-faint);">(no roles in vocabulary)</span>';
+    return;
+  }
+  el.innerHTML = _reposState.roles.map(role => `
+    <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;">
+      <input type="checkbox" class="rpf-role" value="${esc(role)}" /> ${esc(role)}
+    </label>
+  `).join('');
+}
+
+function _clearRepoForm() {
+  for (const id of ['rpfNamespace','rpfDisplayName','rpfRepoUrl','rpfRootPath']) {
+    const el = document.getElementById(id);
+    if (el) { el.value = ''; el.disabled = false; }
+  }
+  const branchEl = document.getElementById('rpfRepoBranch');
+  if (branchEl) branchEl.value = 'main';
+  const msg = document.getElementById('repoFormMsg');
+  if (msg) { msg.textContent = ''; msg.style.color = ''; }
+  document.querySelectorAll('.rpf-role').forEach(cb => cb.checked = false);
+  _reposState.editingUuid = null;
+}
+
+function showRepoForm(repo) {
+  _clearRepoForm();
+  const titleEl = document.getElementById('repoFormTitle');
+  if (repo) {
+    titleEl.textContent = `Edit repo · ${repo.namespace}`;
+    document.getElementById('rpfNamespace').value = repo.namespace;
+    document.getElementById('rpfNamespace').disabled = true;  // immutable post-create
+    document.getElementById('rpfDisplayName').value = repo.display_name === repo.namespace ? '' : (repo.display_name || '');
+    document.getElementById('rpfRepoUrl').value = repo.repo_url;
+    document.getElementById('rpfRepoBranch').value = repo.repo_branch;
+    document.getElementById('rpfRootPath').value = repo.root_path || '';
+    document.querySelectorAll('.rpf-role').forEach(cb => cb.checked = (repo.roles || []).includes(cb.value));
+    _reposState.editingUuid = repo.uuid;
+  } else {
+    titleEl.textContent = 'Add repo';
+  }
+  document.getElementById('repoFormCard').style.display = '';
+  setTimeout(() => document.getElementById('rpfNamespace').focus(), 50);
+}
+
+function hideRepoForm() {
+  document.getElementById('repoFormCard').style.display = 'none';
+  _clearRepoForm();
+}
+
+function editRepo(uuid) {
+  const r = _reposState.list.find(x => x.uuid === uuid);
+  if (r) showRepoForm(r);
+}
+
+async function deleteRepoConfirm(uuid, ns) {
+  if (!confirm(
+    `Delete repo "${ns}"?\n\n` +
+    `If this repo had role=spec, the projector will regenerate the\n` +
+    `dav-source-spec ConfigMap and roll dav-docs-mcp.\n\n` +
+    `If it was the last role=spec repo, the projector will refuse\n` +
+    `(would crash the MCP). Create a replacement first.`
+  )) return;
+  const msgEl = document.getElementById('repoFormMsg');
+  try {
+    const resp = await api(`/api/repos/${encodeURIComponent(uuid)}`, { method: 'DELETE' });
+    await loadRepos();
+    toast(`Deleted ${ns}${resp._projection ? ' · ' + _describeRepoProjection(resp._projection, true) : ''}`);
+  } catch (e) {
+    toast('Delete failed: ' + e.message, true);
+  }
+}
+
+async function saveRepo() {
+  const msgEl = document.getElementById('repoFormMsg');
+  msgEl.textContent = 'Saving…';
+  msgEl.style.color = '';
+  const roles = Array.from(document.querySelectorAll('.rpf-role:checked')).map(cb => cb.value);
+  const payload = {
+    namespace: document.getElementById('rpfNamespace').value.trim(),
+    display_name: document.getElementById('rpfDisplayName').value.trim() || null,
+    repo_url: document.getElementById('rpfRepoUrl').value.trim(),
+    repo_branch: document.getElementById('rpfRepoBranch').value.trim() || 'main',
+    root_path: document.getElementById('rpfRootPath').value.trim(),
+    roles: roles,
+  };
+  try {
+    let resp;
+    if (_reposState.editingUuid) {
+      // namespace + tenant_id are immutable through PUT (per ADR-003 §3)
+      const { namespace, ...putBody } = payload;
+      resp = await api(`/api/repos/${encodeURIComponent(_reposState.editingUuid)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(putBody),
+      });
+    } else {
+      resp = await api('/api/repos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    }
+    msgEl.innerHTML = `<span style="color:var(--green);">Saved · ${esc(resp.namespace)}${resp._projection ? ' · ' + _describeRepoProjection(resp._projection, false) : ''}</span>`;
+    await loadRepos();
+    setTimeout(() => hideRepoForm(), 1200);
+  } catch (e) {
+    msgEl.innerHTML = `<span style="color:var(--red);">${esc(e.message)}</span>`;
+  }
+}
+
+function _describeRepoProjection(p, plain) {
+  if (!p) return '';
+  if (p.status === 'unchanged')
+    return plain ? 'ConfigMap already current; MCP not rolled' : 'ConfigMap already current; MCP not rolled';
+  if (p.status === 'refused')
+    return plain ? `projection refused: ${p.reason || ''}` : `<span style="color:var(--accent);">projection refused: ${esc(p.reason || '')}</span>`;
+  if (p.status === 'skipped')
+    return plain ? `projection skipped: ${p.reason || ''}` : `<span style="color:var(--accent);">projection skipped: ${esc(p.reason || '')}</span>`;
+  if (p.status === 'projected') {
+    const base = `projected ${p.source_count} source(s)`;
+    return plain
+      ? `${base}; MCP ${p.rolled_out ? 'rolling' : 'not rolled'}`
+      : `${base}; MCP ${p.rolled_out ? '<span style="color:var(--accent);">rolling</span>' : 'not rolled'}`;
+  }
+  return p.status || '';
+}
+
+async function projectReposManually() {
+  const btn = document.getElementById('reposProjectBtn');
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    const r = await api('/api/repos/project', { method: 'POST' });
+    btn.title = `${r.status} · ${r.source_count} source(s)` + (r.rolled_out ? ' · MCP rolling' : '');
+    btn.textContent = r.status === 'projected'
+      ? `✓ Projected (${r.source_count})`
+      : (r.status === 'unchanged' ? '✓ Already current' : `⚠ ${r.status}`);
+    toast(`Projection: ${_describeRepoProjection(r, true)}`);
+  } catch (e) {
+    btn.title = e.message;
+    btn.textContent = '⚠ Failed';
+    toast('Projection failed: ' + e.message, true);
+  } finally {
+    setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 3000);
+  }
+}
+
+document.getElementById('addRepoBtn')?.addEventListener('click', () => showRepoForm(null));
+document.getElementById('saveRepoBtn')?.addEventListener('click', saveRepo);
+document.getElementById('cancelRepoBtn')?.addEventListener('click', hideRepoForm);
+document.getElementById('reposProjectBtn')?.addEventListener('click', projectReposManually);
+
 document.getElementById('addMCPBtn').addEventListener('click', () => openMCPForm(null));
 document.getElementById('cancelMCPBtn').addEventListener('click', () => {
   document.getElementById('mcpFormCard').style.display = 'none';
@@ -7442,6 +7706,7 @@ document.getElementById('saveCodeRepoBtn').addEventListener('click', async () =>
 // ── Config nav: scroll-spy + click-to-scroll ─────────────────────────────────
 let _configNavReady = false;
 const _cfgPanelIds = [
+  'configReposPanel',
   'configSpecPanel','configCorpusPanel','configInferencePanel',
   'configModelsPanel','configUCAssistPanel','configMCPPanel','configCodeReposPanel',
 ];
