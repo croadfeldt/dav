@@ -83,6 +83,26 @@ def _validate_roles(roles: list[str]) -> list[str]:
 DEFAULT_TENANT = "default"
 
 
+def _parse_jsonb(value) -> dict:
+    """asyncpg returns JSONB columns as raw strings unless a codec is
+    registered globally. Parse here to keep the rest of the module simple.
+    Accepts dict (already parsed), str (JSON to parse), or None.
+    """
+    if value is None or value == "":
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        import json
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    # Unexpected type — return empty rather than raise.
+    return {}
+
+
 def _row_to_dict(row: asyncpg.Record) -> dict:
     """Convert a managed_repos row to a JSON-serialisable dict."""
     return {
@@ -94,8 +114,8 @@ def _row_to_dict(row: asyncpg.Record) -> dict:
         "root_path": row["root_path"],
         "roles": list(row["roles"] or []),
         "tenant_id": row["tenant_id"],
-        "ingestion_config": dict(row["ingestion_config"] or {}),
-        "metadata": dict(row["metadata"] or {}),
+        "ingestion_config": _parse_jsonb(row["ingestion_config"]),
+        "metadata": _parse_jsonb(row["metadata"]),
         "created_at": row["created_at"].isoformat(),
         "created_by": row["created_by"],
         "updated_at": row["updated_at"].isoformat(),
