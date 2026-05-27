@@ -51,11 +51,24 @@ spec:
       type: string
       default: "corpus"
 
-    # Path to the use-case directory inside the corpus repo
-    # (DCM convention: use-cases/ at the corpus repo root)
+    # Path to the use-case directory inside the corpus repo (DCM
+    # convention: use-cases/ at the corpus repo root). Used only in
+    # legacy single-source corpus mode. Multi-source corpus mode
+    # (ADR-007/M11) honors per-source root_path at clone time, so this
+    # param is ignored when dav-source-corpus has a `sources` key.
     - name: corpus-uc-subpath
       type: string
       default: "use-cases"
+
+    # Per-run corpus namespace filter (ADR-007 / M11b). Comma-separated
+    # list of source namespaces to include for this run. Empty string
+    # means "include all sources in the ConfigMap" — the common case
+    # (full-corpus regression). Operators select a subset from the
+    # New Run modal for ad-hoc / debug runs. Ignored in legacy
+    # single-source corpus mode.
+    - name: corpus-namespaces
+      type: string
+      default: ""
 
     # Run-corpus settings
     - name: mode
@@ -168,24 +181,29 @@ spec:
         - name: target-subdir
           value: $(params.spec-subdir)
 
-    # 3. Clone the consumer's corpus repo into <corpus-subdir>
-    #    (runs in parallel with sync-spec since both are read-only clones)
+    # 3. Clone each corpus source into <corpus-subdir>/<namespace>/
+    #    (per ADR-007 / M11b: multi-source-aware). Falls back to
+    #    legacy single-source clone when dav-source-corpus has no
+    #    `sources` key. corpus-namespaces param filters which sources
+    #    to include for this run (empty = all).
+    #
+    #    Runs in parallel with sync-spec; both are read-only clones.
     - name: sync-corpus
       timeout: "10m"
       runAfter:
         - cleanup-workspace
       taskRef:
-        name: dav-git-sync
+        name: dav-git-sync-multi-corpus
       workspaces:
         - name: source
           workspace: shared-data
       params:
-        - name: repo-url
-          value: $(params.consumer-corpus-repo-url)
-        - name: repo-branch
-          value: $(params.consumer-corpus-repo-branch)
-        - name: target-subdir
+        - name: workspace-subdir
           value: $(params.corpus-subdir)
+        - name: corpus-namespaces
+          value: $(params.corpus-namespaces)
+        - name: legacy-uc-subpath
+          value: $(params.corpus-uc-subpath)
 
     # 4. Run DAV stage 2 across the corpus
     #    Per-UC wall time at LLM inference is highly variable depending on
@@ -203,8 +221,13 @@ spec:
         - name: source
           workspace: shared-data
       params:
+        # ADR-007/M11b: corpus-subdir is the PARENT dir; engine.gather_corpus
+        # rglobs across all <namespace>/ subdirs (multi-source) OR the
+        # legacy single-clone dir (single-source). corpus-uc-subpath is
+        # honored only when the legacy clone path produced a flat repo
+        # with UCs under a sub-path — we append it conditionally below.
         - name: corpus-subdir
-          value: "$(params.corpus-subdir)/$(params.corpus-uc-subpath)"
+          value: $(params.corpus-subdir)
         - name: spec-subdir
           value: $(params.spec-subdir)
         - name: output-subdir

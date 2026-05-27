@@ -1584,7 +1584,12 @@
         <input id="nrCorpusSubpath" placeholder="(detecting…)" />
         <div class="form-hint">Relative path within the cloned corpus. Auto-detected from <code>dav/use-cases/</code> or <code>use-cases/</code>. Blank = full corpus.</div>
       </div>
-      <div class="form-row">
+      <div class="form-field" id="nrCorpusSourcesWrap" style="display:none;">
+        <label>Corpus sources (per-run filter)</label>
+        <div id="nrCorpusSources" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:2px;max-height:140px;overflow-y:auto;"></div>
+        <div class="form-hint">Select which corpus sources to include in this run. Blank/all = every registered <code>role=corpus</code> repo. Multi-source mode only.</div>
+      </div>
+      <div class="form-row" id="nrCorpusLegacyWrap">
         <div class="form-field"><label>Corpus repo URL</label>
           <input id="nrCorpusRepo" placeholder="(loading…)" /></div>
         <div class="form-field"><label>Corpus branch</label>
@@ -3216,9 +3221,55 @@ async function loadNewRunDefaults(forcedSubpath) {
         detectedEl.innerHTML = `· <span style="color:var(--text-faint)">no dav/ or use-cases/ found</span>`;
       }
     }
+    await _populateCorpusSourcesPicker();
   } catch (e) {
     toast('Could not load run defaults: ' + e.message, true);
   }
+}
+
+// ADR-007 / M11b: populate the per-run corpus source multi-select from
+// managed_repos. Hidden in legacy single-source mode (zero rows).
+async function _populateCorpusSourcesPicker() {
+  const wrap = document.getElementById('nrCorpusSourcesWrap');
+  const legacy = document.getElementById('nrCorpusLegacyWrap');
+  const grid = document.getElementById('nrCorpusSources');
+  if (!wrap || !grid) return;
+  try {
+    const resp = await api('/api/repos?role=corpus').catch(() => ({repos:[]}));
+    const rows = (resp.repos || []).filter(r => (r.roles || []).includes('corpus'));
+    if (!rows.length) {
+      wrap.style.display = 'none';
+      if (legacy) legacy.style.display = '';
+      grid.innerHTML = '';
+      return;
+    }
+    wrap.style.display = '';
+    if (legacy) legacy.style.display = 'none';   // multi-source supersedes legacy fields
+    grid.innerHTML = '';
+    rows.forEach(r => {
+      const ns = r.namespace || r.handle || '?';
+      const label = document.createElement('label');
+      label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;';
+      label.innerHTML = `<input type="checkbox" class="nr-corpus-ns" value="${esc(ns)}" checked style="width:auto;height:auto;accent-color:var(--accent);"> <span>${esc(ns)}</span> <span style="color:var(--text-faint);font-size:10px;">${esc(r.repo_url||'')}</span>`;
+      grid.appendChild(label);
+    });
+  } catch (e) {
+    wrap.style.display = 'none';
+    if (legacy) legacy.style.display = '';
+  }
+}
+
+// Returns null when all sources are selected (server default = include all),
+// otherwise a list of namespaces. Also returns null in legacy single-source
+// mode (picker hidden).
+function _collectSelectedCorpusNamespaces() {
+  const wrap = document.getElementById('nrCorpusSourcesWrap');
+  if (!wrap || wrap.style.display === 'none') return null;
+  const boxes = Array.from(document.querySelectorAll('#nrCorpusSources .nr-corpus-ns'));
+  if (!boxes.length) return null;
+  const selected = boxes.filter(b => b.checked).map(b => b.value);
+  if (selected.length === boxes.length) return null;
+  return selected;
 }
 
 // When the New Run modal is opened with an explicit UC selection (Run a Set,
@@ -3360,6 +3411,9 @@ async function submitNewRun() {
     selection_mode:     _pendingRunLineage?.selection_mode || (
       _pendingRunFilter ? 'selection' : 'corpus'
     ),
+    // ADR-007 / M11b: per-run corpus source filter. Null = all sources;
+    // a partial selection narrows the multi-source clone step in Tekton.
+    corpus_namespaces:  _collectSelectedCorpusNamespaces(),
   };
   try {
     const resp = await api('/api/runs', {method:'POST', body:JSON.stringify(payload)});

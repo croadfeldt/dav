@@ -1,0 +1,190 @@
+---
+# Tekton Task: multi-source corpus clone (ADR-007, M11b)
+#
+# Replaces the spec-only sync-corpus step for multi-source corpus runs.
+# Reads dav-source-corpus ConfigMap; for each source (filtered by the
+# optional corpus-namespaces param), clones the repo into a temp dir
+# and copies the configured root_path subtree into
+# /workspace/<workspace-subdir>/<namespace>/.
+#
+# Backward compatibility:
+# - If dav-source-corpus has no `sources` key (legacy single-source
+#   shape), falls back to cloning the single repo_url/repo_branch into
+#   /workspace/<workspace-subdir>/ (preserving the pre-M11 layout exactly).
+#
+# The downstream dav-run-corpus task gets /workspace/<workspace-subdir>/
+# (parent) as its corpus-subdir — engine.gather_corpus rglobs across all
+# namespace subdirs so the run analyzes UCs from every included source.
+# Per-source root_path is honored at clone time so only UC content
+# (not the full repo tree) lands in the workspace.
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: dav-git-sync-multi-corpus
+  namespace: {{ dav_namespace }}
+  annotations:
+    dav.dev/source-type: "corpus-multi"
+    dav.dev/last-applied-at: "{{ ansible_date_time.iso8601 }}"
+spec:
+  description: |
+    Clone each managed_repos row with role=corpus (or a filtered subset)
+    into <workspace>/<namespace>/<root_path-contents>. Per-source root_path
+    keeps the workspace free of non-UC YAML (.github/workflows etc.).
+  params:
+    - name: workspace-subdir
+      type: string
+      description: |
+        Subdirectory of the workspace to populate (e.g. "corpus").
+        Each source clones into <workspace-subdir>/<namespace>/.
+      default: "corpus"
+    - name: corpus-namespaces
+      type: string
+      description: |
+        Comma-separated list of source namespaces to include. Empty
+        means "all sources in the ConfigMap". Per-run override from
+        the New Run modal flows through here.
+      default: ""
+    - name: legacy-uc-subpath
+      type: string
+      description: |
+        Only used in the legacy single-source fallback (ConfigMap has
+        no `sources` key). Subdirectory of the cloned repo to stage
+        as the corpus content — keeps non-UC YAML (workflows etc.)
+        out of the engine's walk. Multi-source mode honors per-source
+        root_path instead and ignores this.
+      default: "use-cases"
+  workspaces:
+    - name: source
+      description: Shared workspace where the cloned corpus lands.
+  volumes:
+    - name: source-config
+      configMap:
+        name: dav-source-corpus
+  steps:
+    - name: clone
+      # Reuse the MCP image — it has git + pyyaml from M5b, exactly
+      # what we need to parse the dav-source-corpus sources YAML.
+      image: {{ mcp_docs_image }}
+      env:
+        - name: WORKSPACE_DIR_RESOLVED
+          value: "$(workspaces.source.path)/$(params.workspace-subdir)"
+        - name: NAMESPACES_FILTER
+          value: "$(params.corpus-namespaces)"
+        - name: LEGACY_UC_SUBPATH
+          value: "$(params.legacy-uc-subpath)"
+        # Legacy single-source fallback values. With optional=true these
+        # are absent in multi-source mode; the script branches accordingly.
+        - name: FALLBACK_REPO_URL
+          valueFrom:
+            configMapKeyRef:
+              name: dav-source-corpus
+              key: repo_url
+              optional: true
+        - name: FALLBACK_REPO_BRANCH
+          valueFrom:
+            configMapKeyRef:
+              name: dav-source-corpus
+              key: repo_branch
+              optional: true
+      volumeMounts:
+        - name: source-config
+          mountPath: /config
+          readOnly: true
+      script: |
+        #!/bin/sh
+        set -eu
+        echo "[multi-corpus] workspace=$WORKSPACE_DIR_RESOLVED"
+        echo "[multi-corpus] namespace filter=${NAMESPACES_FILTER:-(all)}"
+
+        # Fresh start so stale state from a prior run doesn't bleed in
+        rm -rf "$WORKSPACE_DIR_RESOLVED"
+        mkdir -p "$WORKSPACE_DIR_RESOLVED"
+
+        if [ -f /config/sources ]; then
+          echo "[multi-corpus] /config/sources detected — multi-source mode"
+          python3 <<'PYEOF'
+        import os, subprocess, sys, shutil, tempfile
+        import yaml
+
+        ws = os.environ['WORKSPACE_DIR_RESOLVED']
+        ns_filter = os.environ.get('NAMESPACES_FILTER', '').strip()
+        selected = set(n.strip() for n in ns_filter.split(',') if n.strip()) if ns_filter else None
+
+        with open('/config/sources') as f:
+            sources = yaml.safe_load(f) or []
+
+        cloned = 0
+        skipped_filter = 0
+        for src in sources:
+            ns = src.get('namespace')
+            url = src.get('repo_url')
+            branch = src.get('repo_branch', 'main')
+            root = (src.get('root_path') or '').strip('/')
+            if not ns or not url:
+                print(f'[multi-corpus] skipping malformed source: {src}', flush=True)
+                continue
+            if selected is not None and ns not in selected:
+                skipped_filter += 1
+                continue
+            tmp = tempfile.mkdtemp(prefix='davcorpus-')
+            print(f'[multi-corpus] cloning {ns}: {url}#{branch} -> {tmp}', flush=True)
+            try:
+                subprocess.run(
+                    ['git', 'clone', '--depth', '1', '--branch', branch, url, tmp],
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                print(f'[multi-corpus] ERROR cloning {ns}: {e}', file=sys.stderr)
+                shutil.rmtree(tmp, ignore_errors=True)
+                continue
+            src_dir = os.path.join(tmp, root) if root else tmp
+            dst_dir = os.path.join(ws, ns)
+            os.makedirs(dst_dir, exist_ok=True)
+            if not os.path.isdir(src_dir):
+                print(f'[multi-corpus] WARN {ns}: root_path {root!r} not found in repo; skipping', file=sys.stderr)
+                shutil.rmtree(tmp, ignore_errors=True)
+                continue
+            for entry in os.listdir(src_dir):
+                # Skip .git, hidden dirs, etc. — they're not UC content
+                if entry.startswith('.'):
+                    continue
+                s = os.path.join(src_dir, entry)
+                d = os.path.join(dst_dir, entry)
+                if os.path.isdir(s):
+                    shutil.copytree(s, d, symlinks=False)
+                else:
+                    shutil.copy2(s, d)
+            shutil.rmtree(tmp, ignore_errors=True)
+            cloned += 1
+            yaml_count = sum(1 for r, _, fs in os.walk(dst_dir) for f in fs if f.endswith(('.yaml', '.yml')))
+            print(f'[multi-corpus]   {ns}: {yaml_count} yaml file(s) staged', flush=True)
+
+        print(f'[multi-corpus] complete: {cloned} source(s) cloned, {skipped_filter} skipped by filter', flush=True)
+        if cloned == 0 and skipped_filter == 0:
+            print('[multi-corpus] ERROR: no sources cloned and no filter to blame', file=sys.stderr)
+            sys.exit(1)
+        PYEOF
+        elif [ -n "${FALLBACK_REPO_URL:-}" ] && [ -n "${FALLBACK_REPO_BRANCH:-}" ]; then
+          echo "[multi-corpus] no /config/sources — legacy single-source fallback"
+          # Clone to a temp dir, then stage only the legacy-uc-subpath
+          # subtree into the workspace (same shape as multi-source —
+          # keeps non-UC YAML out of the engine's recursive walk).
+          TMP_CLONE=$(mktemp -d /tmp/dav-corpus-legacy.XXXXXX)
+          trap 'rm -rf "$TMP_CLONE"' EXIT
+          git clone --depth 1 --branch "$FALLBACK_REPO_BRANCH" "$FALLBACK_REPO_URL" "$TMP_CLONE"
+          SRC="$TMP_CLONE"
+          if [ -n "${LEGACY_UC_SUBPATH:-}" ] && [ -d "$TMP_CLONE/$LEGACY_UC_SUBPATH" ]; then
+            SRC="$TMP_CLONE/$LEGACY_UC_SUBPATH"
+            echo "[multi-corpus] legacy: staging $LEGACY_UC_SUBPATH subtree"
+          fi
+          # Copy non-hidden entries to keep .git out of the workspace
+          for entry in "$SRC"/*; do
+            [ -e "$entry" ] || continue
+            cp -r "$entry" "$WORKSPACE_DIR_RESOLVED/"
+          done
+          yaml_n=$(find "$WORKSPACE_DIR_RESOLVED" -name '*.yaml' -o -name '*.yml' 2>/dev/null | wc -l)
+          echo "[multi-corpus] legacy clone: $yaml_n yaml file(s) staged"
+        else
+          echo "[multi-corpus] ERROR: no /config/sources and no FALLBACK_REPO_URL/BRANCH" >&2
+          exit 1
+        fi

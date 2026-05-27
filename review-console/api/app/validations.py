@@ -87,6 +87,7 @@ def _mk_pipelinerun(
     uc_handles: Optional[list[str]] = None,
     uc_uuids: Optional[list[str]] = None,
     managed_uc_uuids: Optional[list[str]] = None,
+    corpus_namespaces: Optional[list[str]] = None,
 ) -> dict:
     """Build a PipelineRun object targeting the DAV Pipeline."""
     suffix = str(int(time.time()))[-6:]
@@ -130,6 +131,8 @@ def _mk_pipelinerun(
             f"http://dav-review-api.{NAMESPACE}.svc.cluster.local:8000",
         )
         params.append({"name": "console-api-url", "value": console_url})
+    if corpus_namespaces:
+        params.append({"name": "corpus-namespaces", "value": ",".join(corpus_namespaces)})
 
     return {
         "apiVersion": f"{_TEKTON_GROUP}/{_TEKTON_VERSION}",
@@ -179,6 +182,7 @@ def trigger_run(
     uc_handles: Optional[list[str]] = None,
     uc_uuids: Optional[list[str]] = None,
     managed_uc_uuids: Optional[list[str]] = None,
+    corpus_namespaces: Optional[list[str]] = None,
 ) -> dict:
     """Create a PipelineRun. Returns the created object's status summary."""
     if not ENABLED:
@@ -202,6 +206,7 @@ def trigger_run(
         uc_handles=uc_handles,
         uc_uuids=uc_uuids,
         managed_uc_uuids=managed_uc_uuids,
+        corpus_namespaces=corpus_namespaces,
     )
 
     try:

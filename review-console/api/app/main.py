@@ -522,6 +522,10 @@ class RunTriggerIn(BaseModel):
     # User-facing session metadata (persisted to run_sessions)
     name: str = ""
     description: str = ""
+    # ADR-007 / M11b: per-run corpus namespace filter. Empty/None = all
+    # role=corpus repos in the registry are included. Operator selects a
+    # subset from the New Run modal for ad-hoc / debug runs.
+    corpus_namespaces: Optional[list[str]] = None
     category: str = "ad-hoc"
     tags: list[str] = []
     # Legacy params kept for backward compat with self-test UI
@@ -749,6 +753,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             uc_handles=payload.uc_handles,
             uc_uuids=payload.uc_uuids,
             managed_uc_uuids=payload.managed_uc_uuids,
+            corpus_namespaces=payload.corpus_namespaces,
         )
     except Exception as e:
         log.exception("run trigger failed")
