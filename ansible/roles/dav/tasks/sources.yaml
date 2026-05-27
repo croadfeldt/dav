@@ -89,8 +89,20 @@
   ansible.builtin.debug:
     msg: >-
       {% if source_corpus_existing.resources | length == 0 %}
-      Created dav-source-corpus ConfigMap from vars
-      ({{ consumer_corpus_repo_url }}#{{ consumer_corpus_repo_branch }}).
+      {% if consumer_corpus_sources is defined and consumer_corpus_sources | length > 0 %}
+      Created dav-source-corpus ConfigMap (multi-source mode,
+      {{ consumer_corpus_sources | length }} sources:
+      {{ consumer_corpus_sources | map(attribute='namespace') | join(', ') }}).
+      {% else %}
+      Created dav-source-corpus ConfigMap (legacy single-source:
+      {{ consumer_corpus_repo_url }}#{{ consumer_corpus_repo_branch }}).
+      {% endif %}
+      {% else %}
+      {% if 'sources' in source_corpus_existing.resources[0].data %}
+      dav-source-corpus already exists (multi-source mode) —
+      managed-by={{
+      source_corpus_existing.resources[0].metadata.annotations.get(
+      'dav.dev/managed-by', '(unset)') }} — leaving alone.
       {% else %}
       dav-source-corpus already exists
       ({{ source_corpus_existing.resources[0].data.repo_url }}#{{
@@ -98,6 +110,7 @@
       managed-by={{
       source_corpus_existing.resources[0].metadata.annotations.get(
       'dav.dev/managed-by', '(unset)') }} — leaving alone.
+      {% endif %}
       {% endif %}
 
 # --- Inference sourcing ConfigMap ---

@@ -47,27 +47,40 @@ spec:
                     component: review-console-db
                 topologyKey: kubernetes.io/hostname
       initContainers:
+        # ADR-007 / M11: dav-source-corpus is now a multi-source ConfigMap with
+        # a `sources` YAML list; the legacy top-level repo_url/repo_branch keys
+        # are optional and present only in fresh / pre-projection installs.
+        # The Tekton stage-2 pipeline does the real multi-source clone at run
+        # start (dav-git-sync-multi-corpus task). This init container is a
+        # legacy pre-seed for the API's directory-mode corpus loader; it's a
+        # no-op when the ConfigMap is multi-source. The API's startup seed
+        # already tolerates an empty /data/repo (main.py:207 warns + skips).
         - name: git-clone-corpus
           image: alpine/git:latest
           env:
-            # Sourced from dav-source-corpus ConfigMap at pod start.
-            # The web UI updates the ConfigMap + triggers rollout to retarget.
             - name: REPO_URL
               valueFrom:
                 configMapKeyRef:
                   name: dav-source-corpus
                   key: repo_url
+                  optional: true
             - name: REPO_BRANCH
               valueFrom:
                 configMapKeyRef:
                   name: dav-source-corpus
                   key: repo_branch
+                  optional: true
           command:
             - /bin/sh
             - -c
             - |
-              git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" /data/repo && \
-              echo "Corpus clone from $REPO_URL#$REPO_BRANCH: $(find /data/repo -type f | wc -l) files"
+              if [ -n "${REPO_URL:-}" ] && [ -n "${REPO_BRANCH:-}" ]; then
+                git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" /data/repo && \
+                echo "Corpus clone from $REPO_URL#$REPO_BRANCH: $(find /data/repo -type f | wc -l) files"
+              else
+                echo "Multi-source corpus mode — Tekton handles corpus clone at run start; skipping legacy pre-seed"
+                mkdir -p /data/repo
+              fi
           volumeMounts:
             - name: corpus
               mountPath: /data
