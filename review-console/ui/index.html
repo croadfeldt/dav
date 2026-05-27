@@ -1610,7 +1610,12 @@
       </div>
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Spec / Architecture</div>
-      <div class="form-row">
+      <div class="form-field" id="nrSpecSourcesWrap" style="display:none;">
+        <label>Spec sources (read-only)</label>
+        <div id="nrSpecSources" style="padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:2px;font-size:11px;max-height:120px;overflow-y:auto;"></div>
+        <div class="form-hint">Multi-source spec: every <code>role=spec</code> repo in the registry is served by the MCP. Edit per-repo settings in <strong>Config → Managed repos</strong>.</div>
+      </div>
+      <div class="form-row" id="nrSpecLegacyWrap">
         <div class="form-field"><label>Spec repo URL</label>
           <input id="nrSpecRepo" placeholder="(loading…)" /></div>
         <div class="form-field"><label>Spec branch</label>
@@ -3393,8 +3398,29 @@ async function loadNewRunDefaults(forcedSubpath) {
     const spec    = sources.spec      || {};
     const corpus  = sources.corpus    || {};
     const inf     = sources.inference || {};
-    document.getElementById('nrSpecRepo').value    = spec.repo_url      || '';
-    document.getElementById('nrSpecBranch').value  = spec.repo_branch   || '';
+    // Spec side: legacy single-source shows repo URL/branch inputs; multi-source
+    // mode (post-M11a) hides those and renders a read-only source list instead —
+    // editing happens in Config → Managed repos.
+    const specLegacy = document.getElementById('nrSpecLegacyWrap');
+    const specMulti  = document.getElementById('nrSpecSourcesWrap');
+    if (spec.multi_source && Array.isArray(spec.sources) && spec.sources.length) {
+      specLegacy.style.display = 'none';
+      specMulti.style.display = '';
+      document.getElementById('nrSpecSources').innerHTML = spec.sources.map(s =>
+        `<div style="display:flex;gap:6px;align-items:baseline;margin-bottom:2px;">
+           <span style="font-weight:600;min-width:60px;">${esc(s.namespace || '')}</span>
+           <span style="font-family:var(--mono,monospace);color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${esc(s.repo_url || '')}</span>
+           <span style="color:var(--accent);font-family:var(--mono,monospace);">${esc(s.repo_branch || '')}</span>
+           ${s.root_path ? `<span style="color:var(--text-faint);font-family:var(--mono,monospace);font-size:10px;">/${esc(s.root_path)}</span>` : ''}
+         </div>`).join('');
+    } else {
+      specLegacy.style.display = '';
+      specMulti.style.display = 'none';
+      document.getElementById('nrSpecRepo').value    = spec.repo_url      || '';
+      document.getElementById('nrSpecBranch').value  = spec.repo_branch   || '';
+    }
+    // Corpus legacy URL/branch (the multi-source picker is handled separately
+    // by _populateCorpusSourcesPicker — that toggles nrCorpusLegacyWrap)
     document.getElementById('nrCorpusRepo').value  = corpus.repo_url    || '';
     document.getElementById('nrCorpusBranch').value= corpus.repo_branch || '';
     const nrSel = document.getElementById('nrModelSel');
@@ -3408,9 +3434,19 @@ async function loadNewRunDefaults(forcedSubpath) {
 
     if (forcedSubpath !== undefined) {
       document.getElementById('nrCorpusSubpath').value = forcedSubpath || '';
+      document.getElementById('nrCorpusSubpath').placeholder = '';
+    } else if (corpus.multi_source) {
+      // Multi-source corpus: per-source root_path is baked into the projected
+      // ConfigMap; the legacy uc-subpath param is ignored. Leave the field
+      // editable for the rare advanced override but make the placeholder
+      // honest so nothing looks "stuck loading".
+      document.getElementById('nrCorpusSubpath').value = '';
+      document.getElementById('nrCorpusSubpath').placeholder = '(multi-source — per-source root_path applies; leave blank)';
+      detectedEl.innerHTML = `· <span style="color:var(--text-faint)">multi-source corpus (${(corpus.sources||[]).length} source(s))</span>`;
     } else {
       const detect = await api('/api/sources/corpus/uc-subpath').catch(() => ({}));
       document.getElementById('nrCorpusSubpath').value = detect.detected || '';
+      document.getElementById('nrCorpusSubpath').placeholder = '';
       if (detect.detected) {
         detectedEl.textContent = `· auto-detected ${detect.detected}/`;
       } else if (detect.corpus_dir_exists === false) {
