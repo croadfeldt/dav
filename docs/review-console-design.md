@@ -384,6 +384,44 @@ The Inbox API (M7) reads from `pr_comments`. The Inbox UI (M8) lets
 operators dismiss comments or draft a UC from one (LLM-assisted draft
 via the UC Assist plumbing).
 
+## Inbox tab (M7 + M8, top-level nav)
+
+A new "📬 Inbox" top-level nav item exposes PR-comment curation.
+
+API surface (M7):
+
+- `GET /api/inbox?status=&repo_uuid=&tenant_id=&limit=` — list ingested
+  comments. `status` defaults to `new`; pass `all` to disable the filter.
+- `GET /api/inbox/{uuid}` — single comment enriched with `uc_links`
+  (any UCs already drafted from this comment).
+- `POST /api/inbox/{uuid}/status` — transition. Body:
+  `{status: "new"|"dismissed"|"drafted_to_uc", uc_uuid?: str, notes?: str}`.
+  When `status=drafted_to_uc`, `uc_uuid` is required and an entry is
+  inserted into `uc_pr_comment_links` (idempotent on conflict).
+- `POST /api/inbox/{uuid}/draft-uc` — calls `uc_assist.chat()` with a
+  user message that frames the PR comment as scenario source material.
+  Body: `{model_config_id?: int, endpoint_url?, model_id?}` (same
+  resolution as `POST /api/uc-assist`). Returns
+  `{explanation, yaml_suggestion, raw, comment}` for the UI editor.
+
+UI flow (M8):
+
+1. Operator opens Inbox tab → sees `new` comments in the left list,
+   filtered chips (new / drafted / dismissed / all) + per-repo dropdown.
+2. Click a row → detail panel right shows full body, GitHub deep-links,
+   any existing UC drafts.
+3. Click `✦ Draft UC (LLM)` → spinner; 30-60s later draft appears with
+   explanation + YAML in a collapsible block. `⎘ Copy YAML` for fast
+   paste; `↑ Switch to Use Cases` stashes the draft in sessionStorage
+   and pivots to the UC editor.
+4. After saving the UC, operator clicks the `drafted_to_uc` chip on the
+   detail panel (or the API call from the editor's save handler) to
+   record the link.
+
+The Use Cases editor pre-population from sessionStorage is a polished
+follow-up; v1 hands the operator a one-click clipboard copy + a clear
+written workflow.
+
 ## DB migrations
 
 Migrations run automatically at API startup before `schema.sql`. Each migration file is idempotent (safe to re-run).

@@ -1229,6 +1229,208 @@ async def uc_assist_chat(payload: UCAssistIn, request: Request):
     return result
 
 
+# ========================= INBOX (M7 of #28) =========================
+# Operator-facing curation API for ingested pr_comments. Reads from
+# pr_comments (poller M5 + webhook M6) and exposes:
+#   - GET /api/inbox                — list with filters
+#   - GET /api/inbox/{uuid}         — single comment
+#   - POST /api/inbox/{uuid}/status — dismiss / mark drafted-to-uc
+#   - POST /api/inbox/{uuid}/draft-uc — LLM-draft a UC YAML
+#
+# UI (M8) consumes these. The draft-uc endpoint reuses the existing
+# UC Assist plumbing with a tailored system + user message.
+
+
+class InboxStatusIn(BaseModel):
+    # Closed to {dismissed, drafted_to_uc, new} — 'new' supports un-dismissing
+    # a comment if the operator changed their mind.
+    status: str = Field(..., min_length=1, max_length=32)
+    # Required when status='drafted_to_uc' — records the link in
+    # uc_pr_comment_links so we have UC ↔ comment provenance.
+    uc_uuid: Optional[str] = Field(None, max_length=64)
+    notes: Optional[str] = Field(None, max_length=2048)
+
+
+class InboxDraftUCIn(BaseModel):
+    # Same model-resolution options as POST /api/uc-assist
+    model_config_id: Optional[int] = None
+    endpoint_url: Optional[str] = Field(None, max_length=512)
+    model_id: Optional[str] = Field(None, max_length=256)
+
+
+@app.get("/api/inbox")
+async def list_inbox_api(
+    status: Optional[str] = Query(
+        "new",
+        description="Filter by status. 'new' (default), 'dismissed', "
+                    "'drafted_to_uc', or 'all' to disable the filter.",
+    ),
+    repo_uuid: Optional[str] = Query(None, description="filter by source repo uuid"),
+    tenant_id: Optional[str] = Query(None, description="filter by tenant_id"),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    """List ingested PR comments for the curation Inbox. Newest first."""
+    status_filter: Optional[str] = status if status and status != "all" else None
+    try:
+        async with pool.acquire() as conn:
+            return {
+                "comments": await _pr_comments.list_comments(
+                    conn, status=status_filter, repo_uuid=repo_uuid,
+                    tenant_id=tenant_id, limit=limit,
+                ),
+            }
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/inbox/{uuid}")
+async def get_inbox_comment_api(uuid: str):
+    async with pool.acquire() as conn:
+        comment = await _pr_comments.get_comment(conn, uuid)
+        if not comment:
+            raise HTTPException(404, f"comment {uuid!r} not found")
+        # Also fetch any existing UC links so the UI can show "drafted into X"
+        links = await conn.fetch(
+            "SELECT uc_uuid, linked_at, linked_by, notes "
+            "FROM uc_pr_comment_links WHERE pr_comment_uuid::text = $1 "
+            "ORDER BY linked_at DESC",
+            uuid,
+        )
+    comment["uc_links"] = [
+        {
+            "uc_uuid": str(r["uc_uuid"]),
+            "linked_at": r["linked_at"].isoformat(),
+            "linked_by": r["linked_by"],
+            "notes": r["notes"],
+        }
+        for r in links
+    ]
+    return comment
+
+
+@app.post("/api/inbox/{uuid}/status")
+async def set_inbox_status_api(uuid: str, payload: InboxStatusIn, request: Request):
+    """Transition a comment's status. If status='drafted_to_uc', also record
+    the link in uc_pr_comment_links (uc_uuid required). Idempotent on the
+    link (ON CONFLICT DO NOTHING) so reapplying the same status is safe."""
+    reviewer = get_user(request)
+    if payload.status == "drafted_to_uc" and not payload.uc_uuid:
+        raise HTTPException(400, "uc_uuid is required when status='drafted_to_uc'")
+    try:
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                updated = await _pr_comments.set_status(
+                    conn, uuid, payload.status, changed_by=reviewer,
+                )
+                if not updated:
+                    raise HTTPException(404, f"comment {uuid!r} not found")
+                if payload.status == "drafted_to_uc":
+                    await conn.execute(
+                        "INSERT INTO uc_pr_comment_links "
+                        "(uc_uuid, pr_comment_uuid, linked_by, notes) "
+                        "VALUES ($1, $2, $3, $4) "
+                        "ON CONFLICT (uc_uuid, pr_comment_uuid) DO NOTHING",
+                        payload.uc_uuid, uuid, reviewer, payload.notes,
+                    )
+        return updated
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/inbox/{uuid}/draft-uc")
+async def draft_uc_from_comment_api(uuid: str, payload: InboxDraftUCIn, request: Request):
+    """LLM-draft a DAV use case YAML from a PR comment.
+
+    Reuses the UC Assist pipeline with a tailored user message that
+    frames the comment as scenario source material. Returns
+    {explanation, yaml_suggestion, raw, comment} so the UI can open
+    the UC editor with the draft and the source context side-by-side.
+
+    The UI is expected to follow up with POST /api/inbox/{uuid}/status
+    {status: 'drafted_to_uc', uc_uuid: <new UC uuid>} after the
+    operator saves the resulting UC.
+    """
+    get_user(request)
+
+    async with pool.acquire() as conn:
+        comment = await _pr_comments.get_comment(conn, uuid)
+        if not comment:
+            raise HTTPException(404, f"comment {uuid!r} not found")
+        repo_row = await conn.fetchrow(
+            "SELECT namespace, display_name FROM managed_repos "
+            "WHERE uuid::text = $1",
+            comment["repo_uuid"],
+        )
+    repo_ns = repo_row["namespace"] if repo_row else "(unknown)"
+    repo_name = (
+        repo_row["display_name"]
+        if (repo_row and repo_row["display_name"]) else repo_ns
+    )
+
+    # Model config resolution mirrors POST /api/uc-assist.
+    cfg: Optional[dict] = None
+    if payload.model_config_id is not None:
+        if pool is None:
+            raise HTTPException(503, "pool not initialized")
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM model_configs WHERE id=$1 AND enabled",
+                payload.model_config_id,
+            )
+        if not row:
+            raise HTTPException(404, "Model config not found or disabled")
+        cfg = dict(row)
+    elif payload.endpoint_url and payload.model_id:
+        async with pool.acquire() as conn:
+            base = await conn.fetchrow(
+                "SELECT provider, api_key FROM model_configs "
+                "WHERE endpoint_url=$1 AND enabled ORDER BY id LIMIT 1",
+                payload.endpoint_url,
+            )
+        cfg = {
+            "provider":     base["provider"] if base else "openai",
+            "endpoint_url": payload.endpoint_url,
+            "model_id":     payload.model_id,
+            "api_key":      base["api_key"] if base else "",
+        }
+
+    user_message = (
+        f"Draft a DAV use case YAML from this PR comment.\n\n"
+        f"Source repo: {repo_name} (namespace: {repo_ns})\n"
+        f"PR #{comment['pr_number']}: {comment['pr_title'] or '(no title)'}\n"
+        f"Author: @{comment['author_login']}\n"
+        f"Comment URL: {comment['comment_url'] or '(none)'}\n"
+        f"Comment type: {comment['github_comment_type']}\n\n"
+        f"Comment body:\n---\n{comment['body']}\n---\n\n"
+        f"Frame the UC around verifying the architecture handles the scenario, "
+        f"gap, or concern the commenter raised. If the comment describes a bug, "
+        f"the UC should exercise the path that would catch it. Use:\n"
+        f"  - handle: `pr-derived/{repo_ns}/<short-descriptor>`\n"
+        f"  - generated_by.mode: `pr-targeted` (this is PR-comment-derived)\n"
+        f"  - generated_by.source: `llm-guided` (you generated it from the comment)\n"
+        f"Make reasonable assumptions where the comment is ambiguous and note "
+        f"them in your explanation."
+    )
+
+    result = await uc_assist.chat(
+        user_message=user_message,
+        context=(
+            "This UC is being drafted from a PR comment via the DAV review "
+            "console Inbox (M7 of #28). The operator will review your draft "
+            "in the UC editor before saving."
+        ),
+        cfg=cfg,
+        pool=pool,
+    )
+    if "error" in result and not result.get("explanation"):
+        raise HTTPException(503, result["error"])
+
+    return {
+        **result,
+        "comment": comment,
+    }
+
+
 # ========================= USE CASES =========================
 
 

@@ -572,6 +572,9 @@
     transition:color .15s, border-color .15s;
   }
   .run-context-chip.active { display:flex; }
+  /* Inbox status filter chips (M8 of #28) */
+  .inbox-status-chip { font-size:10px; padding:3px 9px; }
+  .inbox-status-chip.active { background:var(--accent); color:var(--bg-panel); border-color:var(--accent); }
   .run-context-chip:hover { color:var(--text); border-color:var(--accent-soft); }
   .run-context-chip .rcc-dot { width:6px; height:6px; border-radius:50%; background:var(--accent); animation:pulse 1.6s infinite; flex-shrink:0; }
   .run-context-chip .rcc-dot.done { background:var(--green); animation:none; }
@@ -714,6 +717,9 @@
       </a>
       <a class="pf-nav-item" data-view="results" href="javascript:void(0)">
         <span class="nav-icon">≡</span><span class="nav-label">Results <span class="badge" id="badgeResults" style="font-size:9px;"></span></span>
+      </a>
+      <a class="pf-nav-item" data-view="inbox" href="javascript:void(0)" title="PR-comment Inbox — draft UCs from ingested comments">
+        <span class="nav-icon">📬</span><span class="nav-label">Inbox <span class="badge" id="badgeInbox" style="font-size:9px;"></span></span>
       </a>
       <a class="pf-nav-item" data-view="review" href="javascript:void(0)">
         <span class="nav-icon">✦</span><span class="nav-label">Review &amp; Plan</span>
@@ -1008,6 +1014,44 @@
         <div class="detail-pane"><div class="detail-empty">Select a use case or create a new one.</div></div>
       </div>
     </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ INBOX (PR-comment curation, M8 of #28) ══════════════ -->
+    <section class="pf-view" id="view-inbox">
+      <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:14px;padding:14px;height:calc(100vh - 60px);">
+        <!-- Left: comment list -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div>
+                <div style="font-weight:600;font-size:13px;">PR Comments</div>
+                <div style="font-size:10px;color:var(--text-faint);">Ingested from repos with role=issue-source</div>
+              </div>
+              <button class="btn ghost btn-icon" id="inboxRefreshBtn" title="Refresh">↻</button>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+              <span style="font-size:10px;color:var(--text-faint);">Status:</span>
+              <button class="btn ghost btn-sm inbox-status-chip active" data-status="new">New</button>
+              <button class="btn ghost btn-sm inbox-status-chip" data-status="drafted_to_uc">Drafted</button>
+              <button class="btn ghost btn-sm inbox-status-chip" data-status="dismissed">Dismissed</button>
+              <button class="btn ghost btn-sm inbox-status-chip" data-status="all">All</button>
+              <span style="margin-left:8px;font-size:10px;color:var(--text-faint);">Repo:</span>
+              <select id="inboxRepoFilter" style="font-size:11px;padding:2px 6px;background:var(--bg-input,var(--bg-raised));border:1px solid var(--border);">
+                <option value="">all</option>
+              </select>
+            </div>
+          </div>
+          <div id="inboxList" style="flex:1;overflow-y:auto;min-height:0;"></div>
+        </div>
+
+        <!-- Right: comment detail + actions -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;" id="inboxDetailPanel">
+          <div id="inboxDetailEmpty" style="padding:32px;text-align:center;color:var(--text-faint);font-size:12px;">
+            Select a comment from the list to see its full body and curation actions.
+          </div>
+          <div id="inboxDetailBody" style="display:none;flex:1;overflow-y:auto;min-height:0;padding:14px;"></div>
+        </div>
       </div>
     </section>
 
@@ -2165,6 +2209,7 @@ function switchView(name) {
   if (name === 'usecases') { loadUCs(); loadSets(); }
   if (name === 'review')   loadReviewTab();
   if (name === 'config')   loadConfig();
+  if (name === 'inbox')    loadInbox();
 }
 
 // ── Active run chip (masthead) ───────────────────────────────
@@ -7653,6 +7698,285 @@ document.getElementById('cancelRepoBtn')?.addEventListener('click', hideRepoForm
 document.getElementById('reposProjectBtn')?.addEventListener('click', projectReposManually);
 document.getElementById('rpfClearPatBtn')?.addEventListener('click', () => clearRepoSecret('github_pat'));
 document.getElementById('rpfClearWebhookSecretBtn')?.addEventListener('click', () => clearRepoSecret('github_webhook_secret'));
+
+
+// ── Inbox: PR-comment curation (M8 of #28) ──────────────────────────────────
+// Reads ingested pr_comments via /api/inbox; lets the operator dismiss
+// comments or draft a UC from one (LLM-assisted via /api/inbox/{uuid}/draft-uc,
+// which reuses the UC Assist plumbing under the hood).
+let _inboxState = {
+  list: [],
+  selectedUuid: null,
+  statusFilter: 'new',
+  repoFilter: '',
+};
+
+async function loadInbox() {
+  // Hydrate repo filter dropdown from the registry (uses the same
+  // _reposState cache populated by loadRepos when Config is opened;
+  // hit /api/repos directly if state is empty).
+  try {
+    let repos = (_reposState && _reposState.list) || [];
+    if (!repos.length) {
+      const r = await api('/api/repos');
+      repos = r.repos || [];
+    }
+    const sel = document.getElementById('inboxRepoFilter');
+    if (sel) {
+      const issueSourceRepos = repos.filter(x => (x.roles || []).includes('issue-source'));
+      const opts = ['<option value="">all</option>'].concat(
+        issueSourceRepos.map(x => `<option value="${esc(x.uuid)}">${esc(x.namespace)}</option>`)
+      );
+      sel.innerHTML = opts.join('');
+      sel.value = _inboxState.repoFilter || '';
+    }
+  } catch { /* non-fatal */ }
+
+  // Fetch comments per current filters
+  const params = new URLSearchParams();
+  params.set('status', _inboxState.statusFilter || 'new');
+  if (_inboxState.repoFilter) params.set('repo_uuid', _inboxState.repoFilter);
+  params.set('limit', '200');
+  try {
+    const r = await api('/api/inbox?' + params.toString());
+    _inboxState.list = r.comments || [];
+    document.getElementById('badgeInbox').textContent =
+      _inboxState.list.length ? _inboxState.list.length : '';
+    renderInboxList();
+    // Preserve selection if still in list; otherwise clear detail
+    if (_inboxState.selectedUuid && _inboxState.list.find(c => c.uuid === _inboxState.selectedUuid)) {
+      renderInboxDetail(_inboxState.list.find(c => c.uuid === _inboxState.selectedUuid));
+    } else {
+      _inboxState.selectedUuid = null;
+      _showInboxEmpty();
+    }
+  } catch (e) {
+    document.getElementById('inboxList').innerHTML =
+      `<div class="empty" style="color:var(--red);padding:14px;">${esc(e.message)}</div>`;
+  }
+}
+
+function renderInboxList() {
+  const el = document.getElementById('inboxList');
+  if (!_inboxState.list.length) {
+    el.innerHTML = `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);">
+      No comments match the current filter.
+      <div style="font-size:10px;margin-top:8px;">
+        Comments appear here when a repo with role=issue-source has open-PR comments
+        (poller M5 / webhook M6).
+      </div>
+    </div>`;
+    return;
+  }
+  el.innerHTML = _inboxState.list.map(c => {
+    const isActive = c.uuid === _inboxState.selectedUuid;
+    const statusColor = c.status === 'new' ? 'var(--accent)'
+      : (c.status === 'drafted_to_uc' ? 'var(--green)' : 'var(--text-faint)');
+    const preview = (c.body || '').replace(/\s+/g, ' ').slice(0, 140);
+    const uuidJson = attrJson(c.uuid);
+    return `
+      <div class="inbox-row" data-uuid="${esc(c.uuid)}"
+           style="padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;
+                  ${isActive ? 'background:var(--bg-raised);border-left:2px solid var(--accent);' : ''}"
+           onclick="selectInboxComment(${uuidJson})">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
+          <div style="font-size:11px;font-weight:600;">
+            <span style="color:var(--text-faint);">@</span>${esc(c.author_login)}
+            <span style="color:var(--text-faint);font-weight:400;font-size:10px;"> · PR #${c.pr_number}</span>
+          </div>
+          <span style="font-size:9px;color:${statusColor};text-transform:uppercase;letter-spacing:.06em;">${esc(c.status)}</span>
+        </div>
+        <div style="font-size:10px;color:var(--text-faint);margin:2px 0 4px;">
+          ${esc(c.pr_title || '(no title)')}
+        </div>
+        <div style="font-size:11px;color:var(--text-dim);line-height:1.4;">${esc(preview)}${preview.length >= 140 ? '…' : ''}</div>
+        <div style="font-size:9px;color:var(--text-faint);margin-top:4px;font-family:var(--mono,monospace);">
+          ${esc(c.github_comment_type)} · ${esc(fmtTs(c.github_updated_at))} · src: ${esc(c.ingestion_source)}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function _showInboxEmpty() {
+  document.getElementById('inboxDetailEmpty').style.display = '';
+  document.getElementById('inboxDetailBody').style.display = 'none';
+}
+
+function _showInboxBody() {
+  document.getElementById('inboxDetailEmpty').style.display = 'none';
+  document.getElementById('inboxDetailBody').style.display = 'flex';
+}
+
+async function selectInboxComment(uuid) {
+  _inboxState.selectedUuid = uuid;
+  renderInboxList(); // re-render to show active state
+  try {
+    const c = await api(`/api/inbox/${encodeURIComponent(uuid)}`);
+    renderInboxDetail(c);
+  } catch (e) {
+    document.getElementById('inboxDetailBody').innerHTML =
+      `<div style="color:var(--red);padding:14px;">${esc(e.message)}</div>`;
+    _showInboxBody();
+  }
+}
+
+function renderInboxDetail(c) {
+  const el = document.getElementById('inboxDetailBody');
+  el.style.flexDirection = 'column';
+  el.style.gap = '10px';
+  const ucLinks = (c.uc_links || []).map(l => `
+    <div style="font-size:11px;font-family:var(--mono,monospace);color:var(--text-dim);">
+      ↳ <a href="javascript:void(0)" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(l.uc_uuid)}'),200)" style="color:var(--accent);">${esc(l.uc_uuid)}</a>
+      <span style="color:var(--text-faint);font-family:inherit;font-size:10px;"> · ${esc(l.linked_by || '')} · ${esc(fmtTs(l.linked_at))}</span>
+    </div>
+  `).join('');
+  el.innerHTML = `
+    <div style="padding-bottom:8px;border-bottom:1px solid var(--border);">
+      <div style="font-size:13px;font-weight:600;">PR #${c.pr_number}: ${esc(c.pr_title || '(no title)')}</div>
+      <div style="font-size:11px;color:var(--text-faint);margin-top:2px;">
+        @${esc(c.author_login)} ${c.author_url ? `· <a href="${esc(c.author_url)}" target="_blank" rel="noopener" style="color:var(--text-faint);">profile</a>` : ''}
+        · ${esc(c.github_comment_type)}
+        ${c.comment_url ? `· <a href="${esc(c.comment_url)}" target="_blank" rel="noopener" style="color:var(--text-faint);">comment on GitHub ↗</a>` : ''}
+        ${c.pr_url ? `· <a href="${esc(c.pr_url)}" target="_blank" rel="noopener" style="color:var(--text-faint);">PR ↗</a>` : ''}
+      </div>
+      <div style="font-size:10px;color:var(--text-faint);margin-top:2px;font-family:var(--mono,monospace);">
+        updated ${esc(fmtTs(c.github_updated_at))} · fetched ${esc(fmtTs(c.fetched_at))} · src: ${esc(c.ingestion_source)} · status: <span style="color:${c.status === 'new' ? 'var(--accent)' : (c.status === 'drafted_to_uc' ? 'var(--green)' : 'var(--text-faint)')};text-transform:uppercase;">${esc(c.status)}</span>
+      </div>
+    </div>
+    <div style="padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:40vh;overflow-y:auto;font-family:var(--mono,monospace);">${esc(c.body)}</div>
+    ${ucLinks ? `<div style="padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">
+      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:6px;">Drafted into UCs</div>
+      ${ucLinks}
+    </div>` : ''}
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button class="btn primary" id="inboxDraftBtn" onclick="draftUCFromComment('${esc(c.uuid)}')">✦ Draft UC (LLM)</button>
+      <button class="btn ghost" id="inboxDismissBtn" onclick="setInboxStatus('${esc(c.uuid)}', 'dismissed')" ${c.status === 'dismissed' ? 'disabled' : ''}>Dismiss</button>
+      ${c.status !== 'new' ? `<button class="btn ghost" onclick="setInboxStatus('${esc(c.uuid)}', 'new')">Reopen</button>` : ''}
+      <span id="inboxDetailMsg" style="font-size:11px;color:var(--text-faint);"></span>
+    </div>
+    <div id="inboxDraftOutput" style="display:none;"></div>`;
+  _showInboxBody();
+}
+
+async function setInboxStatus(uuid, status, ucUuid) {
+  const msgEl = document.getElementById('inboxDetailMsg');
+  if (msgEl) { msgEl.textContent = '…'; msgEl.style.color = ''; }
+  const body = { status };
+  if (ucUuid) body.uc_uuid = ucUuid;
+  try {
+    await api(`/api/inbox/${encodeURIComponent(uuid)}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (msgEl) { msgEl.innerHTML = `<span style="color:var(--green);">${esc(status)}</span>`; }
+    // Refresh list (the comment may have moved out of the current filter)
+    await loadInbox();
+  } catch (e) {
+    if (msgEl) msgEl.innerHTML = `<span style="color:var(--red);">${esc(e.message)}</span>`;
+  }
+}
+
+async function draftUCFromComment(uuid) {
+  const btn = document.getElementById('inboxDraftBtn');
+  const msgEl = document.getElementById('inboxDetailMsg');
+  const outEl = document.getElementById('inboxDraftOutput');
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '… drafting (this can take 30-60s)';
+  if (msgEl) { msgEl.textContent = ''; msgEl.style.color = ''; }
+  // Pass the operator's preferred UC Assist model if they have one
+  // selected in localStorage (same key used by Config → UC Assist panel)
+  const body = {};
+  const ucAssistModelId = (() => { try { return localStorage.getItem('ucAssistModelId'); } catch { return null; } })();
+  if (ucAssistModelId) {
+    const n = parseInt(ucAssistModelId, 10);
+    if (Number.isFinite(n)) body.model_config_id = n;
+  }
+  try {
+    const r = await api(`/api/inbox/${encodeURIComponent(uuid)}/draft-uc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    outEl.style.display = '';
+    outEl.innerHTML = `
+      <div style="padding:8px 10px;background:var(--bg-raised);border:1px solid var(--green);border-radius:2px;">
+        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:6px;">LLM draft — review before saving</div>
+        ${r.explanation ? `<div style="font-size:12px;line-height:1.5;margin-bottom:8px;">${esc(r.explanation)}</div>` : ''}
+        ${r.yaml_suggestion ? `<details open style="margin-bottom:8px;">
+          <summary style="font-size:11px;color:var(--text-faint);cursor:pointer;">YAML (click to collapse)</summary>
+          <pre style="font-family:var(--mono,monospace);font-size:11px;background:var(--bg-panel);padding:8px;border:1px solid var(--border);border-radius:2px;overflow-x:auto;max-height:50vh;">${esc(r.yaml_suggestion)}</pre>
+        </details>` : '<div style="color:var(--accent);">(no YAML extracted from response — see raw output below)</div>'}
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button class="btn primary" onclick="copyInboxDraftYaml(${attrJson(r.yaml_suggestion || '')})" ${r.yaml_suggestion ? '' : 'disabled'} title="Copy the YAML to clipboard so you can paste it into the UC editor">⎘ Copy YAML</button>
+          <button class="btn ghost" onclick="openUCEditorWithDraft('${esc(uuid)}', ${attrJson(r.yaml_suggestion || '')})" ${r.yaml_suggestion ? '' : 'disabled'} title="Stash draft in sessionStorage + switch to Use Cases tab (paste manually)">↑ Switch to Use Cases</button>
+          <button class="btn ghost" onclick="document.getElementById('inboxDraftOutput').style.display='none';">Hide draft</button>
+          <span style="font-size:10px;color:var(--text-faint);">After saving the UC, mark the comment as <em>Drafted</em> below to record the link.</span>
+        </div>
+        ${r.raw && !r.yaml_suggestion ? `<details style="margin-top:8px;"><summary style="font-size:10px;color:var(--text-faint);cursor:pointer;">Raw response</summary>
+          <pre style="font-family:var(--mono,monospace);font-size:10px;background:var(--bg-panel);padding:8px;border:1px solid var(--border);max-height:30vh;overflow-y:auto;">${esc(r.raw)}</pre>
+        </details>` : ''}
+      </div>`;
+  } catch (e) {
+    if (msgEl) msgEl.innerHTML = `<span style="color:var(--red);">Draft failed: ${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function copyInboxDraftYaml(yamlText) {
+  try {
+    await navigator.clipboard.writeText(yamlText || '');
+    toast('YAML copied to clipboard');
+  } catch (e) {
+    toast('Copy failed: ' + e.message, true);
+  }
+}
+
+function openUCEditorWithDraft(commentUuid, yamlDraft) {
+  // Stash the draft + source comment uuid in sessionStorage so the UC
+  // editor on the Use Cases tab can pre-populate. The save handler over
+  // there should call setInboxStatus(commentUuid, 'drafted_to_uc', newUcUuid)
+  // after a successful save to record the provenance link.
+  try {
+    sessionStorage.setItem('inboxDraftPayload', JSON.stringify({
+      comment_uuid: commentUuid,
+      yaml: yamlDraft,
+      from: 'inbox',
+      timestamp: new Date().toISOString(),
+    }));
+  } catch (e) {
+    toast('Could not stash draft in sessionStorage: ' + e.message, true);
+    return;
+  }
+  toast('Draft staged — switching to Use Cases editor');
+  switchView('usecases');
+  // The Use Cases tab's editor opens via newUC() / editUC(); a v1
+  // operator workflow is: copy the draft YAML into the new-UC editor
+  // manually. A polished pre-fill (auto-newUC + auto-paste) lands as
+  // a follow-up — for v1 keeping the boundary clean between modules.
+  setTimeout(() => {
+    if (typeof openNewUC === 'function') openNewUC();
+    else if (typeof newUC === 'function') newUC();
+  }, 300);
+}
+
+// Status filter chips
+document.querySelectorAll('.inbox-status-chip').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.inbox-status-chip').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    _inboxState.statusFilter = btn.dataset.status;
+    loadInbox();
+  });
+});
+document.getElementById('inboxRepoFilter')?.addEventListener('change', (e) => {
+  _inboxState.repoFilter = e.target.value || '';
+  loadInbox();
+});
+document.getElementById('inboxRefreshBtn')?.addEventListener('click', () => loadInbox());
 
 document.getElementById('addMCPBtn').addEventListener('click', () => openMCPForm(null));
 document.getElementById('cancelMCPBtn').addEventListener('click', () => {
