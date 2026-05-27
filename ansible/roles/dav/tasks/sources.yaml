@@ -46,8 +46,20 @@
   ansible.builtin.debug:
     msg: >-
       {% if source_spec_existing.resources | length == 0 %}
-      Created dav-source-spec ConfigMap from vars
-      ({{ consumer_spec_repo_url }}#{{ consumer_spec_repo_branch }}).
+      {% if consumer_spec_sources is defined and consumer_spec_sources | length > 0 %}
+      Created dav-source-spec ConfigMap (multi-source mode,
+      {{ consumer_spec_sources | length }} sources:
+      {{ consumer_spec_sources | map(attribute='namespace') | join(', ') }}).
+      {% else %}
+      Created dav-source-spec ConfigMap (legacy single-source:
+      {{ consumer_spec_repo_url }}#{{ consumer_spec_repo_branch }}).
+      {% endif %}
+      {% else %}
+      {% if 'sources' in source_spec_existing.resources[0].data %}
+      dav-source-spec already exists (multi-source mode) —
+      managed-by={{
+      source_spec_existing.resources[0].metadata.annotations.get(
+      'dav.dev/managed-by', '(unset)') }} — leaving alone.
       {% else %}
       dav-source-spec already exists
       ({{ source_spec_existing.resources[0].data.repo_url }}#{{
@@ -55,6 +67,7 @@
       managed-by={{
       source_spec_existing.resources[0].metadata.annotations.get(
       'dav.dev/managed-by', '(unset)') }} — leaving alone.
+      {% endif %}
       {% endif %}
 
 # --- Corpus sourcing ConfigMap ---

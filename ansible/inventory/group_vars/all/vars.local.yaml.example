@@ -36,10 +36,51 @@ inference_primary_endpoint: "http://inference.example.local:8000/v1"
 # Leave commented out if not applicable.
 # vllm_r9700_endpoint: "http://vllm-r9700.vllm-r9700.svc:8000/v1"
 
-# --- Consumer spec repo (architecture docs served by MCP) ---
-# Holds your consumer's architectural specification. DAV's MCP server
-# clones this repo and exposes the docs to the Stage 2 analyzer.
+# --- Consumer spec sources (architecture docs served by MCP) ---
+# Holds your consumer's architectural specification(s). DAV's MCP server
+# clones the source repo(s) and exposes the docs to the Stage 2 analyzer.
+#
+# TWO MODES are supported:
+#
+# 1. SINGLE-SOURCE (legacy): one repo, unprefixed document handles.
+#    Use this if your consumer has all its specs in one repo.
+#
+#    consumer_spec_repo_url: "https://github.com/your-org/your-spec-repo.git"
+#
+#    Document handles look like `subdir/topic.md`.
+#
+# 2. MULTI-SOURCE (new): multiple repos, namespaced handles.
+#    Use this when your consumer's specs span multiple repos (e.g., a
+#    substrate spec + a realization spec). Each source declares a
+#    namespace that becomes the handle prefix.
+#
+#    consumer_spec_sources:
+#      - namespace: udlm
+#        repo_url: "https://github.com/your-org/udlm.git"
+#        repo_branch: main
+#        root_path: ""               # serve from repo root
+#      - namespace: dcm
+#        repo_url: "https://github.com/your-org/dcm.git"
+#        repo_branch: main
+#        root_path: architecture     # serve from <repo>/architecture/
+#
+#    Document handles look like `udlm/contracts/provider-contract.md` and
+#    `dcm/control-plane/components.md`.
+#
+# Either MODE 1 OR MODE 2 — not both. If consumer_spec_sources is set,
+# it takes precedence and consumer_spec_repo_url is ignored.
 consumer_spec_repo_url: "https://github.com/your-org/your-spec-repo.git"
+
+# Example multi-source declaration (uncomment + customize to use):
+# consumer_spec_sources:
+#   - namespace: udlm
+#     repo_url: "https://github.com/your-org/udlm.git"
+#     repo_branch: main
+#     root_path: ""
+#   - namespace: dcm
+#     repo_url: "https://github.com/your-org/dcm.git"
+#     repo_branch: main
+#     root_path: architecture
 
 # --- Consumer corpus repo (use cases + baselines) ---
 # Holds your consumer's use cases (test scenarios DAV evaluates) and

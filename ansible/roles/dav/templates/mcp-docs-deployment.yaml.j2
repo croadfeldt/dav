@@ -14,12 +14,18 @@ metadata:
     image.openshift.io/triggers: |
       [{"from":{"kind":"ImageStreamTag","name":"dav-docs-mcp:latest","namespace":"{{ dav_namespace }}"},"fieldPath":"spec.template.spec.containers[?(@.name==\"mcp-server\")].image"}]
     # --- Sourcing metadata (readable by oc describe and by the review-console web UI) ---
-    # These annotations mirror the authoritative state in the dav-source-spec
-    # ConfigMap. Ansible stamps initial values from consumer_spec_repo_* vars;
-    # the review-console API keeps them in sync when the UI switches sources.
+    # Mirror of the authoritative dav-source-spec ConfigMap state. Ansible
+    # stamps initial values from consumer_spec_* vars; the review-console
+    # API keeps them in sync when the UI switches sources.
     dav.dev/source-type: "spec"
+{% if consumer_spec_sources is defined and consumer_spec_sources | length > 0 %}
+    dav.dev/source-mode: "multi"
+    dav.dev/source-count: "{{ consumer_spec_sources | length }}"
+{% else %}
+    dav.dev/source-mode: "single"
     dav.dev/source-repo-url: "{{ consumer_spec_repo_url }}"
     dav.dev/source-repo-branch: "{{ consumer_spec_repo_branch }}"
+{% endif %}
     dav.dev/source-configmap: "dav-source-spec"
     dav.dev/last-applied-at: "{{ ansible_date_time.iso8601 }}"
 spec:
@@ -37,43 +43,95 @@ spec:
         - name: git-clone
           image: alpine/git:latest
           env:
-            # REPO_URL and REPO_BRANCH come from the dav-source-spec ConfigMap
-            # rather than being baked in by Jinja. This lets the web UI
-            # retarget the MCP by updating the ConfigMap + rolling this
-            # Deployment, without touching the template. Pods read the
-            # ConfigMap values at start time — the init-container clones
-            # whatever ConfigMap says right now.
+            # Legacy single-source fallback. With optional=true, these are
+            # absent when the ConfigMap is in multi-source mode (no repo_url
+            # or repo_branch keys), and the init script falls through to
+            # parsing /config/sources instead.
             - name: REPO_URL
               valueFrom:
                 configMapKeyRef:
                   name: dav-source-spec
                   key: repo_url
+                  optional: true
             - name: REPO_BRANCH
               valueFrom:
                 configMapKeyRef:
                   name: dav-source-spec
                   key: repo_branch
+                  optional: true
           command:
             - /bin/sh
             - -c
             - |
-              git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" /data/repo && \
-              echo "Cloned $(ls /data/repo/architecture/data-model/*.md 2>/dev/null | wc -l) docs from $REPO_URL#$REPO_BRANCH"
+              set -eu
+              rm -f /data/.source-flags
+
+              if [ -f /config/sources ]; then
+                # Multi-source mode: parse sources YAML, clone each, and write
+                # `namespace:served_path` lines to /data/.source-flags for the
+                # main container to consume.
+                apk add --no-cache python3 py3-yaml >/dev/null 2>&1
+                python3 <<'PYEOF'
+              import yaml, subprocess, sys
+              with open('/config/sources') as f:
+                  sources = yaml.safe_load(f)
+              if not sources:
+                  print('ERROR: /config/sources is empty', file=sys.stderr)
+                  sys.exit(1)
+              flag_lines = []
+              for src in sources:
+                  ns = src['namespace']
+                  url = src['repo_url']
+                  branch = src['repo_branch']
+                  root = (src.get('root_path') or '').strip('/')
+                  dst = f'/data/{ns}'
+                  print(f'Cloning {url}#{branch} -> {dst}', flush=True)
+                  subprocess.run(
+                      ['git', 'clone', '--depth', '1', '--branch', branch, url, dst],
+                      check=True,
+                  )
+                  served = f'{dst}/{root}' if root else dst
+                  flag_lines.append(f'{ns}:{served}')
+              with open('/data/.source-flags', 'w') as f:
+                  f.write('\n'.join(flag_lines) + '\n')
+              print(f'Wrote {len(flag_lines)} source flag(s)', flush=True)
+              PYEOF
+              elif [ -n "${REPO_URL:-}" ] && [ -n "${REPO_BRANCH:-}" ]; then
+                # Legacy single-source mode
+                git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" /data/repo
+                echo "Cloned single-source: $REPO_URL#$REPO_BRANCH"
+                echo "$(ls /data/repo/architecture/data-model/*.md 2>/dev/null | wc -l) .md files in legacy data-model path"
+              else
+                echo "ERROR: no sources configured (no /config/sources, no REPO_URL/REPO_BRANCH)" >&2
+                exit 1
+              fi
           volumeMounts:
             - name: docs
               mountPath: /data
+            - name: source-config
+              mountPath: /config
       containers:
         - name: mcp-server
           image: {{ mcp_docs_image }}
-          args:
-            - "--docs-path"
-            - "/data/repo/architecture/data-model"
-            - "--transport"
-            - "sse"
-            - "--host"
-            - "0.0.0.0"
-            - "--port"
-            - "8080"
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              ARGS="--transport sse --host 0.0.0.0 --port 8080"
+              if [ -f /data/.source-flags ]; then
+                # Multi-source: build --source flags from init container output
+                while IFS= read -r line; do
+                  [ -z "$line" ] && continue
+                  ARGS="$ARGS --source $line"
+                done < /data/.source-flags
+                echo "Starting MCP in multi-source mode with: $ARGS"
+              else
+                # Legacy single-source
+                ARGS="$ARGS --docs-path /data/repo/architecture/data-model"
+                echo "Starting MCP in single-source mode with: $ARGS"
+              fi
+              exec python server.py $ARGS
           ports:
             - containerPort: 8080
               name: http
@@ -101,6 +159,14 @@ spec:
       volumes:
         - name: docs
           emptyDir: {}
+        - name: source-config
+          configMap:
+            name: dav-source-spec
+            # Each ConfigMap data key becomes a file under /config/. In
+            # multi-source mode that's /config/sources (containing the YAML
+            # list). In legacy mode that's /config/repo_url and
+            # /config/repo_branch (which the init script ignores in favor of
+            # the env vars).
 ---
 apiVersion: v1
 kind: Service

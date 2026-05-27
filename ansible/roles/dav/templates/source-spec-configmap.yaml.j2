@@ -1,23 +1,37 @@
 ---
-# DCM Spec Sourcing ConfigMap
+# DAV Spec Sourcing ConfigMap
 # ---
-# Single source of truth for "which DCM architecture spec does the MCP serve?".
+# Single source of truth for "which spec sources does the MCP serve?".
 #
-# This ConfigMap is the authoritative state for spec sourcing. Both the
-# Ansible playbook and the review-console web UI read and write it:
+# Two data shapes are supported:
+#
+#   1. Multi-source (preferred): a `sources` field carrying a YAML list of
+#      sources. Each source has `namespace`, `repo_url`, `repo_branch`,
+#      and optional `root_path` (defaults to repo root). The MCP serves
+#      from all sources concurrently with namespaced handles.
+#
+#   2. Legacy single-source: `repo_url` and `repo_branch` at top-level data,
+#      no `sources` field. The MCP serves from one repo with unprefixed
+#      handles. Maintained for backward compat with the minimal-consumer
+#      example and other single-repo consumers.
+#
+# The init-container script in mcp-docs-deployment.yaml.j2 reads `sources`
+# first; if absent, falls back to repo_url/repo_branch.
+#
+# Both the Ansible playbook and the review-console web UI read and write
+# this ConfigMap:
 #
 #   Ansible: creates on first deploy, DOES NOT overwrite thereafter.
 #            Subsequent playbook runs see managed-by: "runtime" and skip the
 #            data field. They still ensure the ConfigMap exists and
 #            reconcile the annotations `ansible-managed-initial-*`.
 #
-#   Web UI:  POST /api/sources/spec updates data.repo_url/repo_branch,
+#   Web UI:  POST /api/sources/spec updates data.{sources|repo_url|repo_branch},
 #            stamps `last-applied-by` and `last-applied-at`, then triggers
 #            a fresh MCP rollout so the init-container re-clones.
 #
-# The Deployment's init-container reads repo_url and repo_branch from here
-# via configMapKeyRef env vars — so changing this ConfigMap + rolling the
-# Deployment is sufficient to retarget the MCP. No template changes required.
+# Changing this ConfigMap + rolling the dav-docs-mcp Deployment is sufficient
+# to retarget the MCP. No template changes required for source changes.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -35,8 +49,23 @@ metadata:
     dav.dev/managed-by: "ansible"
     dav.dev/last-applied-by: "ansible"
     dav.dev/last-applied-at: "{{ ansible_date_time.iso8601 }}"
+{% if consumer_spec_sources is defined and consumer_spec_sources | length > 0 %}
+    dav.dev/ansible-managed-initial-source-count: "{{ consumer_spec_sources | length }}"
+data:
+  # Multi-source mode. List of {namespace, repo_url, repo_branch, root_path}.
+  # root_path is optional and defaults to "" (serve from repo root).
+  sources: |
+{% for src in consumer_spec_sources %}
+    - namespace: "{{ src.namespace }}"
+      repo_url: "{{ src.repo_url }}"
+      repo_branch: "{{ src.repo_branch }}"
+      root_path: "{{ src.root_path | default('') }}"
+{% endfor %}
+{% else %}
     dav.dev/ansible-managed-initial-url: "{{ consumer_spec_repo_url }}"
     dav.dev/ansible-managed-initial-branch: "{{ consumer_spec_repo_branch }}"
 data:
+  # Legacy single-source mode. Maintained for backward compatibility.
   repo_url: "{{ consumer_spec_repo_url }}"
   repo_branch: "{{ consumer_spec_repo_branch }}"
+{% endif %}
