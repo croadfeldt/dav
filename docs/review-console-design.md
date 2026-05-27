@@ -139,7 +139,7 @@ Two-pane layout: left nav (category list), right content (selected category).
 - **Default evaluation model** — project-scoped default for new analysis runs. Stored in `model_defaults` table (`key='evaluation'`). Set in Config → AI Models; applies to all users. New Run modal reads from `GET /api/model-defaults` on open and pre-selects this model when no user override is stored in localStorage. Only registered model_config rows can be set as project defaults (custom endpoint+model pairs are user-scoped only).
 - **Default UC Assist model** — user-scoped personal default for UC Assist authoring. Stored in localStorage under `ucAssistModelId`. Configurable both in Config → AI Models and inline in the UC Assist panel (both selectors share the same storage key and mirror each other). Falls back to env-var config (`DAV_UC_ASSIST_*`) if no DB rows exist.
 - **MCP Integrations** — registered MCP servers (`mcp_server_configs` table) with `use_uc_assist` flag. Health polled on demand. Servers flagged `use_uc_assist` displayed with amber badge.
-- **Code Repositories** — git repos for branch/PR creation from enhancement findings (`code_repo_configs` table). Supports GitHub + GitLab.
+- ~~**Code Repositories**~~ — removed per [ADR-006](../adr/006-consolidate-code-repos-into-managed-repos.md). Enhancement PR target repos are now part of the **Managed repos** panel with `role=enhancement-target`. Provider (github/gitlab) lives in `metadata.provider` or is inferred from the URL. PAT is the same `github_pat` field used by other roles (per-repo inline or shared credential).
 
 ---
 

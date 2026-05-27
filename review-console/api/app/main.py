@@ -60,6 +60,7 @@ MIGRATE_007_PATH = Path(__file__).parent / "migrate_007_managed_repos.sql"
 MIGRATE_008_PATH = Path(__file__).parent / "migrate_008_pr_comments.sql"
 MIGRATE_009_PATH = Path(__file__).parent / "migrate_009_repo_credentials.sql"
 MIGRATE_010_PATH = Path(__file__).parent / "migrate_010_shared_credentials.sql"
+MIGRATE_011_PATH = Path(__file__).parent / "migrate_011_consolidate_code_repos.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -160,10 +161,13 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_009_PATH.read_text())
         log.info("Applying migration 010 (shared credentials)...")
         await conn.execute(MIGRATE_010_PATH.read_text())
+        log.info("Applying migration 011 (consolidate code_repo_configs)...")
+        await conn.execute(MIGRATE_011_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
         await _seed_managed_repos(conn)
+        await _migrate_code_repo_configs(conn)
     log.info("Ready.")
     import asyncio
     finalizer_task = asyncio.create_task(_finalizer_loop())
@@ -291,6 +295,144 @@ async def _seed_managed_repos(conn: asyncpg.Connection) -> None:
             "managed_repos seed: nothing to seed (no spec or corpus ConfigMaps "
             "had usable data)"
         )
+
+
+async def _migrate_code_repo_configs(conn: asyncpg.Connection) -> None:
+    """ADR-006 — fold each code_repo_configs row into managed_repos with
+    the 'enhancement-target' role. Match by repo_url; create otherwise.
+    Migrate the plaintext token to Fernet-encrypted github_pat_encrypted
+    only when the target row has no PAT yet (don't clobber existing
+    ADR-004/005 credentials). Idempotent: a row that already has the
+    enhancement-target role is skipped.
+    """
+    from . import crypto as _crypto
+    try:
+        # Skip migration if the legacy table doesn't exist (fresh install)
+        exists = await conn.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+            "WHERE table_name = 'code_repo_configs')"
+        )
+        if not exists:
+            return
+        rows = await conn.fetch(
+            "SELECT id, name, provider, repo_url, default_branch, token, enabled "
+            "FROM code_repo_configs"
+        )
+    except Exception as e:
+        log.warning("code_repo_configs migration: query failed (%s); skipping", e)
+        return
+
+    if not rows:
+        log.info("code_repo_configs migration: nothing to migrate")
+        return
+
+    fernet_ok = _crypto.is_available()
+    if not fernet_ok:
+        log.warning(
+            "code_repo_configs migration: Fernet key unavailable; managed_repos "
+            "rows will be created/updated WITHOUT tokens. Operator must re-enter "
+            "credentials via the Repos UI."
+        )
+
+    migrated_new = 0
+    merged_existing = 0
+    skipped = 0
+    for r in rows:
+        repo_url = r["repo_url"]
+        name = r["name"] or repo_url
+        provider = r["provider"]
+        existing = await conn.fetchrow(
+            "SELECT uuid, namespace, roles, github_pat_encrypted, "
+            "       github_pat_credential_id, metadata "
+            "FROM managed_repos WHERE repo_url = $1 LIMIT 1",
+            repo_url,
+        )
+        token_enc = None
+        if fernet_ok and r["token"]:
+            try:
+                token_enc = _crypto.encrypt(r["token"])
+            except Exception as e:
+                log.warning(
+                    "code_repo_configs migration: cannot encrypt token for %s (%s)",
+                    name, e,
+                )
+        if existing:
+            existing_roles = list(existing["roles"] or [])
+            if "enhancement-target" in existing_roles:
+                skipped += 1
+                continue
+            new_roles = existing_roles + ["enhancement-target"]
+            # Merge metadata: keep existing keys, set provider only if absent
+            existing_meta = existing["metadata"]
+            if isinstance(existing_meta, str):
+                try:
+                    import json as _json
+                    existing_meta = _json.loads(existing_meta)
+                except Exception:
+                    existing_meta = {}
+            elif existing_meta is None:
+                existing_meta = {}
+            if "provider" not in existing_meta and provider:
+                existing_meta["provider"] = provider
+            import json as _json
+            # Only migrate the token if the target has neither inline nor FK
+            should_set_token = (
+                token_enc is not None
+                and not existing["github_pat_encrypted"]
+                and existing["github_pat_credential_id"] is None
+            )
+            if should_set_token:
+                await conn.execute(
+                    "UPDATE managed_repos SET roles = $1, metadata = $2::jsonb, "
+                    "github_pat_encrypted = $3, updated_by = $4 WHERE uuid = $5",
+                    new_roles, _json.dumps(existing_meta), token_enc,
+                    "system:migration-011", existing["uuid"],
+                )
+            else:
+                await conn.execute(
+                    "UPDATE managed_repos SET roles = $1, metadata = $2::jsonb, "
+                    "updated_by = $3 WHERE uuid = $4",
+                    new_roles, _json.dumps(existing_meta),
+                    "system:migration-011", existing["uuid"],
+                )
+            merged_existing += 1
+            log.info(
+                "code_repo_configs migration: merged 'enhancement-target' role "
+                "into managed_repos %s (token: %s)",
+                existing["namespace"], "migrated" if should_set_token else "kept existing",
+            )
+        else:
+            # Create a new managed_repos row. Derive a namespace from name.
+            ns = re.sub(r"[^a-z0-9-]+", "-", (name or "").lower()).strip("-")[:63] or f"code-repo-{r['id']}"
+            try:
+                from . import repos as _repos_mod
+                import json as _json
+                await _repos_mod.create_repo(
+                    conn,
+                    namespace=ns,
+                    repo_url=repo_url,
+                    repo_branch=r["default_branch"] or "main",
+                    display_name=name,
+                    roles=["enhancement-target"],
+                    metadata={"provider": provider, "source": "migrated_from_code_repo_configs"},
+                    github_pat=r["token"] if (fernet_ok and r["token"]) else None,
+                    created_by="system:migration-011",
+                )
+                migrated_new += 1
+                log.info(
+                    "code_repo_configs migration: created managed_repos row %s for %s",
+                    ns, repo_url,
+                )
+            except Exception as e:
+                log.warning(
+                    "code_repo_configs migration: failed to create row for %s (%s)",
+                    name, e,
+                )
+
+    log.info(
+        "code_repo_configs migration: %d created, %d merged, %d already-migrated",
+        migrated_new, merged_existing, skipped,
+    )
 
 
 app = FastAPI(title="DAV Console API", version="0.9.5", lifespan=lifespan)
@@ -1146,7 +1288,10 @@ class CodeRepoIn(BaseModel):
     enabled: bool = True
 
 class PrCreateIn(BaseModel):
-    repo_config_id: int
+    # Post-ADR-006: enhancement PR target is a managed_repos row with
+    # role=enhancement-target (looked up by uuid or namespace). The
+    # legacy code_repo_configs.id-based `repo_config_id` field is gone.
+    repo_uuid: str = Field(..., min_length=1, max_length=128)
     run_id: str
     uc_uuid: Optional[str] = None
     scope: str = Field("uc", pattern="^(uc|run)$")
@@ -4308,68 +4453,42 @@ async def get_enhancement_prompt(
     return {"system_prompt": system_prompt, "user_prompt": user_prompt}
 
 
-# ========================= CODE REPOSITORIES =========================
+# ========================= CODE REPOSITORIES (deprecated post-ADR-006) =========================
+#
+# Per ADR-006 these endpoints are deprecated; code repositories live in
+# the managed_repos registry with role='enhancement-target'. The endpoints
+# return 410 Gone with a Location header pointing at the new path so any
+# external caller gets an actionable error.
+
+
+_CODE_REPOS_GONE_DETAIL = {
+    "message": (
+        "Endpoint deprecated per ADR-006. Code repositories are now part of the "
+        "managed_repos registry with role='enhancement-target'."
+    ),
+    "use_instead": "/api/repos?role=enhancement-target",
+    "see": "https://github.com/croadfeldt/dav/blob/main/adr/006-consolidate-code-repos-into-managed-repos.md",
+}
 
 
 @app.get("/api/code-repos")
-async def list_code_repos():
-    """List configured code repos; token is masked."""
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """SELECT id, name, provider, repo_url, default_branch,
-                      CASE WHEN token != '' THEN '••••••••' ELSE '' END AS token,
-                      enabled, created_by, created_at, updated_at
-               FROM code_repo_configs ORDER BY created_at"""
-        )
-    return [dict(r) for r in rows]
+async def list_code_repos_gone():
+    raise HTTPException(410, detail=_CODE_REPOS_GONE_DETAIL)
 
 
-@app.post("/api/code-repos", status_code=201)
-async def create_code_repo(payload: CodeRepoIn, request: Request):
-    user = get_user(request)
-    async with pool.acquire() as conn:
-        try:
-            row = await conn.fetchrow(
-                """INSERT INTO code_repo_configs
-                     (name, provider, repo_url, default_branch, token, enabled, created_by)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7)
-                   RETURNING id, name, provider, repo_url, default_branch,
-                             CASE WHEN token != '' THEN '••••••••' ELSE '' END AS token,
-                             enabled, created_by, created_at""",
-                payload.name, payload.provider, payload.repo_url,
-                payload.default_branch, payload.token, payload.enabled, user,
-            )
-        except Exception as e:
-            if "unique" in str(e).lower():
-                raise HTTPException(409, f"A repo named '{payload.name}' already exists")
-            raise HTTPException(500, str(e))
-    return dict(row)
+@app.post("/api/code-repos", status_code=410)
+async def create_code_repo_gone(payload: CodeRepoIn, request: Request):
+    raise HTTPException(410, detail=_CODE_REPOS_GONE_DETAIL)
 
 
 @app.put("/api/code-repos/{rid}")
-async def update_code_repo(rid: int, payload: CodeRepoIn, request: Request):
-    get_user(request)
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """UPDATE code_repo_configs
-               SET name=$1, provider=$2, repo_url=$3, default_branch=$4,
-                   token = CASE WHEN $5 != '' THEN $5 ELSE token END,
-                   enabled=$6, updated_at=now()
-               WHERE id=$7 RETURNING id""",
-            payload.name, payload.provider, payload.repo_url,
-            payload.default_branch, payload.token, payload.enabled, rid,
-        )
-    if not row:
-        raise HTTPException(404, "Code repo not found")
-    return {"ok": True}
+async def update_code_repo_gone(rid: int, payload: CodeRepoIn, request: Request):
+    raise HTTPException(410, detail=_CODE_REPOS_GONE_DETAIL)
 
 
-@app.delete("/api/code-repos/{rid}", status_code=204)
-async def delete_code_repo(rid: int, request: Request):
-    get_user(request)
-    async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM code_repo_configs WHERE id=$1", rid)
-    return Response(status_code=204)
+@app.delete("/api/code-repos/{rid}", status_code=410)
+async def delete_code_repo_gone(rid: int, request: Request):
+    raise HTTPException(410, detail=_CODE_REPOS_GONE_DETAIL)
 
 
 # ========================= PR / MR CREATION =========================
@@ -4601,16 +4720,46 @@ async def pr_create(payload: PrCreateIn, request: Request):
     """
     user = get_user(request)
     async with pool.acquire() as conn:
-        repo_row = await conn.fetchrow(
-            "SELECT provider, repo_url, default_branch, token, enabled FROM code_repo_configs WHERE id=$1",
-            payload.repo_config_id,
-        )
-        if not repo_row:
-            raise HTTPException(404, "Code repo config not found")
-        if not repo_row["enabled"]:
-            raise HTTPException(400, "Code repo is disabled")
-        if not repo_row["token"]:
-            raise HTTPException(400, "No token configured for this repo")
+        # ADR-006: enhancement target is a managed_repos row with role=enhancement-target
+        managed = await _repos.get_repo(conn, payload.repo_uuid)
+        if not managed:
+            raise HTTPException(404, f"Repo {payload.repo_uuid!r} not found")
+        if "enhancement-target" not in (managed.get("roles") or []):
+            raise HTTPException(
+                400,
+                f"Repo {managed['namespace']} does not have the "
+                f"'enhancement-target' role. Add it via the Repos UI.",
+            )
+        secrets = await _repos.get_repo_secrets(conn, payload.repo_uuid)
+        token = (secrets or {}).get("github_pat") or ""
+        if not token:
+            raise HTTPException(
+                400,
+                f"Repo {managed['namespace']} has no PAT configured. "
+                f"Set one via the Repos UI (inline or shared credential).",
+            )
+        # Provider: from metadata override, else infer from URL
+        provider = (managed.get("metadata") or {}).get("provider")
+        if not provider:
+            repo_url_lc = (managed["repo_url"] or "").lower()
+            if "github.com" in repo_url_lc:
+                provider = "github"
+            elif "gitlab" in repo_url_lc:
+                provider = "gitlab"
+            else:
+                raise HTTPException(
+                    400,
+                    f"Cannot infer provider for {managed['repo_url']!r}; "
+                    f"set metadata.provider on the repo to 'github' or 'gitlab'.",
+                )
+        # Synthesise the repo_row shape the rest of the function expects
+        repo_row = {
+            "provider": provider,
+            "repo_url": managed["repo_url"],
+            "default_branch": managed["repo_branch"],
+            "token": token,
+            "enabled": True,  # post-ADR-006: presence of role IS the enabled flag
+        }
 
         # R3 — collect non-approved source UCs (defense in depth alongside
         # the client-side warning). Corpus-sourced UCs (no lifecycle state)

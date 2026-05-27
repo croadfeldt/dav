@@ -1172,7 +1172,6 @@
       <div class="config-nav-group">
         <div class="config-nav-cat" data-target="cfgSec-integrations">Integrations</div>
         <a class="config-nav-link" data-target="configMCPPanel">MCP servers</a>
-        <a class="config-nav-link" data-target="configCodeReposPanel">Code repositories</a>
       </div>
     </nav>
 
@@ -1520,49 +1519,10 @@
         </div>
       </div>
 
-      <div class="cfg-card panel-card" id="configCodeReposPanel">
-        <div class="panel-card-header" style="justify-content:space-between;">
-          <div>
-            <div class="pc-title">Code repositories</div>
-            <div class="pc-sub">Git repos for branch + PR/MR creation from enhancement findings</div>
-          </div>
-          <button class="btn ghost btn-sm" id="addCodeRepoBtn">+ Add repo</button>
-        </div>
-        <div id="codeRepoList" style="min-height:32px;"></div>
-      </div>
-
-      <div id="codeRepoFormCard" class="cfg-card panel-card" style="display:none;">
-        <div class="panel-card-header">
-          <div class="pc-title" id="codeRepoFormTitle">Add repository</div>
-        </div>
-        <div class="panel-card-body">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
-            <div class="form-field"><label>Name</label>
-              <input id="crfName" placeholder="e.g. dav-upstream" /></div>
-            <div class="form-field"><label>Provider</label>
-              <select id="crfProvider">
-                <option value="github">GitHub</option>
-                <option value="gitlab">GitLab</option>
-              </select></div>
-            <div class="form-field"><label>Repo URL</label>
-              <input id="crfUrl" placeholder="https://github.com/owner/repo" /></div>
-            <div class="form-field"><label>Default branch</label>
-              <input id="crfBranch" placeholder="main" /></div>
-            <div class="form-field"><label>Token <span style="color:var(--text-faint);font-weight:400;">(blank = keep existing)</span></label>
-              <input id="crfToken" type="password" placeholder="ghp_… or glpat-…" /></div>
-            <div class="form-field" style="display:flex;flex-direction:column;gap:8px;justify-content:flex-end;">
-              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
-                <input type="checkbox" id="crfEnabled" checked /> Enabled
-              </label>
-            </div>
-          </div>
-          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
-            <button class="btn primary" id="saveCodeRepoBtn">Save</button>
-            <button class="btn ghost" id="cancelCodeRepoBtn">Cancel</button>
-            <span id="codeRepoFormMsg" style="font-size:11px;color:var(--text-faint);"></span>
-          </div>
-        </div>
-      </div>
+      <!-- Per ADR-006: the "Code repositories" panel was consolidated
+           into Managed repos. Add the 'enhancement-target' role to any
+           repo in the Repos panel above to enable enhancement PR
+           creation against it. -->
 
     </div><!-- /config-content -->
   </div><!-- /config-layout -->
@@ -6999,13 +6959,21 @@ document.getElementById('rpEnhNextRow') && document.getElementById('rpEnhToPrBtn
   const panel  = document.getElementById('rpPrSection');
   const msgEl  = document.getElementById('rpPrMsg');
   msgEl.textContent = '';
-  if (!_codeRepos.length) { try { _codeRepos = await api('/api/code-repos'); } catch {} }
-  const enabled = _codeRepos.filter(r => r.enabled);
+  // ADR-006: enhancement targets are managed_repos rows with role=enhancement-target
+  if (!_codeRepos.length) {
+    try {
+      const r = await api('/api/repos?role=enhancement-target');
+      _codeRepos = r.repos || [];
+    } catch {}
+  }
   const sel = document.getElementById('rpPrRepoSel');
-  sel.innerHTML = enabled.length
-    ? enabled.map(r => `<option value="${r.id}" data-branch="${esc(r.default_branch)}">${esc(r.name)} (${esc(r.provider)})</option>`).join('')
-    : '<option value="">No repos — add in Config</option>';
-  if (enabled.length) {
+  sel.innerHTML = _codeRepos.length
+    ? _codeRepos.map(r => {
+        const provider = (r.metadata && r.metadata.provider) || (r.repo_url && r.repo_url.toLowerCase().includes('gitlab') ? 'gitlab' : 'github');
+        return `<option value="${esc(r.uuid)}" data-branch="${esc(r.repo_branch)}">${esc(r.display_name || r.namespace)} (${esc(provider)})</option>`;
+      }).join('')
+    : '<option value="">No enhancement-target repos — add the role in the Repos panel</option>';
+  if (_codeRepos.length) {
     const opt = sel.selectedOptions[0];
     if (opt?.dataset.branch) document.getElementById('rpPrBaseBranch').value = opt.dataset.branch;
   }
@@ -7037,13 +7005,13 @@ document.getElementById('rpPrCopyBtn')?.addEventListener('click', () => {
 });
 
 document.getElementById('rpPrCreateBtn')?.addEventListener('click', async () => {
-  const repoId = parseInt(document.getElementById('rpPrRepoSel').value, 10);
-  if (!repoId) { toast('Select a repository first'); return; }
+  const repoUuid = document.getElementById('rpPrRepoSel').value;
+  if (!repoUuid) { toast('Select a repository first'); return; }
   const { runId, scope, ucUuid } = _rpGetContext();
   const msgEl = document.getElementById('rpPrMsg');
   const btn   = document.getElementById('rpPrCreateBtn');
   const payload = {
-    repo_config_id: repoId, run_id: runId, uc_uuid: ucUuid || null, scope,
+    repo_uuid: repoUuid, run_id: runId, uc_uuid: ucUuid || null, scope,
     branch:      document.getElementById('rpPrBranch').value.trim(),
     title:       document.getElementById('rpPrTitle').value.trim(),
     base_branch: document.getElementById('rpPrBaseBranch').value.trim() || null,
@@ -7315,13 +7283,21 @@ document.getElementById('rdEnhToPrBtn').addEventListener('click', async () => {
   const msgEl  = document.getElementById('rdPrMsg');
   msgEl.textContent = '';
 
-  if (!_codeRepos.length) { try { _codeRepos = await api('/api/code-repos'); } catch {} }
-  const enabled = _codeRepos.filter(r => r.enabled);
+  // ADR-006: enhancement targets are managed_repos rows with role=enhancement-target
+  if (!_codeRepos.length) {
+    try {
+      const r = await api('/api/repos?role=enhancement-target');
+      _codeRepos = r.repos || [];
+    } catch {}
+  }
   const sel = document.getElementById('rdPrRepoSel');
-  sel.innerHTML = enabled.length
-    ? enabled.map(r => `<option value="${r.id}" data-branch="${esc(r.default_branch)}">${esc(r.name)} (${esc(r.provider)})</option>`).join('')
-    : '<option value="">No repos configured — add one in Config</option>';
-  if (enabled.length) _rdPrRepoChanged();
+  sel.innerHTML = _codeRepos.length
+    ? _codeRepos.map(r => {
+        const provider = (r.metadata && r.metadata.provider) || (r.repo_url && r.repo_url.toLowerCase().includes('gitlab') ? 'gitlab' : 'github');
+        return `<option value="${esc(r.uuid)}" data-branch="${esc(r.repo_branch)}">${esc(r.display_name || r.namespace)} (${esc(provider)})</option>`;
+      }).join('')
+    : '<option value="">No enhancement-target repos — add the role in Config → Managed repos</option>';
+  if (_codeRepos.length) _rdPrRepoChanged();
 
   const scope  = document.getElementById('rdEnhScopeSel').value;
   const { runId, ucUuid } = _reviewCtx;
@@ -7360,12 +7336,12 @@ document.getElementById('rdPrCopyBtn').addEventListener('click', () => {
 });
 
 document.getElementById('rdPrCreateBtn').addEventListener('click', async () => {
-  const repoId = parseInt(document.getElementById('rdPrRepoSel').value, 10);
-  if (!repoId) { toast('Select a repository first'); return; }
+  const repoUuid = document.getElementById('rdPrRepoSel').value;
+  if (!repoUuid) { toast('Select a repository first'); return; }
   const msgEl = document.getElementById('rdPrMsg');
   const btn   = document.getElementById('rdPrCreateBtn');
   const payload = {
-    repo_config_id: repoId,
+    repo_uuid: repoUuid,
     run_id:  _reviewCtx.runId,
     uc_uuid: _reviewCtx.ucUuid || null,
     scope:       document.getElementById('rdEnhScopeSel').value,
@@ -8412,103 +8388,25 @@ document.getElementById('ucAssistPanelModelSel').addEventListener('change', func
   if (cfgSel && cfgSel.querySelector(`option[value="${this.value}"]`)) cfgSel.value = this.value;
 });
 
-// ── Code Repositories ────────────────────────────────────────────────────────
-
+// ── Enhancement Targets (ADR-006) ────────────────────────────────────────────
+// Post-ADR-006, code_repo_configs is consolidated into managed_repos with
+// role=enhancement-target. The Config UI for code repositories was removed;
+// operators manage these through the Managed repos panel (add the role,
+// set a PAT). The `_codeRepos` cache below is populated lazily from
+// /api/repos?role=enhancement-target by the two PR-creation dropdowns
+// (rpPrRepoSel and rdPrRepoSel) and invalidated on config reload.
 let _codeRepos = [];
-let _codeRepoEditId = null;
 
 async function loadCodeRepos() {
-  try { _codeRepos = await api('/api/code-repos'); } catch { _codeRepos = []; }
-  renderCodeRepoList();
-}
-
-function renderCodeRepoList() {
-  const el = document.getElementById('codeRepoList');
-  if (!el) return;
-  if (!_codeRepos.length) {
-    el.innerHTML = '<div style="padding:12px 16px;font-size:11px;color:var(--text-faint);">No repositories configured.</div>';
-    return;
-  }
-  el.innerHTML = _codeRepos.map(r => `
-    <div class="mcp-row" data-id="${r.id}">
-      <span class="mcp-name">${esc(r.name)}</span>
-      <span class="mcp-url" title="${esc(r.repo_url)}">${esc(r.repo_url)}</span>
-      <span style="font-size:10px;color:var(--text-faint);flex-shrink:0;">${esc(r.provider)} · ${esc(r.default_branch)}</span>
-      ${r.token ? '<span style="font-size:9px;color:var(--ok);border:1px solid var(--border);padding:1px 5px;border-radius:2px;">token set</span>' : '<span style="font-size:9px;color:var(--error);border:1px solid var(--border);padding:1px 5px;border-radius:2px;">no token</span>'}
-      ${!r.enabled ? '<span style="font-size:9px;color:var(--text-faint);border:1px solid var(--border);padding:1px 5px;border-radius:2px;">disabled</span>' : ''}
-      <span class="mcp-actions">
-        <button class="btn ghost btn-icon" style="font-size:10px;" onclick="openCodeRepoForm(${r.id})">Edit</button>
-        <button class="btn ghost btn-icon" style="font-size:10px;color:var(--error);" onclick="deleteCodeRepo(${r.id},this)">✕</button>
-      </span>
-    </div>`).join('');
-}
-
-function openCodeRepoForm(id) {
-  _codeRepoEditId = id || null;
-  const r = id ? _codeRepos.find(x => x.id === id) : null;
-  document.getElementById('codeRepoFormTitle').textContent = r ? 'Edit repository' : 'Add repository';
-  document.getElementById('crfName').value = r ? r.name : '';
-  document.getElementById('crfProvider').value = r ? r.provider : 'github';
-  document.getElementById('crfUrl').value = r ? r.repo_url : '';
-  document.getElementById('crfBranch').value = r ? r.default_branch : 'main';
-  document.getElementById('crfToken').value = '';
-  document.getElementById('crfEnabled').checked = r ? r.enabled : true;
-  document.getElementById('codeRepoFormMsg').textContent = '';
-  document.getElementById('codeRepoFormCard').style.display = '';
-  document.getElementById('crfName').focus();
-}
-
-async function deleteCodeRepo(id, btn) {
-  if (!btn) return;
-  const r = _codeRepos.find(x => x.id === id);
-  if (!r) return;
-  _armDeleteBtn(btn, async () => {
-    try {
-      await api(`/api/code-repos/${id}`, { method: 'DELETE' });
-      _codeRepos = _codeRepos.filter(x => x.id !== id);
-      renderCodeRepoList();
-    } catch (e) { toast('Delete failed: ' + e.message, true); }
-  });
-}
-
-document.getElementById('addCodeRepoBtn').addEventListener('click', () => openCodeRepoForm(null));
-document.getElementById('cancelCodeRepoBtn').addEventListener('click', () => {
-  document.getElementById('codeRepoFormCard').style.display = 'none';
-  _codeRepoEditId = null;
-});
-
-document.getElementById('saveCodeRepoBtn').addEventListener('click', async () => {
-  const msgEl = document.getElementById('codeRepoFormMsg');
-  const payload = {
-    name: document.getElementById('crfName').value.trim(),
-    provider: document.getElementById('crfProvider').value,
-    repo_url: document.getElementById('crfUrl').value.trim(),
-    default_branch: document.getElementById('crfBranch').value.trim() || 'main',
-    token: document.getElementById('crfToken').value,
-    enabled: document.getElementById('crfEnabled').checked,
-  };
-  if (!payload.name || !payload.repo_url) {
-    msgEl.textContent = 'Name and repo URL are required.';
-    msgEl.style.color = 'var(--error)';
-    return;
-  }
-  msgEl.textContent = 'Saving…'; msgEl.style.color = 'var(--text-faint)';
+  // Lazy: populated when the PR creation form opens. Kept as a no-op
+  // function so loadConfig()'s existing call site stays valid.
   try {
-    if (_codeRepoEditId) {
-      const updated = await api(`/api/code-repos/${_codeRepoEditId}`, { method: 'PUT', body: JSON.stringify(payload) });
-      _codeRepos = _codeRepos.map(r => r.id === _codeRepoEditId ? updated : r);
-    } else {
-      const created = await api('/api/code-repos', { method: 'POST', body: JSON.stringify(payload) });
-      _codeRepos.push(created);
-    }
-    renderCodeRepoList();
-    document.getElementById('codeRepoFormCard').style.display = 'none';
-    _codeRepoEditId = null;
-  } catch (e) {
-    msgEl.textContent = `Save failed: ${e.message}`;
-    msgEl.style.color = 'var(--error)';
+    const r = await api('/api/repos?role=enhancement-target');
+    _codeRepos = r.repos || [];
+  } catch {
+    _codeRepos = [];
   }
-});
+}
 
 
 // ── Config nav: scroll-spy + click-to-scroll ─────────────────────────────────
@@ -8516,7 +8414,8 @@ let _configNavReady = false;
 const _cfgPanelIds = [
   'configCredentialsPanel','configReposPanel',
   'configSpecPanel','configCorpusPanel','configInferencePanel',
-  'configModelsPanel','configUCAssistPanel','configMCPPanel','configCodeReposPanel',
+  'configModelsPanel','configUCAssistPanel','configMCPPanel',
+  // Per ADR-006: configCodeReposPanel folded into configReposPanel
 ];
 
 function _updateConfigNavActive() {

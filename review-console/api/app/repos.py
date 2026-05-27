@@ -42,7 +42,7 @@ SECRET_FIELDS = ("github_pat", "github_webhook_secret")
 
 # v1 closed vocabulary. Open for extension — adding a role here is the only
 # change needed to make the registry accept it.
-VALID_ROLES = {"spec", "corpus", "issue-source"}
+VALID_ROLES = {"spec", "corpus", "issue-source", "enhancement-target"}
 
 # Match the migration's CHECK constraint exactly.
 _NAMESPACE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$")
