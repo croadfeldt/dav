@@ -214,7 +214,7 @@ Milestone breakdown:
 - **M2 — Registry → ConfigMap projection** ✅ (idempotent, role=spec hook, rolls dav-docs-mcp on real change only)
 - **M3 — Repos UI view** ✅ (Config → Managed repos: list with role chips, add/edit/delete dialog, manual "↻ Project" button, projection-status feedback in toasts)
 - **M4 — Sources panel refactor** ✅ (Architecture spec panel is read-only; shows the list of projected sources; "↑ Manage in Repos" jump-to button; legacy single-source ConfigMap detected and called out for conversion)
-- **M5 — `pr_comments` table + GitHub poller** (role=issue-source)
+- **M5 — `pr_comments` table + GitHub poller** ✅ (migration 008; async background poller hits role=issue-source repos every 5 min; upserts open-PR `issue_comment` + `pull_request_review_comment` into pr_comments; per-repo poll-state row tracks success/error + watermark; status lifecycle `new` → `dismissed` | `drafted_to_uc`; UC↔comment provenance via uc_pr_comment_links. PAT via `GITHUB_TOKEN` env in the operator-managed `dav-review-api-tokens` Secret — without it the poller runs but rate-limits hard.)
 - **M6 — Webhook receiver extension** for issue_comment / PR review comment events
 - **M7 — Inbox API + LLM auto-draft endpoint** (reuses UC Assist plumbing)
 - **M8 — Inbox UI tab** + "draft UC from comment" flow

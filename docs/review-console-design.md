@@ -292,6 +292,62 @@ pipeline (each run clones from the ConfigMap fresh, so no Deployment
 rollout is needed). When corpus becomes multi-source-capable, the
 project_corpus_sources sibling lands.
 
+## PR-comment ingestion (M5+, ADR-003 extension)
+
+managed_repos rows with `role=issue-source` are polled for PR comments
+by a background task in the review-api process. Migration 008 adds:
+
+- `pr_comments` — one row per ingested comment. Keyed by
+  `(repo_uuid, github_comment_id, github_comment_type)` so re-polls and
+  webhook replays upsert cleanly. `status` lifecycle: `new` →
+  `dismissed` | `drafted_to_uc`. Curator state is preserved across
+  re-polls (only body and timestamps update; status never gets reset).
+- `uc_pr_comment_links` — provenance from a UC back to the PR
+  comment(s) that drove its creation. Many-to-many.
+- `pr_comment_poll_state` — one row per role=issue-source repo. Records
+  last poll start/finish timestamps, success/error, comments seen,
+  newest-seen watermark.
+
+Poller (`review-console/api/app/pr_comments.py`):
+
+- Async background task started in `lifespan` alongside the finalizer
+- Runs every `PR_COMMENTS_POLL_INTERVAL_SECONDS` (default 300)
+- Initial delay `PR_COMMENTS_POLL_STARTUP_DELAY_SECONDS` (default 30)
+- For each role=issue-source repo: list open PRs → for each PR list
+  `issue_comment` and `pull_request_review_comment` types → upsert
+- One DB connection per repo (failures isolated)
+- Logs `pr_comments poll: N repo(s) — ok=K fail=K total_comments_seen=N`
+  per pass for visibility
+
+GitHub client (`review-console/api/app/github_client.py`):
+
+- httpx async, Bearer auth via `GITHUB_TOKEN` env
+- Pagination via Link rel="next" (max 20 pages = 2000 items per call;
+  safety cap with warning log)
+- `parse_owner_repo(url)` derives owner+repo from the managed_repos
+  row's `repo_url` (no need for the operator to type them twice)
+- Anonymous mode supported but warns; 60 req/hr quota burns out fast
+  for periodic polling
+
+Operator setup for production polling:
+
+1. Generate a GitHub PAT with `repo` scope (or `public_repo` if only
+   public repos will be polled).
+2. Add it to the `dav-review-api-tokens` Secret:
+   ```
+   oc patch secret dav-review-api-tokens -n {{ dav_namespace }} \
+     -p '{"stringData":{"GITHUB_TOKEN":"ghp_..."}}'
+   oc rollout restart deploy/dav-review-api -n {{ dav_namespace }}
+   ```
+3. In the Repos UI, edit each repo you want polled and check the
+   `issue-source` role checkbox. The poller picks it up within
+   POLL_INTERVAL_SECONDS.
+
+The Inbox API (M7) reads from `pr_comments`. The Inbox UI (M8) lets
+operators dismiss comments or draft a UC from one (LLM-assisted draft
+via the UC Assist plumbing). Webhook receiver (M6) pushes individual
+comments via the same upsert path so the poller becomes a fallback.
+
 ## DB migrations
 
 Migrations run automatically at API startup before `schema.sql`. Each migration file is idempotent (safe to re-run).

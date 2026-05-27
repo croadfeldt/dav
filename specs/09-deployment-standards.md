@@ -30,6 +30,12 @@ Topics this spec will cover when authored:
   - Seeding: first-run only, the API seeds the registry from existing source ConfigMaps so operators don't lose their config across upgrade
   - CRUD via `GET/POST/PUT/DELETE /api/repos`; UI lands in M3 (Config → Repos)
   - `tenant_id` column ungated in v1 (multi-tenant request filtering deferred per ADR-003 §3.A)
+- PR-comment ingestion (M5+):
+  - role=issue-source repos are polled every 5 min by a background async task in review-api
+  - `GITHUB_TOKEN` env (from the `dav-review-api-tokens` Secret, alongside `DAV_CORPUS_PUSH_TOKEN`): GitHub PAT with `repo` (or `public_repo`) scope. Without it, anonymous mode runs at 60 req/hr per IP — unsuitable for periodic polling.
+  - To add the token: `oc patch secret dav-review-api-tokens -n {{ dav_namespace }} -p '{"stringData":{"GITHUB_TOKEN":"ghp_..."}}'` then rollout-restart review-api.
+  - `PR_COMMENTS_POLL_INTERVAL_SECONDS` (default 300) and `PR_COMMENTS_POLL_STARTUP_DELAY_SECONDS` (default 30) env vars tune cadence.
+  - Webhook receiver (M6) pushes individual comments via the same upsert path so the poller becomes a fallback for missed events / repos without webhook configured.
 - Tekton pipeline (today):
   - Pipeline structure
   - Triggering: manual, scheduled, or webhook-based

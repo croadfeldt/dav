@@ -38,6 +38,7 @@ from . import uc_assist
 from . import corpus_push
 from . import repos as _repos
 from . import projector as _projector
+from . import pr_comments as _pr_comments
 
 log = logging.getLogger("dav-review-api")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -55,6 +56,7 @@ MIGRATE_004_PATH = Path(__file__).parent / "migrate_004_default_set.sql"
 MIGRATE_005_PATH = Path(__file__).parent / "migrate_005_corpus_push.sql"
 MIGRATE_006_PATH = Path(__file__).parent / "migrate_006_run_lineage.sql"
 MIGRATE_007_PATH = Path(__file__).parent / "migrate_007_managed_repos.sql"
+MIGRATE_008_PATH = Path(__file__).parent / "migrate_008_pr_comments.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -149,6 +151,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_006_PATH.read_text())
         log.info("Applying migration 007 (managed_repos registry)...")
         await conn.execute(MIGRATE_007_PATH.read_text())
+        log.info("Applying migration 008 (pr_comments + poll_state)...")
+        await conn.execute(MIGRATE_008_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -156,12 +160,15 @@ async def lifespan(app: FastAPI):
     log.info("Ready.")
     import asyncio
     finalizer_task = asyncio.create_task(_finalizer_loop())
+    pr_comments_task = asyncio.create_task(_pr_comments.poller_loop(pool))
     yield
     finalizer_task.cancel()
-    try:
-        await finalizer_task
-    except Exception:
-        pass
+    pr_comments_task.cancel()
+    for t in (finalizer_task, pr_comments_task):
+        try:
+            await t
+        except Exception:
+            pass
     await pool.close()
 
 
