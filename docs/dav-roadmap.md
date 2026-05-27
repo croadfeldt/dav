@@ -210,8 +210,8 @@ filtering deferred to a future ADR-003-derivative when the workload arrives.
 
 Milestone breakdown:
 
-- **M1 — managed_repos table + CRUD API** ✅ (this commit)
-- **M2 — Registry → ConfigMap projection** (regenerate dav-source-spec on changes)
+- **M1 — managed_repos table + CRUD API** ✅
+- **M2 — Registry → ConfigMap projection** ✅ (idempotent, role=spec hook, rolls dav-docs-mcp on real change only)
 - **M3 — Repos UI view** (Config → Repos: list/add/edit/delete)
 - **M4 — Sources panel refactor** (read-only view over registry)
 - **M5 — `pr_comments` table + GitHub poller** (role=issue-source)

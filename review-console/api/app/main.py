@@ -37,6 +37,7 @@ from . import results as _results
 from . import uc_assist
 from . import corpus_push
 from . import repos as _repos
+from . import projector as _projector
 
 log = logging.getLogger("dav-review-api")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -255,6 +256,22 @@ async def _seed_managed_repos(conn: asyncpg.Connection) -> None:
     )
     if inserted:
         log.info("managed_repos seeded %d row(s) from existing ConfigMaps", inserted)
+        # Project the seeded registry back to the ConfigMap so the two are
+        # consistent from t0. If the source ConfigMap was in legacy mode,
+        # this converts it to multi-source mode (and rolls the MCP). If it
+        # was already multi-source with the same data, projection is a
+        # no-op (idempotent — projector compares and skips).
+        try:
+            result = await _projector.project_spec_sources(
+                conn, applied_by="system:seed",
+            )
+            log.info("managed_repos seed: projection result %s", result.get("status"))
+        except Exception as e:
+            log.warning(
+                "managed_repos seed: projection failed (%s); registry is "
+                "populated but ConfigMap may differ until next CRUD or "
+                "manual POST /api/repos/project", e,
+            )
     else:
         log.info(
             "managed_repos seed: nothing to seed (no spec or corpus ConfigMaps "
@@ -2902,11 +2919,13 @@ async def get_repo_api(uuid_or_namespace: str):
 
 @app.post("/api/repos")
 async def create_repo_api(payload: RepoCreateIn, request: Request):
-    """Create a new managed repo."""
+    """Create a new managed repo. If the new repo carries role=spec, also
+    project the registry to the dav-source-spec ConfigMap + rollout-restart
+    dav-docs-mcp so the new source is served (M2)."""
     reviewer = get_user(request)
     try:
         async with pool.acquire() as conn:
-            return await _repos.create_repo(
+            created = await _repos.create_repo(
                 conn,
                 namespace=payload.namespace,
                 repo_url=payload.repo_url,
@@ -2919,6 +2938,11 @@ async def create_repo_api(payload: RepoCreateIn, request: Request):
                 metadata=payload.metadata,
                 created_by=reviewer,
             )
+            if _projector.repo_touches_spec(created):
+                created["_projection"] = await _projector.project_spec_sources(
+                    conn, applied_by=reviewer,
+                )
+            return created
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -2927,10 +2951,14 @@ async def create_repo_api(payload: RepoCreateIn, request: Request):
 async def update_repo_api(uuid_or_namespace: str, payload: RepoUpdateIn, request: Request):
     """Update fields on an existing managed repo. namespace and tenant_id are
     immutable through this endpoint; tenant transfers land as a dedicated
-    endpoint later (see ADR-003)."""
+    endpoint later (see ADR-003).
+
+    Projects to dav-source-spec ConfigMap if the row carried role=spec
+    BEFORE or AFTER the update (covers add/remove/change-of-other-fields)."""
     reviewer = get_user(request)
     try:
         async with pool.acquire() as conn:
+            before = await _repos.get_repo(conn, uuid_or_namespace)
             updated = await _repos.update_repo(
                 conn,
                 uuid_or_namespace,
@@ -2943,24 +2971,51 @@ async def update_repo_api(uuid_or_namespace: str, payload: RepoUpdateIn, request
                 metadata=payload.metadata,
                 updated_by=reviewer,
             )
+            if not updated:
+                raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
+            if (_projector.repo_touches_spec(before)
+                    or _projector.repo_touches_spec(updated)):
+                updated["_projection"] = await _projector.project_spec_sources(
+                    conn, applied_by=reviewer,
+                )
+            return updated
     except ValueError as e:
         raise HTTPException(400, str(e))
-    if not updated:
-        raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
-    return updated
 
 
 @app.delete("/api/repos/{uuid_or_namespace}")
-async def delete_repo_api(uuid_or_namespace: str):
-    """Delete a managed repo. Caller is responsible for understanding the
-    consequences for any role this repo carried (e.g., removing a role=spec
-    repo will, after M2 lands, regenerate the dav-source-spec ConfigMap
-    without that repo)."""
+async def delete_repo_api(uuid_or_namespace: str, request: Request):
+    """Delete a managed repo. If the deleted repo carried role=spec, also
+    project the registry to the dav-source-spec ConfigMap + rollout-restart
+    dav-docs-mcp so the MCP stops serving the removed source.
+
+    The projector refuses to write an empty sources list (would crash the
+    MCP at init), so deleting the last role=spec repo logs a warning and
+    leaves the ConfigMap untouched. Create a replacement first."""
+    reviewer = get_user(request)
     async with pool.acquire() as conn:
+        before = await _repos.get_repo(conn, uuid_or_namespace)
         ok = await _repos.delete_repo(conn, uuid_or_namespace)
-    if not ok:
-        raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
-    return {"deleted": uuid_or_namespace}
+        if not ok:
+            raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
+        projection = None
+        if _projector.repo_touches_spec(before):
+            projection = await _projector.project_spec_sources(
+                conn, applied_by=reviewer,
+            )
+    return {"deleted": uuid_or_namespace, "_projection": projection}
+
+
+@app.post("/api/repos/project")
+async def project_repos_api(request: Request):
+    """Manually trigger registry → dav-source-spec ConfigMap projection.
+
+    Useful after operator-side surgery (oc edits, registry-direct DB writes
+    via psql, etc.) or as a smoke test. Idempotent: if the ConfigMap is
+    already current, no patch is written and no rollout is triggered."""
+    reviewer = get_user(request)
+    async with pool.acquire() as conn:
+        return await _projector.project_spec_sources(conn, applied_by=reviewer)
 
 
 @app.get("/api/repos/roles/vocabulary")
