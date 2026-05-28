@@ -135,6 +135,14 @@ If you'd rather type the password every time, skip this step and add `--ask-vaul
 
 ### 0.2 — Add `dav-version.yaml` to the corpus repo
 
+> **Note on M11a+ multi-source corpus.** Once the operator (or the API) has
+> projected the corpus registry into the multi-source `dav-source-corpus`
+> ConfigMap shape, the `git-clone-corpus` init container on `dav-review-api`
+> is a no-op (Tekton's `dav-git-sync-multi-corpus` task owns the real clone
+> at run start). This is expected: the API pod's `/data/repo` will be empty
+> until the first pipeline run completes, and the legacy single-source
+> `repo_url`/`repo_branch` keys on the ConfigMap are no longer present.
+
 The engine reads `dav-version.yaml` from the corpus root to populate `consumer_version` in every Analysis output. Without it, `consumer_version` is empty and analyses can't be tied to a specific corpus state.
 
 ```bash
@@ -198,6 +206,22 @@ Type vault password when prompted. The playbook runs through:
 6. Tekton pipeline + triggers + event listener + webhook route
 7. Review console (UI + API + Postgres)
 8. Validation tasks
+
+> **LLM-bound endpoint timeouts (M12+).** The playbook configures three
+> layers between the browser and the API with a 600s timeout: the
+> OpenShift Route (`haproxy.router.openshift.io/timeout=600s` on
+> `review-console-ui-route.yaml.j2`), the oauth-proxy sidecar
+> (`--upstream-timeout=600s` on `review-console-ui-deployment.yaml.j2`),
+> and the nginx sidecar (`proxy_read_timeout 600s` on the `/api/`
+> location in `review-console-ui-nginx-cm.yaml.j2`). This is the
+> ceiling for long-running LLM calls — bulk UC extract on a real
+> transcript, wizard generate against frontier models, and refine round
+> trips — and matches the 600s `httpx` timeout used by
+> `uc_assist.extract_bulk`. The three values are currently hardcoded in
+> the templates above; edit them in lock-step if your cluster needs a
+> different ceiling. Symptom of a too-short timeout: long calls return
+> 502 with the only useful diagnostic being `oauth-proxy`'s
+> `"timeout awaiting response headers"` log line.
 
 (In-cluster vLLM fallback is opt-in via `--tags vllm`; see §1c.)
 

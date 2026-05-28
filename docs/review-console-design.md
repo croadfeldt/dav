@@ -67,6 +67,13 @@ The SPA is a single `index.html` with no build step. All state lives in JS globa
 
 **Trigger form:** `POST /api/runs` → creates a `run_sessions` row and calls Tekton to start `dav-stage2` PipelineRun. Params: name, description, category, tags, mode (verification/reproduce/explore), inference model (selected from `model_configs` via dropdown — endpoint + model_id derived from the row), corpus subpath, repo overrides, sample count, halt-on-error.
 
+**Per-run source filters** *(M11b + post-M12, multi-source mode only)*: when `/api/sources` reports `spec.multi_source` or `corpus.multi_source` is true, the modal renders a vertical checkbox list for each side instead of the legacy URL/branch inputs:
+
+- **Corpus sources (per-run filter)** *(M11b)*: ticked namespaces flow through `RunTriggerIn.corpus_namespaces` → `_mk_pipelinerun` → PipelineRun `corpus-namespaces` param → `dav-git-sync-multi-corpus` Tekton task, which clones only the selected sources into `/workspace/corpus/<namespace>/`. **Hard enforcement** — unticked sources physically aren't in the workspace.
+- **Spec sources (per-run filter)** *(post-M12)*: ticked namespaces flow through `RunTriggerIn.spec_namespaces` → `_mk_pipelinerun` → PipelineRun `spec-namespaces` param → `dav-run-corpus` task `DAV_SPEC_NAMESPACES_FILTER` env var → `engine.ai.prompts.build_stage2_system_prompt` appends a "spec source focus for this run" paragraph. **Soft enforcement** — the MCP itself still serves every spec namespace; the focus hint instructs the LLM to prefer the listed sources and note any cross-namespace lookups.
+
+For both, all-checked ≡ null sent (no filter applied; full set used) — the default behavior matches pre-M11b runs.
+
 **Run drawer:** Opens when a run row is clicked. Four layout modes (button in drawer header):
 - `detailed` — full GPU/vLLM stat tiles + task list + prompts panel (default)
 - `stacked-tails` — compact stats + task list + prompts panel stacked
@@ -237,6 +244,22 @@ If any link in this chain is broken (e.g., `turns_log_path` not passed, `_emit_t
 `STAGE2_PROMPT_VERSION` in `engine/src/dav/ai/prompts.py` is bumped on any change to the system or user prompt. Stored in each analysis YAML under `metadata.prompt_version`. Used for cross-run comparability assertions.
 
 Current: `"1.5"` — gap title field added, `spec_refs_missing` as list.
+
+The stage-2 system prompt also picks up a **per-run spec-source focus paragraph** when the engine sees `DAV_SPEC_NAMESPACES_FILTER` (set by the Tekton `dav-run-corpus` task from the `spec-namespaces` PipelineRun param; ultimately from the New Run modal's spec-source checkbox grid). The hint asks the LLM to prefer documents from the listed namespaces when grounding via MCP and to note any cross-namespace lookup in its analysis. This is **soft enforcement** — the MCP itself still holds every spec namespace — and is the spec-side analog of M11b's hard-enforced corpus filter (which physically constrains what `dav-git-sync-multi-corpus` clones).
+
+---
+
+## Infrastructure: LLM-bound endpoint timeouts (M12+)
+
+Three layers between the browser and the API each have their own default short timeout. For long LLM calls (`/api/uc-assist` wizard generate/refine, `/api/use-cases/bulk-from-text` transcript extraction), all three need to be lifted in lock-step or the slowest layer 502s mid-stream:
+
+| Hop | Default | M12+ setting | Where |
+|---|---|---|---|
+| OpenShift Route (haproxy) | 30s | `haproxy.router.openshift.io/timeout: 600s` | `ansible/roles/dav/templates/review-console-ui-route.yaml.j2` |
+| oauth-proxy sidecar | 30s | `--upstream-timeout=600s` | `ansible/roles/dav/templates/review-console-ui-deployment.yaml.j2` |
+| nginx `/api/` location | 60s | `proxy_read_timeout 600s` | `ansible/roles/dav/templates/review-console-ui-nginx-cm.yaml.j2` |
+
+The 600s ceiling matches the `httpx` timeout used by `uc_assist.extract_bulk`. Symptom of any hop being too short: the request returns 502 to the browser with no useful detail; the only readable signal is `oauth-proxy`'s `"http: proxy error: net/http: timeout awaiting response headers"` log line. When investigating future timeout-shaped issues, check oauth-proxy logs first — Route and nginx fail silently with generic 502s.
 
 ---
 

@@ -116,7 +116,7 @@ The Ansible role at `../ansible/roles/dav/tasks/review_console.yaml` builds the 
 
 The API pod mounts:
 - `dav-workspace` PVC at `/workspace` (read-only) — for results browsing. **Must be ReadWriteMany** (CephFS, NFS, EFS, etc.) — RWO causes Multi-Attach failure when pipeline pods land on a different node than the API pod. The role defaults to RWX and uses the cluster's default storage class; override `dav_workspace_pvc_storage_class` in `vars.local.yaml` if the cluster default is RWO. See `docs/operator-runbook.md` §0.0 for storage-class names by provider.
-- `corpus` emptyDir at `/data` — cloned from the corpus repo by an init container
+- `corpus` emptyDir at `/data` — historically pre-populated by a `git-clone-corpus` init container. **Post-M11a**: the init container is a graceful no-op when `dav-source-corpus` is in multi-source mode (legacy `repo_url`/`repo_branch` keys absent). Tekton's `dav-git-sync-multi-corpus` task is the source of truth for corpus content at run time; the API's directory-mode loader tolerates an empty `/data/repo`.
 - `service-ca` ConfigMap at `/var/run/configmaps/service-ca` — OpenShift's service-CA bundle (auto-injected by the `service.beta.openshift.io/inject-cabundle` annotation). Used to verify the TLS cert of `thanos-querier` when the API queries Prometheus for run-detail metrics.
 
 The OAuth integration uses OpenShift's `origin-oauth-proxy` sidecar in the UI pod. The API trusts the `X-Forwarded-User` header set by the proxy and uses it as the identity on managed-UC writes and run triggers.
@@ -130,6 +130,8 @@ The OAuth integration uses OpenShift's `origin-oauth-proxy` sidecar in the UI po
 - OpenShift user-workload monitoring enabled (it is by default on 4.18+)
 - An AMD GPU metrics exporter publishing `gpu_gfx_activity`, `gpu_used_vram`, `gpu_average_package_power`, `gpu_edge_temperature` to cluster Prometheus. The AMD GPU Operator deploys this when `DeviceConfig.spec.metricsExporter.enable=true`. Recommended scrape `interval: 10s` for the run-detail UI freshness; the operator default of 60s is too coarse — the drawer polls every 3 s but Prometheus is the bottleneck.
 - A vLLM (or other OpenAI-compatible) inference server publishing `vllm:num_requests_running`, `vllm:gpu_cache_usage_perc`, `vllm:generation_tokens_total`, etc. KServe auto-generates a ServiceMonitor for `InferenceService` resources when annotated with `monitoring.opendatahub.io/scrape=true`.
+
+**LLM-bound endpoint timeouts (M12+).** The Route, oauth-proxy sidecar, and nginx sidecar are all configured for a 600s ceiling so long-running calls (`/api/uc-assist` for wizard generate/refine, `/api/use-cases/bulk-from-text` for transcript extraction) don't 502 mid-stream. Three hops, three different defaults to override: `haproxy.router.openshift.io/timeout` annotation on the Route, `--upstream-timeout=600s` on the oauth-proxy container args, and `proxy_read_timeout 600s` on the `/api/` location in the nginx ConfigMap. All three live in `ansible/roles/dav/templates/review-console-ui-*` and must move in lock-step.
 
 ## Run locally (development)
 
