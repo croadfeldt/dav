@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dav.core.use_case_schema import UseCase
 
-STAGE2_PROMPT_VERSION = "1.6"  # 1.6 — cross-turn dedup nudge ("scan prior tool calls before re-issuing")
+STAGE2_PROMPT_VERSION = "1.7"  # 1.7 — per-UC spec_namespaces hard scope (M12 "C" pass)
 
 # /no_think directive at the top is a Qwen3 chat template token that disables
 # the model's thinking-mode output (<think>...</think> blocks). We strip

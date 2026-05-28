@@ -404,6 +404,16 @@ class UseCase:
     tags: list[str] = field(default_factory=list)
     version: str = "1.0.0"
     metadata: UseCaseMetadata = field(default_factory=UseCaseMetadata)
+    # Per-UC spec scope (M12 follow-up "C" in the routing consistency pass).
+    # When present, the stage-2 agent restricts MCP grounding to documents
+    # whose handle prefix is in this list (hard enforcement: out-of-scope
+    # get_document_section / get_document calls return an OUT-OF-SCOPE
+    # marker; in-scope search_docs results are preferred). Empty / missing
+    # = no per-UC restriction; the run-wide DAV_SPEC_NAMESPACES_FILTER env
+    # var still applies as the soft default. Lets one corpus mix UCs that
+    # test DCM-only, UDLM-only, and cross-spec without forcing the operator
+    # to pick at run-trigger time.
+    spec_namespaces: list[str] = field(default_factory=list)
 
     @classmethod
     def new(cls, handle: str, scenario: Scenario, generated_by: GeneratedBy,
@@ -462,6 +472,7 @@ class UseCase:
             tags=data.get("tags", []),
             version=data.get("version", "1.0.0"),
             metadata=metadata,
+            spec_namespaces=data.get("spec_namespaces") or [],
         )
 
 # --- Analysis schema (stage 2 output with descriptor-form severity/confidence) ---

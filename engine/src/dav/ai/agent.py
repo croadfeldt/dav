@@ -255,6 +255,20 @@ class Stage2Agent:
         # config.seed. The runner sets this for each sample of a multi-sample
         # run so each sample uses a distinct seed.
         self._sample_seed: int | None = None
+        # Per-UC spec namespace scope (M12 "C" pass). Populated from
+        # UseCase.spec_namespaces at the start of analyze(). When non-empty,
+        # the agent (1) appends a tighter focus paragraph to the system
+        # prompt that takes precedence over the run-wide
+        # DAV_SPEC_NAMESPACES_FILTER hint, and (2) hard-rejects
+        # get_document / get_document_section MCP calls whose handle
+        # namespace is outside the list — returning an OUT-OF-SCOPE marker
+        # that the model sees on its next turn. Counted via
+        # self._out_of_scope_blocked_count and surfaced on the summary
+        # record. search_docs results aren't filtered (the result format
+        # varies per MCP backend); the system-prompt focus + the per-call
+        # reject combine to keep grounding in-scope in practice.
+        self._uc_spec_namespaces: list[str] = []
+        self._out_of_scope_blocked_count: int = 0
 
     # Safety cap on any single field's stored length. Prevents a runaway
     # prompt or tool result from making the JSONL file pathologically large.
@@ -319,6 +333,38 @@ class Stage2Agent:
                     )
         return result
 
+    def _check_namespace_scope(self, tool_name: str, args: dict) -> Optional[str]:
+        """Hard MCP-call scope guard (M12 "C" pass).
+
+        When the active use case declares `spec_namespaces`, calls to
+        `get_document` / `get_document_section` with a handle whose
+        namespace prefix is outside that list are blocked. Returns a
+        formatted OUT-OF-SCOPE marker the agent loop returns to the
+        model in lieu of the real MCP result; returns None when the
+        call is in-scope (proceed normally).
+        """
+        if not self._uc_spec_namespaces:
+            return None
+        if tool_name not in ("get_document_section", "get_document"):
+            return None
+        handle = (args.get("handle") or "").strip()
+        if not handle or "/" not in handle:
+            return None
+        ns = handle.split("/", 1)[0]
+        if ns in self._uc_spec_namespaces:
+            return None
+        self._out_of_scope_blocked_count += 1
+        return (
+            f"⛔ OUT-OF-SCOPE: this use case's spec_namespaces is "
+            f"{self._uc_spec_namespaces}; the handle {handle!r} is in "
+            f"namespace {ns!r}, which is NOT in scope for this UC. "
+            f"The engine refused the call without contacting the MCP. "
+            f"Your next action MUST query an in-scope handle (one whose "
+            f"prefix is in {self._uc_spec_namespaces}). If you genuinely "
+            f"need cross-namespace grounding, document that in your "
+            f"analysis under `dependencies` instead of fetching the doc."
+        )
+
     def _emit_turn(self, turn: int, kind: str, **fields) -> None:
         """Append a single structured-turn record to turns_log_path (JSONL).
 
@@ -377,9 +423,25 @@ class Stage2Agent:
         self._too_large_handles = set()
         self._call_history = {}
         self._cross_turn_dup_count = 0
+        # M12 "C" pass: pick up per-UC spec scope, if any.
+        self._uc_spec_namespaces = list(getattr(use_case, "spec_namespaces", None) or [])
+        self._out_of_scope_blocked_count = 0
 
         tool_defs = get_tool_definitions()
         sys_prompt = build_stage2_system_prompt(self.consumer_profile)
+        if self._uc_spec_namespaces:
+            sys_prompt += (
+                "\n\n## Per-UC spec source scope (HARD)\n"
+                f"This use case declares `spec_namespaces: "
+                f"{self._uc_spec_namespaces}`. This OVERRIDES any run-wide "
+                f"spec focus. Restrict MCP grounding to documents whose "
+                f"handle prefix is one of those namespaces. The engine "
+                f"hard-rejects `get_document` and `get_document_section` "
+                f"calls for out-of-scope handles with an "
+                f"`⛔ OUT-OF-SCOPE` marker — pre-empt that by checking "
+                f"each handle's prefix before calling. For `search_docs`, "
+                f"prefer in-scope results and ignore the rest."
+            )
         user_prompt = build_stage2_user_prompt(use_case, self.consumer_profile)
         messages: list[ChatMessage] = [
             ChatMessage(role="system",  content=sys_prompt),
@@ -544,6 +606,32 @@ class Stage2Agent:
 
                     log.info("turn %d: mcp call %s args=%s", turn, tool_name, args)
 
+                    # M12 "C" pass: hard namespace scope check before the
+                    # MCP round trip. When the UC declared spec_namespaces
+                    # and the requested handle is out of scope, return the
+                    # OUT-OF-SCOPE marker; the agent loop emits a tool turn
+                    # record with the marker as the result, and the model
+                    # sees it on the next response. Mirrors the dedup +
+                    # anti-fishing short-circuit pattern.
+                    scope_block = self._check_namespace_scope(tool_name, args)
+                    if scope_block is not None:
+                        log.info(
+                            "turn %d: out-of-scope block %s args=%s",
+                            turn, tool_name, args,
+                        )
+                        self._emit_turn(
+                            turn=turn, kind="tool",
+                            tool_name=tool_name, args=args, ok=True,
+                            result=scope_block, result_length=len(scope_block),
+                            out_of_scope=True,
+                        )
+                        messages.append(ChatMessage(
+                            role="tool", content=scope_block,
+                            tool_call_id=tc["id"], name=tool_name,
+                        ))
+                        _exec_cache[dedup_key] = (tc["id"], scope_block)
+                        continue
+
                     mcp_result = self.mcp.call(tool_name, args)
                     full_result = (
                         mcp_result.result if mcp_result.ok
@@ -637,6 +725,8 @@ class Stage2Agent:
             distinct_calls=len(self._call_history),
             section_title_misses=sum(self._section_title_misses.values()),
             too_large_handles=len(self._too_large_handles),
+            out_of_scope_blocked=self._out_of_scope_blocked_count,
+            uc_spec_namespaces=list(self._uc_spec_namespaces),
             total_tokens=self._total_tokens,
         )
 
