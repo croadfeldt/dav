@@ -133,7 +133,7 @@ def build_stage2_system_prompt(consumer_profile=None) -> str:
     if consumer_profile is None:
         from dav.core.consumer_profile import get_default_profile
         consumer_profile = get_default_profile()
-    return _STAGE2_SYSTEM_PROMPT_TEMPLATE.format(
+    prompt = _STAGE2_SYSTEM_PROMPT_TEMPLATE.format(
         framework_name=consumer_profile.framework_name,
         framework_short=consumer_profile.framework_short,
         provider_summary=consumer_profile.provider_summary or "capabilities that realize intent",
@@ -141,6 +141,26 @@ def build_stage2_system_prompt(consumer_profile=None) -> str:
         provider_types_pipe="|".join(consumer_profile.provider_types),
         policy_modes_pipe="|".join(consumer_profile.policy_modes),
     )
+    # M12 follow-up: per-run spec source focus hint. The DAV_SPEC_NAMESPACES_FILTER
+    # env var is set by the Tekton run-corpus task when the operator picked
+    # a subset of spec sources in the New Run modal. The MCP still serves
+    # every spec namespace; this is a soft instruction so the LLM prefers
+    # grounding against the selected sources.
+    import os
+    ns_filter = (os.environ.get("DAV_SPEC_NAMESPACES_FILTER") or "").strip()
+    if ns_filter:
+        namespaces = [n.strip() for n in ns_filter.split(",") if n.strip()]
+        if namespaces:
+            prompt += (
+                "\n\n## Spec source focus for this run\n"
+                f"This run is scoped to the following spec source namespace(s): "
+                f"{', '.join(namespaces)}. When you query the MCP (handles look "
+                f"like `<namespace>/<path>`), prefer documents from these "
+                f"namespaces. Use other-namespace documents only if you cannot "
+                f"find what you need in the listed namespaces, and note the "
+                f"cross-namespace lookup in your analysis."
+            )
+    return prompt
 
 def build_stage2_user_prompt(use_case: UseCase, consumer_profile=None) -> str:
     """Build the user-turn prompt with the use case to analyze.

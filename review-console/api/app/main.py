@@ -526,6 +526,11 @@ class RunTriggerIn(BaseModel):
     # role=corpus repos in the registry are included. Operator selects a
     # subset from the New Run modal for ad-hoc / debug runs.
     corpus_namespaces: Optional[list[str]] = None
+    # Per-run spec source filter. Soft enforcement — flows through to the
+    # engine which injects a focus hint into the LLM system prompt. The
+    # MCP itself still serves every registered spec namespace; this only
+    # tells the LLM which ones to prefer for grounding.
+    spec_namespaces: Optional[list[str]] = None
     category: str = "ad-hoc"
     tags: list[str] = []
     # Legacy params kept for backward compat with self-test UI
@@ -754,6 +759,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             uc_uuids=payload.uc_uuids,
             managed_uc_uuids=payload.managed_uc_uuids,
             corpus_namespaces=payload.corpus_namespaces,
+            spec_namespaces=payload.spec_namespaces,
         )
     except Exception as e:
         log.exception("run trigger failed")

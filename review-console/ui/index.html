@@ -1611,9 +1611,9 @@
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Spec / Architecture</div>
       <div class="form-field" id="nrSpecSourcesWrap" style="display:none;">
-        <label>Spec sources (read-only)</label>
-        <div id="nrSpecSources" style="padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:2px;font-size:11px;max-height:120px;overflow-y:auto;"></div>
-        <div class="form-hint">Multi-source spec: every <code>role=spec</code> repo in the registry is served by the MCP. Edit per-repo settings in <strong>Config → Managed repos</strong>.</div>
+        <label>Spec sources (per-run filter)</label>
+        <div id="nrSpecSources" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:2px;max-height:140px;overflow-y:auto;"></div>
+        <div class="form-hint">Narrow which <code>role=spec</code> sources the LLM grounds against for this run. Blank/all = the engine sees every registered spec namespace via MCP. Soft enforcement — passed to the engine as a focus hint; the MCP itself still holds all sources.</div>
       </div>
       <div class="form-row" id="nrSpecLegacyWrap">
         <div class="form-field"><label>Spec repo URL</label>
@@ -3406,13 +3406,15 @@ async function loadNewRunDefaults(forcedSubpath) {
     if (spec.multi_source && Array.isArray(spec.sources) && spec.sources.length) {
       specLegacy.style.display = 'none';
       specMulti.style.display = '';
-      document.getElementById('nrSpecSources').innerHTML = spec.sources.map(s =>
-        `<div style="display:flex;gap:6px;align-items:baseline;margin-bottom:2px;">
-           <span style="font-weight:600;min-width:60px;">${esc(s.namespace || '')}</span>
-           <span style="font-family:var(--mono,monospace);color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${esc(s.repo_url || '')}</span>
-           <span style="color:var(--accent);font-family:var(--mono,monospace);">${esc(s.repo_branch || '')}</span>
-           ${s.root_path ? `<span style="color:var(--text-faint);font-family:var(--mono,monospace);font-size:10px;">/${esc(s.root_path)}</span>` : ''}
-         </div>`).join('');
+      const grid = document.getElementById('nrSpecSources');
+      grid.innerHTML = '';
+      spec.sources.forEach(s => {
+        const ns = s.namespace || '?';
+        const label = document.createElement('label');
+        label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;';
+        label.innerHTML = `<input type="checkbox" class="nr-spec-ns" value="${esc(ns)}" checked style="width:auto;height:auto;accent-color:var(--accent);"> <span>${esc(ns)}</span> <span style="color:var(--text-faint);font-size:10px;">${esc(s.repo_url||'')}</span>`;
+        grid.appendChild(label);
+      });
     } else {
       specLegacy.style.display = '';
       specMulti.style.display = 'none';
@@ -3500,6 +3502,17 @@ function _collectSelectedCorpusNamespaces() {
   const wrap = document.getElementById('nrCorpusSourcesWrap');
   if (!wrap || wrap.style.display === 'none') return null;
   const boxes = Array.from(document.querySelectorAll('#nrCorpusSources .nr-corpus-ns'));
+  if (!boxes.length) return null;
+  const selected = boxes.filter(b => b.checked).map(b => b.value);
+  if (selected.length === boxes.length) return null;
+  return selected;
+}
+
+// Spec analog. Same null-means-all contract.
+function _collectSelectedSpecNamespaces() {
+  const wrap = document.getElementById('nrSpecSourcesWrap');
+  if (!wrap || wrap.style.display === 'none') return null;
+  const boxes = Array.from(document.querySelectorAll('#nrSpecSources .nr-spec-ns'));
   if (!boxes.length) return null;
   const selected = boxes.filter(b => b.checked).map(b => b.value);
   if (selected.length === boxes.length) return null;
@@ -3648,6 +3661,9 @@ async function submitNewRun() {
     // ADR-007 / M11b: per-run corpus source filter. Null = all sources;
     // a partial selection narrows the multi-source clone step in Tekton.
     corpus_namespaces:  _collectSelectedCorpusNamespaces(),
+    // Spec analog. Soft enforcement: passed through to the engine as a
+    // focus hint; MCP itself still holds every spec namespace.
+    spec_namespaces:    _collectSelectedSpecNamespaces(),
   };
   try {
     const resp = await api('/api/runs', {method:'POST', body:JSON.stringify(payload)});

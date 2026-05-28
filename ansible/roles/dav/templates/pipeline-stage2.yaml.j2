@@ -70,6 +70,15 @@ spec:
       type: string
       default: ""
 
+    # Per-run spec namespace filter (M12 follow-up). Comma-separated list
+    # of role=spec source namespaces the engine should focus the LLM on
+    # during MCP grounding. Empty = no narrowing (default). Soft enforcement:
+    # the MCP itself still serves every spec namespace — this only injects
+    # a focus hint into the run-corpus engine's LLM system prompt.
+    - name: spec-namespaces
+      type: string
+      default: ""
+
     # Run-corpus settings
     - name: mode
       type: string
@@ -256,3 +265,5 @@ spec:
           value: $(params.mcp-url)
         - name: consumer-profile-path
           value: $(params.consumer-profile-path)
+        - name: spec-namespaces
+          value: $(params.spec-namespaces)

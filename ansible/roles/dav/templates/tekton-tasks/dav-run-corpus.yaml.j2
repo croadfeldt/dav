@@ -109,6 +109,16 @@ spec:
         Empty = use built-in DCM reference profile.
       default: ""
 
+    - name: spec-namespaces
+      type: string
+      description: |
+        Comma-separated list of role=spec namespaces the engine should
+        focus the LLM on for this run. Empty = no narrowing. Exposed to
+        the engine via the DAV_SPEC_NAMESPACES_FILTER env var; engine
+        injects this as a focus hint into the LLM system prompt. Soft
+        enforcement — the MCP itself still holds every spec namespace.
+      default: ""
+
     - name: max-tool-calls
       type: string
       default: "30"
@@ -174,6 +184,11 @@ spec:
       env:
         - name: PYTHONUNBUFFERED
           value: "1"
+        # M12 follow-up: per-run spec source filter. Engine reads this env
+        # var (when set) and injects "focus on namespaces: X, Y" into the
+        # LLM system prompt. Empty string = no narrowing.
+        - name: DAV_SPEC_NAMESPACES_FILTER
+          value: "$(params.spec-namespaces)"
       script: |
         #!/bin/sh
         set -e
