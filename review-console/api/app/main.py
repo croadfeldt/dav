@@ -1681,6 +1681,21 @@ async def draft_uc_from_comment_api(uuid: str, payload: InboxDraftUCIn, request:
             "api_key":      base["api_key"] if base else "",
         }
 
+    # M12 "E" pass: when the source repo has a recognizable namespace
+    # (i.e., the inbox row joined managed_repos cleanly), pre-scope the
+    # drafted UC to that namespace via the spec_namespaces field. The
+    # operator can edit it before saving; the inbox UI surfaces the
+    # auto_scoped_namespaces response field so the pre-scope is visible.
+    auto_scoped = [repo_ns] if (repo_ns and repo_ns != "(unknown)") else []
+    scope_instruction = ""
+    if auto_scoped:
+        scope_instruction = (
+            f"  - spec_namespaces: [{repo_ns}]  (auto-scoped — the comment "
+            f"originated from the {repo_ns!r} repo, so the resulting UC's "
+            f"stage-2 grounding is restricted to that namespace; per-UC "
+            f"spec scope is a HARD constraint enforced by the engine)\n"
+        )
+
     user_message = (
         f"Draft a DAV use case YAML from this PR comment.\n\n"
         f"Source repo: {repo_name} (namespace: {repo_ns})\n"
@@ -1695,6 +1710,7 @@ async def draft_uc_from_comment_api(uuid: str, payload: InboxDraftUCIn, request:
         f"  - handle: `pr-derived/{repo_ns}/<short-descriptor>`\n"
         f"  - generated_by.mode: `pr-targeted` (this is PR-comment-derived)\n"
         f"  - generated_by.source: `llm-guided` (you generated it from the comment)\n"
+        f"{scope_instruction}"
         f"Make reasonable assumptions where the comment is ambiguous and note "
         f"them in your explanation."
     )
@@ -1715,6 +1731,7 @@ async def draft_uc_from_comment_api(uuid: str, payload: InboxDraftUCIn, request:
     return {
         **result,
         "comment": comment,
+        "auto_scoped_namespaces": auto_scoped,
     }
 
 

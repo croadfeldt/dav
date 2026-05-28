@@ -9172,7 +9172,10 @@ function renderInboxList() {
             <span style="color:var(--text-faint);">@</span>${esc(c.author_login)}
             <span style="color:var(--text-faint);font-weight:400;font-size:10px;"> · PR #${c.pr_number}</span>
           </div>
-          <span style="font-size:9px;color:${statusColor};text-transform:uppercase;letter-spacing:.06em;">${esc(c.status)}</span>
+          <div style="display:flex;gap:5px;align-items:center;">
+            ${c.repo_namespace ? `<span title="Source repo namespace — drafted UCs from this comment auto-scope to spec_namespaces: [${esc(c.repo_namespace)}]" style="font-size:9px;font-family:var(--mono,monospace);color:var(--accent);background:var(--accent-bg);padding:1px 5px;border-radius:2px;">${esc(c.repo_namespace)}</span>` : ''}
+            <span style="font-size:9px;color:${statusColor};text-transform:uppercase;letter-spacing:.06em;">${esc(c.status)}</span>
+          </div>
         </div>
         <div style="font-size:10px;color:var(--text-faint);margin:2px 0 4px;">
           ${esc(c.pr_title || '(no title)')}
@@ -9288,9 +9291,16 @@ async function draftUCFromComment(uuid) {
       body: JSON.stringify(body),
     });
     outEl.style.display = '';
+    const autoScope = Array.isArray(r.auto_scoped_namespaces) ? r.auto_scoped_namespaces : [];
+    const autoScopeBanner = autoScope.length
+      ? `<div style="font-size:11px;background:var(--accent-bg);border-left:3px solid var(--accent);padding:6px 10px;margin-bottom:8px;color:var(--text);">
+           🎯 Auto-scoped to <code style="color:var(--accent);font-family:var(--mono,monospace);">spec_namespaces: [${autoScope.map(esc).join(', ')}]</code> — drafted from a comment in the <strong>${autoScope.map(esc).join('/')}</strong> repo. Stage-2 grounding will hard-restrict to this namespace. Edit the YAML before saving if cross-namespace coverage is intended.
+         </div>`
+      : '';
     outEl.innerHTML = `
       <div style="padding:8px 10px;background:var(--bg-raised);border:1px solid var(--green);border-radius:2px;">
         <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:6px;">LLM draft — review before saving</div>
+        ${autoScopeBanner}
         ${r.explanation ? `<div style="font-size:12px;line-height:1.5;margin-bottom:8px;">${esc(r.explanation)}</div>` : ''}
         ${r.yaml_suggestion ? `<details open style="margin-bottom:8px;">
           <summary style="font-size:11px;color:var(--text-faint);cursor:pointer;">YAML (click to collapse)</summary>

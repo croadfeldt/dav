@@ -70,7 +70,7 @@ def _now() -> datetime:
 
 
 def _row_to_dict(row: asyncpg.Record) -> dict:
-    return {
+    d = {
         "uuid": str(row["uuid"]),
         "repo_uuid": str(row["repo_uuid"]),
         "tenant_id": row["tenant_id"],
@@ -91,6 +91,16 @@ def _row_to_dict(row: asyncpg.Record) -> dict:
         "fetched_at": row["fetched_at"].isoformat(),
         "ingestion_source": row["ingestion_source"],
     }
+    # M12 "E" pass: surface the source repo's namespace + display name on
+    # every comment row so the inbox UI can render per-namespace badges
+    # and the draft-uc flow can auto-scope the resulting UC. Only present
+    # when the query joined managed_repos (current path: list_comments +
+    # get_comment do the join below).
+    if "repo_namespace" in row.keys():
+        d["repo_namespace"] = row["repo_namespace"]
+    if "repo_display_name" in row.keys():
+        d["repo_display_name"] = row["repo_display_name"]
+    return d
 
 
 async def list_comments(
@@ -117,9 +127,20 @@ async def list_comments(
         where.append(f"tenant_id = ${len(args)}")
     args.append(limit)
     where_clause = (" WHERE " + " AND ".join(where)) if where else ""
+    # LEFT JOIN managed_repos so each row carries namespace + display_name
+    # — used by the inbox UI for per-namespace badges and by the draft-uc
+    # flow to auto-scope the resulting UC's spec_namespaces. Every existing
+    # WHERE clause references a pc.* column, so prefix unconditionally.
+    qualified_where = (
+        " WHERE " + " AND ".join("pc." + w for w in where)
+    ) if where else ""
     rows = await conn.fetch(
-        f"SELECT * FROM pr_comments{where_clause} "
-        f"ORDER BY github_updated_at DESC LIMIT ${len(args)}",
+        f"SELECT pc.*, mr.namespace AS repo_namespace, "
+        f"       mr.display_name AS repo_display_name "
+        f"FROM pr_comments pc "
+        f"LEFT JOIN managed_repos mr ON mr.uuid = pc.repo_uuid "
+        f"{qualified_where} "
+        f"ORDER BY pc.github_updated_at DESC LIMIT ${len(args)}",
         *args,
     )
     return [_row_to_dict(r) for r in rows]
@@ -127,7 +148,12 @@ async def list_comments(
 
 async def get_comment(conn: asyncpg.Connection, uuid: str) -> Optional[dict]:
     row = await conn.fetchrow(
-        "SELECT * FROM pr_comments WHERE uuid::text = $1", uuid,
+        "SELECT pc.*, mr.namespace AS repo_namespace, "
+        "       mr.display_name AS repo_display_name "
+        "FROM pr_comments pc "
+        "LEFT JOIN managed_repos mr ON mr.uuid = pc.repo_uuid "
+        "WHERE pc.uuid::text = $1",
+        uuid,
     )
     return _row_to_dict(row) if row else None
 
