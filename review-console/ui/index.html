@@ -451,6 +451,11 @@
   /* ── Modal ── */
   .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,0.65); z-index:200; display:none; align-items:center; justify-content:center; }
   .modal-overlay.open { display:flex; }
+  /* Stacked modals: when a secondary editor (setModal, addMemberModal) opens
+     from inside a list/manager modal (manageSetsModal), it must render above
+     the parent. Without this they all share z-index 200 and the later-in-DOM
+     manageSetsModal wins because it's declared after setModal in the source. */
+  #setModal.modal-overlay, #addMemberModal.modal-overlay { z-index:210; }
   .modal { background:var(--bg-panel); border:1px solid var(--border-bright); border-radius:2px; width:600px; max-width:94vw; max-height:90vh; display:flex; flex-direction:column; overflow:hidden; }
   .modal-header { padding:16px 20px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; }
   .modal-title  { font-family:var(--serif); font-size:17px; font-weight:400; }
