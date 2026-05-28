@@ -134,10 +134,14 @@ at the cost of ~10% confidence and 2× wall time. Not worth it.
 
 ### Follow-up actions
 
-1. **Bump `--max-tokens` for the run-corpus Tekton task** from 6144 to
-   8192 or 12288 to give the final JSON emission more headroom on
-   complex UCs. Validates by re-running UC #6 (`infrastructure/prod/greenfield`)
-   on the baseline config.
+1. **Bump `--max-tokens` for the run-corpus Tekton task** ✅ **Done +
+   validated 2026-05-28** (commit `e888c62`). 6144 → 8192 was
+   insufficient (UC #6's final response is 33,907 chars / ~9000 tokens
+   for a 44-component analysis). 8192 → 16384 was the working value.
+   Validation run `dav-stage2-console-970095` on the same Barclays
+   corpus: **6/6 success, +22% wall time concentrated in UC #6, zero
+   quality regression** (matched Phase 1 confidence scores on all
+   UCs that succeeded both runs).
 2. **Defer fp8-KV until calibrated scaling factors are available.**
    Either (a) ship a pre-calibrated Qwen3-32B checkpoint with q_scale
    / prob_scale baked in, or (b) wait for the kyuz0 image to add
