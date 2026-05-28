@@ -247,6 +247,22 @@ class Stage2Agent:
         self._context_safety_buffer: int = int(os.environ.get("DAV_MODEL_CONTEXT_SAFETY", "256"))
         self._budget_capped_turn_count: int = 0
         self._context_overflow_retry_count: int = 0
+        # Two-pass orchestration state (M12 "information-preservation" pass).
+        # When DAV_STAGE2_TWO_PASS != "0" (default), analyze() runs in two
+        # passes: pass 1 explores the spec via MCP and emits a verbose
+        # structured findings JSON; pass 2 starts in a fresh context with
+        # the findings + UC + MCP access and emits the canonical Analysis.
+        # _two_pass_active gates the dispatch: when True, analyze() runs
+        # the single-pass body directly (used INSIDE _analyze_two_pass to
+        # avoid recursion).
+        self._two_pass_active: bool = False
+        self._pass_label: Optional[str] = None
+        # Per-pass prompt + emit overrides. _analyze_two_pass populates
+        # these between pass 1 and pass 2; single-pass analyze leaves them
+        # None and builds prompts normally.
+        self._sys_prompt_override: Optional[str] = None
+        self._user_prompt_override: Optional[str] = None
+        self._emit_findings_only: bool = False
         # Anti-fishing state — models routinely ignore "section not found"
         # results and just try the same section_title in another document, or
         # re-fetch a document already returned as "too large". When patterns
@@ -386,7 +402,9 @@ class Stage2Agent:
         """Append a single structured-turn record to turns_log_path (JSONL).
 
         Errors are swallowed — emission must never disrupt the run itself.
-        `kind` values: 'start', 'response', 'tool', 'final'.
+        `kind` values: 'start', 'response', 'tool', 'final', 'summary'.
+        Records include the active two-pass label ('pass1' / 'pass2' /
+        None) so the UI prompts panel can render per-pass timelines.
 
         Fields are written in full (no preview truncation) up to a per-field
         safety cap (DAV_TURNS_MAX_FIELD_BYTES, default 256 KB). Length is
@@ -414,6 +432,7 @@ class Stage2Agent:
                 "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(),
                 "turn": turn,
                 "kind": kind,
+                **({"pass": self._pass_label} if self._pass_label else {}),
                 **capped,
             }
             self.turns_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -422,15 +441,27 @@ class Stage2Agent:
         except Exception as e:
             log.warning("turns emit failed: %s", e)
 
-    def analyze(self, use_case: UseCase) -> Analysis:
+    def analyze(self, use_case: UseCase):
         """
-        Run the agent loop on a use case. Returns a validated Analysis.
+        Run the agent loop on a use case. Returns a validated Analysis
+        (single-pass) or the raw findings string (when _emit_findings_only).
+
+        Default behavior: two-pass — pass 1 explores + emits findings JSON,
+        pass 2 receives findings + has MCP for re-fetch + emits Analysis.
+        Set DAV_STAGE2_TWO_PASS=0 to force the legacy single-pass.
 
         Raises AgentError on unrecoverable failures (exhausted budget
         with no final response, malformed JSON, schema validation fails).
         """
+        # Dispatch BEFORE setup so two-pass can drive the body twice.
+        # _two_pass_active=True means we're already INSIDE _analyze_two_pass
+        # calling this method for one pass — proceed with the single body
+        # below using the override hooks.
+        if not self._two_pass_active and os.environ.get("DAV_STAGE2_TWO_PASS", "1") != "0":
+            return self._analyze_two_pass(use_case)
         run_id = str(uuid.uuid4())
-        log.info("stage2 run %s started for use case %s", run_id, use_case.uuid)
+        log.info("stage2 %s run %s started for use case %s",
+                 self._pass_label or "single-pass", run_id, use_case.uuid)
         # measure wall time so AnalysisMetadata.wall_time_seconds
         # is populated for ensemble merging and explore-mode cost reporting.
         import time as _time
@@ -448,8 +479,9 @@ class Stage2Agent:
         self._out_of_scope_blocked_count = 0
 
         tool_defs = get_tool_definitions()
-        sys_prompt = build_stage2_system_prompt(self.consumer_profile)
-        if self._uc_spec_namespaces:
+        # Honor two-pass overrides when set; otherwise build prompts as usual.
+        sys_prompt = self._sys_prompt_override or build_stage2_system_prompt(self.consumer_profile)
+        if self._sys_prompt_override is None and self._uc_spec_namespaces:
             sys_prompt += (
                 "\n\n## Per-UC spec source scope (HARD)\n"
                 f"This use case declares `spec_namespaces: "
@@ -462,7 +494,7 @@ class Stage2Agent:
                 f"each handle's prefix before calling. For `search_docs`, "
                 f"prefer in-scope results and ignore the rest."
             )
-        user_prompt = build_stage2_user_prompt(use_case, self.consumer_profile)
+        user_prompt = self._user_prompt_override or build_stage2_user_prompt(use_case, self.consumer_profile)
         messages: list[ChatMessage] = [
             ChatMessage(role="system",  content=sys_prompt),
             ChatMessage(role="user",    content=user_prompt),
@@ -790,16 +822,104 @@ class Stage2Agent:
             # No tool calls → the model is emitting a final answer
             if turn < self.config.max_tool_calls:
                 # Model stopped early. This is normal if it has enough info.
-                # Parse its content as the final analysis.
                 self._emit_run_summary(final_turn=turn)
+                if self._emit_findings_only:
+                    # Pass 1: return raw content string (findings JSON) for
+                    # pass 2 to consume. No Analysis validation here —
+                    # pass 1's emit doesn't conform to the Analysis schema.
+                    return response.content or ""
                 return self._parse_final(response.content, use_case, run_id)
 
             # Hit the budget limit on this turn — it should be emitting final
             self._emit_run_summary(final_turn=turn)
+            if self._emit_findings_only:
+                return response.content or ""
             return self._parse_final(response.content, use_case, run_id)
 
         # Shouldn't reach here, but keep mypy happy
         raise AgentError("agent loop terminated without final response")
+
+    def _analyze_two_pass(self, use_case: UseCase) -> Analysis:
+        """Run the two-pass exploration + synthesis flow.
+
+        Pass 1: explore via MCP, emit a verbose structured FINDINGS JSON.
+                The agent loop runs normally but with the pass-1 system
+                prompt and returns raw content (no Analysis validation).
+        Pass 2: receive the findings as part of the user prompt, with
+                MCP still available for re-fetch, and emit the canonical
+                Analysis JSON.
+
+        Information preservation is the design goal: anything pass 1
+        compressed too aggressively in its findings can be re-pulled by
+        pass 2 via the same MCP tools — never blindly summarized away.
+        """
+        from .prompts import (
+            build_pass1_findings_system_prompt,
+            build_pass2_analysis_system_prompt,
+            build_pass2_user_prompt,
+        )
+
+        log.info("stage2 two-pass beginning for use case %s", use_case.uuid)
+        self._two_pass_active = True
+        try:
+            # ── Pass 1: exploration + findings ──
+            self._pass_label = "pass1"
+            self._sys_prompt_override = build_pass1_findings_system_prompt(self.consumer_profile)
+            if self._uc_spec_namespaces:
+                self._sys_prompt_override += (
+                    "\n\n## Per-UC spec source scope (HARD)\n"
+                    f"This use case declares `spec_namespaces: "
+                    f"{self._uc_spec_namespaces}`. The engine hard-rejects "
+                    f"out-of-scope `get_document` / `get_document_section` "
+                    f"calls with an `⛔ OUT-OF-SCOPE` marker."
+                )
+            self._user_prompt_override = None
+            self._emit_findings_only = True
+            findings_str = self.analyze(use_case)
+            log.info(
+                "stage2 pass-1 emitted %d chars of findings", len(findings_str or "")
+            )
+
+            # ── Reset per-pass state for pass 2 (preserve session-level counters) ──
+            self._reset_between_passes()
+
+            # ── Pass 2: synthesis + analysis ──
+            self._pass_label = "pass2"
+            self._sys_prompt_override = build_pass2_analysis_system_prompt(self.consumer_profile)
+            if self._uc_spec_namespaces:
+                self._sys_prompt_override += (
+                    "\n\n## Per-UC spec source scope (HARD)\n"
+                    f"Same constraint as pass 1: spec_namespaces="
+                    f"{self._uc_spec_namespaces}."
+                )
+            self._user_prompt_override = build_pass2_user_prompt(
+                use_case, findings_str, self.consumer_profile,
+            )
+            self._emit_findings_only = False
+            return self.analyze(use_case)
+        finally:
+            self._two_pass_active = False
+            self._pass_label = None
+            self._sys_prompt_override = None
+            self._user_prompt_override = None
+            self._emit_findings_only = False
+
+    def _reset_between_passes(self) -> None:
+        """Reset per-pass agent state between pass 1 and pass 2.
+
+        Resets dedup + anti-fishing + scope counters so pass 2 starts
+        with a fresh exploration budget. Preserves session-cumulative
+        counters (wall time, total tokens, budget caps, overflow retries)
+        because the operator wants those as totals for the whole UC.
+        """
+        self._section_title_misses = {}
+        self._too_large_handles = set()
+        self._call_history = {}
+        # NOTE: cross_turn_dup_count + out_of_scope_blocked are cumulative
+        # across passes — they represent agent-loop hygiene, not per-pass
+        # exploration depth. _last_prompt_tokens resets so pass 2's dynamic
+        # max_tokens calculation starts from zero estimate.
+        self._last_prompt_tokens = 0
 
     def _emit_run_summary(self, final_turn: int) -> None:
         """End-of-run summary record. Surfaces per-sample stats the operator

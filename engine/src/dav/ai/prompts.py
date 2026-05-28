@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dav.core.use_case_schema import UseCase
 
-STAGE2_PROMPT_VERSION = "1.7"  # 1.7 — per-UC spec_namespaces hard scope (M12 "C" pass)
+STAGE2_PROMPT_VERSION = "1.8"  # 1.8 — two-pass: explore → findings → analysis, with MCP re-fetch in pass 2
 
 # /no_think directive at the top is a Qwen3 chat template token that disables
 # the model's thinking-mode output (<think>...</think> blocks). We strip
@@ -213,3 +213,134 @@ Your task: analyze whether {fw} supports this use case. Use the available
 tools to retrieve spec content. When you've gathered enough, emit the
 final JSON analysis as specified in the system prompt.
 """
+
+
+# ────────────────────────── Two-pass (1.8) ──────────────────────────
+# Pass 1 explores the spec via MCP and emits a verbose structured FINDINGS
+# JSON instead of the canonical Analysis. Pass 2 starts in a fresh context
+# with that findings object + the original UC + MCP access, and emits the
+# Analysis JSON. The re-fetch capability in pass 2 means anything pass 1
+# compressed too aggressively is recoverable without re-running pass 1.
+# Goal is information preservation for gap analysis: pass 1 captures every
+# section, every excerpt, every cross-reference; pass 2 reasons over them.
+
+_PASS1_FINDINGS_INSTRUCTION = """
+You are running PASS 1 of a two-pass analysis. Your job is NOT to emit the
+final Analysis JSON yet — instead, you produce a verbose, structured
+FINDINGS JSON that captures EVERY detail a downstream synthesis pass might
+need to identify gaps in the architecture.
+
+Use the MCP tools (`search_docs`, `get_document_section`, `get_document`)
+to retrieve relevant spec content. Be thorough: it's better to capture a
+section pass 2 won't end up using than to skip one that pass 2 needs and
+can't easily refind.
+
+When you're done exploring, emit your FINDINGS as a SINGLE JSON object
+matching this schema (no prose before or after, no markdown fence):
+
+{
+  "spec_docs_consulted": [
+    {
+      "handle": "<doc handle, e.g. dcm/components/policy-evaluation.md>",
+      "sections_retrieved": [
+        {
+          "title": "<verbatim section title>",
+          "key_capabilities": ["<capability id or name>", ...],
+          "key_constraints": ["<verbatim constraint statement>", ...],
+          "cross_references": ["<other doc/section this depends on>", ...],
+          "excerpt": "<up to 800 chars of verbatim spec text that's most relevant>",
+          "notes": "<your observations about this section's relevance to the UC>"
+        }
+      ]
+    }
+  ],
+  "capabilities_observed": [
+    {
+      "id": "<capability id from spec>",
+      "name": "<capability name>",
+      "spec_ref": "<handle/section where defined>",
+      "supports_uc": "yes|partial|unclear",
+      "rationale": "<one or two sentences>"
+    }
+  ],
+  "data_model_touched": ["<entity name>", ...],
+  "policy_landscape_observed": ["<observation>", ...],
+  "provider_landscape_observed": ["<observation>", ...],
+  "potential_gaps": [
+    {
+      "description": "<what seems missing or weak>",
+      "spec_searched": ["<handles searched>"],
+      "spec_refs_missing": ["<handle/section the gap would need>"],
+      "candidate_severity": "low|medium|high",
+      "evidence": "<what makes you think this is a gap>"
+    }
+  ],
+  "unresolved_questions": [
+    "<questions pass 2 may need to resolve with additional MCP fetches>"
+  ],
+  "exploration_notes": "<any meta-observations about the spec's coverage of this UC>"
+}
+
+Rules:
+- Be EXHAUSTIVE on `spec_docs_consulted`. Pass 2 cannot read your turn
+  history; the findings JSON is the only thing pass 2 sees from your work.
+- Quote spec text verbatim in `excerpt`; don't paraphrase. Gap analysis
+  is highly sensitive to exact wording.
+- If you observe something that MIGHT be a gap but aren't sure, put it
+  in `potential_gaps` with `candidate_severity: low` rather than dropping
+  it. Pass 2 can dismiss it cheaply.
+- `unresolved_questions` is the explicit handoff — list anything you
+  couldn't fully answer so pass 2 knows where to re-fetch.
+"""
+
+
+_PASS2_ANALYSIS_INSTRUCTION = """
+You are running PASS 2 of a two-pass analysis. Pass 1 already explored the
+spec and produced a FINDINGS JSON which you can see in the user message.
+Your job is to synthesize a FINAL Analysis JSON matching the schema in the
+system prompt above.
+
+You have MCP tools available (`search_docs`, `get_document_section`,
+`get_document`) for RE-FETCH if pass 1's findings don't have enough detail
+to resolve a specific question. Use them sparingly — pass 1 should have
+captured the bulk of what you need.
+
+Recommended workflow:
+1. Read the FINDINGS JSON carefully. Note `unresolved_questions` and
+   `potential_gaps` — these are pass 1's explicit handoff.
+2. If any `unresolved_question` or `potential_gap` needs additional spec
+   context to resolve cleanly, re-fetch the relevant section via MCP.
+3. Synthesize the canonical Analysis JSON per the system prompt's schema.
+4. Be explicit when promoting a pass-1 `potential_gap` to a confirmed
+   `gaps[]` entry: reference the pass-1 evidence in `rationale`.
+5. Cite `spec_refs` using the handles pass 1 recorded; this preserves the
+   traceability between exploration and conclusion.
+"""
+
+
+def build_pass1_findings_system_prompt(consumer_profile=None) -> str:
+    """Pass 1 system prompt: stage-2 framing + findings-emission instruction."""
+    base = build_stage2_system_prompt(consumer_profile)
+    return base + "\n\n# ── PASS 1 OVERRIDE ──\n" + _PASS1_FINDINGS_INSTRUCTION.strip()
+
+
+def build_pass2_analysis_system_prompt(consumer_profile=None) -> str:
+    """Pass 2 system prompt: stage-2 framing + analysis-emission instruction
+    with re-fetch guidance."""
+    base = build_stage2_system_prompt(consumer_profile)
+    return base + "\n\n# ── PASS 2 SYNTHESIS ──\n" + _PASS2_ANALYSIS_INSTRUCTION.strip()
+
+
+def build_pass2_user_prompt(use_case: UseCase, findings_json: str,
+                            consumer_profile=None) -> str:
+    """Pass 2 user prompt: the original UC + the findings JSON pass 1 emitted."""
+    base = build_stage2_user_prompt(use_case, consumer_profile)
+    return (
+        base
+        + "\n\n---\n\nPASS 1 FINDINGS (from your prior exploration of the spec):\n\n"
+        + findings_json
+        + "\n\n---\n\nNow emit the canonical Analysis JSON per the system prompt's "
+          "schema. Re-fetch any spec section via MCP if the findings don't have the "
+          "detail you need to make a clean conclusion."
+    )
+
