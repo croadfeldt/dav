@@ -62,6 +62,7 @@ MIGRATE_008_PATH = Path(__file__).parent / "migrate_008_pr_comments.sql"
 MIGRATE_009_PATH = Path(__file__).parent / "migrate_009_repo_credentials.sql"
 MIGRATE_010_PATH = Path(__file__).parent / "migrate_010_shared_credentials.sql"
 MIGRATE_011_PATH = Path(__file__).parent / "migrate_011_consolidate_code_repos.sql"
+MIGRATE_012_PATH = Path(__file__).parent / "migrate_012_namespace_first_class.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -216,6 +217,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_010_PATH.read_text())
         log.info("Applying migration 011 (consolidate code_repo_configs)...")
         await conn.execute(MIGRATE_011_PATH.read_text())
+        log.info("Applying migration 012 (namespace first-class on run_sessions + uc_gaps)...")
+        await conn.execute(MIGRATE_012_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -865,15 +868,17 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                    (run_name, name, description, category, tags, mode,
                     created_by, started_at,
                     baseline_gen_tokens, baseline_prompt_tokens,
-                    set_id, set_name, selection_mode, uc_state_snapshot)
+                    set_id, set_name, selection_mode, uc_state_snapshot,
+                    spec_namespaces, corpus_namespaces)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9,
-                           $10, $11, $12, $13::jsonb)""",
+                           $10, $11, $12, $13::jsonb, $14, $15)""",
                 result["name"], payload.name, payload.description,
                 payload.category or "ad-hoc", payload.tags or [],
                 payload.mode, reviewer,
                 baseline_gen, baseline_prompt,
                 payload.set_id, payload.set_name, payload.selection_mode,
                 json.dumps(uc_state_snapshot) if uc_state_snapshot else None,
+                payload.spec_namespaces, payload.corpus_namespaces,
             )
     except Exception as e:
         log.warning("run_sessions insert failed for %s: %s", result.get("name"), e)
@@ -3152,6 +3157,27 @@ async def dashboard():
 # ========================= ANALYSIS INGESTION =========================
 
 
+def _derive_gap_namespace(gap: dict) -> Optional[str]:
+    """Best-effort namespace tag for a gap based on the spec docs it cites.
+
+    Looks at `spec_refs` (resolved citations) first, falls back to
+    `spec_refs_missing` (docs the model said should exist but didn't).
+    Doc handles are `<namespace>/<path>`; we take the first segment of
+    the first ref. Returns None if no refs present.
+    """
+    for key in ("spec_refs", "spec_refs_missing"):
+        refs = gap.get(key) or []
+        if isinstance(refs, str):
+            refs = [refs]
+        for r in refs:
+            if not isinstance(r, str):
+                continue
+            head = r.split("/", 1)[0].strip()
+            if head:
+                return head
+    return None
+
+
 async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
     """Ingest a workspace run's analysis results into Postgres.
 
@@ -3305,15 +3331,24 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 gap_id = gap.get("gap_id") or f"GAP-{gap_idx:03d}"
                 desc = gap.get("description") or ""
                 title = gap.get("title") or (desc[:80] + ("…" if len(desc) > 80 else ""))
+                # Derive namespace from any spec_refs the engine emitted on
+                # this gap. Each ref is doc-handle-shaped (`<ns>/<path>`), so
+                # the leading segment is the namespace. Multiple distinct
+                # namespaces → store the first; cross-namespace gaps are
+                # currently rare but should be surfaced explicitly in a
+                # future schema bump (uc_gaps.namespaces TEXT[]).
+                namespace = _derive_gap_namespace(gap)
                 await conn.execute(
                     """INSERT INTO uc_gaps
                        (analysis_id, run_id, uc_uuid, gap_id, title,
-                        description, severity, recommendation, rationale)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)""",
+                        description, severity, recommendation, rationale,
+                        namespace)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
                     analysis_id, run_id, uc_uuid,
                     gap_id, title, desc, sev,
                     gap.get("recommendation"),
                     gap.get("rationale"),
+                    namespace,
                 )
                 ingested_gaps += 1
 
@@ -4673,8 +4708,33 @@ async def apply_enhancements(payload: EnhancementApplyIn, request: Request):
     unmatched_namespaces: list[dict] = []
     repo_results: list[dict] = []
 
+    # Look up the run's recorded spec scope so we can flag namespace drift —
+    # patches that target a namespace the run never grounded in get a warning,
+    # not a silent drop (the patch still applies because the model may have
+    # found a legitimate cross-namespace dependency, but the operator needs
+    # to know it happened).
+    run_scope: Optional[set[str]] = None
+    if payload.run_id:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT spec_namespaces FROM run_sessions WHERE run_name = $1",
+                payload.run_id,
+            )
+        if row and row["spec_namespaces"]:
+            run_scope = set(row["spec_namespaces"])
+        # If spec_namespaces is None/empty, the run was unfiltered (all
+        # registered specs in scope) — don't warn on anything.
+
     async with pool.acquire() as conn:
         for ns, ns_enhs in by_namespace.items():
+            if run_scope is not None and ns not in run_scope:
+                apply_warnings.append(
+                    f"CROSS-NAMESPACE DRIFT: enhancement(s) "
+                    f"{', '.join(e.id for e in ns_enhs)} target namespace "
+                    f"{ns!r} which was NOT in this run's spec scope "
+                    f"({sorted(run_scope)}). The PR will still be opened, "
+                    f"but verify the model didn't drift from your intended scope."
+                )
             override = payload.repo_overrides.get(ns)
             repo = await _repos.get_repo(conn, override or ns)
             if not repo or "enhancement-target" not in (repo.get("roles") or []):
