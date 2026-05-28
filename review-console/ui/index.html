@@ -5725,8 +5725,12 @@ async function biSaveSelected() {
 }
 
 async function biPrepStep3() {
-  // Populate existing-Set dropdown
-  if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
+  // ALWAYS re-fetch sets so the dropdown reflects current server state.
+  // (Using cached `allSets` once cost us: a set deleted earlier in the
+  // session showed up in the dropdown, member-add POSTs 404'd, errors
+  // were silently swallowed, and the user ended up thinking the Set
+  // assignment had deleted the set when really it never wrote a member.)
+  try { await loadSets(); } catch(_) {}
   const sel = document.getElementById('biSetExistingSel');
   sel.innerHTML = '<option value="">— pick a set —</option>' +
     (allSets || []).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
@@ -5769,6 +5773,12 @@ async function biApplySetAssignment() {
       if (!v) { toast('Pick an existing Set', true); primary.disabled = false; return; }
       targetSetId = parseInt(v, 10);
     }
+    // Track per-UC member-add outcomes so the operator gets a clear final
+    // summary instead of a silent "success" toast when many adds 404'd.
+    // The bug this guards against: a stale set id from a deleted-but-cached
+    // dropdown entry → all member-adds 404 → bulk modal claims success →
+    // operator thinks the bulk flow deleted the set when it never wrote.
+    const addOk = []; const addFail = [];
     if (mode === 'skip') {
       // Nothing to do — drafts already saved
     } else if (mode === 'individual') {
@@ -5777,21 +5787,49 @@ async function biApplySetAssignment() {
         const sid = s.value ? parseInt(s.value, 10) : null;
         if (!sid) continue;
         status.textContent = `assigning ${s.dataset.ucuuid.slice(0,8)}…`;
-        await api(`/api/sets/${sid}/members`, {
-          method: 'POST',
-          body: JSON.stringify({uc_uuid: s.dataset.ucuuid, uc_source: 'managed'}),
-        }).catch(e => log_failures(s.dataset.ucuuid, e));
+        try {
+          await api(`/api/sets/${sid}/members`, {
+            method: 'POST',
+            body: JSON.stringify({uc_uuid: s.dataset.ucuuid, uc_source: 'managed'}),
+          });
+          addOk.push(s.dataset.ucuuid);
+        } catch (e) {
+          addFail.push({uc_uuid: s.dataset.ucuuid, set_id: sid, error: e.message});
+        }
       }
     } else if (targetSetId) {
       for (const uc of _biSavedUCs) {
         status.textContent = `adding ${uc.title.slice(0,30)}…`;
-        await api(`/api/sets/${targetSetId}/members`, {
-          method: 'POST',
-          body: JSON.stringify({uc_uuid: uc.uuid, uc_source: 'managed'}),
-        }).catch(e => console.warn('bulk: add to set failed', uc.uuid, e));
+        try {
+          await api(`/api/sets/${targetSetId}/members`, {
+            method: 'POST',
+            body: JSON.stringify({uc_uuid: uc.uuid, uc_source: 'managed'}),
+          });
+          addOk.push(uc.uuid);
+        } catch (e) {
+          addFail.push({uc_uuid: uc.uuid, title: uc.title, set_id: targetSetId, error: e.message});
+        }
       }
     }
-    toast(`Bulk import complete: ${_biSavedUCs.length} UC(s) saved`);
+    if (addFail.length) {
+      // Don't close the modal — show the failures so the operator can
+      // pick a different set / new set / skip and recover.
+      const summary = document.getElementById('biSavedSummary');
+      const setLabel = mode === 'existing'
+        ? (allSets.find(s => s.id === targetSetId)?.name || `id=${targetSetId}`)
+        : (mode === 'new' ? 'new set' : 'individual selections');
+      summary.style.color = '';
+      summary.innerHTML = `<strong>${_biSavedUCs.length}</strong> UC${_biSavedUCs.length===1?'':'s'} saved as drafts.<br>`
+        + `<span style="color:var(--red);"><strong>${addFail.length}</strong> set membership${addFail.length===1?'':'s'} failed</strong> — ${esc(setLabel)} may have been deleted, or the UC was rejected.</span>`
+        + `<details style="margin-top:6px;font-size:11px;"><summary style="cursor:pointer;color:var(--text-faint);">show failure details</summary>`
+        + `<ul style="margin:4px 0 0 16px;padding:0;">`
+        + addFail.map(f => `<li>${esc(f.title || f.uc_uuid.slice(0,12))}: ${esc(f.error)}</li>`).join('')
+        + `</ul></details>`
+        + `<div style="margin-top:8px;font-size:11px;color:var(--text-dim);">The UCs themselves are saved (visible in the Use Cases list). Pick a different set option above and click <strong>Finish</strong> again to retry; the already-added members won't be duplicated (the API is idempotent on conflict).</div>`;
+      primary.disabled = false;
+      return;   // stay on step 3
+    }
+    toast(`Bulk import complete: ${_biSavedUCs.length} UC(s) saved, ${addOk.length} added to set`);
     closeBulkImport();
     try { await loadUCs(); } catch(_) {}
     try { await loadSets(); } catch(_) {}
