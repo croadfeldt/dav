@@ -2759,7 +2759,10 @@ function rdRenderPrompts() {
     } else if (kind === 'response') {
       const content = r.content ?? r.content_preview;
       if (content) body = _renderTurnBody(idx, null, content, r.content_length);
-      else body = `<div class="sub">(no content; ${r.tool_call_count || 0} tool call(s))</div>`;
+      else {
+        const n = r.tool_call_count || 0;
+        body = `<div class="sub">↳ model went straight to ${n} tool call${n===1?'':'s'} — no narration this turn (normal for tool-using models like Qwen3)</div>`;
+      }
     } else if (kind === 'tool') {
       const args = r.args ? JSON.stringify(r.args, null, 2) : '';
       body = _renderTurnBody(idx + ':args', 'args', args, args.length);
