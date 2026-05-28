@@ -1599,7 +1599,7 @@
       </div>
       <div class="form-field" id="nrCorpusSourcesWrap" style="display:none;">
         <label>Corpus sources (per-run filter)</label>
-        <div id="nrCorpusSources" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:2px;max-height:140px;overflow-y:auto;"></div>
+        <div id="nrCorpusSources" style="display:flex;flex-direction:column;gap:4px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:2px;max-height:160px;overflow-y:auto;"></div>
         <div class="form-hint">Select which corpus sources to include in this run. Blank/all = every registered <code>role=corpus</code> repo. Multi-source mode only.</div>
       </div>
       <div class="form-row" id="nrCorpusLegacyWrap">
@@ -1612,7 +1612,7 @@
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Spec / Architecture</div>
       <div class="form-field" id="nrSpecSourcesWrap" style="display:none;">
         <label>Spec sources (per-run filter)</label>
-        <div id="nrSpecSources" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:2px;max-height:140px;overflow-y:auto;"></div>
+        <div id="nrSpecSources" style="display:flex;flex-direction:column;gap:4px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:2px;max-height:160px;overflow-y:auto;"></div>
         <div class="form-hint">Narrow which <code>role=spec</code> sources the LLM grounds against for this run. Blank/all = the engine sees every registered spec namespace via MCP. Soft enforcement — passed to the engine as a focus hint; the MCP itself still holds all sources.</div>
       </div>
       <div class="form-row" id="nrSpecLegacyWrap">
@@ -3411,8 +3411,8 @@ async function loadNewRunDefaults(forcedSubpath) {
       spec.sources.forEach(s => {
         const ns = s.namespace || '?';
         const label = document.createElement('label');
-        label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;';
-        label.innerHTML = `<input type="checkbox" class="nr-spec-ns" value="${esc(ns)}" checked style="width:auto;height:auto;accent-color:var(--accent);"> <span>${esc(ns)}</span> <span style="color:var(--text-faint);font-size:10px;">${esc(s.repo_url||'')}</span>`;
+        label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;min-width:0;';
+        label.innerHTML = `<input type="checkbox" class="nr-spec-ns" value="${esc(ns)}" checked style="width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;"> <span style="font-weight:500;flex-shrink:0;">${esc(ns)}</span> <span style="color:var(--text-faint);font-size:10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.repo_url||'')}</span>`;
         grid.appendChild(label);
       });
     } else {
@@ -3485,8 +3485,8 @@ async function _populateCorpusSourcesPicker() {
     rows.forEach(r => {
       const ns = r.namespace || r.handle || '?';
       const label = document.createElement('label');
-      label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;';
-      label.innerHTML = `<input type="checkbox" class="nr-corpus-ns" value="${esc(ns)}" checked style="width:auto;height:auto;accent-color:var(--accent);"> <span>${esc(ns)}</span> <span style="color:var(--text-faint);font-size:10px;">${esc(r.repo_url||'')}</span>`;
+      label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;min-width:0;';
+      label.innerHTML = `<input type="checkbox" class="nr-corpus-ns" value="${esc(ns)}" checked style="width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;"> <span style="font-weight:500;flex-shrink:0;">${esc(ns)}</span> <span style="color:var(--text-faint);font-size:10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.repo_url||'')}</span>`;
       grid.appendChild(label);
     });
   } catch (e) {
