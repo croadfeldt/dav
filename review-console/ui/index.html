@@ -156,15 +156,25 @@
   .rd-compact-row .v.hot  { color:var(--red); }
   .rd-compact-row .sep   { color:var(--text-faint); margin:0 6px; }
   /* Turn record styling for prompts/responses panel */
-  .turn-rec { padding:6px 0; border-bottom:1px dashed var(--border); }
+  .turn-rec { padding:8px 10px; border-bottom:1px dashed var(--border); }
   .turn-rec:last-child { border-bottom:none; }
-  .turn-rec .head { font-size:10px; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:3px; }
-  .turn-rec .head .kind { display:inline-block; padding:1px 5px; border-radius:2px; margin-right:6px; font-weight:600; }
+  /* Subtle alternating bg per kind so consecutive responses / tool calls
+     visually chunk apart without each record needing its own border. */
+  .turn-rec.kind-response { background:rgba(123,168,79,0.04); }
+  .turn-rec.kind-tool     { background:rgba(224,168,80,0.04); }
+  .turn-rec .head { font-size:11px; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px; font-weight:500; }
+  .turn-rec .head .kind { display:inline-block; padding:2px 7px; border-radius:2px; margin-right:8px; font-weight:600; font-size:10px; }
   .turn-rec .kind.start { background:var(--blue-bg); color:var(--blue); }
   .turn-rec .kind.response { background:var(--green-bg); color:var(--green); }
   .turn-rec .kind.tool { background:var(--accent-bg); color:var(--accent); }
   .turn-rec .body { color:var(--text); white-space:pre-wrap; word-break:break-word; }
   .turn-rec .body .sub { color:var(--text-dim); font-size:10px; }
+  /* UC boundary banner — inserted between records when uc_uuid changes.
+     Distinct from any single record so the eye lands on "new UC starts here". */
+  .uc-boundary { margin:14px -10px 8px -10px; padding:8px 12px; background:var(--accent-bg); border-left:3px solid var(--accent); border-top:1px solid var(--accent-soft); border-bottom:1px solid var(--accent-soft); font-size:11px; color:var(--text); font-weight:600; }
+  .uc-boundary .uc-uuid { font-family:var(--mono,monospace); color:var(--accent); font-weight:500; margin-left:8px; }
+  .uc-boundary .uc-meta { color:var(--text-dim); font-weight:400; font-size:10px; margin-left:8px; }
+  .uc-boundary:first-child { margin-top:0; }
   /* twocol-grid passthrough (used in tasks+prompts two-column arrangement) */
   .rd-twocol { display:contents; }
   .run-section { margin-bottom:22px; }
@@ -2652,17 +2662,19 @@ function rdRenderCompactStats(snap, vlive) {
 }
 
 async function rdRefreshPrompts() {
-  // Discover turns files (once per drawer-open), then incrementally tail
-  // each one. Renders the union in chronological-by-ts order.
+  // Discover turns files every poll (cheap GET; the engine adds one new
+  // file when each UC starts, and we used to discover only once per
+  // drawer-open — so the second + third UC in a multi-UC run never
+  // showed up). Merge the discovered set into perFile without losing
+  // already-accumulated records.
   if (!_rdName) return;
   try {
-    if (!_rdPromptsState.filesKnown.length) {
-      const ls = await api(`/api/runs/${encodeURIComponent(_rdName)}/turns`).catch(() => ({}));
-      _rdPromptsState.filesKnown = ls.files || [];
-      for (const f of _rdPromptsState.filesKnown) {
-        if (!_rdPromptsState.perFile[f]) _rdPromptsState.perFile[f] = {next_offset:0, records:[]};
-      }
+    const ls = await api(`/api/runs/${encodeURIComponent(_rdName)}/turns`).catch(() => ({}));
+    const discovered = ls.files || [];
+    for (const f of discovered) {
+      if (!_rdPromptsState.perFile[f]) _rdPromptsState.perFile[f] = {next_offset:0, records:[]};
     }
+    _rdPromptsState.filesKnown = discovered.length ? discovered : _rdPromptsState.filesKnown;
     // Poll each known file for delta
     for (const f of _rdPromptsState.filesKnown) {
       const st = _rdPromptsState.perFile[f];
@@ -2685,7 +2697,13 @@ function _renderTurnBody(idx, label, text, originalLength) {
   if (text == null || text === '') return '';
   const cap = RD_PROMPTS_COLLAPSED_CHARS;
   const len = (originalLength != null) ? originalLength : text.length;
-  const wantsExpanded = _rdPromptsState.expanded.has(idx) || _rdPromptsState.defaultMode === 'expanded';
+  // The toggle handler stores `a.dataset.rdToggle` as a string in the Set;
+  // matching here on a number meant `expanded.has(3)` after `add('3')`
+  // was always false, so "show full" never expanded. Force string both
+  // ways. Same fix applies to the `idx + ':args'` tool-arg variant — it's
+  // already a string so just match formats.
+  const key = String(idx);
+  const wantsExpanded = _rdPromptsState.expanded.has(key) || _rdPromptsState.defaultMode === 'expanded';
   const truncatedByEngine = len > text.length;          // engine hit MAX_FIELD_BYTES
   const truncatedByUI     = !wantsExpanded && text.length > cap;
   const display = truncatedByUI ? text.slice(0, cap) : text;
@@ -2697,11 +2715,11 @@ function _renderTurnBody(idx, label, text, originalLength) {
       ? `<span class="sub">… ${(len-text.length).toLocaleString()} chars not stored (engine cap)</span>`
       : `<span class="sub">… ${(len - cap).toLocaleString()} more</span>`;
     const action = truncatedByUI
-      ? `<a href="javascript:void(0)" data-rd-toggle="${idx}" style="color:var(--accent);font-size:10px;margin-left:6px;">show full</a>`
+      ? `<a href="javascript:void(0)" data-rd-toggle="${esc(key)}" style="color:var(--accent);font-size:10px;margin-left:6px;">show full</a>`
       : '';
     suffix = `<div style="margin-top:2px">${note}${action}</div>`;
   } else if (wantsExpanded && text.length > cap) {
-    suffix = `<div style="margin-top:2px"><a href="javascript:void(0)" data-rd-toggle="${idx}" style="color:var(--text-faint);font-size:10px;">collapse</a></div>`;
+    suffix = `<div style="margin-top:2px"><a href="javascript:void(0)" data-rd-toggle="${esc(key)}" style="color:var(--text-faint);font-size:10px;">collapse</a></div>`;
   }
   return `<div>${labelPrefix}<span style="white-space:pre-wrap">${esc(display)}</span></div>${suffix}`;
 }
@@ -2721,6 +2739,7 @@ function rdRenderPrompts() {
   }
   // Cap to most recent 400 to keep DOM bounded
   const visible = all.slice(-400);
+  let lastUcUuid = null;
   const html = visible.map((r, idx) => {
     const kind = r.kind || 'turn';
     let head = `<span class="kind ${esc(kind)}">${esc(kind)}</span>`;
@@ -2749,7 +2768,18 @@ function rdRenderPrompts() {
     } else {
       body = `<div>${esc(JSON.stringify(r).slice(0,300))}</div>`;
     }
-    return `<div class="turn-rec"><div class="head">${head}</div><div class="body">${body}</div></div>`;
+    // UC boundary banner — emitted whenever the uc_uuid changes (including
+    // the very first record). Lets the eye land on "new UC starts here"
+    // without scanning for the small "start" chip on a turn header.
+    let boundary = '';
+    const recUuid = r.uc_uuid || null;
+    if (recUuid && recUuid !== lastUcUuid) {
+      const ts = r.ts ? new Date(r.ts).toLocaleTimeString() : '';
+      const fileBits = r._file ? r._file.replace(/^.*\//, '').replace(/\.jsonl$/, '') : '';
+      boundary = `<div class="uc-boundary">▶ Use case <span class="uc-uuid">${esc(recUuid)}</span>${ts ? `<span class="uc-meta">first record at ${esc(ts)}</span>` : ''}${fileBits ? `<span class="uc-meta">· ${esc(fileBits)}</span>` : ''}</div>`;
+      lastUcUuid = recUuid;
+    }
+    return `${boundary}<div class="turn-rec kind-${esc(kind)}"><div class="head">${head}</div><div class="body">${body}</div></div>`;
   }).join('');
   el.innerHTML = html;
   // Wire up per-record toggle links
