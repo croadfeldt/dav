@@ -237,6 +237,18 @@ class Stage2Agent:
         # reinforced guidance fresh on its next turn. Reset per agent run.
         self._section_title_misses: dict[str, int] = {}   # section_title -> miss count
         self._too_large_handles: set[str] = set()
+        # Cross-turn dedup state (post-M12 follow-up). Records every distinct
+        # (tool_name, args_json) pair the agent has actually executed this run,
+        # plus the turn it first ran on and a preview of the result. When the
+        # model emits the same call again across a turn boundary, we short-
+        # circuit to a DUPLICATE-CROSS-TURN marker with a pointer to the
+        # original — saves the MCP round trip AND tells the model to pivot.
+        # Reset per analyze() like the other anti-fishing state.
+        self._call_history: dict[tuple, dict] = {}
+        # Counter surfaced via _emit_turn(kind="summary") at end of analyze()
+        # so operators can spot UCs where the model kept asking for the same
+        # thing without having to eyeball every turn.
+        self._cross_turn_dup_count: int = 0
         # wall-time tracking for AnalysisMetadata.wall_time_seconds
         self._wall_time_start: float = 0.0
         # per-sample seed override. When None, falls back to
@@ -363,6 +375,8 @@ class Stage2Agent:
         # Reset anti-fishing state for this run
         self._section_title_misses = {}
         self._too_large_handles = set()
+        self._call_history = {}
+        self._cross_turn_dup_count = 0
 
         tool_defs = get_tool_definitions()
         sys_prompt = build_stage2_system_prompt(self.consumer_profile)
@@ -484,6 +498,50 @@ class Stage2Agent:
                         ))
                         continue
 
+                    # Cross-turn dedup (post-M12 follow-up): same (tool, args)
+                    # already executed on an earlier turn this run? Skip the
+                    # MCP round trip and return a STOP marker with a pointer
+                    # back to the original turn + a preview of its result.
+                    # Models (especially Qwen3-class) lose track of their own
+                    # prior calls as context grows; without this guard they
+                    # re-issue identical searches/section fetches across
+                    # turns 7, 9, 11, ... and burn the budget.
+                    if dedup_key in self._call_history:
+                        prior = self._call_history[dedup_key]
+                        preview = (prior["result"] or "")[:400]
+                        if len(prior["result"] or "") > 400:
+                            preview += f"… [{len(prior['result']) - 400} more chars in original]"
+                        repeat_content = (
+                            f"⛔ DUPLICATE-CROSS-TURN: you already called "
+                            f"{tool_name}({json.dumps(args)}) on turn "
+                            f"{prior['turn']} (tool_call_id={prior['tool_call_id']}). "
+                            f"The result is unchanged. Re-running would waste "
+                            f"the budget. Either pivot to a DIFFERENT query / "
+                            f"section / handle, or stop fetching and write your "
+                            f"final JSON analysis on your NEXT response.\n\n"
+                            f"--- Original result preview ---\n{preview}"
+                        )
+                        self._cross_turn_dup_count += 1
+                        log.info(
+                            "turn %d: cross-turn dedup blocked %s args=%s "
+                            "(first run on turn %d)",
+                            turn, tool_name, args, prior["turn"],
+                        )
+                        self._emit_turn(
+                            turn=turn, kind="tool",
+                            tool_name=tool_name, args=args, ok=True,
+                            result=repeat_content, result_length=len(repeat_content),
+                            dedup_of=prior["tool_call_id"],
+                            cross_turn_dedup=True,
+                            first_seen_turn=prior["turn"],
+                        )
+                        _exec_cache[dedup_key] = (tc["id"], repeat_content)
+                        messages.append(ChatMessage(
+                            role="tool", content=repeat_content,
+                            tool_call_id=tc["id"], name=tool_name,
+                        ))
+                        continue
+
                     log.info("turn %d: mcp call %s args=%s", turn, tool_name, args)
 
                     mcp_result = self.mcp.call(tool_name, args)
@@ -514,6 +572,18 @@ class Stage2Agent:
                             f"{full_result}"
                         )
                     _exec_cache[dedup_key] = (tc["id"], full_result)
+                    # Record this call for cross-turn dedup on future turns.
+                    # Only record successful MCP results — error responses
+                    # might be transient and worth retrying. The WRAP-UP
+                    # prepended directive is included in `full_result` here,
+                    # but its preview is only used as a model-facing hint, so
+                    # that's fine.
+                    if mcp_result.ok and dedup_key not in self._call_history:
+                        self._call_history[dedup_key] = {
+                            "turn": turn,
+                            "tool_call_id": tc["id"],
+                            "result": full_result,
+                        }
 
                     self._tool_trace.append(ToolCall(
                         tool=tool_name,
@@ -543,13 +613,32 @@ class Stage2Agent:
             if turn < self.config.max_tool_calls:
                 # Model stopped early. This is normal if it has enough info.
                 # Parse its content as the final analysis.
+                self._emit_run_summary(final_turn=turn)
                 return self._parse_final(response.content, use_case, run_id)
 
             # Hit the budget limit on this turn — it should be emitting final
+            self._emit_run_summary(final_turn=turn)
             return self._parse_final(response.content, use_case, run_id)
 
         # Shouldn't reach here, but keep mypy happy
         raise AgentError("agent loop terminated without final response")
+
+    def _emit_run_summary(self, final_turn: int) -> None:
+        """End-of-run summary record. Surfaces per-sample stats the operator
+        wants to spot quickly — most importantly the cross-turn duplicate
+        count so UCs where the model kept re-asking become visible without
+        eyeballing every turn. The UI's prompts panel renders kind='summary'
+        records inline; run-summary.yaml aggregation across samples is a
+        follow-up that touches stage2_analyze + run_corpus."""
+        self._emit_turn(
+            turn=final_turn + 1,
+            kind="summary",
+            cross_turn_duplicates_blocked=self._cross_turn_dup_count,
+            distinct_calls=len(self._call_history),
+            section_title_misses=sum(self._section_title_misses.values()),
+            too_large_handles=len(self._too_large_handles),
+            total_tokens=self._total_tokens,
+        )
 
     def _parse_final(self, content: str, use_case: UseCase, run_id: str) -> Analysis:
         """

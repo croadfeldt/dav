@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dav.core.use_case_schema import UseCase
 
-STAGE2_PROMPT_VERSION = "1.5"  # ε.2 — gap title, spec_refs_missing as list
+STAGE2_PROMPT_VERSION = "1.6"  # 1.6 — cross-turn dedup nudge ("scan prior tool calls before re-issuing")
 
 # /no_think directive at the top is a Qwen3 chat template token that disables
 # the model's thinking-mode output (<think>...</think> blocks). We strip
@@ -43,6 +43,8 @@ You have access to tools that retrieve {framework_short} spec content. Use them 
 4. If a `get_document` returns content larger than ~5000 characters, you have probably over-fetched — next time use `get_document_section` instead.
 
 Tool budget: you have a limited number of tool calls. Spend them on targeted retrieval, not bulk fetches.
+
+Before every tool call, **scan your prior tool calls in this conversation**. If you have already called the same tool with the same arguments earlier, do not call it again — the result is unchanged. Instead, either pivot to a DIFFERENT query, section, or handle, or stop fetching and write your analysis. The engine will detect cross-turn duplicates and short-circuit them with a DUPLICATE-CROSS-TURN marker pointing at the original tool_call_id, but you should pre-empt that by tracking what you've already asked.
 
 Handling tool failures — READ THIS CAREFULLY:
 - When `get_document_section` returns "Section '<X>' not found. Available sections: ..." — that error response is INFORMATION. It is telling you exactly which sections exist. Your next action MUST be either:
