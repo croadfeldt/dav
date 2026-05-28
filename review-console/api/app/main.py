@@ -137,6 +137,58 @@ async def _finalizer_loop():
             log.warning("finalizer loop hiccup: %s", e)
 
 
+async def _analysis_ingest_loop():
+    """Background task: scan the workspace `results/` directory for
+    run-summary.yaml files whose run_id isn't in `analysis_runs` yet,
+    and ingest them. Runs every 5 minutes + at startup. Idempotent —
+    `_ingest_run_analyses()` upserts and is safe to re-call.
+
+    Without this, `/api/use-cases/{uuid}/runs`, the UC detail panel's
+    "Test history" section, and run-comparison views silently return
+    empty for any run not manually ingested via `POST /api/analysis/ingest/{run_id}`.
+    The `/api/results` endpoint always worked because it reads the PVC
+    directly; the manual-ingest gap was an artifact (engine writes to
+    disk; nobody wired the post-pipeline auto-ingest before now).
+    """
+    import asyncio
+    SLEEP_SECONDS = 300   # 5 minutes
+    INITIAL_DELAY = 10    # let the pool + migrations settle first
+    await asyncio.sleep(INITIAL_DELAY)
+    while True:
+        try:
+            on_disk = []
+            try:
+                on_disk = [r["run_id"] for r in _results.list_runs() if r.get("run_id")]
+            except Exception as e:
+                log.info("ingest loop: list_runs failed (%s); workspace not mounted yet?", e)
+            if on_disk:
+                async with pool.acquire() as conn:
+                    ingested_rows = await conn.fetch(
+                        "SELECT run_id FROM analysis_runs WHERE run_id = ANY($1)",
+                        on_disk,
+                    )
+                ingested = {r["run_id"] for r in ingested_rows}
+                pending = [rid for rid in on_disk if rid not in ingested]
+                if pending:
+                    log.info("ingest loop: %d run(s) on disk not yet in DB; ingesting", len(pending))
+                for rid in pending:
+                    try:
+                        async with pool.acquire() as conn:
+                            result = await _ingest_run_analyses(rid, conn)
+                        log.info(
+                            "ingest loop: %s — ucs=%s gaps=%s",
+                            rid, result.get("ucs_ingested"), result.get("gaps_ingested"),
+                        )
+                    except Exception as e:
+                        log.warning("ingest loop: %s failed (%s); will retry next pass", rid, e)
+            await asyncio.sleep(SLEEP_SECONDS)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.warning("ingest loop hiccup: %s", e)
+            await asyncio.sleep(SLEEP_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pool
@@ -172,10 +224,12 @@ async def lifespan(app: FastAPI):
     import asyncio
     finalizer_task = asyncio.create_task(_finalizer_loop())
     pr_comments_task = asyncio.create_task(_pr_comments.poller_loop(pool))
+    ingest_task = asyncio.create_task(_analysis_ingest_loop())
     yield
     finalizer_task.cancel()
     pr_comments_task.cancel()
-    for t in (finalizer_task, pr_comments_task):
+    ingest_task.cancel()
+    for t in (finalizer_task, pr_comments_task, ingest_task):
         try:
             await t
         except Exception:
