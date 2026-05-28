@@ -137,28 +137,64 @@ def _build_run_prompt(run_id: str, uc_analyses: list[dict]) -> str:
 
 
 _ENHANCEMENT_UC_SYSTEM = (
-    "You are a senior software architect documenting concrete enhancements "
-    "to address identified coverage gaps in a system.\n\n"
-    "For each gap, produce an Enhancement Specification with:\n"
-    "1. Enhancement title and objective — one sentence stating what changes and why.\n"
-    "2. Proposed change — the specific architectural component, pattern, or mechanism to add or modify.\n"
-    "3. Implementation outline — 3–5 concrete steps an engineering team would follow.\n"
-    "4. Acceptance criteria — how to verify the gap is closed, tied to the use case's success criteria.\n"
-    "5. Dependencies and risks — what must be in place first, and what could go wrong.\n\n"
-    "Key each enhancement to its gap ID. Be specific and actionable. "
-    "Write in plain prose — no markdown headers, minimal bullet points."
+    "You are a senior software architect producing CONCRETE SPEC EDITS to close "
+    "coverage gaps. Your output is consumed mechanically — a downstream step "
+    "applies your patches to the architecture specification repository, so "
+    "every patch must be ready to commit without further translation.\n\n"
+    "For EACH gap, emit one ENHANCEMENT block in this exact format:\n\n"
+    "    ENHANCEMENT <id> (gap: <gap_id>)\n"
+    "    target: <spec doc handle, e.g. dcm/components/policy-evaluation.md>\n"
+    "    action: add_section | update_section | replace_text | new_document\n"
+    "    section_title: <verbatim title to add or modify>\n"
+    "    position: <after \"<existing section title>\" | end_of_document | top>\n"
+    "    rationale: <one sentence linking this patch to the gap>\n"
+    "    ```markdown\n"
+    "    <VERBATIM markdown content to insert or that replaces the existing section — \n"
+    "     ready to paste, no placeholders, no \"<your text here>\" stubs>\n"
+    "    ```\n"
+    "    acceptance: <one sentence — how a reviewer confirms the gap is closed>\n\n"
+    "Rules:\n"
+    "- Prefer `add_section` and `update_section` over `new_document`. Only emit "
+    "  `new_document` when no existing target doc fits, and then `target:` is the "
+    "  proposed new handle (e.g. `dcm/governance/audit-trail.md`).\n"
+    "- The user message tells you which doc handles each gap's analysis flagged "
+    "  (`spec_refs_missing`) — prefer those targets unless an obviously-better one "
+    "  exists in the user message's spec_refs context.\n"
+    "- The markdown block is the LITERAL EDIT — write the actual prose / list / "
+    "  table the spec will carry, not a meta-description of what to write.\n"
+    "- One ENHANCEMENT block per gap. Multiple gaps may target the same doc; "
+    "  group them in DOC ORDER so a human can apply the patches sequentially.\n"
+    "- No prose between blocks. No introduction. No summary. The downstream "
+    "  parser keys on the `ENHANCEMENT <id>` line."
 )
 
 _ENHANCEMENT_RUN_SYSTEM = (
-    "You are a senior software architect documenting a prioritised enhancement roadmap "
-    "to address coverage gaps across multiple use cases.\n\n"
-    "Produce:\n"
-    "1. Systemic enhancements — gaps appearing across multiple use cases signalling shared deficiencies.\n"
-    "2. UC-specific enhancements for high-severity single-UC gaps.\n"
-    "3. For each enhancement: title, proposed change, implementation outline (3–5 steps), "
-    "acceptance criteria, dependencies and risks.\n"
-    "4. A sequenced delivery roadmap identifying which enhancements unblock others.\n\n"
-    "Reference gap IDs and UC handles. Be specific and actionable. Write in plain prose."
+    "You are a senior software architect producing CONCRETE SPEC EDITS to close "
+    "coverage gaps across multiple use cases. Your output is consumed "
+    "mechanically — a downstream step applies your patches to the architecture "
+    "specification repository.\n\n"
+    "Group your output in TWO sections:\n\n"
+    "1. SYSTEMIC ENHANCEMENTS (one patch may close gaps in multiple UCs)\n"
+    "2. UC-SPECIFIC ENHANCEMENTS (only gaps not addressed above)\n\n"
+    "For EACH enhancement use this exact block format:\n\n"
+    "    ENHANCEMENT <id> (gaps: <gap_id>[, <gap_id>...], UCs: <uc_handle>[, ...])\n"
+    "    target: <spec doc handle>\n"
+    "    action: add_section | update_section | replace_text | new_document\n"
+    "    section_title: <verbatim>\n"
+    "    position: <after \"...\" | end_of_document | top>\n"
+    "    rationale: <one sentence>\n"
+    "    ```markdown\n"
+    "    <VERBATIM markdown content — ready to paste, no placeholders>\n"
+    "    ```\n"
+    "    acceptance: <one sentence>\n\n"
+    "After the blocks, emit a final ORDER section listing the enhancement IDs in "
+    "the order a human should apply them (dependencies first):\n\n"
+    "    ORDER: <id1>, <id2>, <id3>, ...\n\n"
+    "Rules:\n"
+    "- The markdown block is the LITERAL EDIT — actual content, not meta-prose.\n"
+    "- The user message lists each gap's spec_refs_missing — prefer those targets.\n"
+    "- No introduction, no summary. The downstream parser keys on the\n"
+    "  `ENHANCEMENT <id>` and `ORDER:` lines."
 )
 
 
@@ -194,9 +230,22 @@ def _build_enhancement_prompt(uc: dict, analysis: dict, gaps: list[dict]) -> str
                 parts.append(f"    Rationale: {g['rationale']}")
             if g.get("recommendation"):
                 parts.append(f"    Initial recommendation: {g['recommendation']}")
+            # Pass through the spec docs the stage-2 analysis flagged as missing
+            # the content this gap needs. Lets the model target its patches
+            # without guessing which doc/handle to touch.
+            refs_missing = g.get("spec_refs_missing") or g.get("spec_refs") or []
+            if refs_missing:
+                if isinstance(refs_missing, list):
+                    parts.append("    spec_refs_missing: " + ", ".join(str(r) for r in refs_missing))
+                else:
+                    parts.append(f"    spec_refs_missing: {refs_missing}")
     else:
         parts.append("\nNo gaps identified.")
-    parts.append("\nPlease provide the Enhancement Specification for each gap.")
+    parts.append(
+        "\nProduce ENHANCEMENT blocks per the system instructions. "
+        "Each block must include a verbatim markdown patch ready to paste — "
+        "no placeholders, no meta-prose."
+    )
     return "\n".join(parts)
 
 
@@ -215,9 +264,22 @@ def _build_enhancement_run_prompt(run_id: str, uc_analyses: list[dict]) -> str:
             sev = g.get("severity") or {}
             sev_label = sev.get("label") or sev.get("band") or "?" if isinstance(sev, dict) else str(sev)
             parts.append(f"    [{g.get('gap_id','?')}] {g.get('title','')} ({sev_label})")
+            if g.get("description"):
+                parts.append(f"      Description: {(g.get('description') or '')[:300]}")
             if g.get("recommendation"):
                 parts.append(f"      Recommendation: {(g.get('recommendation') or '')[:400]}")
-    parts.append("\nPlease provide the Enhancement Roadmap.")
+            refs_missing = g.get("spec_refs_missing") or g.get("spec_refs") or []
+            if refs_missing:
+                if isinstance(refs_missing, list):
+                    parts.append(f"      spec_refs_missing: {', '.join(str(r) for r in refs_missing)}")
+                else:
+                    parts.append(f"      spec_refs_missing: {refs_missing}")
+    parts.append(
+        "\nProduce ENHANCEMENT blocks per the system instructions, grouped into "
+        "SYSTEMIC ENHANCEMENTS then UC-SPECIFIC ENHANCEMENTS, followed by the "
+        "final ORDER line. Each block must include a verbatim markdown patch "
+        "ready to paste — no placeholders, no meta-prose."
+    )
     return "\n".join(parts)
 
 
