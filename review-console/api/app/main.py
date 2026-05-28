@@ -4619,121 +4619,166 @@ async def enhancements(payload: EnhancementIn, request: Request):
 
 
 class EnhancementApplyIn(BaseModel):
-    """Take the streamed text from /api/enhancements + a target managed_repos
-    row (role=enhancement-target) and open a PR with the parsed patches."""
+    """Take the streamed text from /api/enhancements and open one PR per
+    affected spec repo. Patches auto-route by the namespace prefix on each
+    ENHANCEMENT block's `target:` field — `dcm/components/foo.md` lands in
+    the managed_repos row with namespace='dcm' (provided it has
+    role=enhancement-target), `udlm/...` lands in udlm's repo, etc.
+
+    `repo_overrides` lets you remap a namespace to a specific managed_repos
+    row by uuid or namespace — useful when the spec is mirrored, or when
+    you want all patches to land in a fork. Empty dict = pure auto-routing.
+    """
     enhancement_text: str = Field(..., min_length=10)
-    target_repo: str = Field(..., min_length=1, max_length=256)   # uuid or namespace
-    base_branch: Optional[str] = None                              # default: repo default branch
-    branch_name: Optional[str] = None                              # default: dav-enh/<random>
-    pr_title:    Optional[str] = None
+    repo_overrides: dict[str, str] = Field(default_factory=dict)   # {namespace -> uuid_or_namespace}
+    branch_name: Optional[str] = None                              # default: dav-enh/<random>; shared across PRs
     # Scope context for the PR description
     scope: Optional[str] = None     # 'uc' | 'run'
     run_id: Optional[str] = None
     uc_uuid: Optional[str] = None
     uc_handle: Optional[str] = None
+    pr_title: Optional[str] = None
 
 
 @app.post("/api/enhancements/apply")
 async def apply_enhancements(payload: EnhancementApplyIn, request: Request):
-    """Parse the LLM-emitted ENHANCEMENT blocks and open a single PR that
-    materializes the patches against the configured enhancement-target repo.
+    """Parse the LLM-emitted ENHANCEMENT blocks and open one PR per
+    affected spec repo. Patches are routed by the namespace prefix on
+    each enhancement's `target:` field.
 
     Failure modes surfaced in the response (not 500'd):
-      * parse_errors per block — model emitted a malformed ENHANCEMENT
-      * apply_warnings per file — replace_text not implemented, anchor
-        section not found, etc.
-    Per-file fetch / push failures DO raise 502 since the user needs to
-    know GitHub rejected the change.
+      * parse_errors per block
+      * apply_warnings per file (replace_text NYI, anchor not found, ...)
+      * unmatched_namespaces — targets whose namespace has no managed_repos
+        row with role=enhancement-target (silently dropping would lose data)
+    Per-file fetch / push failures DO raise 502.
     """
     user = get_user(request)
     enhancements = _enh_apply.parse_enhancement_blocks(payload.enhancement_text)
     if not enhancements:
         raise HTTPException(400, "no ENHANCEMENT blocks found in input text")
-    by_target = _enh_apply.group_by_target(enhancements)
-    if not by_target:
-        raise HTTPException(400, "all parsed enhancements were missing a target")
 
-    # Resolve the target repo + credential
-    async with pool.acquire() as conn:
-        repo = await _repos.get_repo(conn, payload.target_repo)
-        if not repo:
-            raise HTTPException(404, f"managed_repos row {payload.target_repo!r} not found")
-        if "enhancement-target" not in (repo.get("roles") or []):
-            raise HTTPException(
-                400,
-                f"repo {repo.get('namespace')!r} does not have role=enhancement-target; "
-                f"add the role in Config → Managed repos first"
-            )
-        secrets = await _repos.get_repo_secrets(conn, repo["uuid"])
-    token = (secrets or {}).get("github_pat") if secrets else None
-    if not token:
-        raise HTTPException(
-            400,
-            f"repo {repo['namespace']!r} has no GitHub PAT configured "
-            f"(set an inline credential or link a shared one)"
-        )
-    if not corpus_push.is_github(repo["repo_url"]):
-        raise HTTPException(400, f"target repo {repo['repo_url']!r} is not a GitHub URL")
-    owner, repo_name = corpus_push.parse_github_url(repo["repo_url"])
-    base_branch = payload.base_branch or repo.get("repo_branch") or "main"
-    # role-specific path prefix inside the repo
-    root_path = _repos.resolve_root_path(repo, "enhancement-target") or ""
+    # Group enhancements by target namespace (e.g., dcm, udlm).
+    by_namespace: dict[str, list] = {}
+    for e in enhancements:
+        if not e.target:
+            continue
+        by_namespace.setdefault(e.target_namespace, []).append(e)
+    if not by_namespace:
+        raise HTTPException(400, "all parsed enhancements were missing a target")
 
     import secrets as _sysrand
     branch_name = payload.branch_name or f"dav-enh/{_sysrand.token_hex(4)}"
-
-    per_file: list[dict] = []
     apply_warnings: list[str] = []
-    for target_handle, enhs in by_target.items():
-        # Strip the leading namespace from the handle; we trust the user
-        # picked a repo whose namespace matches.
-        target_ns = enhs[0].target_namespace
-        rel_path = enhs[0].target_path
-        # Prefix the role's root_path if any
-        repo_path = f"{root_path}/{rel_path}".lstrip("/") if root_path else rel_path
+    unmatched_namespaces: list[dict] = []
+    repo_results: list[dict] = []
 
-        # Fetch the current content (None = new file)
-        existing: Optional[str]
+    async with pool.acquire() as conn:
+        for ns, ns_enhs in by_namespace.items():
+            override = payload.repo_overrides.get(ns)
+            repo = await _repos.get_repo(conn, override or ns)
+            if not repo or "enhancement-target" not in (repo.get("roles") or []):
+                unmatched_namespaces.append({
+                    "namespace": ns,
+                    "enhancements": [e.id for e in ns_enhs],
+                    "reason": (
+                        f"no managed_repos row with namespace={ns!r} and "
+                        f"role=enhancement-target (override={override!r})"
+                        if not repo else
+                        f"repo {repo.get('namespace')!r} found but lacks role=enhancement-target"
+                    ),
+                })
+                continue
+            secrets = await _repos.get_repo_secrets(conn, repo["uuid"]) or {}
+            token = secrets.get("github_pat")
+            if not token:
+                unmatched_namespaces.append({
+                    "namespace": ns,
+                    "enhancements": [e.id for e in ns_enhs],
+                    "reason": f"repo {repo['namespace']!r} has no GitHub PAT configured",
+                })
+                continue
+            if not corpus_push.is_github(repo["repo_url"]):
+                unmatched_namespaces.append({
+                    "namespace": ns,
+                    "enhancements": [e.id for e in ns_enhs],
+                    "reason": f"target {repo['repo_url']!r} is not a GitHub URL",
+                })
+                continue
+            repo_result = await _apply_to_one_repo(
+                repo=repo, token=token, enhancements=ns_enhs,
+                branch_name=branch_name, all_enhancements=enhancements,
+                payload=payload, user=user, warnings=apply_warnings,
+            )
+            repo_results.append(repo_result)
+
+    return {
+        "ok": True,
+        "branch": branch_name,
+        "shared_branch_across_prs": True,
+        "repo_results": repo_results,
+        "unmatched_namespaces": unmatched_namespaces,
+        "apply_warnings": apply_warnings,
+        "enhancements_total": len(enhancements),
+        "enhancements_with_parse_errors": [e.id for e in enhancements if e.parse_errors],
+    }
+
+
+async def _apply_to_one_repo(
+    *, repo: dict, token: str, enhancements: list,
+    branch_name: str, all_enhancements: list,
+    payload: EnhancementApplyIn, user: str,
+    warnings: list[str],
+) -> dict:
+    """Open one PR against `repo` carrying the patches whose target
+    namespace matches. Returns a per-repo result dict for the response."""
+    owner, repo_name = corpus_push.parse_github_url(repo["repo_url"])
+    base_branch = repo.get("repo_branch") or "main"
+    root_path = _repos.resolve_root_path(repo, "enhancement-target") or ""
+
+    # Group THIS namespace's enhancements by target file
+    by_file: dict[str, list] = {}
+    for e in enhancements:
+        by_file.setdefault(e.target, []).append(e)
+
+    files_changed: list[dict] = []
+    for target_handle, file_enhs in by_file.items():
+        rel_path = file_enhs[0].target_path
+        repo_path = f"{root_path}/{rel_path}".lstrip("/") if root_path else rel_path
         try:
             existing = await corpus_push.fetch_file_content(
                 owner=owner, repo=repo_name, file_path=repo_path,
                 ref=base_branch, token=token,
             )
         except Exception as e:
-            raise HTTPException(502, f"fetch {repo_path}: {e}")
+            raise HTTPException(502, f"fetch {owner}/{repo_name}:{repo_path} — {e}")
 
-        # Apply each enhancement in source order
         current = existing or ""
         applied_ids: list[str] = []
-        for enh in enhs:
+        for enh in file_enhs:
             if enh.parse_errors:
-                apply_warnings.append(f"{enh.id}: {'; '.join(enh.parse_errors)}")
+                warnings.append(f"[{repo['namespace']}] {enh.id}: {'; '.join(enh.parse_errors)}")
                 continue
             if existing is None and enh.action != "new_document":
-                # File doesn't exist — only new_document makes sense. Coerce
-                # add_section into new_document for the first patch so we
-                # don't lose the proposed content.
-                apply_warnings.append(
-                    f"{enh.id}: target {target_handle} doesn't exist yet; "
+                warnings.append(
+                    f"[{repo['namespace']}] {enh.id}: target {target_handle} doesn't exist; "
                     f"applying as new_document (was {enh.action})"
                 )
                 enh.action = "new_document"
             new_content, err = _enh_apply.apply_enhancement(current, enh)
             if err:
-                apply_warnings.append(f"{enh.id}: {err}")
+                warnings.append(f"[{repo['namespace']}] {enh.id}: {err}")
                 continue
             current = new_content
             applied_ids.append(enh.id)
 
         if applied_ids:
-            per_file.append({
+            files_changed.append({
                 "target_handle": target_handle,
                 "repo_path": repo_path,
                 "applied": applied_ids,
                 "new_content_preview": current[:400],
             })
-            # Push this file to the side branch (idempotent on re-run with the
-            # same branch_name; subsequent files share the branch + PR).
             try:
                 await corpus_push.push_uc_to_github(
                     owner=owner, repo=repo_name,
@@ -4742,18 +4787,20 @@ async def apply_enhancements(payload: EnhancementApplyIn, request: Request):
                     file_content=current,
                     branch_name=branch_name,
                     commit_message=f"DAV enhancement patches for {target_handle}",
-                    pr_title=payload.pr_title or _enh_apply_default_pr_title(payload, len(by_target)),
-                    pr_body=_enh_apply_pr_body(payload, enhancements, apply_warnings, user),
+                    pr_title=payload.pr_title or _enh_apply_default_pr_title(payload, len(by_file)),
+                    pr_body=_enh_apply_pr_body(payload, all_enhancements, warnings, user, repo["namespace"]),
                     author_name=user or "DAV",
                     author_email=f"{user or 'dav'}@dav-review.local",
                     token_override=token,
                 )
             except Exception as e:
-                raise HTTPException(502, f"push {repo_path}: {e}")
-    # After all files pushed, ask GitHub for the PR URL via a lookup
+                raise HTTPException(502, f"push {owner}/{repo_name}:{repo_path} — {e}")
+
+    # Resolve the PR URL after all files pushed
     pr_url: Optional[str] = None
     try:
-        async with __import__("httpx").AsyncClient(timeout=10.0) as cx:
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=10.0) as cx:
             r = await cx.get(
                 f"https://api.github.com/repos/{owner}/{repo_name}/pulls",
                 headers={"Authorization": f"Bearer {token}",
@@ -4766,15 +4813,11 @@ async def apply_enhancements(payload: EnhancementApplyIn, request: Request):
         pass
 
     return {
-        "ok": True,
-        "branch": branch_name,
+        "namespace": repo["namespace"],
+        "repo": f"{owner}/{repo_name}",
         "base_branch": base_branch,
         "pr_url": pr_url,
-        "target_repo": f"{owner}/{repo_name}",
-        "files_changed": per_file,
-        "apply_warnings": apply_warnings,
-        "enhancements_total": len(enhancements),
-        "enhancements_skipped": [e.id for e in enhancements if e.parse_errors],
+        "files_changed": files_changed,
     }
 
 
