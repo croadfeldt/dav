@@ -125,7 +125,16 @@ spec:
 
     - name: max-tokens
       type: string
-      default: "6144"
+      # Per-turn LLM output budget. Bumped 6144 → 8192 on 2026-05-28 after the
+      # Barclays A/B baseline run (`dav-stage2-console-933026`) hit
+      # AgentError: could not parse final analysis as JSON: unbalanced braces
+      # on UC #6 (infrastructure/prod/greenfield) — the model emitted ~6144
+      # tokens of valid JSON then got chopped mid-string. Each component in
+      # the analysis is ~150-250 tokens, and complex UCs with 10-12 components
+      # plus data_model/gaps/recommendations sections push past 5K easily.
+      # 8192 = +33% headroom. Zero VRAM / wall-time cost when the model
+      # doesn't actually emit more (stops at end-of-stream naturally).
+      default: "8192"
 
     - name: cache-prompt
       type: string
