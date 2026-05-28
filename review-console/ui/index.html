@@ -5603,18 +5603,32 @@ function biRenderResults() {
   el.innerHTML = '';
   _biExtracted.forEach((it, idx) => {
     const card = document.createElement('div');
-    card.style.cssText = 'border:1px solid var(--border); border-radius:2px; background:var(--bg-input); padding:8px 10px;';
-    // Best-effort title extraction
+    const failed = !!it._biSaveError;
+    const saved  = !!it._ucUuid;
+    const accent = failed ? 'var(--red)' : (saved ? 'var(--green)' : 'var(--border)');
+    card.style.cssText = `border:1px solid ${accent}; border-radius:2px; background:var(--bg-input); padding:8px 10px;`;
     const titleMatch = /^title:\s*(.+)$/m.exec(it.yaml_content || '');
     const title = titleMatch ? titleMatch[1].trim().replace(/^["']|["']$/g, '') : '(untitled draft)';
+    const detailOpen = failed ? '' : 'none';
+    const statusBadge = saved
+      ? `<span style="font-size:9px; padding:2px 6px; background:var(--green-bg, rgba(80,180,80,0.15)); color:var(--green); border-radius:2px; font-weight:600;">SAVED</span>`
+      : failed
+        ? `<span style="font-size:9px; padding:2px 6px; background:rgba(217,101,58,0.15); color:var(--red); border-radius:2px; font-weight:600;">FAILED</span>`
+        : '';
     card.innerHTML = `
       <div style="display:flex; align-items:center; gap:8px;">
         <input type="checkbox" data-idx="${idx}" class="bi-keep" ${it._keep ? 'checked' : ''}
+               ${saved ? 'disabled' : ''}
                style="width:auto; height:auto; accent-color:var(--accent);" />
         <strong style="flex:1; font-size:13px;">${esc(title)}</strong>
+        ${statusBadge}
         <button class="btn ghost btn-sm" data-idx="${idx}" data-act="toggle" style="font-size:10px;">▾ details</button>
       </div>
-      <div data-detail="${idx}" style="display:none; margin-top:6px;">
+      ${failed ? `<div style="margin-top:6px; padding:6px 8px; background:rgba(217,101,58,0.10); border-left:3px solid var(--red); font-size:11px; color:var(--text);">
+        <strong>Validation failed:</strong> ${esc(it._biSaveError)}<br>
+        <span style="color:var(--text-faint); font-size:10px;">Fix the YAML below (expand details ▾) and click <strong>↻ Retry save</strong>.</span>
+      </div>` : ''}
+      <div data-detail="${idx}" style="display:${detailOpen}; margin-top:6px;">
         ${it.rationale ? `<div style="font-size:11px; color:var(--text-faint); margin-bottom:4px;"><strong>why:</strong> ${esc(it.rationale)}</div>` : ''}
         ${it.source_excerpt ? `<div style="font-size:11px; color:var(--text-faint); margin-bottom:4px; font-style:italic;">"${esc(it.source_excerpt)}"</div>` : ''}
         <textarea data-idx="${idx}" class="bi-yaml" rows="10" spellcheck="false" style="width:100%; font-family:ui-monospace, monospace; font-size:11px; line-height:1.5;">${esc(it.yaml_content || '')}</textarea>
@@ -5647,33 +5661,64 @@ async function biSaveSelected() {
   primary.disabled = true;
   const status = document.getElementById('biStatus');
   _biSavedUCs = [];
-  const failures = [];
+  const failures = [];   // { index, title, error_detail }
   for (let i = 0; i < toSave.length; i++) {
     const it = toSave[i];
     status.textContent = `saving ${i+1}/${toSave.length}…`;
+    const titleMatch = /^title:\s*(.+)$/m.exec(it.yaml_content || '');
+    const title = titleMatch ? titleMatch[1].trim().replace(/^["']|["']$/g, '') : `(item ${i+1} — untitled)`;
     try {
       const resp = await api('/api/use-cases', {
         method: 'POST',
         body: JSON.stringify({yaml_content: it.yaml_content, tags: []}),
       });
       const uuid = resp.uuid || resp.use_case?.uuid;
-      const titleMatch = /^title:\s*(.+)$/m.exec(it.yaml_content || '');
-      const title = titleMatch ? titleMatch[1].trim().replace(/^["']|["']$/g, '') : '(untitled)';
       _biSavedUCs.push({uuid, title, yaml_content: it.yaml_content});
       it._ucUuid = uuid;
+      it._biSaveError = null;
     } catch (e) {
-      failures.push({title: '(item ' + (i+1) + ')', error: e.message});
+      // Best-effort extract validation errors from the structured 400 body
+      let detail = e.message;
+      try {
+        const parsed = JSON.parse(e.message.replace(/^[^{]*/, ''));
+        const inner = parsed.detail && typeof parsed.detail === 'object' ? parsed.detail : parsed;
+        if (inner.errors && Array.isArray(inner.errors)) {
+          detail = inner.errors.join('; ');
+        } else if (inner.message) {
+          detail = inner.message;
+        }
+      } catch(_) { /* keep raw message */ }
+      failures.push({index: i+1, title, error: detail, _it: it});
+      it._biSaveError = detail;
     }
   }
   status.textContent = '';
-  document.getElementById('biSavedSummary').innerHTML =
-    `<strong>${_biSavedUCs.length}</strong> UC${_biSavedUCs.length===1?'':'s'} saved as drafts.` +
-    (failures.length ? ` <span style="color:var(--red)">${failures.length} failed.</span>` : '');
-  // Step 3 — Set assignment
+  biRenderResults();   // re-render cards so failed UCs show their inline error
+  const okN = _biSavedUCs.length;
+  const failN = failures.length;
+  const summaryEl = document.getElementById('biSavedSummary');
+  // Hard block on zero successes — DON'T silently proceed to Set creation
+  if (okN === 0) {
+    summaryEl.style.color = 'var(--red)';
+    summaryEl.innerHTML =
+      `<strong>0 UCs saved</strong> — all ${failN} failed engine validation.<br>`
+      + `<div style="margin-top:6px;font-size:11px;color:var(--text-dim);">Each failed card below shows its specific error inline; common cause is a value put in the wrong <code>dimensions.*</code> slot (e.g., <code>expiry_enforcement</code> belongs in <code>lifecycle_phase</code>, not <code>failure_mode</code>). Fix the YAML in-place and click <strong>↻ Retry save</strong>, or click <strong>← Back</strong> to re-extract.</div>`;
+    primary.textContent = '↻ Retry save';
+    primary.disabled = false;
+    primary.onclick = biSaveSelected;   // retry path
+    // Re-show Back so the user can re-extract or pivot
+    const backBtn = document.getElementById('biBackBtn');
+    if (backBtn) backBtn.style.display = '';
+    return;
+  }
+  summaryEl.style.color = '';
+  summaryEl.innerHTML =
+    `<strong>${okN}</strong> UC${okN===1?'':'s'} saved as drafts.` +
+    (failN ? ` <span style="color:var(--red)">${failN} failed</span> — see inline errors on the cards above; fix and re-extract if you want them too.` : '');
   document.getElementById('biStep2').style.display = 'none';
   document.getElementById('biStep3').style.display = '';
   await biPrepStep3();
-  document.getElementById('biBackBtn').style.display = 'none';   // no going back after save
+  document.getElementById('biBackBtn').style.display = 'none';
   primary.textContent = 'Finish';
   primary.disabled = false;
   primary.onclick = biApplySetAssignment;

@@ -87,6 +87,32 @@ Validation rules the engine enforces (your YAML must satisfy these):
 - Every `dimensions.*` value MUST be picked from the lists above exactly.
 - `actor.profile` and `scenario.profile` must match the same enum.
 - `scenario.description`, `scenario.intent`, and `success_criteria` must be non-empty.
+
+⛔ Common cross-dimension confusions that fail validation — DO NOT make these mistakes:
+
+  * `expiry_enforcement` is a valid LIFECYCLE_PHASE, NOT a failure_mode.
+    When a UC describes TTL / deadline / decommission-by-time scenarios:
+        dimensions.lifecycle_phase: expiry_enforcement     ← correct
+        dimensions.failure_mode:    happy_path             ← (or timeout, etc.)
+    NOT:
+        dimensions.failure_mode:    expiry_enforcement     ← WRONG, INVALID
+
+  * `decommission`, `drift_detection`, `rehydration_*`, `brownfield_ingestion`
+    are all LIFECYCLE_PHASE values, NOT failure_modes.
+
+  * `timeout`, `resource_exhaustion`, `rollback_required`, `partial_fulfillment`
+    are FAILURE_MODE values, NOT lifecycle phases.
+
+  * `multi_policy_chain`, `conflicting_policies`, `governance_matrix_enforcement`
+    are POLICY_COMPLEXITY values, NOT governance_context values.
+
+  * `audit_heavy`, `compliance_gated`, `sovereignty_enforced`
+    are GOVERNANCE_CONTEXT values, NOT failure_modes.
+
+Rule of thumb: before emitting a dimension value, scan the lists above and
+confirm the value appears in that specific dimension's list. If a concept
+fits multiple dimensions (e.g., "policy enforcement" → both lifecycle and
+policy), choose the dimension where it literally appears in the enum list.
 """
 
 _SYSTEM_PROMPT = f"""You are an expert at writing DAV (Document and API Verification) use case YAML documents.
