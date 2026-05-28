@@ -1868,9 +1868,15 @@ async def list_use_cases(
     return {"use_cases": managed + corpus_ucs}
 
 
-@app.get("/api/use-cases/{uuid:path}")
+@app.get("/api/use-cases/{uuid}")
 async def get_use_case(uuid: str):
-    """Return a single use case by uuid — managed DB first, then corpus files."""
+    """Return a single use case by uuid — managed DB first, then corpus files.
+
+    Route uses `{uuid}` (NOT `{uuid:path}`) so sibling routes like
+    `/api/use-cases/{uuid}/runs` and `/api/use-cases/{uuid}/lifecycle`
+    don't get swallowed by greedy path matching. UC UUIDs follow the
+    `uc-<hex with dashes>` format and never contain slashes.
+    """
     # Check managed DB
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -1973,7 +1979,7 @@ async def create_use_case(payload: ManagedUCIn, request: Request):
     return {"ok": True, "uuid": uc_uuid, "title": title}
 
 
-@app.put("/api/use-cases/{uuid:path}")
+@app.put("/api/use-cases/{uuid}")
 async def update_use_case(uuid: str, payload: ManagedUCIn, request: Request):
     """Update an existing managed use case."""
     user = get_user(request)
@@ -2011,7 +2017,7 @@ async def update_use_case(uuid: str, payload: ManagedUCIn, request: Request):
     return {"ok": True, "uuid": uuid, "title": title}
 
 
-@app.delete("/api/use-cases/{uuid:path}")
+@app.delete("/api/use-cases/{uuid}")
 async def delete_use_case(uuid: str, request: Request):
     """Delete a managed use case."""
     user = get_user(request)
