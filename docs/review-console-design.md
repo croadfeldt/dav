@@ -243,11 +243,61 @@ If any link in this chain is broken (e.g., `turns_log_path` not passed, `_emit_t
 
 `STAGE2_PROMPT_VERSION` in `engine/src/dav/ai/prompts.py` is bumped on any change to the system or user prompt. Stored in each analysis YAML under `metadata.prompt_version`. Used for cross-run comparability assertions.
 
-Current: `"1.5"` — gap title field added, `spec_refs_missing` as list.
+Current: `"1.8"` — two-pass (explore → findings → synthesize) with per-pass system prompts. Earlier bumps: `1.5` gap title + spec_refs_missing, `1.6` cross-turn dedup nudge, `1.7` per-UC `spec_namespaces` hard scope.
 
 The stage-2 system prompt also picks up a **per-run spec-source focus paragraph** when the engine sees `DAV_SPEC_NAMESPACES_FILTER` (set by the Tekton `dav-run-corpus` task from the `spec-namespaces` PipelineRun param; ultimately from the New Run modal's spec-source checkbox grid). The hint asks the LLM to prefer documents from the listed namespaces when grounding via MCP and to note any cross-namespace lookup in its analysis. This is **soft enforcement** — the MCP itself still holds every spec namespace — and is the spec-side analog of M11b's hard-enforced corpus filter (which physically constrains what `dav-git-sync-multi-corpus` clones).
 
 **Cross-turn tool-call dedup (1.6)** — Stage2Agent tracks every successful `(tool_name, args_json)` pair in `self._call_history` for the duration of one UC sample. If the model emits the same call on a later turn, the engine short-circuits with a `⛔ DUPLICATE-CROSS-TURN` marker carrying the original turn number, `tool_call_id`, and a 400-char preview of the original result. Pairs with a stage-2 prompt nudge telling the model to scan its own prior calls before re-issuing. End of each `analyze()` emits a `kind="summary"` turn record (`cross_turn_duplicates_blocked`, `distinct_calls`, `section_title_misses`, `too_large_handles`, `total_tokens`) which the UI's prompts panel renders inline. Aggregating these into `run-summary.yaml` is a follow-up that requires touching `stage2_analyze` + `run_corpus.CorpusUcResult`.
+
+**Per-UC `spec_namespaces` (1.7)** — UCs declare an optional top-level `spec_namespaces: [<ns>, ...]` field that overrides any run-wide focus. Three enforcement layers in the engine: (1) prompt — a "## Per-UC spec source scope (HARD)" paragraph appended to the system prompt; (2) `Stage2Agent._check_namespace_scope()` hard-rejects `get_document` / `get_document_section` for out-of-namespace handles with an `⛔ OUT-OF-SCOPE` marker before the MCP roundtrip; (3) summary record carries `out_of_scope_blocked` + `uc_spec_namespaces`. Search results aren't filtered (varies by MCP backend) but the prompt + per-call reject are the practical floor.
+
+**Two-pass stage-2 (1.8, default-on)** — explores in pass 1, synthesizes in pass 2 with re-fetch fallback. Default behavior when `DAV_STAGE2_TWO_PASS != "0"`.
+- **Pass 1**: same agent loop, but the system prompt is built from `build_pass1_findings_system_prompt()` and asks the model to emit a verbose structured FINDINGS JSON instead of the canonical Analysis (sections retrieved, capabilities observed, constraints quoted verbatim, cross-references, potential gaps, unresolved questions). The agent loop returns the raw findings string — no Analysis validation.
+- **Pass 2**: fresh context. System prompt from `build_pass2_analysis_system_prompt()`. User prompt is the original UC + the findings JSON. MCP tools still available so pass 2 can re-fetch any spec section the findings compressed too aggressively. Emits the canonical Analysis via the existing `_parse_final` path.
+- **State between passes**: dedup + anti-fishing reset; cross-turn-dup count and out-of-scope-blocked are cumulative across passes (agent-loop hygiene metrics, not per-pass exploration depth).
+- **Turn records** carry a `pass: pass1 | pass2 | null` field so the UI prompts panel can render per-pass timelines.
+- **Information-preservation guarantee**: pass 2's MCP access means nothing pass 1 compressed is irrecoverably lost.
+
+**Dynamic max_tokens + context-overflow retry** — independent of the two-pass change but composes cleanly with it. Before every inference call the agent estimates the next prompt size from the last response's `prompt_tokens` plus a growth pad and computes `available_for_output = ceiling - estimated_prompt`. If less than `config.max_tokens`, requests only what fits AND drops tools (forcing final emission). Belt-and-suspenders: a 400 with `"maximum context length"` in the message gets parsed, retried once with `tools=None` and a `max_tokens` derived from the reported input-token count. Tracked on the summary as `budget_capped_turns` and `context_overflow_retries`. Operator-tunable: `DAV_MODEL_CONTEXT_LIMIT` (default 86016 = current vLLM `--max-model-len`) and `DAV_MODEL_CONTEXT_SAFETY` (default 256, tokenizer-drift cushion).
+
+---
+
+## Infrastructure confidence — distinct from analytical confidence
+
+Every Analysis carries `metadata.infrastructure_confidence = {label, score, signals, explanation, recommendations}` computed by `Stage2Agent._compute_infrastructure_confidence()` at end-of-run from the same counters the summary record exposes. This answers **"did infrastructure constrain grounding?"** and is **distinct from analytical confidence** (`success_likelihood`, per-component `confidence`). A UC can be analytically high-confidence while infrastructure-compromised (model committed early due to budget pressure without enough exploration) and vice versa.
+
+**Scoring** (start at 100, cap at 0):
+- `context_overflow_retries × 30` — major; vLLM rejected a call mid-run
+- `budget_capped_turns × 10` — forced commit due to dynamic max-tokens
+- `cross_turn_dedup_rate > 20% → -10` — model losing track of prior calls
+- `section_title_misses > 5 → -5` — model fishing for sections that don't exist
+- `out_of_scope_blocked > 3 → -5` — frequent namespace-boundary attempts
+
+**Labels**: `high ≥85 / medium ≥65 / low ≥40 / compromised <40`. Recommendations include "switch to long-context model" when overflow or cap counts are non-zero — pairs with the per-run model selector that already flows `inference_endpoint` + `inference_model` through `RunTriggerIn`.
+
+**Persistence + surfacing** (migrate_013):
+- `uc_analyses` gains `infra_confidence_{label,score,explanation}` + `infra_confidence_{signals,recommendations}` JSONB columns + index on label.
+- `_ingest_run_analyses` reads `metadata.infrastructure_confidence` and persists.
+- `GET /api/use-cases/{uuid}/runs` includes the per-row `infrastructure_confidence` object.
+- `GET /api/runs/{name}/infra-confidence-aggregate` returns per-run label breakdown + deduplicated recommendations for the run drawer.
+- `GET /api/runs/preflight-hint?set_id=X` returns a banner-shaped hint when ≥2 of the last N runs of the same Set had any UC at `low`/`compromised`. New Run modal renders the hint at top of step 1.
+
+**UI surfacing**: per-UC chip in the Test history table on the UC detail panel (color-coded: green/amber/orange/red); tooltip carries explanation + signals + recommendations. Existing analyses ingested before migrate_013 show no chip (null label).
+
+---
+
+## Enhancement apply — turn findings into a PR
+
+`POST /api/enhancements/apply` consumes the structured ENHANCEMENT blocks emitted by `POST /api/enhancements` (the system prompt for that endpoint was tightened in commit `50ee227` to demand mechanical patch blocks with `target:`, `action:`, `section_title:`, `position:`, a verbatim markdown content block, and `acceptance:` instead of prose). The applier:
+
+1. Parses every ENHANCEMENT block via `enhancement_apply.parse_enhancement_blocks()` (tolerant — malformed blocks return with `parse_errors[]` populated rather than being silently dropped).
+2. Groups by the namespace prefix on each `target:`.
+3. For each namespace, looks up the `managed_repos` row with that namespace + `role=enhancement-target` (or uses an explicit `repo_overrides[ns]` mapping). Missing or PAT-less rows surface in `unmatched_namespaces[]`.
+4. For each target file, fetches current content via `corpus_push.fetch_file_content()`, applies all of the namespace's patches in source order via `enhancement_apply.apply_enhancement()` (`add_section`, `update_section`, `new_document`; `replace_text` is NYI and surfaces as a warning), then pushes via `corpus_push.push_uc_to_github()`.
+5. Opens **one PR per affected repo** — all sharing the same `branch_name` for cross-repo traceability.
+6. Cross-namespace drift warning: if `payload.run_id` is set and `run_sessions.spec_namespaces` was non-empty for that run, any patch targeting an out-of-scope namespace gets a CROSS-NAMESPACE DRIFT warning (PR still opens; operator decides).
+
+`corpus_push.push_uc_to_github` gained a `token_override` parameter so the applier authenticates with the per-repo PAT (`repos.get_repo_secrets`) instead of the legacy `DAV_CORPUS_PUSH_TOKEN` env var.
 
 ---
 

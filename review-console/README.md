@@ -133,6 +133,13 @@ The OAuth integration uses OpenShift's `origin-oauth-proxy` sidecar in the UI po
 
 **LLM-bound endpoint timeouts (M12+).** The Route, oauth-proxy sidecar, and nginx sidecar are all configured for a 600s ceiling so long-running calls (`/api/uc-assist` for wizard generate/refine, `/api/use-cases/bulk-from-text` for transcript extraction) don't 502 mid-stream. Three hops, three different defaults to override: `haproxy.router.openshift.io/timeout` annotation on the Route, `--upstream-timeout=600s` on the oauth-proxy container args, and `proxy_read_timeout 600s` on the `/api/` location in the nginx ConfigMap. All three live in `ansible/roles/dav/templates/review-console-ui-*` and must move in lock-step.
 
+**Post-M12 follow-up surface (briefly).** A handful of features sit on top of the M11/M12 base and are worth knowing exist:
+- **Two-pass stage-2** is on by default (`DAV_STAGE2_TWO_PASS=1`): pass 1 explores the spec and emits a structured findings JSON; pass 2 starts fresh with the findings + MCP re-fetch + the canonical Analysis schema. Information-preservation guarantee — pass 2 can re-pull anything pass 1 compressed.
+- **Infrastructure confidence** lives on `metadata.infrastructure_confidence` of every Analysis, persisted via migration 013 to `uc_analyses.infra_confidence_{label,score,signals,explanation,recommendations}`. Distinct from analytical confidence. UI surfaces as a colored chip on the UC detail Test history table; New Run modal renders a preflight banner when recent runs of a Set had compromised confidence.
+- **Enhancement apply** turns the structured ENHANCEMENT blocks from `POST /api/enhancements` into real PRs (multi-PR auto-routed by namespace) against `role=enhancement-target` repos. See `POST /api/enhancements/apply` and `review-console/api/app/enhancement_apply.py`.
+- **Auto-ingest loop** in `lifespan()` re-runs `_ingest_run_analyses` for every workspace `run-summary.yaml` not yet in `analysis_runs` — startup + every 5 min. Removes the manual `POST /api/analysis/ingest/{run_id}` step that historically left per-UC history (and run comparisons) blank.
+- **Namespace as first-class field** on `run_sessions.{spec,corpus}_namespaces` and `uc_gaps.namespace` (migration 012). Cross-namespace drift warning on enhancement-apply when patches target a namespace outside the run's recorded scope.
+
 ## Run locally (development)
 
 You'll need:

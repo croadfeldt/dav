@@ -223,6 +223,26 @@ Type vault password when prompted. The playbook runs through:
 > 502 with the only useful diagnostic being `oauth-proxy`'s
 > `"timeout awaiting response headers"` log line.
 
+> **Engine env vars worth knowing about (post-M12 follow-ups).** All are
+> set on the `dav-run-corpus` Tekton task via `ansible/roles/dav/templates/tekton-tasks/dav-run-corpus.yaml.j2`
+> and operator-tunable from there:
+>   * **`DAV_STAGE2_TWO_PASS`** — `"1"` (default) runs two-pass analyses
+>     (explore → findings → synthesize with MCP re-fetch). Set to `"0"`
+>     to fall back to single-pass for A/B comparison or debugging.
+>   * **`DAV_MODEL_CONTEXT_LIMIT`** — defaults to `86016`, must match the
+>     deployed vLLM `--max-model-len`. The agent uses this to compute
+>     `available_for_output` per turn and force-emit a final answer when
+>     room is tight, instead of letting vLLM 400 the request.
+>   * **`DAV_MODEL_CONTEXT_SAFETY`** — defaults to `256`, a tokenizer-drift
+>     cushion. Raise if you observe sporadic 400s near the ceiling.
+>   * **`DAV_SPEC_NAMESPACES_FILTER`** — set automatically by the Tekton
+>     task from the New Run modal's spec-source per-run filter. Soft
+>     enforcement (prompt hint); per-UC `spec_namespaces` in the corpus
+>     YAML is the hard-enforced override.
+>   * **`DAV_TURNS_MAX_FIELD_BYTES`** — defaults to `262144` (256 KB),
+>     the per-field cap on per-turn JSONL records. Bump for stress tests
+>     or very verbose models.
+
 (In-cluster vLLM fallback is opt-in via `--tags vllm`; see §1c.)
 
 **Estimated time:** 15-30 minutes. Most of it is image builds (engine, MCP, review console UI/API). If image builds succeed quickly and pods come up, total can be under 15 min.
