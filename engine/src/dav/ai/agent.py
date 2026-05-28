@@ -230,6 +230,23 @@ class Stage2Agent:
         self.turns_log_path = turns_log_path
         self._tool_trace: list[ToolCall] = []
         self._total_tokens: int = 0
+        # Last response's prompt_tokens — used as a lower-bound estimate for
+        # the NEXT call's input size so we can compute how much output budget
+        # actually fits inside the model's context window. The vLLM serving
+        # config exposes a hard ceiling (currently 86016 = 84K via YaRN) and
+        # rejects requests where input + max_tokens > ceiling. With
+        # --max-tokens 16384 (post-2026-05-28 bump for verbose analyses),
+        # any UC whose tool-call exploration accumulates >~69.6K input
+        # tokens overflowed and produced a 400 BadRequestError. Now we
+        # adaptively shrink max_tokens per turn and force a final emission
+        # (tools_arg=None) when room is tight. Also catches and retries on
+        # the explicit 400 message as a belt-and-suspenders.
+        self._last_prompt_tokens: int = 0
+        # Operator-tunable. Default tracks the deployed vLLM --max-model-len.
+        self._model_context_limit: int = int(os.environ.get("DAV_MODEL_CONTEXT_LIMIT", "86016"))
+        self._context_safety_buffer: int = int(os.environ.get("DAV_MODEL_CONTEXT_SAFETY", "256"))
+        self._budget_capped_turn_count: int = 0
+        self._context_overflow_retry_count: int = 0
         # Anti-fishing state — models routinely ignore "section not found"
         # results and just try the same section_title in another document, or
         # re-fetch a document already returned as "too large". When patterns
@@ -423,6 +440,9 @@ class Stage2Agent:
         self._too_large_handles = set()
         self._call_history = {}
         self._cross_turn_dup_count = 0
+        self._last_prompt_tokens = 0
+        self._budget_capped_turn_count = 0
+        self._context_overflow_retry_count = 0
         # M12 "C" pass: pick up per-UC spec scope, if any.
         self._uc_spec_namespaces = list(getattr(use_case, "spec_namespaces", None) or [])
         self._out_of_scope_blocked_count = 0
@@ -472,6 +492,38 @@ class Stage2Agent:
             # final response")` and produce no analysis.
             tools_arg = None if at_budget else tool_defs
 
+            # Dynamic max_tokens — when the running prompt size is large
+            # enough that requesting the full config.max_tokens would push
+            # past the model's context ceiling, shrink the request and
+            # force a final emission (drop tools) so the model commits with
+            # whatever room is left. Estimate next-prompt size from the
+            # last response's prompt_tokens plus a growth pad — the next
+            # turn adds the prior assistant message + new tool result(s).
+            growth_pad = 1500   # rough: assistant content + one tool result
+            estimated_prompt = (self._last_prompt_tokens or 0) + growth_pad
+            ceiling = self._model_context_limit - self._context_safety_buffer
+            requested_max = self.config.max_tokens
+            available_for_output = ceiling - estimated_prompt
+            if available_for_output < requested_max:
+                # Force final emission when room is tight: drop tools and
+                # cap max_tokens to what actually fits.
+                if available_for_output < 256:
+                    # Catastrophic — almost no room left. Reserve a minimum
+                    # to let the model say SOMETHING; the wrap-up nudge
+                    # already in the last tool result tells it to commit.
+                    available_for_output = max(256, ceiling - estimated_prompt - 8)
+                requested_max = max(256, min(self.config.max_tokens, available_for_output))
+                tools_arg = None   # force final emit
+                self._budget_capped_turn_count += 1
+                log.info(
+                    "turn %d/%d: context-tight (last_prompt=%d, ceiling=%d, "
+                    "available_for_output=%d) — dropping tools, "
+                    "max_tokens=%d, forcing final emit",
+                    turn, self.config.max_tool_calls,
+                    self._last_prompt_tokens, ceiling, available_for_output,
+                    requested_max,
+                )
+
             log.info(
                 "turn %d/%d: %d messages in context, %d tokens used so far%s",
                 turn, self.config.max_tool_calls,
@@ -484,15 +536,53 @@ class Stage2Agent:
                     messages=messages,
                     tools=tools_arg,
                     temperature=self.config.temperature,
-                    max_tokens=self.config.max_tokens,
+                    max_tokens=requested_max,
                     guided_json_schema=guided,
                     seed=self._sample_seed if self._sample_seed is not None else self.config.seed,
                 )
             except InferenceError as e:
-                raise AgentError(f"inference failed at turn {turn}: {e}") from e
+                # Last-ditch belt-and-suspenders: if vLLM rejected the
+                # request because input + max_tokens overflowed the
+                # context ceiling, parse the reported input size from the
+                # error message and retry once with tools off + a
+                # max_tokens that actually fits. The error message format
+                # is the vLLM OpenAI-compat one:
+                #   "...maximum context length is N tokens. However, you
+                #    requested X output tokens and your prompt contains
+                #    at least Y input tokens..."
+                em = str(e)
+                if ("maximum context length" in em and
+                        ("input_tokens" in em or "prompt contains" in em)):
+                    import re as _re
+                    mIn = _re.search(r"prompt contains at least (\d+) input tokens", em)
+                    if mIn:
+                        actual_input = int(mIn.group(1))
+                        retry_max = max(256, ceiling - actual_input - 8)
+                        log.warning(
+                            "turn %d: context overflow (input=%d, ceiling=%d); "
+                            "retrying once with max_tokens=%d, tools off",
+                            turn, actual_input, ceiling, retry_max,
+                        )
+                        self._context_overflow_retry_count += 1
+                        try:
+                            response = self.inference.chat(
+                                messages=messages,
+                                tools=None,
+                                temperature=self.config.temperature,
+                                max_tokens=retry_max,
+                                guided_json_schema=guided,
+                                seed=self._sample_seed if self._sample_seed is not None else self.config.seed,
+                            )
+                        except InferenceError as e2:
+                            raise AgentError(f"inference failed at turn {turn} (post-overflow retry): {e2}") from e2
+                    else:
+                        raise AgentError(f"inference failed at turn {turn}: {e}") from e
+                else:
+                    raise AgentError(f"inference failed at turn {turn}: {e}") from e
 
             usage = response.usage or {}
             self._total_tokens += usage.get("total_tokens", 0)
+            self._last_prompt_tokens = usage.get("prompt_tokens", self._last_prompt_tokens)
 
             self._emit_turn(
                 turn=turn, kind="response",
@@ -727,6 +817,8 @@ class Stage2Agent:
             too_large_handles=len(self._too_large_handles),
             out_of_scope_blocked=self._out_of_scope_blocked_count,
             uc_spec_namespaces=list(self._uc_spec_namespaces),
+            budget_capped_turns=self._budget_capped_turn_count,
+            context_overflow_retries=self._context_overflow_retry_count,
             total_tokens=self._total_tokens,
         )
 
