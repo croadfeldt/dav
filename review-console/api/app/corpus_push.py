@@ -71,6 +71,27 @@ async def _gh(method: str, url: str, token: str, **kw) -> httpx.Response:
         return await cx.request(method, url, headers=headers, **kw)
 
 
+async def fetch_file_content(
+    *, owner: str, repo: str, file_path: str, ref: str, token: str
+) -> Optional[str]:
+    """Fetch a file's decoded content from GitHub. Returns None on 404
+    so the caller can distinguish "doesn't exist yet" from auth errors
+    (which raise). Used by the enhancement-apply path to read the current
+    spec before applying patches.
+    """
+    from base64 import b64decode
+    api = f"https://api.github.com/repos/{owner}/{repo}/contents/{file_path}"
+    r = await _gh("GET", api, token, params={"ref": ref})
+    if r.status_code == 404:
+        return None
+    if r.status_code != 200:
+        raise RuntimeError(f"fetch_file_content {r.status_code}: {r.text[:400]}")
+    j = r.json()
+    if j.get("type") != "file" or "content" not in j:
+        raise RuntimeError(f"unexpected contents response for {file_path}: {str(j)[:300]}")
+    return b64decode(j["content"]).decode("utf-8", errors="replace")
+
+
 async def push_uc_to_github(
     *,
     owner: str,
@@ -85,6 +106,7 @@ async def push_uc_to_github(
     author_name: str,
     author_email: str,
     existing_pr_number: Optional[int] = None,
+    token_override: Optional[str] = None,
 ) -> dict:
     """Create-or-update `file_path` on a side branch and open/refresh a PR.
 
@@ -98,10 +120,11 @@ async def push_uc_to_github(
       5. If no existing PR is open from this branch, open one. Otherwise
          leave the existing PR; the new commit shows up automatically.
     """
-    token = push_token()
+    token = token_override or push_token()
     if not token:
         raise RuntimeError(
-            f"{GITHUB_TOKEN_ENV} is not set; add the secret in the consumer namespace"
+            f"no per-repo PAT and {GITHUB_TOKEN_ENV} is not set; "
+            f"either link a managed_repos credential or set the env secret"
         )
     api = f"https://api.github.com/repos/{owner}/{repo}"
 

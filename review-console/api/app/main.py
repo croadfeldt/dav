@@ -36,6 +36,7 @@ from . import metrics
 from . import results as _results
 from . import uc_assist
 from . import corpus_push
+from . import enhancement_apply as _enh_apply
 from . import repos as _repos
 from . import projector as _projector
 from . import pr_comments as _pr_comments
@@ -4615,6 +4616,203 @@ async def enhancements(payload: EnhancementIn, request: Request):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+class EnhancementApplyIn(BaseModel):
+    """Take the streamed text from /api/enhancements + a target managed_repos
+    row (role=enhancement-target) and open a PR with the parsed patches."""
+    enhancement_text: str = Field(..., min_length=10)
+    target_repo: str = Field(..., min_length=1, max_length=256)   # uuid or namespace
+    base_branch: Optional[str] = None                              # default: repo default branch
+    branch_name: Optional[str] = None                              # default: dav-enh/<random>
+    pr_title:    Optional[str] = None
+    # Scope context for the PR description
+    scope: Optional[str] = None     # 'uc' | 'run'
+    run_id: Optional[str] = None
+    uc_uuid: Optional[str] = None
+    uc_handle: Optional[str] = None
+
+
+@app.post("/api/enhancements/apply")
+async def apply_enhancements(payload: EnhancementApplyIn, request: Request):
+    """Parse the LLM-emitted ENHANCEMENT blocks and open a single PR that
+    materializes the patches against the configured enhancement-target repo.
+
+    Failure modes surfaced in the response (not 500'd):
+      * parse_errors per block — model emitted a malformed ENHANCEMENT
+      * apply_warnings per file — replace_text not implemented, anchor
+        section not found, etc.
+    Per-file fetch / push failures DO raise 502 since the user needs to
+    know GitHub rejected the change.
+    """
+    user = get_user(request)
+    enhancements = _enh_apply.parse_enhancement_blocks(payload.enhancement_text)
+    if not enhancements:
+        raise HTTPException(400, "no ENHANCEMENT blocks found in input text")
+    by_target = _enh_apply.group_by_target(enhancements)
+    if not by_target:
+        raise HTTPException(400, "all parsed enhancements were missing a target")
+
+    # Resolve the target repo + credential
+    async with pool.acquire() as conn:
+        repo = await _repos.get_repo(conn, payload.target_repo)
+        if not repo:
+            raise HTTPException(404, f"managed_repos row {payload.target_repo!r} not found")
+        if "enhancement-target" not in (repo.get("roles") or []):
+            raise HTTPException(
+                400,
+                f"repo {repo.get('namespace')!r} does not have role=enhancement-target; "
+                f"add the role in Config → Managed repos first"
+            )
+        secrets = await _repos.get_repo_secrets(conn, repo["uuid"])
+    token = (secrets or {}).get("github_pat") if secrets else None
+    if not token:
+        raise HTTPException(
+            400,
+            f"repo {repo['namespace']!r} has no GitHub PAT configured "
+            f"(set an inline credential or link a shared one)"
+        )
+    if not corpus_push.is_github(repo["repo_url"]):
+        raise HTTPException(400, f"target repo {repo['repo_url']!r} is not a GitHub URL")
+    owner, repo_name = corpus_push.parse_github_url(repo["repo_url"])
+    base_branch = payload.base_branch or repo.get("repo_branch") or "main"
+    # role-specific path prefix inside the repo
+    root_path = _repos.resolve_root_path(repo, "enhancement-target") or ""
+
+    import secrets as _sysrand
+    branch_name = payload.branch_name or f"dav-enh/{_sysrand.token_hex(4)}"
+
+    per_file: list[dict] = []
+    apply_warnings: list[str] = []
+    for target_handle, enhs in by_target.items():
+        # Strip the leading namespace from the handle; we trust the user
+        # picked a repo whose namespace matches.
+        target_ns = enhs[0].target_namespace
+        rel_path = enhs[0].target_path
+        # Prefix the role's root_path if any
+        repo_path = f"{root_path}/{rel_path}".lstrip("/") if root_path else rel_path
+
+        # Fetch the current content (None = new file)
+        existing: Optional[str]
+        try:
+            existing = await corpus_push.fetch_file_content(
+                owner=owner, repo=repo_name, file_path=repo_path,
+                ref=base_branch, token=token,
+            )
+        except Exception as e:
+            raise HTTPException(502, f"fetch {repo_path}: {e}")
+
+        # Apply each enhancement in source order
+        current = existing or ""
+        applied_ids: list[str] = []
+        for enh in enhs:
+            if enh.parse_errors:
+                apply_warnings.append(f"{enh.id}: {'; '.join(enh.parse_errors)}")
+                continue
+            if existing is None and enh.action != "new_document":
+                # File doesn't exist — only new_document makes sense. Coerce
+                # add_section into new_document for the first patch so we
+                # don't lose the proposed content.
+                apply_warnings.append(
+                    f"{enh.id}: target {target_handle} doesn't exist yet; "
+                    f"applying as new_document (was {enh.action})"
+                )
+                enh.action = "new_document"
+            new_content, err = _enh_apply.apply_enhancement(current, enh)
+            if err:
+                apply_warnings.append(f"{enh.id}: {err}")
+                continue
+            current = new_content
+            applied_ids.append(enh.id)
+
+        if applied_ids:
+            per_file.append({
+                "target_handle": target_handle,
+                "repo_path": repo_path,
+                "applied": applied_ids,
+                "new_content_preview": current[:400],
+            })
+            # Push this file to the side branch (idempotent on re-run with the
+            # same branch_name; subsequent files share the branch + PR).
+            try:
+                await corpus_push.push_uc_to_github(
+                    owner=owner, repo=repo_name,
+                    base_branch=base_branch,
+                    file_path=repo_path,
+                    file_content=current,
+                    branch_name=branch_name,
+                    commit_message=f"DAV enhancement patches for {target_handle}",
+                    pr_title=payload.pr_title or _enh_apply_default_pr_title(payload, len(by_target)),
+                    pr_body=_enh_apply_pr_body(payload, enhancements, apply_warnings, user),
+                    author_name=user or "DAV",
+                    author_email=f"{user or 'dav'}@dav-review.local",
+                    token_override=token,
+                )
+            except Exception as e:
+                raise HTTPException(502, f"push {repo_path}: {e}")
+    # After all files pushed, ask GitHub for the PR URL via a lookup
+    pr_url: Optional[str] = None
+    try:
+        async with __import__("httpx").AsyncClient(timeout=10.0) as cx:
+            r = await cx.get(
+                f"https://api.github.com/repos/{owner}/{repo_name}/pulls",
+                headers={"Authorization": f"Bearer {token}",
+                         "Accept": "application/vnd.github+json"},
+                params={"head": f"{owner}:{branch_name}", "state": "open"},
+            )
+        if r.status_code == 200 and r.json():
+            pr_url = r.json()[0]["html_url"]
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "branch": branch_name,
+        "base_branch": base_branch,
+        "pr_url": pr_url,
+        "target_repo": f"{owner}/{repo_name}",
+        "files_changed": per_file,
+        "apply_warnings": apply_warnings,
+        "enhancements_total": len(enhancements),
+        "enhancements_skipped": [e.id for e in enhancements if e.parse_errors],
+    }
+
+
+def _enh_apply_default_pr_title(payload: EnhancementApplyIn, file_count: int) -> str:
+    if payload.scope == "uc" and payload.uc_handle:
+        return f"DAV enhancement: address gaps in {payload.uc_handle}"
+    if payload.scope == "run" and payload.run_id:
+        return f"DAV enhancement: roadmap for run {payload.run_id}"
+    return f"DAV enhancement: {file_count} spec patch(es)"
+
+
+def _enh_apply_pr_body(
+    payload: EnhancementApplyIn,
+    enhancements: list,
+    warnings: list[str],
+    user: str,
+) -> str:
+    lines = ["This PR was generated by DAV's enhancement-apply pipeline.",
+             "",
+             "## Source"]
+    if payload.run_id:
+        lines.append(f"- Run: `{payload.run_id}`")
+    if payload.uc_handle:
+        lines.append(f"- UC: `{payload.uc_handle}`")
+    if payload.uc_uuid:
+        lines.append(f"- UC UUID: `{payload.uc_uuid}`")
+    lines += ["", "## Enhancements applied"]
+    for e in enhancements:
+        gaps = f" — gaps: {', '.join(e.gap_ids)}" if e.gap_ids else ""
+        lines.append(f"- **{e.id}**{gaps}  ·  `{e.target}`  ·  `{e.action}`")
+        if e.acceptance:
+            lines.append(f"  - acceptance: {e.acceptance}")
+    if warnings:
+        lines += ["", "## Warnings"]
+        for w in warnings:
+            lines.append(f"- {w}")
+    lines += ["", f"Triggered by `{user}` via `POST /api/enhancements/apply`."]
+    return "\n".join(lines)
 
 
 @app.get("/api/enhancements/prompt")
