@@ -720,6 +720,17 @@ class AnalysisMetadata:
     # will deprecate this in favor of run_id.
     stage2_run_id: str = ""
 
+    # Infrastructure-induced quality assessment for this analysis. Computed by
+    # the agent at end-of-run from the same counters surfaced on the summary
+    # turn record (context_overflow_retries, budget_capped_turns,
+    # cross_turn_duplicates_blocked, section_title_misses, out_of_scope_blocked).
+    # Distinct from analytical confidence — answers "did infrastructure constrain
+    # grounding?" rather than "is the answer right?". Shape:
+    #   {label: high|medium|low|compromised, score: 0-100,
+    #    signals: [str], explanation: str, recommendations: [str]}
+    # Empty dict when not populated (back-compat with pre-2026-05-28 runs).
+    infrastructure_confidence: dict[str, Any] = field(default_factory=dict)
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

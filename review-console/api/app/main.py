@@ -63,6 +63,7 @@ MIGRATE_009_PATH = Path(__file__).parent / "migrate_009_repo_credentials.sql"
 MIGRATE_010_PATH = Path(__file__).parent / "migrate_010_shared_credentials.sql"
 MIGRATE_011_PATH = Path(__file__).parent / "migrate_011_consolidate_code_repos.sql"
 MIGRATE_012_PATH = Path(__file__).parent / "migrate_012_namespace_first_class.sql"
+MIGRATE_013_PATH = Path(__file__).parent / "migrate_013_infrastructure_confidence.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -219,6 +220,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_011_PATH.read_text())
         log.info("Applying migration 012 (namespace first-class on run_sessions + uc_gaps)...")
         await conn.execute(MIGRATE_012_PATH.read_text())
+        log.info("Applying migration 013 (infrastructure_confidence on uc_analyses)...")
+        await conn.execute(MIGRATE_013_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -2194,6 +2197,9 @@ async def get_use_case_runs(uuid: str, limit: int = 20):
             """SELECT ua.run_id, ua.uc_handle, ua.status, ua.verdict,
                       ua.wall_time_seconds, ua.sample_count, ua.model,
                       ua.analyzed_at, ua.ingested_at,
+                      ua.infra_confidence_label, ua.infra_confidence_score,
+                      ua.infra_confidence_signals, ua.infra_confidence_explanation,
+                      ua.infra_confidence_recommendations,
                       (SELECT COUNT(*) FROM uc_gaps g WHERE g.analysis_id = ua.id) AS gap_count
                FROM uc_analyses ua
                WHERE ua.uc_uuid = $1
@@ -2215,9 +2221,136 @@ async def get_use_case_runs(uuid: str, limit: int = 20):
                 "analyzed_at": r["analyzed_at"].isoformat() if r["analyzed_at"] else None,
                 "ingested_at": r["ingested_at"].isoformat(),
                 "gap_count": int(r["gap_count"] or 0),
+                "infrastructure_confidence": (
+                    {
+                        "label": r["infra_confidence_label"],
+                        "score": r["infra_confidence_score"],
+                        "signals": _parse_jsonb(r["infra_confidence_signals"]) or [],
+                        "explanation": r["infra_confidence_explanation"],
+                        "recommendations": _parse_jsonb(r["infra_confidence_recommendations"]) or [],
+                    } if r["infra_confidence_label"] else None
+                ),
             }
             for r in rows
         ],
+    }
+
+
+@app.get("/api/runs/{run_name}/infra-confidence-aggregate")
+async def get_run_infra_confidence_aggregate(run_name: str):
+    """Aggregate per-run infrastructure-confidence breakdown.
+
+    Counts UCs by label so the run detail drawer can show "12 of 15 UCs
+    ran cleanly, 2 had budget caps, 1 was compromised." Surfaces the union
+    of recommended actions across all UCs (deduplicated).
+    """
+    async with pool.acquire() as conn:
+        # Find the workspace run_id corresponding to this Tekton run_name
+        rid_row = await conn.fetchrow(
+            "SELECT run_id FROM analysis_runs WHERE run_id = $1 OR "
+            "(SELECT 1 FROM run_sessions WHERE run_name = $1) IS NOT NULL LIMIT 1",
+            run_name,
+        )
+        # Caller may pass either the Tekton run_name or workspace run_id;
+        # the analysis_runs table is keyed by workspace run_id.
+        rows = await conn.fetch(
+            """SELECT infra_confidence_label, infra_confidence_score,
+                      infra_confidence_recommendations
+               FROM uc_analyses
+               WHERE run_id = $1""",
+            (rid_row["run_id"] if rid_row else run_name),
+        )
+    if not rows:
+        return {"run_id": run_name, "total_ucs": 0, "breakdown": {}, "recommendations": []}
+    from collections import Counter
+    breakdown = Counter()
+    rec_seen: set = set()
+    recommendations: list[str] = []
+    for r in rows:
+        label = r["infra_confidence_label"] or "unscored"
+        breakdown[label] += 1
+        for rec in (_parse_jsonb(r["infra_confidence_recommendations"]) or []):
+            if rec not in rec_seen:
+                rec_seen.add(rec)
+                recommendations.append(rec)
+    return {
+        "run_id": run_name,
+        "total_ucs": sum(breakdown.values()),
+        "breakdown": dict(breakdown),
+        "recommendations": recommendations,
+    }
+
+
+@app.get("/api/runs/preflight-hint")
+async def runs_preflight_hint(
+    set_id: Optional[int] = Query(None, description="UC set the operator is about to run"),
+    lookback_runs: int = Query(5, ge=1, le=20),
+):
+    """Pre-flight hint for the New Run modal — Phase C of the
+    infrastructure-confidence work.
+
+    Looks at the last N runs for the same set_id (or globally if no set),
+    counts how many had any UC flagged with infrastructure_confidence
+    label = 'low' or 'compromised', and returns a structured hint object
+    when the threshold is crossed. The UI renders this as an inline
+    banner suggesting a long-context model or per-UC spec_namespaces.
+    """
+    if set_id is None:
+        return {"hint": None}
+    async with pool.acquire() as conn:
+        # Find recent runs that included this set
+        recent_runs = await conn.fetch(
+            """SELECT DISTINCT ar.run_id
+               FROM analysis_runs ar
+               JOIN run_sessions rs ON rs.run_name = ar.run_id
+               WHERE rs.set_id = $1
+               ORDER BY ar.run_id DESC LIMIT $2""",
+            set_id, lookback_runs,
+        )
+        if not recent_runs:
+            return {"hint": None}
+        run_ids = [r["run_id"] for r in recent_runs]
+        # For each run, count UCs by infra_confidence_label
+        stats = await conn.fetch(
+            """SELECT run_id, infra_confidence_label, COUNT(*) AS n
+               FROM uc_analyses
+               WHERE run_id = ANY($1::text[])
+               GROUP BY run_id, infra_confidence_label""",
+            run_ids,
+        )
+    from collections import defaultdict
+    per_run = defaultdict(lambda: defaultdict(int))
+    for r in stats:
+        per_run[r["run_id"]][r["infra_confidence_label"] or "unscored"] += r["n"]
+    # Threshold: ≥2 of the last N runs had at least one low or compromised UC
+    triggering_runs = [
+        rid for rid, counts in per_run.items()
+        if counts.get("low", 0) + counts.get("compromised", 0) > 0
+    ]
+    if len(triggering_runs) < 2:
+        return {"hint": None}
+    worst = max(
+        (counts.get("compromised", 0), counts.get("low", 0), rid)
+        for rid, counts in per_run.items()
+    )
+    return {
+        "hint": {
+            "severity": "warning",
+            "headline": (
+                f"Heads up: {len(triggering_runs)} of the last "
+                f"{len(per_run)} run(s) of this set had at least one UC "
+                f"flagged with low or compromised infrastructure confidence."
+            ),
+            "detail": (
+                "Consider running on a long-context model (Sonnet 4.6 / "
+                "Opus 4.7 — 200K context) for this set, or narrowing each "
+                "UC's spec_namespaces field to reduce exploration depth. "
+                "The current local Qwen3-32B at 86K context may force "
+                "early commits on deep-exploration UCs."
+            ),
+            "triggering_runs": triggering_runs,
+            "set_id": set_id,
+        }
     }
 
 
@@ -3287,6 +3420,7 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             endpoint_url = None
             engine_version = None
             gaps = []
+            infra: dict = {}   # infrastructure_confidence object from analysis metadata
             if analysis and analysis.get("_source") == "single":
                 a_meta = analysis.get("analysis_metadata") or {}
                 summary_block = analysis.get("summary") or {}
@@ -3296,6 +3430,7 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 model = a_meta.get("model")
                 endpoint_url = a_meta.get("endpoint_url")
                 engine_version = a_meta.get("engine_version")
+                infra = a_meta.get("infrastructure_confidence") or {}
                 gaps = analysis.get("gaps_identified") or []
             elif analysis and analysis.get("_source") == "explore":
                 # Use first sample's metadata
@@ -3304,6 +3439,7 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 model = a_meta.get("model")
                 endpoint_url = a_meta.get("endpoint_url")
                 engine_version = a_meta.get("engine_version")
+                infra = a_meta.get("infrastructure_confidence") or {}
                 # Collect gaps from all samples (deduplicated by gap_id)
                 seen_gap_ids = set()
                 for sample in (analysis.get("samples") or []):
@@ -3322,8 +3458,12 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                    (run_id, uc_uuid, uc_handle, status, verdict, overall_assessment,
                     wall_time_seconds, sample_count, engine_version, model,
                     endpoint_url, analyzed_at,
-                    lifecycle_state_at_run, source_kind)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                    lifecycle_state_at_run, source_kind,
+                    infra_confidence_label, infra_confidence_score,
+                    infra_confidence_signals, infra_confidence_explanation,
+                    infra_confidence_recommendations)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+                           $15,$16,$17::jsonb,$18,$19::jsonb)
                    RETURNING id""",
                 run_id, uc_uuid,
                 uc.get("uc_handle"),
@@ -3334,6 +3474,11 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 uc.get("sample_count"),
                 engine_version, model, endpoint_url, analyzed_at,
                 state_at_run, source_kind,
+                (infra.get("label") if infra else None),
+                (infra.get("score") if infra else None),
+                json.dumps(infra.get("signals") or []) if infra else None,
+                (infra.get("explanation") if infra else None),
+                json.dumps(infra.get("recommendations") or []) if infra else None,
             )
             analysis_id = row["id"]
             ingested_ucs += 1

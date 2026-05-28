@@ -3605,13 +3605,33 @@ async function openNewRun(banner, subpath, ucFilter, branchOverride, lineage) {
   if (effectiveBanner) { bannerEl.textContent = effectiveBanner; bannerEl.style.display = ''; }
   else bannerEl.style.display = 'none';
   await loadNewRunDefaults(effectiveSubpath);
-  // If a caller wants to test against a specific corpus branch (e.g. a push-PR
-  // branch from "Push & test"), override the field AFTER defaults load.
   if (branchOverride) {
     const br = document.getElementById('nrCorpusBranch');
     if (br) br.value = branchOverride;
   }
   loadRunCategories();
+  // Phase C of the infrastructure-confidence work: if the operator is about
+  // to run a known Set and the last few runs of that Set had UCs flagged with
+  // low or compromised infrastructure confidence, surface a pre-flight hint
+  // banner so they can switch to a long-context model BEFORE triggering.
+  try {
+    const sid = _pendingRunLineage?.set_id;
+    if (sid) {
+      const r = await api(`/api/runs/preflight-hint?set_id=${encodeURIComponent(sid)}`);
+      if (r && r.hint) {
+        const hintEl = document.getElementById('newRunPreflightHint') || (() => {
+          const h = document.createElement('div');
+          h.id = 'newRunPreflightHint';
+          h.style.cssText = 'margin:8px 0;padding:8px 12px;background:var(--accent-bg);border-left:3px solid var(--accent);font-size:11px;color:var(--text);border-radius:2px;';
+          document.querySelector('#newRunModal .modal-body').prepend(h);
+          return h;
+        })();
+        hintEl.innerHTML = `<strong>⚠ ${esc(r.hint.headline)}</strong><br>
+          <span style="color:var(--text-dim);font-size:11px;">${esc(r.hint.detail)}</span>`;
+        hintEl.style.display = '';
+      }
+    }
+  } catch(_) { /* hint is advisory; failures shouldn't block opening */ }
 }
 
 // Build {handles, uuids, managed} arrays from a Set's members[]. Corpus
@@ -4973,10 +4993,33 @@ async function loadUCTestHistory(uuid) {
       const verdictTxt = r.verdict ? esc(r.verdict.replace(/_/g,' ')) : (r.status || '—');
       const wt = r.wall_time_seconds ? `${r.wall_time_seconds.toFixed(1)}s` : '';
       const gaps = r.gap_count ? `${r.gap_count} gap${r.gap_count!==1?'s':''}` : '';
+      // Infrastructure confidence chip (Phase B of A+C+D+E follow-on).
+      // Distinct from analytical verdict — answers "was the analysis run
+      // under clean infrastructure conditions?" rather than "is the answer
+      // right?". Tooltip carries the engine's explanation + recommendations.
+      const ic = r.infrastructure_confidence;
+      let icChip = '';
+      if (ic && ic.label) {
+        const colors = {
+          high:        ['var(--green)','rgba(80,180,80,0.12)'],
+          medium:      ['var(--accent)','var(--accent-bg)'],
+          low:         ['#cf7416','rgba(207,116,22,0.15)'],
+          compromised: ['var(--red)','rgba(217,101,58,0.18)'],
+        };
+        const [fg, bg] = colors[ic.label] || ['var(--text-faint)','transparent'];
+        const tip = [
+          `infrastructure confidence: ${ic.label} (${ic.score}/100)`,
+          ic.explanation || '',
+          (ic.signals && ic.signals.length) ? 'signals: ' + ic.signals.join(', ') : '',
+          (ic.recommendations && ic.recommendations.length) ? 'recommendations:\n - ' + ic.recommendations.join('\n - ') : '',
+        ].filter(Boolean).join('\n\n');
+        icChip = `<span title="${esc(tip)}" style="font-size:9px;padding:1px 6px;background:${bg};color:${fg};border-radius:8px;text-transform:uppercase;letter-spacing:.04em;font-weight:600;cursor:help;">infra: ${esc(ic.label)}</span>`;
+      }
       h += `<div style="display:flex;align-items:center;gap:10px;padding:5px 12px;font-size:11px;border-top:1px solid var(--border);cursor:pointer"
               onclick="_openUCRunResult('${esc(r.run_id)}','${esc(uuid)}')"
               title="Open in Results tab">
         <span style="color:${verdictColor};font-weight:500;min-width:120px;">${verdictTxt}</span>
+        ${icChip}
         <span style="font-family:var(--mono,monospace);font-size:10px;color:var(--text-dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.run_id)}</span>
         <span style="color:var(--text-faint);font-size:10px;min-width:60px;text-align:right">${esc(wt)}</span>
         <span style="color:var(--text-faint);font-size:10px;min-width:60px;text-align:right">${esc(gaps)}</span>

@@ -921,6 +921,106 @@ class Stage2Agent:
         # max_tokens calculation starts from zero estimate.
         self._last_prompt_tokens = 0
 
+    def _compute_infrastructure_confidence(self) -> dict:
+        """Synthesize the per-UC infrastructure-induced quality assessment
+        from the same counters surfaced on the summary turn record.
+
+        Distinct from the model's analytical confidence (the per-component
+        / per-analysis confidence scores already in the Analysis schema).
+        This answers "did infrastructure constrain grounding?" rather than
+        "is the answer right?" — a UC can be analytically high-confidence
+        while infrastructure-compromised (model committed early due to
+        budget pressure without enough exploration) and vice versa.
+
+        Score deductions:
+          * context_overflow_retries     × 30 (major — vLLM rejected a call)
+          * budget_capped_turns          × 10 (major-ish — forced commit)
+          * cross_turn_dedup ratio > 20% × 10 (moderate — model lost track)
+          * section_title_misses > 5     × 5  (moderate — fishing)
+          * out_of_scope_blocked > 3     × 5  (soft — namespace boundary hits)
+        """
+        score = 100
+        signals: list[str] = []
+        recommendations: list[str] = []
+
+        if self._context_overflow_retry_count > 0:
+            n = self._context_overflow_retry_count
+            score -= 30 * n
+            signals.append(f"context_overflow_retries={n}")
+            recommendations.append(
+                "Switch to a long-context model (Sonnet 4.6 / Opus 4.7, 200K) "
+                "for this UC via the New Run model selector."
+            )
+
+        if self._budget_capped_turn_count > 0:
+            n = self._budget_capped_turn_count
+            score -= 10 * n
+            signals.append(f"budget_capped_turns={n}")
+            if "long-context" not in " ".join(recommendations):
+                recommendations.append(
+                    "Several turns committed early due to context pressure; "
+                    "consider a long-context model or narrowing spec_namespaces."
+                )
+
+        distinct = len(self._call_history)
+        if distinct > 0 and self._cross_turn_dup_count / distinct > 0.2:
+            score -= 10
+            signals.append(
+                f"cross_turn_dedup_rate={self._cross_turn_dup_count}/{distinct}"
+            )
+            recommendations.append(
+                "Model attempted the same tool call across turns at a high rate "
+                "— possible context-window memory pressure."
+            )
+
+        misses_total = sum(self._section_title_misses.values())
+        if misses_total > 5:
+            score -= 5
+            signals.append(f"section_title_misses={misses_total}")
+            recommendations.append(
+                "Model fished for section titles repeatedly — UC may probe "
+                "areas the spec doesn't cover, or spec headings are inconsistent."
+            )
+
+        if self._out_of_scope_blocked_count > 3:
+            score -= 5
+            signals.append(f"out_of_scope_blocked={self._out_of_scope_blocked_count}")
+            recommendations.append(
+                "Model frequently attempted out-of-scope handles — verify "
+                "the UC's spec_namespaces field matches its actual needs."
+            )
+
+        score = max(0, score)
+        if score >= 85:
+            label = "high"
+            explanation = "Analysis ran cleanly within infrastructure limits."
+        elif score >= 65:
+            label = "medium"
+            explanation = (
+                "Mild infrastructure pressure during exploration; conclusions "
+                "are likely sound but verify spot-checks of cited spec sections."
+            )
+        elif score >= 40:
+            label = "low"
+            explanation = (
+                "Significant infrastructure constraints affected grounding; "
+                "the model may have committed before fully exploring the spec. "
+                "Consider re-running with a long-context model."
+            )
+        else:
+            label = "compromised"
+            explanation = (
+                "Severe infrastructure constraints — analysis should not be "
+                "trusted without a re-run on a long-context model."
+            )
+        return {
+            "label": label,
+            "score": score,
+            "signals": signals,
+            "explanation": explanation,
+            "recommendations": recommendations,
+        }
+
     def _emit_run_summary(self, final_turn: int) -> None:
         """End-of-run summary record. Surfaces per-sample stats the operator
         wants to spot quickly — most importantly the cross-turn duplicate
@@ -984,6 +1084,7 @@ class Stage2Agent:
                     engine_version=engine_version_string(),
                     engine_commit=engine_commit_string(),
                     consumer_version=consumer_version_string(self.consumer_content_path),
+                    infrastructure_confidence=self._compute_infrastructure_confidence(),
                 ),
                 components_required=[_from_dict(ComponentRequired, x) for x in data.get("components_required", [])],
                 data_model_touched=[_from_dict(DataModelTouched, x) for x in data.get("data_model_touched", [])],
