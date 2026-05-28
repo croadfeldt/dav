@@ -247,6 +247,8 @@ Current: `"1.5"` — gap title field added, `spec_refs_missing` as list.
 
 The stage-2 system prompt also picks up a **per-run spec-source focus paragraph** when the engine sees `DAV_SPEC_NAMESPACES_FILTER` (set by the Tekton `dav-run-corpus` task from the `spec-namespaces` PipelineRun param; ultimately from the New Run modal's spec-source checkbox grid). The hint asks the LLM to prefer documents from the listed namespaces when grounding via MCP and to note any cross-namespace lookup in its analysis. This is **soft enforcement** — the MCP itself still holds every spec namespace — and is the spec-side analog of M11b's hard-enforced corpus filter (which physically constrains what `dav-git-sync-multi-corpus` clones).
 
+**Cross-turn tool-call dedup (1.6)** — Stage2Agent tracks every successful `(tool_name, args_json)` pair in `self._call_history` for the duration of one UC sample. If the model emits the same call on a later turn, the engine short-circuits with a `⛔ DUPLICATE-CROSS-TURN` marker carrying the original turn number, `tool_call_id`, and a 400-char preview of the original result. Pairs with a stage-2 prompt nudge telling the model to scan its own prior calls before re-issuing. End of each `analyze()` emits a `kind="summary"` turn record (`cross_turn_duplicates_blocked`, `distinct_calls`, `section_title_misses`, `too_large_handles`, `total_tokens`) which the UI's prompts panel renders inline. Aggregating these into `run-summary.yaml` is a follow-up that requires touching `stage2_analyze` + `run_corpus.CorpusUcResult`.
+
 ---
 
 ## Infrastructure: LLM-bound endpoint timeouts (M12+)
