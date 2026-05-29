@@ -117,6 +117,12 @@ def test_normalize_severity_case_insensitive():
     sev = normalize_severity("MAJOR")
     assert_eq(sev.label, "major", "case normalized")
 
+def test_normalize_severity_medium_aliases_to_moderate():
+    sev = normalize_severity("medium")
+    assert_eq(sev.label, "moderate", "string alias")
+    sev2 = normalize_severity({"label": "Medium", "score": 50})
+    assert_eq(sev2.label, "moderate", "dict alias, case-insensitive")
+
 def test_normalize_severity_rejects_invalid_label():
     assert_raises(
         lambda: normalize_severity("catastrophic"),

@@ -96,6 +96,17 @@ _SEVERITY_DEFAULTS: dict[str, int] = {
     "critical": 90,
 }
 
+# Natural-language synonyms the LLM sometimes emits instead of the
+# canonical label. `medium` is the observed case (OSAC 2026-05-29):
+# the confidence axis uses low/medium/high, so the model carried
+# `medium` over to severity where the canonical midpoint label is
+# `moderate`. Only add unambiguous mappings — e.g. `high` and `low`
+# could mean either `major`/`critical` or `minor`/`advisory`, so they
+# stay un-aliased and continue to error.
+_SEVERITY_ALIASES: dict[str, str] = {
+    "medium": "moderate",
+}
+
 _CONFIDENCE_DEFAULTS: dict[str, int] = {
     "low": 30,
     "medium": 50,
@@ -189,6 +200,7 @@ def normalize_severity(value: Any) -> SeverityDescriptor:
 
     if isinstance(value, str):
         label = value.strip().lower()
+        label = _SEVERITY_ALIASES.get(label, label)
         if label not in _SEVERITY_DEFAULTS:
             raise ValueError(
                 f"invalid severity label '{value}'; expected one of {sorted(_SEVERITY_DEFAULTS)}"
@@ -206,6 +218,7 @@ def normalize_severity(value: Any) -> SeverityDescriptor:
         if not isinstance(label_raw, str):
             raise ValueError(f"severity dict missing 'label' or not a string: {value!r}")
         label = label_raw.strip().lower()
+        label = _SEVERITY_ALIASES.get(label, label)
         if label not in _SEVERITY_DEFAULTS:
             raise ValueError(
                 f"invalid severity label '{label_raw}'; expected one of {sorted(_SEVERITY_DEFAULTS)}"
