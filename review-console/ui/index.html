@@ -1196,6 +1196,7 @@
         <div class="config-nav-cat" data-target="cfgSec-aimodels">AI Models</div>
         <a class="config-nav-link" data-target="configModelsPanel">Review models</a>
         <a class="config-nav-link" data-target="configUCAssistPanel">UC Assist</a>
+        <a class="config-nav-link" data-target="configArchDefaultPanel">Arch Review</a>
       </div>
       <div class="config-nav-group">
         <div class="config-nav-cat" data-target="cfgSec-integrations">Integrations</div>
@@ -1447,7 +1448,7 @@
       <div class="cfg-card panel-card" id="configEvalDefaultPanel">
         <div class="panel-card-header">
           <div>
-            <div class="pc-title">Default evaluation model</div>
+            <div class="pc-title">Evaluation model</div>
             <div class="pc-sub">Project default for new analysis runs — applies to all users. Can be overridden per run in the New Run modal.</div>
           </div>
           <span id="evalDefaultStatus" style="font-size:10px;color:var(--text-faint);"></span>
@@ -1468,7 +1469,7 @@
       <div class="cfg-card panel-card" id="configUCAssistPanel">
         <div class="panel-card-header">
           <div>
-            <div class="pc-title">Default UC Assist model</div>
+            <div class="pc-title">UC Assist model</div>
             <div class="pc-sub">Your personal default for NL-assisted use case authoring. Stored locally — does not affect other users.</div>
           </div>
           <span id="ucAssistCfgStatus" style="font-size:10px;color:var(--text-faint);"></span>
@@ -1479,6 +1480,7 @@
               <option value="">— select a model —</option>
             </select>
             <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('ucAssistModelSel',_ucAssistModelKey)">Browse…</button>
+            <button class="btn primary btn-sm" id="saveUCAssistBtn">Save</button>
             <span id="uacMsg" style="font-size:11px;color:var(--text-faint);"></span>
           </div>
           <div class="form-hint" style="margin-top:8px;">Selected model is stored locally and passed with each request. Add endpoints in the Model Endpoints panel above.</div>
@@ -1488,7 +1490,7 @@
       <div class="cfg-card panel-card" id="configArchDefaultPanel">
         <div class="panel-card-header">
           <div>
-            <div class="pc-title">Default Arch Review model</div>
+            <div class="pc-title">Arch Review model</div>
             <div class="pc-sub">Project default for architectural review (Review &amp; Plan tab) — applies to all users. Can be overridden per call from the run drawer's Review &amp; Plan tab.</div>
           </div>
           <span id="archDefaultStatus" style="font-size:10px;color:var(--text-faint);"></span>
@@ -9670,6 +9672,39 @@ document.getElementById('ucAssistPanelModelSel').addEventListener('change', func
   // Mirror to Config selector
   const cfgSel = document.getElementById('ucAssistModelSel');
   if (cfgSel && cfgSel.querySelector(`option[value="${this.value}"]`)) cfgSel.value = this.value;
+});
+
+// Explicit Save button on the Config UC Assist panel — UX consistency with
+// the Evaluation and Arch Review pickers. The change-listener above already
+// auto-persists to localStorage on every change; this just confirms the
+// current selection visibly, mirroring the other two panels' Save flow.
+document.getElementById('saveUCAssistBtn').addEventListener('click', () => {
+  const sel = document.getElementById('ucAssistModelSel');
+  const msgEl = document.getElementById('uacMsg');
+  const btn = document.getElementById('saveUCAssistBtn');
+  btn.disabled = true;
+  try {
+    localStorage.setItem(_ucAssistModelKey, sel.value || '');
+    _ucAssistAvailable = null;
+    // Mirror to the run-drawer panel selector if it's been instantiated.
+    const panelSel = document.getElementById('ucAssistPanelModelSel');
+    if (panelSel && (sel.value === '' || panelSel.querySelector(`option[value="${sel.value}"]`))) {
+      panelSel.value = sel.value;
+    }
+    msgEl.textContent = sel.value ? 'Saved' : 'Cleared';
+    msgEl.style.color = 'var(--green)';
+    // Refresh the header status chip on the panel.
+    const statusEl = document.getElementById('ucAssistCfgStatus');
+    if (statusEl) {
+      statusEl.textContent = sel.value ? '✓ model selected' : 'no model selected';
+      statusEl.style.color = sel.value ? 'var(--ok)' : 'var(--text-faint)';
+    }
+    setTimeout(() => { msgEl.textContent = ''; msgEl.style.color = ''; }, 2500);
+  } catch(e) {
+    msgEl.textContent = 'Save failed: ' + e.message;
+    msgEl.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
 });
 
 // ── Enhancement Targets (ADR-006) ────────────────────────────────────────────
