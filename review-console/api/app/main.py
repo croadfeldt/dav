@@ -38,6 +38,7 @@ from . import uc_assist
 from . import corpus_push
 from . import enhancement_apply as _enh_apply
 from . import repos as _repos
+from .repos import _parse_jsonb
 from . import projector as _projector
 from . import pr_comments as _pr_comments
 from . import credentials as _credentials
@@ -64,6 +65,7 @@ MIGRATE_010_PATH = Path(__file__).parent / "migrate_010_shared_credentials.sql"
 MIGRATE_011_PATH = Path(__file__).parent / "migrate_011_consolidate_code_repos.sql"
 MIGRATE_012_PATH = Path(__file__).parent / "migrate_012_namespace_first_class.sql"
 MIGRATE_013_PATH = Path(__file__).parent / "migrate_013_infrastructure_confidence.sql"
+MIGRATE_014_PATH = Path(__file__).parent / "migrate_014_model_capabilities.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -222,6 +224,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_012_PATH.read_text())
         log.info("Applying migration 013 (infrastructure_confidence on uc_analyses)...")
         await conn.execute(MIGRATE_013_PATH.read_text())
+        log.info("Applying migration 014 (model capabilities + per-use sampling profiles)...")
+        await conn.execute(MIGRATE_014_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -1356,6 +1360,33 @@ class ModelConfigIn(BaseModel):
     is_local: bool = False
     use_arch_review: bool = True
     use_uc_assist: bool = False
+    # Static facts about the server side of this endpoint. Recognized keys:
+    #   speculative_decoding: bool  — when true, engine drops min_p+logit_bias
+    #   supports_min_p: bool        — defaults true; false forces engine to drop
+    #   supports_logit_bias: bool   — defaults true; false forces engine to drop
+    #   max_tokens_default: int     — applied when no per-use profile overrides
+    # See `model_configs.capabilities` (migration 014).
+    capabilities: dict = Field(default_factory=dict)
+
+
+_VALID_USE_KEYS = {
+    "evaluation_verification",
+    "evaluation_explore",
+    "evaluation_reproduce",
+    "arch_review",
+    "uc_assist",
+    "enhancement",
+}
+
+
+class ModelUseProfileIn(BaseModel):
+    # JSONB body of sampling overrides. Any subset of:
+    #   top_k, top_p, min_p, temperature, max_tokens, seed,
+    #   chat_template_kwargs, ...
+    # Engine drops a key entirely if the model's capabilities flag it
+    # unsupported, regardless of whether this profile sets it.
+    params: dict = Field(default_factory=dict)
+    notes: str = Field("", max_length=2048)
 
 
 class ArchReviewIn(BaseModel):
@@ -4468,10 +4499,16 @@ async def list_review_models():
             """SELECT id, name, provider, endpoint_url, model_id,
                       CASE WHEN api_key != '' THEN '••••••••' ELSE '' END AS api_key,
                       enabled, is_local, use_arch_review, use_uc_assist,
+                      capabilities,
                       created_by, created_at, updated_at
                FROM model_configs ORDER BY created_at"""
         )
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["capabilities"] = _parse_jsonb(d.get("capabilities"))
+        out.append(d)
+    return out
 
 
 @app.post("/api/models", status_code=201)
@@ -4482,19 +4519,23 @@ async def create_review_model(payload: ModelConfigIn, request: Request):
             row = await conn.fetchrow(
                 """INSERT INTO model_configs
                      (name, provider, endpoint_url, model_id, api_key, enabled,
-                      is_local, use_arch_review, use_uc_assist, created_by)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                      is_local, use_arch_review, use_uc_assist, capabilities, created_by)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
                    RETURNING id, name, provider, endpoint_url, model_id, enabled,
-                             is_local, use_arch_review, use_uc_assist, created_at""",
+                             is_local, use_arch_review, use_uc_assist, capabilities,
+                             created_at""",
                 payload.name, payload.provider, payload.endpoint_url,
                 payload.model_id, payload.api_key, payload.enabled,
-                payload.is_local, payload.use_arch_review, payload.use_uc_assist, user,
+                payload.is_local, payload.use_arch_review, payload.use_uc_assist,
+                json.dumps(payload.capabilities or {}), user,
             )
         except Exception as e:
             if "unique" in str(e).lower():
                 raise HTTPException(409, f"A model named '{payload.name}' already exists")
             raise HTTPException(500, str(e))
-    return dict(row)
+    d = dict(row)
+    d["capabilities"] = _parse_jsonb(d.get("capabilities"))
+    return d
 
 
 @app.put("/api/models/{mid}")
@@ -4506,11 +4547,13 @@ async def update_review_model(mid: int, payload: ModelConfigIn, request: Request
                SET name=$1, provider=$2, endpoint_url=$3, model_id=$4,
                    api_key = CASE WHEN $5 != '' THEN $5 ELSE api_key END,
                    enabled=$6, is_local=$7, use_arch_review=$8, use_uc_assist=$9,
+                   capabilities=$10::jsonb,
                    updated_at=now()
-               WHERE id=$10 RETURNING id""",
+               WHERE id=$11 RETURNING id""",
             payload.name, payload.provider, payload.endpoint_url,
             payload.model_id, payload.api_key, payload.enabled,
-            payload.is_local, payload.use_arch_review, payload.use_uc_assist, mid,
+            payload.is_local, payload.use_arch_review, payload.use_uc_assist,
+            json.dumps(payload.capabilities or {}), mid,
         )
     if not row:
         raise HTTPException(404, "Model config not found")
@@ -4522,6 +4565,89 @@ async def delete_review_model(mid: int, request: Request):
     get_user(request)
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM model_configs WHERE id=$1", mid)
+    return {"ok": True}
+
+
+# ----- Per-(model, use) sampling profiles -----
+# These let operators tune sampling params per-use without an engine
+# rebuild. Engine resolves at run start as:
+#   per-run CLI/UI override > use_profile row > mode default in code
+# Engine drops any param the model's capabilities flag as unsupported,
+# regardless of which layer set it. See migration 014.
+
+
+@app.get("/api/models/{mid}/profiles")
+async def list_model_use_profiles(mid: int):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id, model_config_id, use_key, params, notes,
+                      updated_by, created_at, updated_at
+               FROM model_use_profiles
+               WHERE model_config_id=$1
+               ORDER BY use_key""",
+            mid,
+        )
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["params"] = _parse_jsonb(d.get("params"))
+        out.append(d)
+    return out
+
+
+@app.get("/api/models/{mid}/profiles/{use_key}")
+async def get_model_use_profile(mid: int, use_key: str):
+    if use_key not in _VALID_USE_KEYS:
+        raise HTTPException(400, f"unknown use_key {use_key!r} — valid: {sorted(_VALID_USE_KEYS)}")
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT id, model_config_id, use_key, params, notes,
+                      updated_by, created_at, updated_at
+               FROM model_use_profiles
+               WHERE model_config_id=$1 AND use_key=$2""",
+            mid, use_key,
+        )
+    if not row:
+        raise HTTPException(404, "profile not found")
+    d = dict(row)
+    d["params"] = _parse_jsonb(d.get("params"))
+    return d
+
+
+@app.put("/api/models/{mid}/profiles/{use_key}")
+async def set_model_use_profile(mid: int, use_key: str, payload: ModelUseProfileIn, request: Request):
+    if use_key not in _VALID_USE_KEYS:
+        raise HTTPException(400, f"unknown use_key {use_key!r} — valid: {sorted(_VALID_USE_KEYS)}")
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        # Verify model exists + enabled. Disabled models can still have
+        # profiles edited so operators can prep the swap before flipping.
+        exists = await conn.fetchval("SELECT 1 FROM model_configs WHERE id=$1", mid)
+        if not exists:
+            raise HTTPException(404, "model not found")
+        await conn.execute(
+            """INSERT INTO model_use_profiles
+                 (model_config_id, use_key, params, notes, updated_by, updated_at)
+               VALUES ($1, $2, $3::jsonb, $4, $5, NOW())
+               ON CONFLICT (model_config_id, use_key) DO UPDATE
+                 SET params     = EXCLUDED.params,
+                     notes      = EXCLUDED.notes,
+                     updated_by = EXCLUDED.updated_by,
+                     updated_at = NOW()""",
+            mid, use_key, json.dumps(payload.params or {}),
+            payload.notes or "", user,
+        )
+    return {"ok": True}
+
+
+@app.delete("/api/models/{mid}/profiles/{use_key}")
+async def delete_model_use_profile(mid: int, use_key: str, request: Request):
+    get_user(request)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM model_use_profiles WHERE model_config_id=$1 AND use_key=$2",
+            mid, use_key,
+        )
     return {"ok": True}
 
 
