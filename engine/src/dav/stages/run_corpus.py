@@ -395,9 +395,23 @@ def _parse_engine_json(blob: Optional[str], name: str) -> Optional[dict]:
     on malformed JSON and falls back to no-op rather than crashing the
     run — the engine still has mode defaults to fall back on, and a
     typo in the operator's profile shouldn't kill an A/B in progress.
+
+    Accepts either inline JSON or `@/path/to/file` syntax (matches curl).
+    The file path form avoids shell-quoting headaches when the Tekton
+    task script needs to thread JSON with spaces through OPTIONAL_ARGS.
     """
     if not blob or not blob.strip() or blob.strip() in ("{}", "null"):
         return None
+    if blob.startswith("@"):
+        path = blob[1:]
+        try:
+            with open(path, "r") as f:
+                blob = f.read()
+        except Exception as e:
+            log.warning("--%s @%s: cannot read file (%s) — ignoring", name, path, e)
+            return None
+        if not blob.strip() or blob.strip() in ("{}", "null"):
+            return None
     import json as _json
     try:
         out = _json.loads(blob)

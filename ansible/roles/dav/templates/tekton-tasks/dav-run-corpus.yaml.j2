@@ -275,14 +275,25 @@ spec:
         # it on; if a non-Qwen3 endpoint is used, the flag is harmless.
         # Per-(model, use) override args. Only forwarded when set so the
         # engine's "missing flag = use defaults" branch fires correctly.
+        #
+        # capabilities-json / use-profile-json contain JSON with spaces,
+        # which gets argv-split by the shell when interpolated unquoted
+        # into OPTIONAL_ARGS. Write to tmpfiles and pass `@/path` syntax
+        # (engine.stages.run_corpus._parse_engine_json reads the file).
+        # Single-quoting the param expansion in echo is safe for our
+        # JSON shapes (keys/values are bool/int/string-without-quotes);
+        # if we ever embed strings with apostrophes here, switch to a
+        # heredoc or base64.
         if [ -n "$(params.use-key)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --use-key $(params.use-key)"
         fi
         if [ -n "$(params.capabilities-json)" ] && [ "$(params.capabilities-json)" != "{}" ]; then
-          OPTIONAL_ARGS="$OPTIONAL_ARGS --capabilities-json $(params.capabilities-json)"
+          printf '%s\n' '$(params.capabilities-json)' > /tmp/dav-capabilities.json
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --capabilities-json @/tmp/dav-capabilities.json"
         fi
         if [ -n "$(params.use-profile-json)" ] && [ "$(params.use-profile-json)" != "{}" ]; then
-          OPTIONAL_ARGS="$OPTIONAL_ARGS --use-profile-json $(params.use-profile-json)"
+          printf '%s\n' '$(params.use-profile-json)' > /tmp/dav-use-profile.json
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --use-profile-json @/tmp/dav-use-profile.json"
         fi
 
         python -m dav.stages.run_corpus \
