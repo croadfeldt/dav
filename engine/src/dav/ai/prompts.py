@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dav.core.use_case_schema import UseCase
 
-STAGE2_PROMPT_VERSION = "1.9"  # 1.9 — strengthen section-title-miss handling: hard-stop on fishing, force verbatim selection from Available sections list
+STAGE2_PROMPT_VERSION = "1.8"  # 1.8 — two-pass: explore → findings → analysis, with MCP re-fetch in pass 2
 
 # /no_think directive at the top is a Qwen3 chat template token that disables
 # the model's thinking-mode output (<think>...</think> blocks). We strip
@@ -46,25 +46,12 @@ Tool budget: you have a limited number of tool calls. Spend them on targeted ret
 
 Before every tool call, **scan your prior tool calls in this conversation**. If you have already called the same tool with the same arguments earlier, do not call it again — the result is unchanged. Instead, either pivot to a DIFFERENT query, section, or handle, or stop fetching and write your analysis. The engine will detect cross-turn duplicates and short-circuit them with a DUPLICATE-CROSS-TURN marker pointing at the original tool_call_id, but you should pre-empt that by tracking what you've already asked.
 
-Handling tool failures — READ THIS CAREFULLY. THESE ARE HARD RULES, NOT GUIDELINES:
-
-⛔ When `get_document_section` returns "Section '<X>' not found. Available sections: [A, B, C, ...]":
-
-THIS IS NOT AN ERROR. It is the AUTHORITATIVE LIST of sections in that document. The titles between the brackets are the ONLY sections that exist in this document — there are no others.
-
-You MUST do exactly one of these three things next. No fourth option exists:
-
-  (a) Call `get_document_section` again on the SAME document with a title COPIED VERBATIM from the "Available sections" list. Pick the listed title that best matches your intent. Copy it byte-for-byte: same capitalization, same spaces, same punctuation, same numbering ("4.1 Capacity" not "4.1. capacity"). If your call argument differs from a listed entry by even one character, you are fishing.
-
-  (b) Call `get_document` on the SAME document handle if you need the structured outline (rare — the "Available sections" list already gives you the outline).
-
-  (c) Call `search_docs` with a DIFFERENT query because this document doesn't contain what you need. Move on.
-
-🚫 FORBIDDEN: calling `get_document_section` on the same document with any title that is NOT in the most recent "Available sections" list. Inventing a plausible-sounding section name and trying again is fishing. The engine instruments fishing attempts (the `section_title_misses` counter on every UC's summary) and they hurt the run's infrastructure_confidence score even when individual calls succeed.
-
-🛑 If you find yourself about to call `get_document_section` and the title you're about to pass is NOT a literal substring of the most recent "Available sections" output, STOP. Re-read the list. Either pick a listed title verbatim or go to (b) or (c).
-
-When `search_docs` returns documents whose titles don't obviously match your intent, the search query was too narrow or too literal. Try broader terms. "VM-provisioning" matches nothing; "virtual machine" or "resource provisioning" works. Hyphens are treated as word separators — prefer space-separated terms.
+Handling tool failures — READ THIS CAREFULLY:
+- When `get_document_section` returns "Section '<X>' not found. Available sections: ..." — that error response is INFORMATION. It is telling you exactly which sections exist. Your next action MUST be either:
+  (a) Pick a section title that was listed in the "Available sections" output, and call `get_document_section` again with that EXACT title, OR
+  (b) Call `get_document` on the same handle to get the full outline.
+- Do NOT keep guessing section titles in other documents after a miss. That is fishing, not research. Three consecutive "not found" responses means your search query was wrong — go back to `search_docs` with different terms.
+- When `search_docs` returns documents whose titles don't obviously match your intent, the search query was too narrow or too literal. Try broader terms. "VM-provisioning" matches nothing; "virtual machine" or "resource provisioning" works. Hyphens are treated as word separators — prefer space-separated terms.
 
 When you have gathered enough information, emit a final analysis as a single JSON object matching this schema:
 
