@@ -92,6 +92,7 @@ def _mk_pipelinerun(
     use_key: Optional[str] = None,
     capabilities_json: Optional[str] = None,
     use_profile_json: Optional[str] = None,
+    stage2_two_pass: Optional[str] = None,
 ) -> dict:
     """Build a PipelineRun object targeting the DAV Pipeline."""
     suffix = str(int(time.time()))[-6:]
@@ -148,6 +149,8 @@ def _mk_pipelinerun(
         params.append({"name": "capabilities-json", "value": capabilities_json})
     if use_profile_json:
         params.append({"name": "use-profile-json", "value": use_profile_json})
+    if stage2_two_pass is not None:
+        params.append({"name": "stage2-two-pass", "value": stage2_two_pass})
 
     return {
         "apiVersion": f"{_TEKTON_GROUP}/{_TEKTON_VERSION}",
@@ -202,6 +205,7 @@ def trigger_run(
     use_key: Optional[str] = None,
     capabilities_json: Optional[str] = None,
     use_profile_json: Optional[str] = None,
+    stage2_two_pass: Optional[str] = None,
 ) -> dict:
     """Create a PipelineRun. Returns the created object's status summary."""
     if not ENABLED:
@@ -230,6 +234,7 @@ def trigger_run(
         use_key=use_key,
         capabilities_json=capabilities_json,
         use_profile_json=use_profile_json,
+        stage2_two_pass=stage2_two_pass,
     )
 
     try:

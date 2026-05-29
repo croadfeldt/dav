@@ -135,6 +135,9 @@ spec:
     - name: use-profile-json
       type: string
       default: ""
+    - name: stage2-two-pass
+      type: string
+      default: "1"
 
   workspaces:
     - name: shared-data
@@ -284,3 +287,5 @@ spec:
           value: $(params.capabilities-json)
         - name: use-profile-json
           value: $(params.use-profile-json)
+        - name: stage2-two-pass
+          value: $(params.stage2-two-pass)

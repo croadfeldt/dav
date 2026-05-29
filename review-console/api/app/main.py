@@ -598,6 +598,11 @@ class RunTriggerIn(BaseModel):
     spec_namespaces: Optional[list[str]] = None
     category: str = "ad-hoc"
     tags: list[str] = []
+    # Per-run override for engine two-pass / single-pass stage-2. "1" or
+    # None = two-pass (engine default); "0" = legacy single-pass. Surfaced
+    # so operators can A/B without an engine rebuild — added 2026-05-29 for
+    # the Qwen3.6-27B MTP investigation.
+    stage2_two_pass: Optional[str] = None
     # Legacy params kept for backward compat with self-test UI
     branch: Optional[str] = None
     commit_sha: Optional[str] = None
@@ -861,6 +866,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             use_key=use_key,
             capabilities_json=capabilities_json,
             use_profile_json=use_profile_json,
+            stage2_two_pass=payload.stage2_two_pass,
         )
     except Exception as e:
         log.exception("run trigger failed")

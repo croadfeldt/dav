@@ -146,6 +146,18 @@ spec:
         Empty / "{}" = mode defaults apply.
       default: ""
 
+    - name: stage2-two-pass
+      type: string
+      description: |
+        Forces stage-2 two-pass mode on/off via the DAV_STAGE2_TWO_PASS
+        env var. "1" (default) runs the two-pass explore → findings →
+        synthesize flow added 2026-05-28; "0" runs the legacy
+        single-pass body. Surfaced as a per-run override so operators
+        can A/B without an engine rebuild — added 2026-05-29 for the
+        Qwen3.6-27B MTP investigation.
+      default: "1"
+
+
     - name: max-tool-calls
       type: string
       default: "30"
@@ -227,6 +239,14 @@ spec:
         # LLM system prompt. Empty string = no narrowing.
         - name: DAV_SPEC_NAMESPACES_FILTER
           value: "$(params.spec-namespaces)"
+        # Set DAV_STAGE2_TWO_PASS=0 to force single-pass stage-2 (legacy
+        # behavior). Default "1" enables the two-pass exploration → findings
+        # → synthesis flow added 2026-05-28. Surfaced here so operators
+        # can A/B between the two without an engine rebuild. Set
+        # explicitly to "0" via the Tekton param flag below; empty value
+        # keeps the engine default of two-pass.
+        - name: DAV_STAGE2_TWO_PASS
+          value: "$(params.stage2-two-pass)"
       script: |
         #!/bin/sh
         set -e
