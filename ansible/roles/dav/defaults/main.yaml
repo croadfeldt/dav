@@ -34,6 +34,18 @@ review_console_image_ui: "{{ dav_registry }}/dav-review-ui:latest"
 review_console_corpus_include: "*.md,*.yml,*.yaml,*.json,*.sql,*.py,*.go,*.rst,*.txt,*.toml,*.ini"
 review_console_corpus_exclude: ".git,node_modules,.venv,__pycache__,dist,build,*.pyc,*.lock"
 
+# --- MCP servers ---
+# dav-docs-mcp serves spec content via SSE from a git-cloned working
+# copy populated by an init container at pod start. To pick up spec
+# repo changes pushed after the pod was created, a CronJob restarts
+# the deployment on a fixed schedule. Operators who want every commit
+# reflected immediately should also configure a push-time webhook
+# upstream; the CronJob is the floor, not the ceiling.
+dav_docs_mcp_refresh_enabled: true
+dav_docs_mcp_refresh_schedule: "17 * * * *"   # hourly at :17
+dav_docs_mcp_refresh_deployment: dav-docs-mcp
+dav_docs_mcp_refresh_service_account: dav-mcp-refresh
+
 # --- Primary inference endpoint health check ---
 # Primary inference lives on an external host that exposes an OpenAI-compatible
 # /v1 endpoint. The endpoint is managed out of band (not by this Ansible

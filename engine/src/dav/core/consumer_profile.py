@@ -127,15 +127,24 @@ class ConsumerProfile:
         filtered = {k: v for k, v in data.items() if k in known}
         return cls(**filtered)
 
-# --- DCM reference profile (built-in default for backward compat) ---
-# This mirrors what was hardcoded in use_case_schema.py before ε.1.
-# When no profile is explicitly loaded, this becomes the default so
-# pre-ε.1 callers and tests keep working unmodified.
+# --- Generic reference profile (built-in default) ---
+# DAV is architecture-corpus agnostic — this profile is the fallback
+# used when no explicit profile is loaded. The values here are
+# illustrative of a generic platform-engineering architecture and
+# DELIBERATELY NOT tied to any specific consumer's domain
+# vocabulary; consumers override via their own ConsumerProfile
+# loaded from a YAML file or constructed in code at run start.
+#
+# Before 2026-05-29 this was named _DCM_REFERENCE_PROFILE and
+# baked DCM-specific vocabulary as the fallback. Rebrand kept the
+# field shapes (same defaults) so any tests or callers that
+# happened to depend on the structure still work; only the
+# user-visible vocabulary moved generic.
 
-_DCM_REFERENCE_PROFILE = ConsumerProfile(
-    framework_name="DCM (Data Center Management)",
-    framework_short="DCM",
-    consumer_id="dcm",
+_GENERIC_REFERENCE_PROFILE = ConsumerProfile(
+    framework_name="Generic Platform Architecture",
+    framework_short="Platform",
+    consumer_id="generic",
     schema_version="1.0",
     lifecycle_phases=[
         "new_request", "modification", "decommission",
@@ -177,15 +186,25 @@ _DCM_REFERENCE_PROFILE = ConsumerProfile(
     policy_summary="evaluation engine with two modes (Internal/External), Evaluation Context, multi-pass convergence",
 )
 
-def get_dcm_reference_profile() -> ConsumerProfile:
-    """Return a copy of the built-in DCM reference profile.
+def get_generic_reference_profile() -> ConsumerProfile:
+    """Return a copy of the built-in generic reference profile.
 
-    Used as the default when no profile is loaded. Returns a fresh copy
-    so callers can mutate it (rare but possible) without affecting the
-    canonical baseline.
+    Used as the default when no consumer profile is loaded. Returns a
+    fresh copy so callers can mutate it (rare but possible) without
+    affecting the canonical baseline.
+
+    Renamed from `get_dcm_reference_profile` 2026-05-29 to reflect the
+    fact that DAV ships consumer-agnostic and the built-in fallback
+    profile is a generic platform-architecture placeholder, not a
+    DCM-specific one.
     """
-    # Deep-ish copy via to_dict round-trip (lists are recreated)
-    return ConsumerProfile.from_dict(_DCM_REFERENCE_PROFILE.to_dict())
+    return ConsumerProfile.from_dict(_GENERIC_REFERENCE_PROFILE.to_dict())
+
+
+# Back-compat alias — preserve the prior name for any callers/tests
+# that imported the DCM-named symbols before the 2026-05-29 generalize
+# pass. Safe to remove once the codebase is fully migrated.
+get_dcm_reference_profile = get_generic_reference_profile
 
 # --- Loaders ---
 

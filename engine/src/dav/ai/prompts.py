@@ -241,7 +241,7 @@ matching this schema (no prose before or after, no markdown fence):
 {
   "spec_docs_consulted": [
     {
-      "handle": "<doc handle, e.g. dcm/components/policy-evaluation.md>",
+      "handle": "<doc handle, e.g. <namespace>/<path-to-doc>.md>",
       "sections_retrieved": [
         {
           "title": "<verbatim section title>",

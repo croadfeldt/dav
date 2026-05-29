@@ -241,9 +241,24 @@ index: Optional[DocumentIndex] = None
 def _resolve_handle(handle: str) -> Optional[dict]:
     """Look up a document by handle.
 
-    In multi-source mode, accepts both:
-      - The full handle (e.g., `udlm/contracts/provider-contract.md`)
+    Resolution is namespace-agnostic — works for whatever sources are
+    registered via `index.sources`. In multi-source mode, accepts:
+
+      - The full handle (`<namespace>/<relpath>`)
       - An unqualified relpath, IF unambiguous across sources
+      - A "namespace + tail-segment" shortcut where the namespace is one
+        of the indexed sources AND exactly one document in that
+        namespace has a path ending with the trailing segment.
+
+    The shortcut path was added 2026-05-29 after stage-2 runs surfaced
+    a 200+ tool-call-miss/run pattern: the model calls search_docs
+    (which returns the full handle correctly), then constructs a
+    shortened "<ns>/<filename>" form for subsequent
+    get_document_section calls because the full nested path is verbose
+    in conversation context. Strict resolution made every such call
+    miss; this third fallback turns the model's reasonable shorthand
+    into successful lookups, without coupling to any specific
+    namespace's directory structure.
 
     Returns the document dict or None.
     """
@@ -253,14 +268,35 @@ def _resolve_handle(handle: str) -> Optional[dict]:
     if not index.multi_source:
         return None
 
-    # Try unqualified lookup — useful for users who don't remember the
-    # namespace. Disambiguates only if exactly one match exists.
+    # Fallback 1: unqualified relpath, unambiguous match.
     matches = [
         doc for doc in index.documents.values()
         if doc["path"] == handle or doc["path"].replace("\\", "/") == handle
     ]
     if len(matches) == 1:
         return matches[0]
+
+    # Fallback 2: namespace + filename shortcut. Split on the first `/`
+    # to separate a candidate namespace from the rest. If the namespace
+    # is one of our indexed sources AND exactly one document in that
+    # namespace has a path ending with the remainder, use it.
+    if "/" in handle:
+        ns_candidate, _, tail = handle.partition("/")
+        known_namespaces = {doc["namespace"] for doc in index.documents.values()}
+        if ns_candidate in known_namespaces and tail:
+            # Normalize separators for cross-platform robustness.
+            tail_norm = tail.replace("\\", "/")
+            ns_matches = [
+                doc for doc in index.documents.values()
+                if doc["namespace"] == ns_candidate
+                and (
+                    doc["path"].replace("\\", "/").endswith("/" + tail_norm)
+                    or doc["path"].replace("\\", "/") == tail_norm
+                )
+            ]
+            if len(ns_matches) == 1:
+                return ns_matches[0]
+
     return None
 
 
