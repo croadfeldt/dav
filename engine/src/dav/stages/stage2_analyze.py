@@ -431,7 +431,7 @@ def _cli():
     consumer_profile = load_profile(
         path=args.consumer_profile,
         mcp_url=args.mcp_url if args.consumer_profile_from_mcp else None,
-        fall_back_to_dcm=True,
+        fall_back_to_generic=True,
     )
     # Set as module-level default so any code that doesn't take an explicit
     # profile picks it up (e.g. ad-hoc UC YAML loads, prompt-builder defaults).

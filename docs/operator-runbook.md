@@ -532,9 +532,9 @@ python <<'EOF'
 import yaml
 from pathlib import Path
 from dav.core.use_case_schema import UseCase
-from dav.core.consumer_profile import get_dcm_reference_profile
+from dav.core.consumer_profile import get_generic_reference_profile
 
-p = get_dcm_reference_profile()
+p = get_generic_reference_profile()
 corpus = Path("${DAV_CORPUS_DIR}/use-cases")
 for path in sorted(corpus.glob("*.yaml")):
     if path.name == "README.yaml":

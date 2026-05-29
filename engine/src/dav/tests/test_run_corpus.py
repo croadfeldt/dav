@@ -15,7 +15,7 @@ from unittest import mock
 import yaml
 
 from dav.ai.agent import AgentConfig
-from dav.core.consumer_profile import get_dcm_reference_profile
+from dav.core.consumer_profile import get_generic_reference_profile
 from dav.core.use_case_schema import (
     Actor, Dimensions, Scenario, UseCase, GeneratedBy, UseCaseMetadata,
     Analysis, AnalysisMetadata, AnalysisSummary, Verdict, Confidence,
@@ -235,7 +235,7 @@ def test_resolve_seed_override_reproduce():
 
 def test_run_one_uc_happy_path():
     """A valid UC + mocked run_samples → success result with file written."""
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         uc_path = td_path / "uc.yaml"
@@ -264,7 +264,7 @@ def test_run_one_uc_happy_path():
 
 def test_run_one_uc_load_failure():
     """Invalid YAML → failure result, no exception."""
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     with tempfile.TemporaryDirectory() as td:
         uc_path = Path(td) / "bad.yaml"
         uc_path.write_text("not: valid: yaml:")  # malformed
@@ -283,7 +283,7 @@ def test_run_one_uc_load_failure():
 
 def test_run_one_uc_validation_failure():
     """UC with invalid vocab → failure result."""
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     with tempfile.TemporaryDirectory() as td:
         uc_path = Path(td) / "bad.yaml"
         uc_data = _valid_v1_uc_dict()
@@ -306,7 +306,7 @@ def test_run_one_uc_validation_failure():
 
 def test_run_one_uc_analyzer_failure():
     """run_samples raises → failure result, no exception leaks."""
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     with tempfile.TemporaryDirectory() as td:
         uc_path = Path(td) / "uc.yaml"
         with uc_path.open("w") as f:
@@ -329,7 +329,7 @@ def test_run_one_uc_analyzer_failure():
 
 def test_run_one_uc_explore_writes_directory():
     """Explore mode writes per-sample files + variance.yaml in a subdirectory."""
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         uc_path = td_path / "uc.yaml"
@@ -358,7 +358,7 @@ def test_run_one_uc_explore_writes_directory():
 
 def test_run_one_uc_verification_with_multiple_samples_merges():
     """Verification mode with N>1 samples calls merge_analyses."""
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     with tempfile.TemporaryDirectory() as td:
         uc_path = Path(td) / "uc.yaml"
         with uc_path.open("w") as f:
@@ -382,7 +382,7 @@ def test_run_one_uc_verification_with_multiple_samples_merges():
 
 def test_run_one_uc_verification_n1_skips_merge():
     """Verification mode with N=1 sample does NOT call merge_analyses."""
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     with tempfile.TemporaryDirectory() as td:
         uc_path = Path(td) / "uc.yaml"
         with uc_path.open("w") as f:
@@ -411,7 +411,7 @@ def test_run_one_uc_verification_n1_skips_merge():
 
 def test_run_one_uc_stamps_run_level_metadata_reproduce():
     """run_one_uc stamps run-level metadata fields onto reproduce-mode output."""
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         uc_path = td_path / "uc.yaml"
@@ -448,7 +448,7 @@ def test_run_one_uc_stamps_run_level_metadata_reproduce():
 
 def test_run_one_uc_stamps_run_level_metadata_verification():
     """Verification (post-merge) keeps run-level stamping intact."""
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         uc_path = td_path / "uc.yaml"
@@ -483,7 +483,7 @@ def test_run_one_uc_stamps_run_level_metadata_verification():
 
 def test_run_one_uc_stamps_run_level_metadata_explore():
     """Explore mode stamps run-level metadata onto each per-sample output."""
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         uc_path = td_path / "uc.yaml"
@@ -523,7 +523,7 @@ def test_run_one_uc_stamps_run_level_metadata_explore():
 def test_run_one_uc_stamping_defaults_when_unset():
     """When run-level metadata params are unset (test/legacy callers), the
     fields should be empty strings, not raise."""
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     with tempfile.TemporaryDirectory() as td:
         td_path = Path(td)
         uc_path = td_path / "uc.yaml"

@@ -193,18 +193,12 @@ def get_generic_reference_profile() -> ConsumerProfile:
     fresh copy so callers can mutate it (rare but possible) without
     affecting the canonical baseline.
 
-    Renamed from `get_dcm_reference_profile` 2026-05-29 to reflect the
+    Renamed from `get_generic_reference_profile` 2026-05-29 to reflect the
     fact that DAV ships consumer-agnostic and the built-in fallback
     profile is a generic platform-architecture placeholder, not a
     DCM-specific one.
     """
     return ConsumerProfile.from_dict(_GENERIC_REFERENCE_PROFILE.to_dict())
-
-
-# Back-compat alias — preserve the prior name for any callers/tests
-# that imported the DCM-named symbols before the 2026-05-29 generalize
-# pass. Safe to remove once the codebase is fully migrated.
-get_dcm_reference_profile = get_generic_reference_profile
 
 # --- Loaders ---
 
@@ -297,15 +291,15 @@ def load_profile(
     *,
     path: Path | str | None = None,
     mcp_url: str | None = None,
-    fall_back_to_dcm: bool = True,
+    fall_back_to_generic: bool = True,
 ) -> ConsumerProfile:
     """Load a ConsumerProfile with file → MCP → built-in fallback.
 
     Precedence:
       1. If `path` is given, load from file. No fallback if it fails.
       2. Else if `mcp_url` is given, try MCP. If MCP fails and
-         `fall_back_to_dcm=True`, fall back to the DCM reference profile.
-      3. Else if `fall_back_to_dcm=True`, return the DCM reference profile.
+         `fall_back_to_generic=True`, fall back to the DCM reference profile.
+      3. Else if `fall_back_to_generic=True`, return the DCM reference profile.
       4. Else raise ConsumerProfileError.
 
     Pre-ε.1 callers that don't pass anything get the DCM reference profile,
@@ -318,20 +312,20 @@ def load_profile(
         try:
             return load_profile_from_mcp(mcp_url)
         except ConsumerProfileError as e:
-            if fall_back_to_dcm:
+            if fall_back_to_generic:
                 log.warning(
-                    "MCP profile load failed (%s); falling back to DCM reference profile",
+                    "MCP profile load failed (%s); falling back to built-in generic reference profile",
                     e,
                 )
-                return get_dcm_reference_profile()
+                return get_generic_reference_profile()
             raise
 
-    if fall_back_to_dcm:
-        log.debug("no profile path or MCP URL given; using DCM reference profile")
-        return get_dcm_reference_profile()
+    if fall_back_to_generic:
+        log.debug("no profile path or MCP URL given; using built-in generic reference profile")
+        return get_generic_reference_profile()
 
     raise ConsumerProfileError(
-        "no profile path or MCP URL given and fall_back_to_dcm=False"
+        "no profile path or MCP URL given and fall_back_to_generic=False"
     )
 
 # --- Default profile mechanism ---
@@ -359,12 +353,12 @@ def set_default_profile(profile: ConsumerProfile) -> None:
 def get_default_profile() -> ConsumerProfile:
     """Return the module-level default profile.
 
-    If none has been set, returns the DCM reference profile (preserving
+    If none has been set, returns the built-in generic reference profile (preserving
     pre-ε.1 behavior for callers that haven't been updated).
     """
     if _DEFAULT_PROFILE is not None:
         return _DEFAULT_PROFILE
-    return get_dcm_reference_profile()
+    return get_generic_reference_profile()
 
 def reset_default_profile() -> None:
     """Clear the module-level default profile (test-only utility)."""

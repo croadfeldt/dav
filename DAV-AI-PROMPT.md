@@ -234,17 +234,17 @@ These are intentionally decoupled. Operators choose deploy targets per layer:
 
 **Don't undo:** if you're working on the deploy layer, preserve the engine/inference split. The engine consumes inference as a URL; the engine deploy and the inference deploy are not coupled. Reintroducing coupling reverses an explicit architectural decision.
 
-### Built-in DCM reference profile
+### Built-in generic reference profile
 
-The framework ships a DCM profile in code (`get_dcm_reference_profile()`) so DAV is usable with no external configuration. This is a deliberate exception to "no consumer-specific knowledge in the framework" — the DCM profile is the canonical worked example, kept current alongside the framework, and provides a fallback so smoke tests and exemplar UCs work without setup.
+The framework ships a DCM profile in code (`get_generic_reference_profile()`) so DAV is usable with no external configuration. This is a deliberate exception to "no consumer-specific knowledge in the framework" — the DCM profile is the canonical worked example, kept current alongside the framework, and provides a fallback so smoke tests and exemplar UCs work without setup.
 
 Other consumers ship their own profile YAML files. The framework does not have a built-in reference profile for any consumer other than DCM.
 
-**Don't undo:** if you're tempted to also bundle a "minimal-consumer" or "BookCatalog" profile in code, don't. Those live as YAML examples in `examples/`. The DCM reference profile is special because DAV was built from DCM and DCM is the testing target.
+**Don't undo:** if you're tempted to also bundle a "minimal-consumer" or "BookCatalog" profile in code, don't. Those live as YAML examples in `examples/`. The generic reference profile is special because DAV was built from DCM and DCM is the testing target.
 
 ### Synthetic exemplar UCs
 
-`examples/exemplar-ucs/` contains two UCs in a fictional `BookCatalog` domain — one happy path, one gap discovery. They validate clean against the DCM reference profile (the profile's vocabulary is general enough to cover them). They're deliberately non-DCM so they serve as portable "what a v1.0 UC looks like" references for new consumers.
+`examples/exemplar-ucs/` contains two UCs in a fictional `BookCatalog` domain — one happy path, one gap discovery. They validate clean against the generic reference profile (the profile's vocabulary is general enough to cover them). They're deliberately non-DCM so they serve as portable "what a v1.0 UC looks like" references for new consumers.
 
 **Don't undo:** keep these synthetic. If you ship DCM-specific UCs as exemplars, they stop being useful as references for other consumers.
 
@@ -269,11 +269,11 @@ Loading order (in `load_profile()`):
 
 1. If `path` is given, load from that YAML file.
 2. Else if `mcp_url` is given, attempt to fetch via MCP (`get_consumer_profile` tool). **Currently the MCP server doesn't implement this tool.** It falls through.
-3. Else fall back to the built-in DCM reference profile (`get_dcm_reference_profile()`).
+3. Else fall back to the built-in generic reference profile (`get_generic_reference_profile()`).
 
 The MCP fallback path was wired in ε.1 anticipating that consumers would ship their profile via the same MCP server that serves their docs. The server-side handler is still pending. Don't remove the MCP loading code; finish the server side instead.
 
-The DCM reference profile is the canonical example. It lives in code (not YAML) so the framework remains usable without any external files. Other consumers ship YAML; DCM is special because DAV was built from DCM.
+The generic reference profile is the canonical example. It lives in code (not YAML) so the framework remains usable without any external files. Other consumers ship YAML; DCM is special because DAV was built from DCM.
 
 Module-level `__getattr__` shims in `use_case_schema.py` and `ai/prompts.py` preserve the old API where pre-ε.1 callers expected globals like `ANALYSIS_JSON_SCHEMA` or `STAGE2_SYSTEM_PROMPT`. These are now built dynamically from the active profile via `build_analysis_json_schema(profile)` and `build_stage2_system_prompt(profile)`. The shims call `get_default_profile()` (which returns DCM if nothing's been set). Setting a default via `set_default_profile()` is required when running with a non-DCM consumer.
 
@@ -397,7 +397,7 @@ The order of difficulty (and decreasing change-radius):
 
 ### Small (touches schema or profile)
 
-- Add a new dimension value — update the consumer profile YAML (or the DCM reference profile). UCs using the new value validate; analyzer output handles it via the dynamically-built JSON schema.
+- Add a new dimension value — update the consumer profile YAML (or the generic reference profile). UCs using the new value validate; analyzer output handles it via the dynamically-built JSON schema.
 - Add a new Analysis output field — update the dataclass, the to_dict/from_dict, the schema spec doc, the prompt's expected output format, the merger if it's list-shaped. Bump the prompt version.
 
 ### Medium (touches the agent)

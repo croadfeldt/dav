@@ -669,7 +669,7 @@ def _cli():
     # Load consumer profile
     from dav.core.consumer_profile import load_profile, set_default_profile
     consumer_profile = load_profile(
-        path=args.consumer_profile, fall_back_to_dcm=True,
+        path=args.consumer_profile, fall_back_to_generic=True,
     )
     set_default_profile(consumer_profile)
     log.info(

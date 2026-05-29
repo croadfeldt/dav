@@ -20,7 +20,7 @@ from dav.core.consumer_profile import (
     load_profile,
     load_profile_from_file,
     load_profile_from_mcp,
-    get_dcm_reference_profile,
+    get_generic_reference_profile,
     get_default_profile,
     set_default_profile,
     reset_default_profile,
@@ -125,11 +125,11 @@ def test_to_dict_round_trip():
 # --- DCM reference profile tests ---
 
 def test_dcm_reference_is_valid():
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     assert_eq(p.validate(), [], "DCM reference validates clean")
 
 def test_dcm_reference_has_expected_provider_types():
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     # Current DCM spec defines 5 provider types. Compound services are a
     # Data concept (compound resource type specifications) orchestrated by
     # the Control Plane (Request Processor / Orchestrator), not a provider
@@ -141,14 +141,14 @@ def test_dcm_reference_has_expected_provider_types():
               "DCM provider_types match current spec (5 types, no meta)")
 
 def test_dcm_reference_has_expected_profiles():
-    p = get_dcm_reference_profile()
+    p = get_generic_reference_profile()
     assert_eq(set(p.profiles),
               {"minimal", "dev", "standard", "prod", "fsi", "sovereign"},
               "DCM profiles match historical hardcoded values")
 
 def test_dcm_reference_returns_fresh_copies():
-    p1 = get_dcm_reference_profile()
-    p2 = get_dcm_reference_profile()
+    p1 = get_generic_reference_profile()
+    p2 = get_generic_reference_profile()
     p1.provider_types.append("mutated")
     # Mutating one copy should not affect the other
     assert_true("mutated" not in p2.provider_types,
@@ -262,11 +262,11 @@ def test_load_profile_path_takes_precedence():
         path.unlink()
 
 def test_load_profile_mcp_fallback_to_dcm_on_failure():
-    """MCP failure + fall_back_to_dcm=True → DCM reference."""
+    """MCP failure + fall_back_to_generic=True → DCM reference."""
     fake_client = mock.MagicMock()
     fake_client.call.side_effect = RuntimeError("MCP down")
     with mock.patch("dav.ai.mcp_tools.McpClient", return_value=fake_client):
-        p = load_profile(mcp_url="http://fake:8080", fall_back_to_dcm=True)
+        p = load_profile(mcp_url="http://fake:8080", fall_back_to_generic=True)
     assert_eq(p.consumer_id, "dcm", "fallback to DCM on MCP failure")
 
 def test_load_profile_mcp_failure_no_fallback_raises():
@@ -274,7 +274,7 @@ def test_load_profile_mcp_failure_no_fallback_raises():
     fake_client.call.side_effect = RuntimeError("MCP down")
     with mock.patch("dav.ai.mcp_tools.McpClient", return_value=fake_client):
         assert_raises(
-            lambda: load_profile(mcp_url="http://fake:8080", fall_back_to_dcm=False),
+            lambda: load_profile(mcp_url="http://fake:8080", fall_back_to_generic=False),
             ConsumerProfileError, "MCP failure raises with fallback disabled"
         )
 
@@ -284,7 +284,7 @@ def test_load_profile_no_args_returns_dcm():
 
 def test_load_profile_no_args_no_fallback_raises():
     assert_raises(
-        lambda: load_profile(fall_back_to_dcm=False),
+        lambda: load_profile(fall_back_to_generic=False),
         ConsumerProfileError, "no args + no fallback raises"
     )
 
