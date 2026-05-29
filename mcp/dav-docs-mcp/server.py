@@ -38,6 +38,19 @@ except ImportError:
     print("Install fastmcp: pip install fastmcp")
     raise
 
+# Above this size, get_document_section returns a head + structural
+# guidance instead of dumping the whole section. Set from observed
+# behavior (OSAC 2026-05-29): a model fetching the ~88k-char / ~22k-token
+# DCM Foundational Capabilities Matrix as one section bloated context and
+# triggered a ~15k-token runaway generation that blew the inference route
+# timeout. Normal prose sections are well under this; only enormous
+# table/reference sections trip it, and they're exactly what should be
+# drilled into (get_capability for matrix rows, a narrower subsection
+# otherwise) rather than dumped wholesale. Corpus-agnostic — no document
+# or namespace is special-cased.
+_MAX_SECTION_CHARS = 32000
+_SECTION_HEAD_CHARS = 6000
+
 # Stopwords filtered from queries so phrases like "how does audit work"
 # rank on "audit" rather than matching nearly every document on "how".
 _STOPWORDS = {
@@ -498,7 +511,58 @@ def get_document_section(handle: str, section_title: str) -> str:
             end_line = section["line"] - 1
             break
 
-    return "\n".join(lines[start_line:end_line])
+    body = "\n".join(lines[start_line:end_line])
+
+    if len(body) <= _MAX_SECTION_CHARS:
+        return body
+
+    # Oversized section — return a head + drill-down guidance instead of
+    # dumping the whole thing into the agent's context.
+    head = body[:_SECTION_HEAD_CHARS]
+    est_tokens = len(body) // 4
+
+    # Sub-headings deeper than this section, for "request a narrower
+    # subsection" guidance.
+    sub_sections = [
+        s["title"] for s in doc["sections"]
+        if start_line < s["line"] - 1 < end_line and s["level"] > start_level
+    ]
+
+    # Capability-matrix rows inside this section (first table cell is an
+    # ID like OBS-002), so we can point the model at get_capability.
+    row_re = re.compile(r"^\|\s*([A-Z]{2,5}-\d{3})\s*\|")
+    cap_ids = [m.group(1) for ln in body.split("\n")
+               if (m := row_re.match(ln))]
+
+    parts = [
+        f"⚠ Section '{section_title}' in '{doc['handle']}' is large "
+        f"({len(body)} chars, ~{est_tokens} tokens) and was TRUNCATED to "
+        f"avoid bloating your context. The first {_SECTION_HEAD_CHARS} "
+        f"characters are shown below.\n",
+    ]
+    if cap_ids:
+        prefixes = sorted({cid.split("-")[0] for cid in cap_ids})
+        sample = ", ".join(cap_ids[:8])
+        parts.append(
+            f"This section is a capability matrix with {len(cap_ids)} row "
+            f"IDs (prefixes: {', '.join(prefixes)}; e.g. {sample}). DO NOT "
+            f"re-fetch the whole section. Call `get_capability(capability_id="
+            f"'<ID>')` for each specific capability you need — it returns "
+            f"that single row with its column headers.\n"
+        )
+    if sub_sections:
+        listed = "\n".join(f"  - {t}" for t in sub_sections)
+        parts.append(
+            f"Or request a narrower subsection by its exact title:\n{listed}\n"
+        )
+    if not cap_ids and not sub_sections:
+        parts.append(
+            "This section has no subsections to narrow into. Use the head "
+            "below; if you need more, call `get_document` for the full text "
+            "only when truly necessary.\n"
+        )
+    parts.append(f"--- first {_SECTION_HEAD_CHARS} chars ---\n{head}")
+    return "\n".join(parts)
 
 
 @mcp.tool()
