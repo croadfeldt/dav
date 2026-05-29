@@ -39,6 +39,14 @@ class EndpointConfig:
     # particular: `{"enable_thinking": False}` disables <think>...</think>
     # reasoning blocks, which is almost always right for tool-use loops.
     # Templates without matching kwargs ignore the field.
+    temperature: float | None = None
+    # Sampling temperature actually used for this run. Stored on the
+    # endpoint so effective_sampling() can surface it alongside the
+    # other params even though the HTTP body sets temperature
+    # separately (via the request, not the endpoint defaults).
+    max_tokens: int | None = None
+    # Same rationale — surfaced via effective_sampling for output
+    # denotation. The actual cap is enforced per-call in AgentConfig.
     cache_prompt: bool = False
     # Whether to allow llama.cpp's cross-request KV cache reuse. The
     # field default here is conservatively False, but per-mode defaults
@@ -116,6 +124,8 @@ def effective_sampling(endpoint: "EndpointConfig") -> dict:
     caps = endpoint.capabilities or {}
     sent: dict = {}
     dropped: dict = {}
+    if endpoint.temperature is not None:
+        sent["temperature"] = endpoint.temperature
     if endpoint.top_k is not None:
         sent["top_k"] = endpoint.top_k
     if endpoint.top_p is not None:
@@ -125,6 +135,8 @@ def effective_sampling(endpoint: "EndpointConfig") -> dict:
             dropped["min_p"] = endpoint.min_p
         else:
             sent["min_p"] = endpoint.min_p
+    if endpoint.max_tokens is not None:
+        sent["max_tokens"] = endpoint.max_tokens
     if endpoint.chat_template_kwargs:
         sent["chat_template_kwargs"] = dict(endpoint.chat_template_kwargs)
     return {

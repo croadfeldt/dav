@@ -775,40 +775,47 @@ def _cli():
     run_dir.mkdir(parents=True, exist_ok=True)
     log.info("run id: %s (output: %s)", run_id, run_dir)
 
-    # Resolve mode-specific defaults
-    if args.temperature is None:
-        temperature = _DEFAULT_TEMPERATURE[args.mode]
-    else:
+    # Resolution order for every tunable: explicit CLI flag > use_profile
+    # from DAV > mode default in code. Capabilities filter drops disallowed
+    # params at body-build time in client._build_body.
+    capabilities = _parse_engine_json(args.capabilities_json, "capabilities-json") or {}
+    use_profile  = _parse_engine_json(args.use_profile_json, "use-profile-json") or {}
+
+    if args.temperature is not None:
         temperature = args.temperature
+    elif "temperature" in use_profile:
+        temperature = use_profile["temperature"]
+    else:
+        temperature = _DEFAULT_TEMPERATURE[args.mode]
     if args.cache_prompt is None:
-        cache_prompt = _DEFAULT_CACHE_PROMPT[args.mode]
+        cache_prompt = use_profile.get("cache_prompt", _DEFAULT_CACHE_PROMPT[args.mode])
     else:
         cache_prompt = args.cache_prompt
 
-    # Resolve sampler params: CLI override > mode default. CLI overrides
-    # are absolute (None means "no override; use mode default"); to send
-    # nothing for a field, set the mode default to None.
     sampler_defaults = _DEFAULT_SAMPLER_PARAMS[args.mode]
-    # Resolution order: explicit CLI flag > use_profile from DAV > mode
-    # default in code. Engine then drops disallowed params per
-    # capabilities at body-build time in client._build_body.
-    capabilities = _parse_engine_json(args.capabilities_json, "capabilities-json") or {}
-    use_profile  = _parse_engine_json(args.use_profile_json, "use-profile-json") or {}
     top_k = args.top_k if args.top_k is not None else use_profile.get("top_k", sampler_defaults["top_k"])
     top_p = args.top_p if args.top_p is not None else use_profile.get("top_p", sampler_defaults["top_p"])
     min_p = args.min_p if args.min_p is not None else use_profile.get("min_p", sampler_defaults["min_p"])
 
+    # max_tokens has a CLI default of 4096 so we can't distinguish "user
+    # didn't set it" from "user explicitly set 4096". Treat any non-default
+    # CLI value as override; otherwise let use_profile or default apply.
+    if args.max_tokens != 4096:
+        max_tokens = args.max_tokens
+    else:
+        max_tokens = use_profile.get("max_tokens", args.max_tokens)
+
     log.info(
         "corpus mode=%s temperature=%s cache_prompt=%s sample_count=%s "
-        "sample_concurrency=%d top_k=%s top_p=%s min_p=%s",
+        "sample_concurrency=%d top_k=%s top_p=%s min_p=%s max_tokens=%s",
         args.mode, temperature, cache_prompt,
         args.sample_count or _DEFAULT_SAMPLE_COUNT[args.mode],
-        args.sample_concurrency, top_k, top_p, min_p,
+        args.sample_concurrency, top_k, top_p, min_p, max_tokens,
     )
 
     config = AgentConfig(
         max_tool_calls=args.max_tool_calls,
-        max_tokens=args.max_tokens,
+        max_tokens=max_tokens,
         temperature=temperature,
         seed=args.seed,
         sample_count=args.sample_count or _DEFAULT_SAMPLE_COUNT[args.mode],
@@ -827,6 +834,8 @@ def _cli():
         top_k=top_k,
         top_p=top_p,
         min_p=min_p,
+        temperature=temperature,
+        max_tokens=max_tokens,
         capabilities=capabilities,
         use_key=args.use_key,
     )

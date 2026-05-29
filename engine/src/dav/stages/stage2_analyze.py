@@ -454,23 +454,35 @@ def _cli():
 
     # Resolve mode-driven sample count and seeds
     sample_count, sample_seeds = _resolve_sample_count_and_seeds(args, use_case)
-    temperature = args.temperature if args.temperature is not None else _DEFAULT_TEMPERATURE[args.mode]
-    cache_prompt = args.cache_prompt if args.cache_prompt is not None else _DEFAULT_CACHE_PROMPT[args.mode]
-
-    # Resolve sampler params: CLI override > mode default. Diagnosed
-    # 2026-04-26 — see run_corpus.py / client.py for full context. Modes
-    # that want sampler-driven variance must send top_k/top_p/min_p
-    # explicitly because llama.cpp server CLI defaults override unsent
-    # fields.
-    sampler_defaults = _DEFAULT_SAMPLER_PARAMS[args.mode]
-    # Resolution order: explicit CLI flag > use_profile > mode default.
-    # Capabilities filter applies at body-build time in client._build_body.
+    # Resolution order for every tunable: explicit CLI flag > use_profile
+    # from DAV > mode default in code. Capabilities filter drops disallowed
+    # params at body-build time in client._build_body.
     from dav.stages.run_corpus import _parse_engine_json
     capabilities = _parse_engine_json(args.capabilities_json, "capabilities-json") or {}
     use_profile  = _parse_engine_json(args.use_profile_json, "use-profile-json") or {}
+
+    if args.temperature is not None:
+        temperature = args.temperature
+    elif "temperature" in use_profile:
+        temperature = use_profile["temperature"]
+    else:
+        temperature = _DEFAULT_TEMPERATURE[args.mode]
+    if args.cache_prompt is None:
+        cache_prompt = use_profile.get("cache_prompt", _DEFAULT_CACHE_PROMPT[args.mode])
+    else:
+        cache_prompt = args.cache_prompt
+
+    sampler_defaults = _DEFAULT_SAMPLER_PARAMS[args.mode]
     top_k = args.top_k if args.top_k is not None else use_profile.get("top_k", sampler_defaults["top_k"])
     top_p = args.top_p if args.top_p is not None else use_profile.get("top_p", sampler_defaults["top_p"])
     min_p = args.min_p if args.min_p is not None else use_profile.get("min_p", sampler_defaults["min_p"])
+
+    # max_tokens has a CLI default of 6144 here. Same disambiguation
+    # rule as run_corpus.py: any non-default CLI value wins.
+    if args.max_tokens != 6144:
+        max_tokens = args.max_tokens
+    else:
+        max_tokens = use_profile.get("max_tokens", args.max_tokens)
 
     log.info(
         "stage2 mode=%s sample_count=%d sample_concurrency=%d temperature=%s "
@@ -496,6 +508,8 @@ def _cli():
             top_k=top_k,
             top_p=top_p,
             min_p=min_p,
+            temperature=temperature,
+            max_tokens=max_tokens,
             capabilities=capabilities,
             use_key=args.use_key,
         )
@@ -522,7 +536,7 @@ def _cli():
     config = AgentConfig(
         max_tool_calls=args.max_tool_calls,
         temperature=temperature,
-        max_tokens=args.max_tokens,
+        max_tokens=max_tokens,
         use_guided_json=not args.no_guided_json,
         sample_count=sample_count,
         sample_concurrency=args.sample_concurrency,
