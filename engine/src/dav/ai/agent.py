@@ -1071,6 +1071,14 @@ class Stage2Agent:
                 engine_version_string, engine_commit_string,
                 consumer_version_string,
             )
+            # Per-UC denotation of effective sampling — mirrors what's at
+            # the top of run-summary.yaml so every analysis is self-
+            # describing without needing to cross-reference its run.
+            try:
+                from dav.ai.client import effective_sampling as _eff_sampling
+                _eff_block = _eff_sampling(self.inference.primary)
+            except Exception:
+                _eff_block = {}
             analysis = Analysis(
                 use_case_uuid=use_case.uuid,
                 analysis_metadata=AnalysisMetadata(
@@ -1085,6 +1093,7 @@ class Stage2Agent:
                     engine_commit=engine_commit_string(),
                     consumer_version=consumer_version_string(self.consumer_content_path),
                     infrastructure_confidence=self._compute_infrastructure_confidence(),
+                    effective_sampling=_eff_block,
                 ),
                 components_required=[_from_dict(ComponentRequired, x) for x in data.get("components_required", [])],
                 data_model_touched=[_from_dict(DataModelTouched, x) for x in data.get("data_model_touched", [])],

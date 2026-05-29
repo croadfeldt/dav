@@ -731,6 +731,17 @@ class AnalysisMetadata:
     # Empty dict when not populated (back-compat with pre-2026-05-28 runs).
     infrastructure_confidence: dict[str, Any] = field(default_factory=dict)
 
+    # Per-(model, use) sampling settings actually sent for this analysis
+    # (DAV migration 014). Shape mirrors client.effective_sampling() and
+    # the run-summary.yaml top-level effective_sampling block:
+    #   {use_key: str, model: str, endpoint_url: str,
+    #    sent: {top_k, top_p, ...}, dropped: {min_p, ...},
+    #    capabilities: {speculative_decoding, supports_min_p, ...}}
+    # Set once at agent construction; identical across all samples of
+    # a given analysis (sampler params don't vary within a UC).
+    # Empty dict when not populated (back-compat with pre-2026-05-29 runs).
+    effective_sampling: dict[str, Any] = field(default_factory=dict)
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
