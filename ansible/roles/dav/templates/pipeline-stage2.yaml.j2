@@ -125,6 +125,17 @@ spec:
       type: string
       default: ""
 
+    # Per-(model, use) override system (DAV migration 014)
+    - name: use-key
+      type: string
+      default: ""
+    - name: capabilities-json
+      type: string
+      default: ""
+    - name: use-profile-json
+      type: string
+      default: ""
+
   workspaces:
     - name: shared-data
       description: |
@@ -267,3 +278,9 @@ spec:
           value: $(params.consumer-profile-path)
         - name: spec-namespaces
           value: $(params.spec-namespaces)
+        - name: use-key
+          value: $(params.use-key)
+        - name: capabilities-json
+          value: $(params.capabilities-json)
+        - name: use-profile-json
+          value: $(params.use-profile-json)

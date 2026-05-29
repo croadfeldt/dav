@@ -805,6 +805,39 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
     if payload.category and payload.category not in RUN_CATEGORIES:
         raise HTTPException(400, f"invalid category; must be one of {RUN_CATEGORIES}")
     params = _resolve_run_params(payload)
+    # Per-(model, use) override system (DAV migration 014). Resolve
+    # capabilities + use_profile from DB by inference_model. use_key
+    # maps from the run mode: verification → evaluation_verification,
+    # explore → evaluation_explore, reproduce → evaluation_reproduce.
+    # arch_review / uc_assist / enhancement go through their own
+    # endpoints, not /api/runs.
+    use_key = f"evaluation_{payload.mode}" if payload.mode in {"verification", "explore", "reproduce"} else None
+    capabilities_json: Optional[str] = None
+    use_profile_json: Optional[str] = None
+    if params["inference_model"]:
+        async with pool.acquire() as conn:
+            mc_row = await conn.fetchrow(
+                "SELECT id, capabilities FROM model_configs "
+                "WHERE model_id=$1 AND enabled ORDER BY id LIMIT 1",
+                params["inference_model"],
+            )
+            if mc_row:
+                caps_raw = mc_row["capabilities"]
+                if caps_raw:
+                    capabilities_json = (
+                        caps_raw if isinstance(caps_raw, str) else json.dumps(caps_raw)
+                    )
+                if use_key:
+                    profile_row = await conn.fetchrow(
+                        "SELECT params FROM model_use_profiles "
+                        "WHERE model_config_id=$1 AND use_key=$2",
+                        mc_row["id"], use_key,
+                    )
+                    if profile_row and profile_row["params"]:
+                        prm = profile_row["params"]
+                        use_profile_json = (
+                            prm if isinstance(prm, str) else json.dumps(prm)
+                        )
     try:
         result = validations.trigger_run(
             triggered_by=reviewer,
@@ -825,6 +858,9 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             managed_uc_uuids=payload.managed_uc_uuids,
             corpus_namespaces=payload.corpus_namespaces,
             spec_namespaces=payload.spec_namespaces,
+            use_key=use_key,
+            capabilities_json=capabilities_json,
+            use_profile_json=use_profile_json,
         )
     except Exception as e:
         log.exception("run trigger failed")

@@ -389,6 +389,27 @@ def run_one_uc(
         sample_count=sample_count,
     )
 
+def _parse_engine_json(blob: Optional[str], name: str) -> Optional[dict]:
+    """Lenient parser for the --capabilities-json / --use-profile-json CLI
+    flags. Accepts empty/missing as no-op (returns None). Logs a warning
+    on malformed JSON and falls back to no-op rather than crashing the
+    run — the engine still has mode defaults to fall back on, and a
+    typo in the operator's profile shouldn't kill an A/B in progress.
+    """
+    if not blob or not blob.strip() or blob.strip() in ("{}", "null"):
+        return None
+    import json as _json
+    try:
+        out = _json.loads(blob)
+    except Exception as e:
+        log.warning("--%s: ignoring malformed JSON (%s)", name, e)
+        return None
+    if not isinstance(out, dict):
+        log.warning("--%s: expected JSON object, got %s — ignoring", name, type(out).__name__)
+        return None
+    return out
+
+
 def write_run_summary(
     *,
     run_dir: Path,
@@ -397,6 +418,7 @@ def write_run_summary(
     results: list[CorpusUcResult],
     runner_started_at: str,
     runner_total_seconds: float,
+    effective_sampling: Optional[dict] = None,
 ) -> Path:
     """Write the unified run-summary.yaml at the top of run_dir."""
     successful = [r for r in results if r.success]
@@ -417,6 +439,16 @@ def write_run_summary(
         "failed": len(failed),
         "total_samples": total_samples,
         "mean_uc_wall_time_seconds": round(mean_wall, 2),
+        # Per-(model, use) capabilities + profile system (DAV migration 014).
+        # `effective_sampling.sent` is what actually went out on every
+        # request body for this run; `effective_sampling.dropped` is what
+        # the engine suppressed at body-build time because a capability
+        # flag forbade it. Together with mode + model these are sufficient
+        # to reproduce the run without DAV state.
+        **(
+            {"effective_sampling": effective_sampling}
+            if effective_sampling else {}
+        ),
         "ucs": [
             {
                 "uc_uuid": r.uc_uuid,
@@ -556,6 +588,32 @@ def _cli():
     parser.add_argument(
         "--halt-on-error", action="store_true",
         help="Stop the corpus run on first UC failure. Default: continue.",
+    )
+    # Per-(model, use) override system (DAV migration 014). When DAV's
+    # API triggers the PipelineRun it resolves the model's capabilities
+    # row and the matching use_profile and threads them through as JSON
+    # strings. Engine applies use_profile params as a layer between
+    # mode defaults and explicit CLI overrides; capabilities filters
+    # what actually goes out on the wire.
+    parser.add_argument(
+        "--use-key", type=str, default=None,
+        help="DAV model_use_profiles use_key for this run (one of: "
+             "evaluation_verification, evaluation_explore, "
+             "evaluation_reproduce, arch_review, uc_assist, enhancement). "
+             "Recorded in run-summary.yaml.effective_sampling.use_key.",
+    )
+    parser.add_argument(
+        "--capabilities-json", type=str, default=None,
+        help="JSON object with the model_configs.capabilities row for the "
+             "target inference model. Engine drops disallowed params per "
+             "EndpointConfig.capabilities. Empty / missing = no filtering.",
+    )
+    parser.add_argument(
+        "--use-profile-json", type=str, default=None,
+        help="JSON object with the model_use_profiles.params row for "
+             "(this model × this use_key). Overrides mode defaults for "
+             "any keys it sets; CLI overrides still win. Empty / missing "
+             "= mode defaults apply.",
     )
     parser.add_argument(
         "--uc-handles", type=str, default=None,
@@ -717,28 +775,14 @@ def _cli():
     # are absolute (None means "no override; use mode default"); to send
     # nothing for a field, set the mode default to None.
     sampler_defaults = _DEFAULT_SAMPLER_PARAMS[args.mode]
-    top_k = args.top_k if args.top_k is not None else sampler_defaults["top_k"]
-    top_p = args.top_p if args.top_p is not None else sampler_defaults["top_p"]
-    min_p = args.min_p if args.min_p is not None else sampler_defaults["min_p"]
-
-    # vLLM rejects `min_p` (and `logit_bias`) at /v1/chat/completions when
-    # speculative decoding is active (e.g. --speculative-config
-    # qwen3_next_mtp on Qwen3.6-27B-FP8). The error is HTTP 400 at turn 0
-    # with no recovery path. Suppress min_p for models flagged via the
-    # comma-list env var DAV_MTP_MODEL_NAMES (default: "qwen36-27b").
-    # Sampler diversity falls back to top_k + top_p, which vLLM accepts
-    # under speculative decoding.
-    _mtp_models = frozenset(
-        s.strip() for s in os.environ.get("DAV_MTP_MODEL_NAMES", "qwen36-27b").split(",")
-        if s.strip()
-    )
-    if args.inference_model in _mtp_models and min_p is not None:
-        log.info(
-            "MTP-enabled inference model %s: suppressing min_p=%s "
-            "(vLLM rejects min_p with speculative decoding)",
-            args.inference_model, min_p,
-        )
-        min_p = None
+    # Resolution order: explicit CLI flag > use_profile from DAV > mode
+    # default in code. Engine then drops disallowed params per
+    # capabilities at body-build time in client._build_body.
+    capabilities = _parse_engine_json(args.capabilities_json, "capabilities-json") or {}
+    use_profile  = _parse_engine_json(args.use_profile_json, "use-profile-json") or {}
+    top_k = args.top_k if args.top_k is not None else use_profile.get("top_k", sampler_defaults["top_k"])
+    top_p = args.top_p if args.top_p is not None else use_profile.get("top_p", sampler_defaults["top_p"])
+    min_p = args.min_p if args.min_p is not None else use_profile.get("min_p", sampler_defaults["min_p"])
 
     log.info(
         "corpus mode=%s temperature=%s cache_prompt=%s sample_count=%s "
@@ -758,6 +802,9 @@ def _cli():
     )
 
     chat_template_kwargs = {"enable_thinking": False} if args.no_enable_thinking else None
+    # use_profile may override chat_template_kwargs too — last writer wins.
+    if "chat_template_kwargs" in use_profile and use_profile["chat_template_kwargs"] is not None:
+        chat_template_kwargs = use_profile["chat_template_kwargs"]
     primary = EndpointConfig(
         url=args.inference_endpoint,
         model=args.inference_model,
@@ -766,7 +813,23 @@ def _cli():
         top_k=top_k,
         top_p=top_p,
         min_p=min_p,
+        capabilities=capabilities,
+        use_key=args.use_key,
     )
+    from dav.ai.client import effective_sampling as _eff_sampling
+    effective_block = _eff_sampling(primary)
+    if effective_block["dropped"]:
+        log.info(
+            "effective_sampling: use_key=%s sent=%s dropped=%s capabilities=%s",
+            effective_block["use_key"], effective_block["sent"],
+            effective_block["dropped"], effective_block["capabilities"],
+        )
+    else:
+        log.info(
+            "effective_sampling: use_key=%s sent=%s capabilities=%s",
+            effective_block["use_key"], effective_block["sent"],
+            effective_block["capabilities"],
+        )
     def _make_inference():
         return InferenceClient(primary=primary)
     def _make_mcp():
@@ -850,6 +913,7 @@ def _cli():
         run_dir=run_dir, run_id=run_id, mode=args.mode,
         results=results, runner_started_at=runner_started_at,
         runner_total_seconds=runner_total,
+        effective_sampling=effective_block,
     )
     log.info("run summary written: %s", summary_path)
 

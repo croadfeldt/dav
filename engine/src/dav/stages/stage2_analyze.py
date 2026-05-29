@@ -333,6 +333,24 @@ def _cli():
     parser.add_argument("--no-guided-json", action="store_true",
                         help="Disable vLLM guided_json decoding (for endpoints that don't support it)")
     parser.add_argument("--log-level", default="INFO")
+    # Per-(model, use) override system (DAV migration 014) — see
+    # stages.run_corpus for the long-form rationale. Mirrored here so
+    # the standalone CLI for single-UC stage-2 runs has the same
+    # tuning surface as the corpus driver.
+    parser.add_argument(
+        "--use-key", type=str, default=None,
+        help="DAV model_use_profiles use_key (recorded in output).",
+    )
+    parser.add_argument(
+        "--capabilities-json", type=str, default=None,
+        help="JSON of model_configs.capabilities; engine drops disallowed "
+             "params per-request.",
+    )
+    parser.add_argument(
+        "--use-profile-json", type=str, default=None,
+        help="JSON of model_use_profiles.params; layer between mode "
+             "defaults and CLI overrides.",
+    )
     parser.add_argument(
         "--enable-thinking",
         action=argparse.BooleanOptionalAction,
@@ -445,25 +463,14 @@ def _cli():
     # explicitly because llama.cpp server CLI defaults override unsent
     # fields.
     sampler_defaults = _DEFAULT_SAMPLER_PARAMS[args.mode]
-    top_k = args.top_k if args.top_k is not None else sampler_defaults["top_k"]
-    top_p = args.top_p if args.top_p is not None else sampler_defaults["top_p"]
-    min_p = args.min_p if args.min_p is not None else sampler_defaults["min_p"]
-
-    # vLLM rejects `min_p` (and `logit_bias`) at /v1/chat/completions when
-    # speculative decoding is active (qwen3_next_mtp on Qwen3.6-27B-FP8).
-    # Mirrors the same suppression in stages.run_corpus. Comma-list env var
-    # DAV_MTP_MODEL_NAMES (default: "qwen36-27b") is the allowlist.
-    _mtp_models = frozenset(
-        s.strip() for s in os.environ.get("DAV_MTP_MODEL_NAMES", "qwen36-27b").split(",")
-        if s.strip()
-    )
-    if args.inference_model in _mtp_models and min_p is not None:
-        log.info(
-            "MTP-enabled inference model %s: suppressing min_p=%s "
-            "(vLLM rejects min_p with speculative decoding)",
-            args.inference_model, min_p,
-        )
-        min_p = None
+    # Resolution order: explicit CLI flag > use_profile > mode default.
+    # Capabilities filter applies at body-build time in client._build_body.
+    from dav.stages.run_corpus import _parse_engine_json
+    capabilities = _parse_engine_json(args.capabilities_json, "capabilities-json") or {}
+    use_profile  = _parse_engine_json(args.use_profile_json, "use-profile-json") or {}
+    top_k = args.top_k if args.top_k is not None else use_profile.get("top_k", sampler_defaults["top_k"])
+    top_p = args.top_p if args.top_p is not None else use_profile.get("top_p", sampler_defaults["top_p"])
+    min_p = args.min_p if args.min_p is not None else use_profile.get("min_p", sampler_defaults["min_p"])
 
     log.info(
         "stage2 mode=%s sample_count=%d sample_concurrency=%d temperature=%s "
@@ -489,6 +496,8 @@ def _cli():
             top_k=top_k,
             top_p=top_p,
             min_p=min_p,
+            capabilities=capabilities,
+            use_key=args.use_key,
         )
         fallback = None
         if args.fallback_endpoint:
@@ -502,6 +511,8 @@ def _cli():
                 top_k=top_k,
                 top_p=top_p,
                 min_p=min_p,
+                capabilities=capabilities,
+                use_key=args.use_key,
             )
         return InferenceClient(primary=primary, fallback=fallback)
 

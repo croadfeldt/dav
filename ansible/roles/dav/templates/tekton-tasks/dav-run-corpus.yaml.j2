@@ -119,6 +119,33 @@ spec:
         enforcement — the MCP itself still holds every spec namespace.
       default: ""
 
+    # Per-(model, use) override system (DAV migration 014). API resolves
+    # the model's capabilities row + the matching use_profile from DB
+    # before triggering the PipelineRun and threads them here as JSON.
+    - name: use-key
+      type: string
+      description: |
+        model_use_profiles use_key for this run (one of:
+        evaluation_verification, evaluation_explore,
+        evaluation_reproduce, arch_review, uc_assist, enhancement).
+        Recorded in run-summary.yaml.effective_sampling.use_key for
+        provenance. Empty = unspecified (engine treats as no profile).
+      default: ""
+    - name: capabilities-json
+      type: string
+      description: |
+        JSON object of model_configs.capabilities for the inference
+        model. Engine drops disallowed params at body-build time per
+        EndpointConfig.capabilities. Empty / "{}" = no filtering.
+      default: ""
+    - name: use-profile-json
+      type: string
+      description: |
+        JSON object of model_use_profiles.params for (this model × this
+        use_key). Layer between mode defaults and explicit CLI overrides.
+        Empty / "{}" = mode defaults apply.
+      default: ""
+
     - name: max-tool-calls
       type: string
       default: "30"
@@ -246,6 +273,18 @@ spec:
         # Note: --no-enable-thinking is the recommended default for
         # Qwen3 stage 2 runs (see prompts.py rationale). We hardcode
         # it on; if a non-Qwen3 endpoint is used, the flag is harmless.
+        # Per-(model, use) override args. Only forwarded when set so the
+        # engine's "missing flag = use defaults" branch fires correctly.
+        if [ -n "$(params.use-key)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --use-key $(params.use-key)"
+        fi
+        if [ -n "$(params.capabilities-json)" ] && [ "$(params.capabilities-json)" != "{}" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --capabilities-json $(params.capabilities-json)"
+        fi
+        if [ -n "$(params.use-profile-json)" ] && [ "$(params.use-profile-json)" != "{}" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --use-profile-json $(params.use-profile-json)"
+        fi
+
         python -m dav.stages.run_corpus \
           --corpus-path "$(params.corpus-subdir)" \
           --output-dir "$(params.output-subdir)" \

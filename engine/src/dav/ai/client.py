@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 import requests
 
@@ -70,6 +70,23 @@ class EndpointConfig:
     # Sampler params. When None, the field is omitted from the request body
     # and the server's CLI default applies. When set, the per-request value
     # overrides whatever the server has defaulted.
+    capabilities: dict = field(default_factory=dict)
+    # Static facts about what the server side of this endpoint supports.
+    # Populated from model_configs.capabilities (DAV migration 014) and
+    # threaded through the PipelineRun → Tekton task → engine CLI as a
+    # JSON blob (--capabilities-json). Recognized keys:
+    #   speculative_decoding: bool  — when true, drops min_p+logit_bias
+    #   supports_min_p: bool        — defaults true; false forces drop
+    #   supports_logit_bias: bool   — defaults true; false forces drop
+    #   max_tokens_default: int     — applied when nothing else sets it
+    # Engine treats these as authoritative: a flag set False here drops
+    # the param regardless of whether a use_profile or CLI override set
+    # it. Negation-only: if a key is absent the engine assumes "supported".
+    use_key: str | None = None
+    # Identifies the calling context: evaluation_verification,
+    # evaluation_explore, evaluation_reproduce, arch_review, uc_assist,
+    # enhancement. Used for the effective-sampling log line and the
+    # output denotation; doesn't change body construction directly.
     #
     # Why this matters: we saw an llama.cpp inference server launched
     # with --top-k 1, which makes the sampler strictly greedy
@@ -87,6 +104,38 @@ class EndpointConfig:
     #
     # Per-mode defaults are populated in dav.stages.run_corpus and
     # dav.stages.stage2_analyze; this dataclass just stores them.
+
+
+def effective_sampling(endpoint: "EndpointConfig") -> dict:
+    """Return the per-request sampling shape the engine WILL send, after
+    capabilities filtering. Sources of truth for output denotation in
+    run-summary.yaml and per-UC AnalysisMetadata. Read at run start when
+    the endpoint is constructed; mirrors the logic in _build_body. Keep
+    in sync if _build_body's drop conditions change.
+    """
+    caps = endpoint.capabilities or {}
+    sent: dict = {}
+    dropped: dict = {}
+    if endpoint.top_k is not None:
+        sent["top_k"] = endpoint.top_k
+    if endpoint.top_p is not None:
+        sent["top_p"] = endpoint.top_p
+    if endpoint.min_p is not None:
+        if caps.get("supports_min_p") is False or caps.get("speculative_decoding") is True:
+            dropped["min_p"] = endpoint.min_p
+        else:
+            sent["min_p"] = endpoint.min_p
+    if endpoint.chat_template_kwargs:
+        sent["chat_template_kwargs"] = dict(endpoint.chat_template_kwargs)
+    return {
+        "use_key": endpoint.use_key,
+        "model": endpoint.model,
+        "endpoint_url": endpoint.url,
+        "sent": sent,
+        "dropped": dropped,
+        "capabilities": dict(caps),
+    }
+
 
 @dataclass
 class ChatMessage:
@@ -282,12 +331,25 @@ class InferenceClient:
         # per-mode values fix it. None means "let server default apply" — only
         # use that path when the server is known to default sensibly OR when
         # the caller is explicit about wanting greedy.
+        #
+        # endpoint.capabilities (DAV migration 014) is the authoritative
+        # negative filter: a flag set False drops the param even when the
+        # caller set a non-None value. Keys absent from capabilities default
+        # to "supported". Today this handles speculative-decoding's
+        # min_p/logit_bias prohibition; new capability keys plug in here.
+        caps = endpoint.capabilities or {}
         if endpoint.top_k is not None:
             body["top_k"] = endpoint.top_k
         if endpoint.top_p is not None:
             body["top_p"] = endpoint.top_p
+        # Capabilities-driven drop: speculative_decoding=True OR
+        # supports_min_p=False both suppress min_p (vLLM rejects min_p with
+        # speculative decoding; first surfaced 2026-05-29 on Qwen3.6-27B MTP).
         if endpoint.min_p is not None:
-            body["min_p"] = endpoint.min_p
+            if caps.get("supports_min_p") is False or caps.get("speculative_decoding") is True:
+                pass  # dropped — see endpoint.capabilities
+            else:
+                body["min_p"] = endpoint.min_p
         if endpoint.chat_template_kwargs:
             body["chat_template_kwargs"] = endpoint.chat_template_kwargs
         return body

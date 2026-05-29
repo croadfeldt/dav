@@ -89,6 +89,9 @@ def _mk_pipelinerun(
     managed_uc_uuids: Optional[list[str]] = None,
     corpus_namespaces: Optional[list[str]] = None,
     spec_namespaces: Optional[list[str]] = None,
+    use_key: Optional[str] = None,
+    capabilities_json: Optional[str] = None,
+    use_profile_json: Optional[str] = None,
 ) -> dict:
     """Build a PipelineRun object targeting the DAV Pipeline."""
     suffix = str(int(time.time()))[-6:]
@@ -136,6 +139,15 @@ def _mk_pipelinerun(
         params.append({"name": "corpus-namespaces", "value": ",".join(corpus_namespaces)})
     if spec_namespaces:
         params.append({"name": "spec-namespaces", "value": ",".join(spec_namespaces)})
+    # Per-(model, use) override system (DAV migration 014). The API
+    # resolves capabilities + use_profile from DB before calling
+    # trigger_run and passes them through as opaque JSON strings.
+    if use_key:
+        params.append({"name": "use-key", "value": use_key})
+    if capabilities_json:
+        params.append({"name": "capabilities-json", "value": capabilities_json})
+    if use_profile_json:
+        params.append({"name": "use-profile-json", "value": use_profile_json})
 
     return {
         "apiVersion": f"{_TEKTON_GROUP}/{_TEKTON_VERSION}",
@@ -187,6 +199,9 @@ def trigger_run(
     managed_uc_uuids: Optional[list[str]] = None,
     corpus_namespaces: Optional[list[str]] = None,
     spec_namespaces: Optional[list[str]] = None,
+    use_key: Optional[str] = None,
+    capabilities_json: Optional[str] = None,
+    use_profile_json: Optional[str] = None,
 ) -> dict:
     """Create a PipelineRun. Returns the created object's status summary."""
     if not ENABLED:
@@ -212,6 +227,9 @@ def trigger_run(
         managed_uc_uuids=managed_uc_uuids,
         corpus_namespaces=corpus_namespaces,
         spec_namespaces=spec_namespaces,
+        use_key=use_key,
+        capabilities_json=capabilities_json,
+        use_profile_json=use_profile_json,
     )
 
     try:
