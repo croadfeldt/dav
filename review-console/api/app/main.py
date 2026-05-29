@@ -4396,6 +4396,103 @@ async def sources_kind_state(kind: str):
         raise HTTPException(500, f"read failed: {e}")
 
 
+# ========================= MCP DOCS REFRESH =========================
+#
+# Manual + scheduled refresh of the dav-docs-mcp deployment so the
+# init container re-clones the spec/corpus repos and the MCP serves
+# current content. The schedule is owned by a CronJob deployed via
+# Ansible (mcp-refresh-cronjob.yaml.j2); this endpoint is the manual
+# "Refresh Now" button surface for the Config UI.
+
+_MCP_REFRESH_DEPLOYMENT = "dav-docs-mcp"
+_MCP_REFRESH_NS = sources.NAMESPACE  # same namespace as the rest of dav-source-* logic
+
+
+@app.post("/api/mcp/refresh-now")
+async def mcp_refresh_now(request: Request):
+    """Trigger an immediate rollout-restart of the dav-docs-mcp deployment.
+
+    The standard kubectl-rollout-restart pattern: patch the pod template's
+    annotations with a fresh restartedAt timestamp, which forces a new
+    ReplicaSet and a rolling restart. The init container re-clones spec +
+    corpus on the new pod's startup.
+
+    Returns the timestamp the rollout was triggered at and the actor who
+    triggered it.
+    """
+    user = get_user(request)
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    body = {
+        "metadata": {
+            "annotations": {
+                "dav.io/last-refreshed-at": now,
+                "dav.io/last-refreshed-by": user,
+                "dav.io/last-refreshed-source": "manual-ui-button",
+            },
+        },
+        "spec": {
+            "template": {
+                "metadata": {
+                    "annotations": {
+                        "dav.io/restartedAt": now,
+                        "dav.io/restartReason": "manual-mcp-refresh",
+                    },
+                },
+            },
+        },
+    }
+    try:
+        sources._apps().patch_namespaced_deployment(
+            name=_MCP_REFRESH_DEPLOYMENT,
+            namespace=_MCP_REFRESH_NS,
+            body=body,
+        )
+        log.info("mcp-refresh-now triggered by=%s at=%s", user, now)
+    except Exception as e:
+        log.exception("mcp-refresh-now failed")
+        raise HTTPException(500, f"refresh failed: {e}")
+    return {"ok": True, "triggered_at": now, "triggered_by": user}
+
+
+@app.get("/api/mcp/refresh-status")
+async def mcp_refresh_status():
+    """Return the current MCP deployment's refresh metadata.
+
+    Reads annotations from the deployment to surface: when it was last
+    refreshed (manual OR scheduled), by whom or what, and current
+    rollout status (so the UI can show a spinner while pods are rolling).
+    """
+    try:
+        dep = sources._apps().read_namespaced_deployment(
+            name=_MCP_REFRESH_DEPLOYMENT,
+            namespace=_MCP_REFRESH_NS,
+        )
+    except Exception as e:
+        log.exception("mcp-refresh-status read failed")
+        raise HTTPException(500, f"status read failed: {e}")
+    annot = (dep.metadata.annotations or {}) if dep.metadata else {}
+    pod_annot = (
+        dep.spec.template.metadata.annotations or {}
+        if dep.spec and dep.spec.template and dep.spec.template.metadata
+        else {}
+    )
+    rollout = sources._deploy_to_rollout_state(dep)
+    return {
+        "deployment": _MCP_REFRESH_DEPLOYMENT,
+        "last_refreshed_at": annot.get("dav.io/last-refreshed-at"),
+        "last_refreshed_by": annot.get("dav.io/last-refreshed-by"),
+        "last_refreshed_source": annot.get("dav.io/last-refreshed-source"),
+        # The pod-template restartedAt is the truthful "this is when a roll
+        # was triggered" marker — present whether the trigger was manual
+        # or scheduled. The metadata annotations above are the manual-trigger
+        # bookkeeping that the scheduled CronJob also writes when it runs.
+        "last_pod_restart_at": pod_annot.get("dav.io/restartedAt"),
+        "last_pod_restart_reason": pod_annot.get("dav.io/restartReason"),
+        "rollout": rollout,
+    }
+
+
 # ========================= LEGACY SELF-TEST (kept for backward compat) =========================
 
 

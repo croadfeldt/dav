@@ -1191,6 +1191,7 @@
         <div class="config-nav-cat" data-target="cfgSec-pipeline">Pipeline Sources</div>
         <a class="config-nav-link" data-target="configSpecPanel">Architecture spec</a>
         <a class="config-nav-link" data-target="configCorpusPanel">Evaluation corpus</a>
+        <a class="config-nav-link" data-target="configMCPRefreshPanel">MCP refresh</a>
       </div>
       <div class="config-nav-group">
         <div class="config-nav-cat" data-target="cfgSec-aimodels">AI Models</div>
@@ -1389,6 +1390,32 @@
             Use the <strong>↻ Project all</strong> button on the Managed repos panel to force a reconcile.
           </div>
           <span id="srcCorpusMsg" style="font-size:11px;color:var(--text-faint);display:none;"></span>
+        </div>
+      </div>
+
+      <div class="panel-card" id="configMCPRefreshPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">MCP refresh</div>
+            <div class="pc-sub">Re-clone spec + corpus repos into the dav-docs-mcp pod so the MCP serves current content. A scheduled CronJob refreshes on its own cadence; this button forces an immediate refresh.</div>
+          </div>
+          <span id="mcpRefreshStatus" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div class="kv-grid">
+            <div class="kv-label">last refreshed</div><div class="kv-val" id="mcpRefreshWhen">—</div>
+            <div class="kv-label">last refresh source</div><div class="kv-val" id="mcpRefreshSource">—</div>
+            <div class="kv-label">last triggered by</div><div class="kv-val" id="mcpRefreshWho">—</div>
+            <div class="kv-label">rollout</div><div class="kv-val" id="mcpRefreshRollout">—</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;">
+            <button class="btn primary btn-sm" id="mcpRefreshNowBtn">↻ Refresh now</button>
+            <button class="btn ghost btn-sm" id="mcpRefreshReloadBtn" title="Reload status without triggering a refresh">⟳ Reload status</button>
+            <span id="mcpRefreshMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div style="font-size:10px;color:var(--text-faint);margin-top:10px;padding:6px 8px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;line-height:1.5;">
+            ℹ Scheduled refresh cadence is owned by the dav-docs-mcp-refresh CronJob (operator-controlled via Ansible vars: <code>dav_docs_mcp_refresh_schedule</code>). The schedule isn't editable from the UI yet — that's a tracked follow-up.
+          </div>
         </div>
       </div>
 
@@ -7069,6 +7096,7 @@ async function loadConfig() {
   await loadArchDefault();    // populates archDefaultModelSel from DB
   await loadMCPServers();
   await loadCodeRepos();
+  await loadMCPRefreshStatus();   // populates configMCPRefreshPanel
   setupConfigNav();
   try {
     const resp = await api('/api/sources');
@@ -7688,6 +7716,58 @@ document.getElementById('saveArchDefaultBtn').addEventListener('click', async ()
   }
   btn.disabled = false;
 });
+
+// ── MCP refresh (Config panel: Pipeline Sources → MCP refresh) ────────────────
+
+function _mcpRefreshFmtRolloutChip(rollout) {
+  if (!rollout) return '—';
+  const ready = rollout.ready_replicas || 0;
+  const desired = rollout.replicas || 0;
+  const updated = rollout.updated_replicas || 0;
+  const phase = (ready === desired && updated === desired && desired > 0)
+    ? `<span style="color:var(--ok)">stable</span>`
+    : `<span style="color:var(--accent)">rolling</span>`;
+  return `${phase} (${ready}/${desired} ready, ${updated} updated)`;
+}
+
+async function loadMCPRefreshStatus() {
+  try {
+    const s = await api('/api/mcp/refresh-status');
+    document.getElementById('mcpRefreshWhen').textContent =
+      s.last_pod_restart_at || s.last_refreshed_at || 'never';
+    document.getElementById('mcpRefreshSource').textContent =
+      s.last_pod_restart_reason || s.last_refreshed_source || '—';
+    document.getElementById('mcpRefreshWho').textContent =
+      s.last_refreshed_by || '—';
+    document.getElementById('mcpRefreshRollout').innerHTML =
+      _mcpRefreshFmtRolloutChip(s.rollout);
+    document.getElementById('mcpRefreshStatus').textContent =
+      s.rollout && s.rollout.ready_replicas === s.rollout.replicas && s.rollout.replicas > 0
+        ? 'ready' : 'rolling';
+  } catch (e) {
+    document.getElementById('mcpRefreshStatus').textContent = 'status read failed';
+  }
+}
+
+document.getElementById('mcpRefreshNowBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('mcpRefreshNowBtn');
+  const msgEl = document.getElementById('mcpRefreshMsg');
+  if (!confirm('Refresh the MCP now? This rolls the dav-docs-mcp pod (~30-60s) and the MCP is briefly unavailable.')) return;
+  btn.disabled = true; msgEl.textContent = 'triggering…';
+  try {
+    const r = await api('/api/mcp/refresh-now', { method: 'POST', body: '{}' });
+    msgEl.textContent = `triggered at ${r.triggered_at} by ${r.triggered_by}`;
+    msgEl.style.color = 'var(--green)';
+    setTimeout(() => loadMCPRefreshStatus(), 1500);
+    setTimeout(() => { msgEl.textContent = ''; msgEl.style.color = ''; }, 4000);
+  } catch (e) {
+    msgEl.textContent = 'refresh failed: ' + (e.message || e);
+    msgEl.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
+});
+
+document.getElementById('mcpRefreshReloadBtn').addEventListener('click', () => loadMCPRefreshStatus());
 
 // ── Model Browser ─────────────────────────────────────────────────────────────
 

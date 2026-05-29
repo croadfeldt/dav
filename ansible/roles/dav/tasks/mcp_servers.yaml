@@ -120,6 +120,17 @@
   ansible.builtin.debug:
     msg: "{{ rollout_status.stdout | default('No changes or fresh deploy — no restart needed') }}"
 
+- name: Deploy MCP refresh CronJob + RBAC
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'mcp-refresh-cronjob.yaml.j2') | from_yaml_all | list }}"
+
+- name: Remove MCP refresh CronJob when disabled
+  ansible.builtin.command:
+    cmd: "oc -n {{ dav_namespace }} delete cronjob/dav-docs-mcp-refresh --ignore-not-found"
+  when: not (dav_docs_mcp_refresh_enabled | bool)
+  changed_when: false
+
 - name: Clean up build context
   ansible.builtin.file:
     path: /tmp/dav-mcp-build
