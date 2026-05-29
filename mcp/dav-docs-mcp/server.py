@@ -70,6 +70,12 @@ class DocumentIndex:
         self.multi_source = multi_source
         self.documents: dict[str, dict] = {}
         self.system_policies: dict[str, dict] = {}
+        # capability_id → {id, row, table_header, section, handle, namespace}
+        # Populated from markdown table rows whose first cell is an ID like
+        # `OBS-001`. Distinct from system_policies, which catches the same
+        # IDs but only as ±200-char prose context. Get_capability returns
+        # the structured table row; get_system_policy returns prose context.
+        self.capabilities: dict[str, dict] = {}
         self._index()
 
     def _make_handle(self, namespace: str, rel_path: Path) -> str:
@@ -100,6 +106,7 @@ class DocumentIndex:
                 content = md_file.read_text(encoding="utf-8")
                 sections = self._extract_sections(content)
                 policies = self._extract_system_policies(content)
+                capabilities = self._extract_capabilities(content, sections)
 
                 self.documents[handle] = {
                     "handle": handle,
@@ -121,13 +128,23 @@ class DocumentIndex:
                         "source_document": handle,
                         "source_namespace": namespace,
                     }
+                for cap in capabilities:
+                    # First definition wins on cross-document collisions —
+                    # capability matrices are authoritative once per ID.
+                    if cap["id"] not in self.capabilities:
+                        self.capabilities[cap["id"]] = {
+                            **cap,
+                            "source_document": handle,
+                            "source_namespace": namespace,
+                        }
                 count += 1
 
             print(f"Indexed {count} documents from {namespace} ({root})")
 
         print(
             f"Total: {len(self.documents)} documents, "
-            f"{len(self.system_policies)} system policies"
+            f"{len(self.system_policies)} system policies, "
+            f"{len(self.capabilities)} capability matrix rows"
         )
 
     def _extract_title(self, content: str) -> str:
@@ -149,6 +166,48 @@ class DocumentIndex:
                     "line": i,
                 })
         return sections
+
+    def _extract_capabilities(self, content: str, sections: list[dict]) -> list[dict]:
+        """Extract capability rows from markdown tables.
+
+        A capability row is a markdown-table line whose first non-empty cell
+        is a structured ID like `OBS-001`, `GRP-003`, `IDM-012`. The
+        immediately preceding `| ID | ... |` header line is captured as the
+        table header so consumers see column meanings. The most recent
+        heading at or above the row's level is recorded as the section
+        context. Stage-2 agents call `get_capability` with the ID rather
+        than misusing `get_document_section(section_title=<ID>)` — the
+        behavior pattern that drove the 233-miss fishing cascade against
+        DCM-Capabilities-Matrix.md.
+        """
+        rows = []
+        lines = content.split("\n")
+        row_re = re.compile(r"^\|\s*([A-Z]{2,5}-\d{3})\s*\|")
+        header_re = re.compile(r"^\|\s*ID\s*\|", re.IGNORECASE)
+        last_header = None
+        for i, line in enumerate(lines):
+            if header_re.match(line):
+                last_header = line.strip()
+                continue
+            m = row_re.match(line)
+            if not m:
+                continue
+            cap_id = m.group(1)
+            # Find the deepest section heading at or before this line.
+            section = None
+            for s in sections:
+                if s["line"] <= i + 1:
+                    section = s["title"]
+                else:
+                    break
+            rows.append({
+                "id": cap_id,
+                "row": line.strip(),
+                "table_header": last_header,
+                "section": section,
+                "line": i + 1,
+            })
+        return rows
 
     def _extract_system_policies(self, content: str) -> list[dict]:
         """Extract system policy references like GRP-001, PLC-003, DPO-005."""
@@ -490,6 +549,55 @@ def get_system_policy(policy_id: str) -> str:
         "source_document": policy["source_document"],
         "source_namespace": policy.get("source_namespace"),
         "context": policy["context"],
+    }, indent=2)
+
+
+@mcp.tool()
+def get_capability(capability_id: str) -> str:
+    """Retrieve a capability matrix row by its structured ID.
+
+    Use this for IDs like `OBS-002`, `GRP-007`, `IDM-012` that appear as
+    rows in a capabilities matrix table. Returns the section heading
+    above the matrix, the table header row (column meanings), and the
+    matching capability row.
+
+    Do NOT pass a capability ID to `get_document_section` as a
+    `section_title` — capability IDs are table-row identifiers, not
+    markdown section headers. Calling `get_document_section(handle=...,
+    section_title='OBS-002')` will miss because no section has that
+    title; the row lives INSIDE the matrix section.
+
+    Args:
+        capability_id: Structured ID like `OBS-002`, `GRP-001`, `IDM-005`.
+            Case-insensitive.
+    """
+    cap_key = capability_id.strip().upper()
+    cap = index.capabilities.get(cap_key)
+    if not cap:
+        prefix = cap_key.split("-")[0] if "-" in cap_key else cap_key
+        siblings = sorted(
+            cid for cid in index.capabilities if cid.startswith(prefix + "-")
+        )
+        if siblings:
+            return (
+                f"Capability '{capability_id}' not found. Other "
+                f"'{prefix}-*' capabilities indexed: {', '.join(siblings)}"
+            )
+        return (
+            f"Capability '{capability_id}' not found. "
+            f"{len(index.capabilities)} capabilities indexed across "
+            f"{len({c['source_document'] for c in index.capabilities.values()})} document(s). "
+            f"If the ID is mentioned only in prose (not a table row), try "
+            f"`get_system_policy('{capability_id}')` for surrounding context."
+        )
+
+    return json.dumps({
+        "id": cap["id"],
+        "source_document": cap["source_document"],
+        "source_namespace": cap.get("source_namespace"),
+        "section": cap["section"],
+        "table_header": cap["table_header"],
+        "row": cap["row"],
     }, indent=2)
 
 

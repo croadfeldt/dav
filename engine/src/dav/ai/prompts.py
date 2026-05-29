@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dav.core.use_case_schema import UseCase
 
-STAGE2_PROMPT_VERSION = "1.8"  # 1.8 — two-pass: explore → findings → analysis, with MCP re-fetch in pass 2
+STAGE2_PROMPT_VERSION = "1.10"  # 1.10 — adds get_capability tool guidance to stop section_title misuse on capability matrix IDs
 
 # /no_think directive at the top is a Qwen3 chat template token that disables
 # the model's thinking-mode output (<think>...</think> blocks). We strip
@@ -41,6 +41,7 @@ You have access to tools that retrieve {framework_short} spec content. Use them 
 2. Fetch specific sections with `get_document_section` — this is the default. Most {framework_short} documents are 10-80k characters; fetching a whole document wastes context.
 3. Use `get_document` ONLY when you need the full structure of a short document, or when you've already narrowed down to a document whose sections you don't know.
 4. If a `get_document` returns content larger than ~5000 characters, you have probably over-fetched — next time use `get_document_section` instead.
+5. For structured IDs like `OBS-002`, `GRP-007`, `IDM-012` (the rows inside capability matrices), call `get_capability(capability_id='<ID>')`. **Do not** pass these IDs as a `section_title` to `get_document_section` — they are table-row identifiers, not section headers. The capability row lives inside its matrix section, not as a section of its own.
 
 Tool budget: you have a limited number of tool calls. Spend them on targeted retrieval, not bulk fetches.
 
