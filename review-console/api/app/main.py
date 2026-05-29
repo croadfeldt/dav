@@ -4527,7 +4527,7 @@ async def delete_review_model(mid: int, request: Request):
 
 # ========================= MODEL DEFAULTS =========================
 
-_VALID_DEFAULT_KEYS = {"evaluation"}
+_VALID_DEFAULT_KEYS = {"evaluation", "arch-review"}
 
 
 class ModelDefaultIn(BaseModel):
@@ -4607,7 +4607,27 @@ async def arch_review(payload: ArchReviewIn, request: Request):
                 "api_key":      base["api_key"]  if base else "",
             }
         else:
-            raise HTTPException(400, "Provide model_config_id or endpoint_url+model_id")
+            # Fall back to the project-scoped Arch Review default
+            # (model_defaults key='arch-review'). Mirrors the evaluation
+            # default flow for run-trigger params.
+            default_id = await conn.fetchval(
+                "SELECT model_config_id FROM model_defaults WHERE key='arch-review'"
+            )
+            if default_id is None:
+                raise HTTPException(
+                    400,
+                    "Provide model_config_id or endpoint_url+model_id, "
+                    "or set a project default in Config → Default Arch Review model",
+                )
+            model_row = await conn.fetchrow(
+                "SELECT * FROM model_configs WHERE id=$1 AND enabled", default_id
+            )
+            if not model_row:
+                raise HTTPException(
+                    404,
+                    "Project Arch Review default points to a model that no longer exists or is disabled",
+                )
+            model_row = dict(model_row)
 
         if payload.scope == "uc":
             if not payload.run_id or not payload.uc_uuid:

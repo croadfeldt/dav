@@ -1485,6 +1485,27 @@
         </div>
       </div>
 
+      <div class="cfg-card panel-card" id="configArchDefaultPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Default Arch Review model</div>
+            <div class="pc-sub">Project default for architectural review (Review &amp; Plan tab) — applies to all users. Can be overridden per call from the run drawer's Review &amp; Plan tab.</div>
+          </div>
+          <span id="archDefaultStatus" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <select id="archDefaultModelSel" style="min-width:260px;">
+              <option value="">— no default set —</option>
+            </select>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('archDefaultModelSel','archDefaultModel')">Browse…</button>
+            <button class="btn primary btn-sm" id="saveArchDefaultBtn">Save</button>
+            <span id="archDefaultMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div class="form-hint" style="margin-top:8px;">Stored server-side. Only registered model endpoints with <em>use_arch_review = true</em> are eligible.</div>
+        </div>
+      </div>
+
       <div class="cfg-sec-hdr" id="cfgSec-integrations">
         <span class="cfg-sec-title">Integrations</span>
         <span class="cfg-sec-sub">MCP servers — SSE tool connections for Claude Code and other agents</span>
@@ -7043,6 +7064,7 @@ async function loadConfig() {
   _populateModelSel('nrModelSel', 'nrLastModel');
   await loadUCAssistConfig();  // populates ucAssistModelSel from _reviewModels
   await loadEvalDefault();    // populates evalDefaultModelSel from DB
+  await loadArchDefault();    // populates archDefaultModelSel from DB
   await loadMCPServers();
   await loadCodeRepos();
   setupConfigNav();
@@ -7597,6 +7619,64 @@ document.getElementById('saveEvalDefaultBtn').addEventListener('click', async ()
       body: JSON.stringify({ model_config_id: modelId }),
     });
     _evalDefaultModelId = modelId;
+    msgEl.textContent = modelId ? 'Default saved' : 'Default cleared';
+    msgEl.style.color = 'var(--green)';
+    setTimeout(() => { msgEl.textContent = ''; msgEl.style.color = ''; }, 2500);
+  } catch(e) {
+    msgEl.textContent = 'Save failed: ' + e.message;
+    msgEl.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
+});
+
+// ── Project-scoped arch-review model default ───────────────────────────────────
+// Mirrors the evaluation default above. Backed by model_defaults
+// (key='arch-review'); /api/arch-review reads it when the caller omits an
+// explicit model_config_id / endpoint_url+model_id override.
+
+let _archDefaultModelId = null;
+
+function _populateArchDefaultSel(modelId) {
+  const sel = document.getElementById('archDefaultModelSel');
+  if (!sel) return;
+  // Only show models with use_arch_review=true (the per-row gate column).
+  const eligible = _reviewModels.filter(m => m.enabled && m.use_arch_review);
+  sel.innerHTML = '<option value="">— no default set —</option>' +
+    eligible.map(m => {
+      const suffix = m.is_local ? 'local' : 'frontier';
+      const label = m.name.toLowerCase().includes(`(${suffix})`) ? m.name : `${m.name} (${suffix})`;
+      return `<option value="${m.id}">${esc(label)}</option>`;
+    }).join('');
+  if (modelId) sel.value = String(modelId);
+}
+
+async function loadArchDefault() {
+  try {
+    const defaults = await api('/api/model-defaults');
+    _archDefaultModelId = defaults['arch-review'] || null;
+  } catch(e) {
+    _archDefaultModelId = null;
+  }
+  _populateArchDefaultSel(_archDefaultModelId);
+}
+
+document.getElementById('saveArchDefaultBtn').addEventListener('click', async () => {
+  const sel = document.getElementById('archDefaultModelSel');
+  const val = sel.value;
+  if (val === '__custom__') {
+    document.getElementById('archDefaultMsg').textContent = 'Custom endpoints cannot be a project default — register the endpoint in Model Endpoints first.';
+    return;
+  }
+  const modelId = val ? parseInt(val, 10) : null;
+  const btn = document.getElementById('saveArchDefaultBtn');
+  const msgEl = document.getElementById('archDefaultMsg');
+  btn.disabled = true; msgEl.textContent = '';
+  try {
+    await api('/api/model-defaults/arch-review', {
+      method: 'PUT',
+      body: JSON.stringify({ model_config_id: modelId }),
+    });
+    _archDefaultModelId = modelId;
     msgEl.textContent = modelId ? 'Default saved' : 'Default cleared';
     msgEl.style.color = 'var(--green)';
     setTimeout(() => { msgEl.textContent = ''; msgEl.style.color = ''; }, 2500);
