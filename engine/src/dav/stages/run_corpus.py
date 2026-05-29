@@ -54,6 +54,7 @@ import argparse
 import dataclasses
 import hashlib
 import logging
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -719,6 +720,25 @@ def _cli():
     top_k = args.top_k if args.top_k is not None else sampler_defaults["top_k"]
     top_p = args.top_p if args.top_p is not None else sampler_defaults["top_p"]
     min_p = args.min_p if args.min_p is not None else sampler_defaults["min_p"]
+
+    # vLLM rejects `min_p` (and `logit_bias`) at /v1/chat/completions when
+    # speculative decoding is active (e.g. --speculative-config
+    # qwen3_next_mtp on Qwen3.6-27B-FP8). The error is HTTP 400 at turn 0
+    # with no recovery path. Suppress min_p for models flagged via the
+    # comma-list env var DAV_MTP_MODEL_NAMES (default: "qwen36-27b").
+    # Sampler diversity falls back to top_k + top_p, which vLLM accepts
+    # under speculative decoding.
+    _mtp_models = frozenset(
+        s.strip() for s in os.environ.get("DAV_MTP_MODEL_NAMES", "qwen36-27b").split(",")
+        if s.strip()
+    )
+    if args.inference_model in _mtp_models and min_p is not None:
+        log.info(
+            "MTP-enabled inference model %s: suppressing min_p=%s "
+            "(vLLM rejects min_p with speculative decoding)",
+            args.inference_model, min_p,
+        )
+        min_p = None
 
     log.info(
         "corpus mode=%s temperature=%s cache_prompt=%s sample_count=%s "
