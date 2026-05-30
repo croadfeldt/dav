@@ -106,10 +106,29 @@ button runs the diagnoser in context. The `/api/diagnose/{id}` endpoint accepts
 either a workspace run_id or a Tekton run name (resolves via timestamp
 correlation), so both entry points work.
 
-**Not yet built:** Phase 2 candidate-eval + auto-revert (the A/B-gated apply for
-the low-blast-radius kinds prompt/profile — where the v1.9 "always measure"
-guardrail becomes load-bearing); Phase 3 scheduling/continual operation; richer
-evidence display (per-signature exemplars) in the proposal detail.
+**Phase 2 — A/B candidate experiments — SHIPPED** (commit `c323ce0`): the
+"always measure, never assume" guardrail as code. An experiment runs a baseline
++ candidate over the same eval set (candidate differs by one config delta —
+today, `max_tokens` via a per-run PipelineRun param, so it's **fully isolated:
+no profile or deploy-var mutation, production + spamllm untouched**), and
+`experiment_eval.gate()` decides promote / revert / inconclusive. The gate
+**refuses to promote a change that introduces a new high-severity failure
+class** (the v1.9 lesson, enforced) and treats ties as inconclusive — validated
+against this session's real runs (0/15→15/15 promotes; regressions and
+new-failure-modes revert). Surfaced as a Proposals|Experiments toggle in the
+Improve tab + a "Run A/B" launcher on max_tokens proposals + an
+A/B-scorecard/verdict/Promote detail. `POST/GET /api/experiments`,
+`POST /api/experiments/{id}/promote`. Promotion of a max_tokens change is
+**human-gated** (its production home is the `dav_stage2_max_tokens` deploy var —
+the Tekton task arg wins over any profile): the A/B PROOF is automated, the
+apply is instructed. `migrate_016` adds the `experiments` table + a
+`change_spec` column bridging Phase 1 proposals to applyable deltas.
+
+**Not yet built:** sampling-param experiments (temp/top_k/… via a shadow
+`model_use_profile` — the runtime-applyable, auto-promotable case, vs max_tokens
+which is redeploy-gated); auto-promote-on-win policy (today promotion is always
+operator-confirmed); Phase 3 scheduling/continual operation; richer evidence
+display (per-signature exemplars) in the proposal detail.
 
 ## 4. Guide ⇄ be-guided (the duality the operator asked for)
 
