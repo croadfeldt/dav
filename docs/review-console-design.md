@@ -514,6 +514,22 @@ Migrations run automatically at API startup before `schema.sql`. Each migration 
 |---|---|
 | `migrate_002_model_configs.sql` | Renames `review_model_configs` → `model_configs`; adds `use_arch_review`/`use_uc_assist` flags; adds `use_uc_assist` to `mcp_server_configs`; migrates any `uc_assist_config` row into `model_configs`; drops `uc_assist_config` |
 | `migrate_003_model_defaults.sql` | Creates `model_defaults` table for project-scoped model defaults |
+| `migrate_015_improvement_proposals.sql` | Self-improvement loop (Phase 1): `run_diagnoses` (per-diagnosis taxonomy snapshot) + `improvement_proposals` (typed change proposals + review lifecycle) |
+
+---
+
+## Self-improvement loop — diagnose & propose (Phase 1, 2026-05-30)
+
+Turns the manual "observe failure → root-cause → propose fix" loop into a feature. Full design + phased plan: [`dav-self-improvement-vision.md`](dav-self-improvement-vision.md). Modules: `failure_taxonomy.py` (classify a run's failures into typed signatures) + `diagnose.py` (signatures → ranked typed proposals, via a rules layer that encodes the OSAC 2026-05-29/30 fixes + an optional LLM second opinion). **Proposals are review artifacts — nothing is applied** (Phase 2 will gate applies).
+
+- `POST /api/diagnose/{run_id:path}?use_llm=` — reads the run's durable failure artifacts (`failures/*.error.txt` + `run-summary.yaml`) from the workspace PVC, builds the failure taxonomy, runs the diagnoser, and persists a proposal batch. `use_llm` (default true) adds an LLM second opinion via the arch-review default model. Returns `{batch_id, taxonomy, proposals, llm_attempted, used_llm}`.
+- `GET /api/diagnose/{run_id:path}` — the latest stored diagnosis (taxonomy + proposals + review status) for a run.
+- `GET /api/improvement-proposals?status=&kind=&run_id=` — cross-run review queue.
+- `POST /api/improvement-proposals/{id}/review` — accept/reject (review only; sets status + `reviewed_by/at`). Does **not** apply the change.
+
+**Signature classes** (the failure taxonomy): `route_504`, `output_truncation`, `severity_reject`/`confidence_reject`, `score_out_of_band`, `context_overflow`, `budget_exhausted` (fishing), `tool_parse_error`, `inference_error`, `unknown`. **Proposal `kind`s**: `prompt | profile | route | tool | code | infra | data` — the kind gates how Phase 2 may apply it (prompt/profile = auto-with-revert; code/infra = human-gated). **Diagnoser guardrails** (in the LLM system prompt, from real incidents): classify the failure class before proposing prompt edits; never "harden the prompt to stop a behavior" (it backfires); respect `throughput × route_timeout` and `context × KV` ceilings. The LLM layer logs on failure and reports `llm_attempted` vs `used_llm` — a diagnostic tool must not hide its own failures. Pure-module regression coverage: `review-console/api/test_self_improvement.py`.
+
+The bundled UI for the review queue is a tracked follow-up; the API + data model are complete.
 
 ---
 

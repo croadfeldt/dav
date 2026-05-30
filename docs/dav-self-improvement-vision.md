@@ -74,6 +74,34 @@ corpus/spec change (the MCP-refresh cron is the hook). Surface a dashboard of
 steers: approve/reject, set objectives (quality > speed, or vice-versa), inject
 domain knowledge, pin invariants.
 
+### Implementation status
+
+**Phase 0 + Phase 1 — SHIPPED 2026-05-30** (commit `7828547`):
+
+- `review-console/api/app/failure_taxonomy.py` — classifies a run's
+  `failures/*.error.txt` into typed signatures (`route_504`,
+  `output_truncation`, `severity_reject`, `budget_exhausted`/fishing,
+  `context_overflow`, `tool_parse_error`, …). The pattern table encodes the
+  OSAC 2026-05-29/30 failure chain.
+- `review-console/api/app/diagnose.py` — rules layer turns signatures into
+  ranked typed proposals and **re-derives the exact fixes made by hand this
+  session** (verified by `test_self_improvement.py`); optional LLM second
+  opinion with the §5 guardrails baked into its system prompt. Proposals are
+  filed, never applied.
+- `migrate_015` — `run_diagnoses` (taxonomy snapshot, survives workspace
+  cleanup) + `improvement_proposals` (the review queue).
+- Endpoints: `POST/GET /api/diagnose/{run_id}`,
+  `GET /api/improvement-proposals?status=&kind=&run_id=`,
+  `POST /api/improvement-proposals/{id}/review` (accept/reject — review only).
+- Observability: `diagnose_llm` logs on degrade; `llm_attempted` vs `used_llm`
+  distinguishes "no model" from "no contribution" (this caught a real bug on
+  first run — an empty `Bearer` header to the local vLLM).
+
+**Not yet built:** the Config/run-drawer **UI** for the review queue (the API +
+data model are done); Phase 2 candidate-eval + auto-revert; Phase 3 scheduling.
+Next increment: the review-queue UI, then Phase 2's A/B-gated apply for the
+low-blast-radius kinds (prompt/profile).
+
 ## 4. Guide ⇄ be-guided (the duality the operator asked for)
 
 - **Be guided:** human sets the objective function (e.g. "maximize gap-recall
