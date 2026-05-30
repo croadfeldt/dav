@@ -186,6 +186,34 @@ def get_run_summary(run_id: str) -> Optional[dict]:
     return _safe_load(path)
 
 
+def get_failures(run_id: str) -> list[dict]:
+    """Read a run's `failures/<uuid>.error.txt` files.
+
+    Returns [{uc_uuid, uc_handle, error_text}] — the durable failure record the
+    self-improvement loop's failure taxonomy consumes. The uuid comes from the
+    filename; the handle is parsed from the `UC: <handle> (<uuid>)` header line.
+    """
+    fail_dir = _results_root() / run_id / "failures"
+    if not fail_dir.is_dir():
+        return []
+    out: list[dict] = []
+    for p in sorted(fail_dir.glob("*.error.txt")):
+        try:
+            text = p.read_text()
+        except Exception as e:
+            log.warning("failure read error %s: %s", p, e)
+            continue
+        uc_uuid = p.name[: -len(".error.txt")]
+        handle = None
+        first = text.split("\n", 1)[0]
+        if first.startswith("UC:"):
+            # "UC: <handle> (<uuid>)"
+            body = first[3:].strip()
+            handle = body.split(" (", 1)[0].strip() or None
+        out.append({"uc_uuid": uc_uuid, "uc_handle": handle, "error_text": text})
+    return out
+
+
 def _extract_verdict(analysis: dict) -> Optional[str]:
     """Pull the top-level verdict out of an analysis YAML dict.
 

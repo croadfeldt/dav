@@ -1,0 +1,131 @@
+"""Self-improvement loop (Phase 1) regression tests — pure modules only.
+
+Run from review-console/api/:  python3 test_self_improvement.py
+
+No pytest dependency (matches the engine's lightweight test style). The
+load-bearing property under test: the diagnoser re-derives the fixes that the
+OSAC 2026-05-29/30 stabilization made by hand. If a future change breaks that
+mapping, this fails.
+"""
+import asyncio
+import sys
+
+from app import failure_taxonomy as ft
+from app import diagnose as dg
+
+_fails = 0
+
+
+def check(cond, msg):
+    global _fails
+    mark = "ok  " if cond else "FAIL"
+    if not cond:
+        _fails += 1
+    print(f"  [{mark}] {msg}")
+
+
+def _tax(model, max_tokens, error_msgs):
+    summary = {
+        "run_id": "t", "mode": "verification", "total_ucs": 15,
+        "successful": 15 - len(error_msgs), "failed": len(error_msgs),
+        "effective_sampling": {"model": model, "use_key": "evaluation_verification",
+                               "sent": {"max_tokens": max_tokens}},
+    }
+    failures = [{"uc_uuid": f"u{i}", "uc_handle": "test/x", "error_text": "Error:\n" + m}
+                for i, m in enumerate(error_msgs)]
+    return ft.build_taxonomy(summary, failures)
+
+
+def test_classify():
+    print("classify_error — real error strings from the OSAC chain:")
+    cases = [
+        ("inference failed at turn 14: primary returned 504: <html>504 Gateway Time-out</html>", "route_504"),
+        ("could not parse final analysis as JSON: unbalanced braces", "output_truncation"),
+        ("Extra data: line 1 column 4500 (char 4499)", "output_truncation"),
+        ("invalid severity label 'low'; expected one of [...]", "severity_reject"),
+        ("invalid confidence label 'certain'", "confidence_reject"),
+        ("agent never emitted a final analysis; max_tool_calls exhausted", "budget_exhausted"),
+        ("maximum context length is 32768 tokens", "context_overflow"),
+        ("a brand new error nobody has classified", "unknown"),
+    ]
+    for msg, expect in cases:
+        got = ft.classify_error(msg)["signature_class"]
+        check(got == expect, f"{expect:18} <- {msg[:50]}  (got {got})")
+    # capture group
+    check(ft.classify_error("invalid severity label 'medium'")["captured"] == "medium",
+          "captures the rejected label ('medium')")
+
+
+def test_rules_rederive_fixes():
+    print("diagnose_rules — re-derives this session's fixes:")
+
+    # 504 (092466) → lower max_tokens / route timeout, high confidence
+    p = dg.diagnose_rules(_tax("qwen3-32b", 16384, ["AgentError: inference failed at turn 18: primary returned 504"]))
+    check(any(x["kind"] == "profile" and "max_tokens" in x["target"].lower() and x["confidence"] == "high"
+              and "16384" in x["proposed_change"] for x in p),
+          "route_504 → lower dav_stage2_max_tokens (cites current 16384)")
+
+    # severity 'low' (101108) → add alias low→minor, code, high confidence
+    p = dg.diagnose_rules(_tax("qwen3-32b", 10240, ["ValueError: invalid severity label 'low'"]))
+    check(any(x["kind"] == "code" and "SEVERITY_ALIASES" in x["target"]
+              and "'low' → 'minor'" in x["proposed_change"] for x in p),
+          "severity_reject 'low' → alias low→minor in _SEVERITY_ALIASES")
+
+    # severity 'high' → high→major (whole-scale mapping)
+    p = dg.diagnose_rules(_tax("qwen3-32b", 10240, ["invalid severity label 'high'"]))
+    check(any("'high' → 'major'" in x["proposed_change"] for x in p),
+          "severity_reject 'high' → high→major (maps the whole L/M/H scale)")
+
+    # truncation (109569) → max_tokens vs route timeout nuance, medium
+    p = dg.diagnose_rules(_tax("qwen25-72b-awq", 10240, ["could not parse final analysis as JSON: unbalanced braces"]))
+    check(any(x["kind"] == "profile" and "route timeout" in x["proposed_change"].lower() for x in p),
+          "output_truncation → raise max_tokens IF route timeout allows (the tradeoff)")
+
+    # fishing/budget → tool/resolver fix, NOT prompt hardening (the v1.9 lesson)
+    p = dg.diagnose_rules(_tax("qwen3-coder-30b", 16384, ["agent never emitted a final analysis; max_tool_calls exhausted"]))
+    check(any(x["kind"] == "tool" and "harden" in x["proposed_change"].lower() for x in p),
+          "budget_exhausted → fix the tool/resolver, explicitly NOT prompt hardening")
+
+
+def test_merge_and_rank():
+    print("merge_and_rank — dedup + ordering:")
+    rule = dg._proposal("route_504", "profile", "max_tokens", "r", "c", "e", "high", source="rule")
+    llm_dup = dg._proposal("route_504", "profile", "Max_Tokens", "r", "c", "e", "high", source="llm")
+    llm_new = dg._proposal("x", "tool", "retry tool", "r", "c", "e", "medium", source="llm")
+    merged = dg.merge_and_rank([rule], [llm_dup, llm_new])
+    check(len(merged) == 2, "drops the LLM duplicate of a rule's (kind,target)")
+    check(merged[0]["source"] == "rule" and merged[0]["confidence"] == "high",
+          "ranks high-confidence rule first")
+
+
+def test_extract_json_array():
+    print("_extract_json_array — robust to fences/prose:")
+    check(dg._extract_json_array('```json\n[{"kind":"x"}]\n```') == [{"kind": "x"}], "fenced json")
+    check(dg._extract_json_array('Sure! [{"kind":"y"}] hope that helps') == [{"kind": "y"}], "prose-wrapped")
+    check(dg._extract_json_array("no array here") == [], "no array → []")
+    check(dg._extract_json_array("") == [], "empty → []")
+
+
+async def test_diagnose_degrades():
+    print("diagnose — degrades to rules-only without an LLM:")
+    tax = _tax("qwen3-32b", 16384, ["primary returned 504"])
+    d = await dg.diagnose(tax, call_fn=None)
+    check(d["llm_attempted"] is False and d["used_llm"] is False, "no call_fn → llm not attempted")
+    check(len(d["proposals"]) >= 1 and d["rule_count"] >= 1, "still produces rule proposals")
+
+
+def main():
+    test_classify()
+    test_rules_rederive_fixes()
+    test_merge_and_rank()
+    test_extract_json_array()
+    asyncio.run(test_diagnose_degrades())
+    print()
+    if _fails:
+        print(f"FAILED: {_fails} check(s)")
+        sys.exit(1)
+    print("ALL PASS")
+
+
+if __name__ == "__main__":
+    main()

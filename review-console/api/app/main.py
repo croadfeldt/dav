@@ -42,6 +42,8 @@ from .repos import _parse_jsonb
 from . import projector as _projector
 from . import pr_comments as _pr_comments
 from . import credentials as _credentials
+from . import failure_taxonomy as _ft
+from . import diagnose as _diagnose
 
 log = logging.getLogger("dav-review-api")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -66,6 +68,7 @@ MIGRATE_011_PATH = Path(__file__).parent / "migrate_011_consolidate_code_repos.s
 MIGRATE_012_PATH = Path(__file__).parent / "migrate_012_namespace_first_class.sql"
 MIGRATE_013_PATH = Path(__file__).parent / "migrate_013_infrastructure_confidence.sql"
 MIGRATE_014_PATH = Path(__file__).parent / "migrate_014_model_capabilities.sql"
+MIGRATE_015_PATH = Path(__file__).parent / "migrate_015_improvement_proposals.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -226,6 +229,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_013_PATH.read_text())
         log.info("Applying migration 014 (model capabilities + per-use sampling profiles)...")
         await conn.execute(MIGRATE_014_PATH.read_text())
+        log.info("Applying migration 015 (self-improvement: diagnose & propose)...")
+        await conn.execute(MIGRATE_015_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -3611,6 +3616,236 @@ async def ingest_analysis(run_id: str, request: Request):
     except Exception as e:
         log.exception("analysis ingest failed for %s", run_id)
         raise HTTPException(500, f"ingest failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Self-improvement loop — Phase 1: diagnose & propose.
+# failure_taxonomy.py classifies a run's failures into typed signatures;
+# diagnose.py turns those into ranked, typed change proposals (rules layer
+# encodes this session's fixes; optional LLM second opinion). Proposals are
+# review artifacts — nothing is applied here (that is Phase 2).
+# See docs/dav-self-improvement-vision.md.
+# ---------------------------------------------------------------------------
+
+_PROPOSAL_STATUSES = {"proposed", "accepted", "rejected", "applied", "superseded"}
+
+
+async def _resolve_diagnosis_model(conn) -> Optional[dict]:
+    """The model to diagnose with: the arch-review default, else any enabled
+    arch-review-capable model. Returns a model_configs row dict or None."""
+    row = await conn.fetchrow(
+        """SELECT mc.* FROM model_defaults md
+             JOIN model_configs mc ON mc.id = md.model_config_id
+            WHERE md.key = 'arch-review' AND mc.enabled"""
+    )
+    if not row:
+        row = await conn.fetchrow(
+            "SELECT * FROM model_configs WHERE enabled AND use_arch_review ORDER BY id LIMIT 1"
+        )
+    return dict(row) if row else None
+
+
+def _make_diagnosis_call_fn(cfg: dict):
+    """Build an async `call_fn(system, user) -> text` for diagnose_llm from a
+    model_configs row (mirrors uc_assist's non-streaming OpenAI/Anthropic client)."""
+    provider = (cfg.get("provider") or "openai").lower()
+    endpoint = (cfg.get("endpoint_url") or "").rstrip("/")
+    model_id = cfg.get("model_id")
+    api_key = cfg.get("api_key") or ""
+
+    async def call_fn(system: str, user: str) -> str:
+        async with httpx.AsyncClient(timeout=120.0) as cx:
+            if provider == "anthropic":
+                headers = {"anthropic-version": "2023-06-01", "content-type": "application/json"}
+                if api_key:
+                    headers["x-api-key"] = api_key
+                r = await cx.post(
+                    f"{endpoint}/v1/messages",
+                    headers=headers,
+                    json={"model": model_id, "max_tokens": 4096, "system": system,
+                          "messages": [{"role": "user", "content": user}]},
+                )
+                r.raise_for_status()
+                data = r.json()
+                return "".join(b.get("text", "") for b in data.get("content", [])
+                               if b.get("type") == "text")
+            base = endpoint[:-3] if endpoint.endswith("/v1") else endpoint
+            # Local vLLM endpoints have no api_key — an empty `Bearer ` header is
+            # an illegal header value, so only send Authorization when keyed.
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            r = await cx.post(
+                f"{base}/v1/chat/completions",
+                headers=headers,
+                json={"model": model_id, "max_tokens": 4096, "temperature": 0.1,
+                      "messages": [{"role": "system", "content": system},
+                                   {"role": "user", "content": user}]},
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"] or ""
+
+    return call_fn
+
+
+class ProposalReviewIn(BaseModel):
+    status: str                       # accepted | rejected
+    note: Optional[str] = None
+
+
+@app.post("/api/diagnose/{run_id:path}")
+async def diagnose_run(run_id: str, request: Request, use_llm: bool = Query(True)):
+    """Diagnose a run's failures and file typed improvement proposals.
+
+    Builds the failure taxonomy from the workspace artifacts, runs the rules
+    diagnoser (+ optional LLM second opinion), and persists a proposal batch.
+    Nothing is applied — proposals are filed for review.
+    """
+    import uuid
+    user = get_user(request)
+    if not _results.is_available():
+        raise HTTPException(503, "workspace PVC not mounted")
+    summary = _results.get_run_summary(run_id)
+    if summary is None:
+        raise HTTPException(404, f"run {run_id!r} not found on workspace PVC")
+    failures = _results.get_failures(run_id)
+    taxonomy = _ft.build_taxonomy(summary, failures)
+
+    async with pool.acquire() as conn:
+        run_name = await conn.fetchval(
+            "SELECT run_name FROM analysis_runs WHERE run_id=$1 LIMIT 1", run_id
+        )
+        call_fn = None
+        if use_llm:
+            cfg = await _resolve_diagnosis_model(conn)
+            if cfg:
+                log.info("diagnose_run: LLM second opinion via model '%s' (%s)",
+                         cfg.get("name"), cfg.get("model_id"))
+                call_fn = _make_diagnosis_call_fn(cfg)
+            else:
+                log.warning("diagnose_run: use_llm requested but no arch-review "
+                            "model resolved — rules-only")
+
+        diagnosis = await _diagnose.diagnose(taxonomy, call_fn=call_fn)
+
+        batch_id = uuid.uuid4().hex
+        await conn.execute(
+            """INSERT INTO run_diagnoses
+                 (batch_id, run_id, run_name, taxonomy, used_llm, rule_count, llm_count, created_by)
+               VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8)""",
+            batch_id, run_id, run_name, json.dumps(taxonomy),
+            diagnosis["used_llm"], diagnosis["rule_count"], diagnosis["llm_count"], user,
+        )
+        stored = []
+        for p in diagnosis["proposals"]:
+            pid = await conn.fetchval(
+                """INSERT INTO improvement_proposals
+                     (batch_id, run_id, run_name, signature_class, kind, target, rationale,
+                      proposed_change, predicted_effect, confidence, source, evidence, created_by)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)
+                   RETURNING id""",
+                batch_id, run_id, run_name, p["signature_class"], p["kind"], p["target"],
+                p["rationale"], p["proposed_change"], p["predicted_effect"], p["confidence"],
+                p["source"], json.dumps(p.get("evidence") or {}), user,
+            )
+            stored.append({"id": pid, **p})
+
+    return {
+        "ok": True,
+        "batch_id": batch_id,
+        "run_id": run_id,
+        "run_name": run_name,
+        "llm_attempted": diagnosis["llm_attempted"],
+        "used_llm": diagnosis["used_llm"],
+        "taxonomy": taxonomy,
+        "proposals": stored,
+    }
+
+
+@app.get("/api/diagnose/{run_id:path}")
+async def get_run_diagnosis(run_id: str):
+    """Return the latest stored diagnosis (taxonomy + proposals) for a run."""
+    async with pool.acquire() as conn:
+        batch = await conn.fetchrow(
+            """SELECT * FROM run_diagnoses WHERE run_id=$1 ORDER BY created_at DESC LIMIT 1""",
+            run_id,
+        )
+        if not batch:
+            return {"run_id": run_id, "diagnosed": False, "proposals": []}
+        props = await conn.fetch(
+            """SELECT * FROM improvement_proposals WHERE batch_id=$1
+               ORDER BY (CASE confidence WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END),
+                        (CASE source WHEN 'rule' THEN 0 ELSE 1 END), id""",
+            batch["batch_id"],
+        )
+    return {
+        "run_id": run_id,
+        "diagnosed": True,
+        "batch_id": batch["batch_id"],
+        "created_at": batch["created_at"].isoformat(),
+        "used_llm": batch["used_llm"],
+        "taxonomy": _parse_jsonb(batch["taxonomy"]),
+        "proposals": [
+            {**{k: r[k] for k in ("id", "signature_class", "kind", "target", "rationale",
+                                  "proposed_change", "predicted_effect", "confidence",
+                                  "source", "status", "reviewed_by", "review_note")},
+             "evidence": _parse_jsonb(r["evidence"])}
+            for r in props
+        ],
+    }
+
+
+@app.get("/api/improvement-proposals")
+async def list_improvement_proposals(
+    status: Optional[str] = None,
+    kind: Optional[str] = None,
+    run_id: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+):
+    """Cross-run review queue of filed proposals, newest first."""
+    clauses, args = [], []
+    for col, val in (("status", status), ("kind", kind), ("run_id", run_id)):
+        if val:
+            args.append(val)
+            clauses.append(f"{col} = ${len(args)}")
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    args.append(limit)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""SELECT id, run_id, run_name, signature_class, kind, target, rationale,
+                       proposed_change, predicted_effect, confidence, source, status,
+                       created_at, reviewed_by, reviewed_at, review_note
+                  FROM improvement_proposals{where}
+                 ORDER BY created_at DESC LIMIT ${len(args)}""",
+            *args,
+        )
+    out = []
+    for r in rows:
+        d = dict(r)
+        for k in ("created_at", "reviewed_at"):
+            if d.get(k):
+                d[k] = d[k].isoformat()
+        out.append(d)
+    return {"proposals": out, "count": len(out)}
+
+
+@app.post("/api/improvement-proposals/{pid}/review")
+async def review_improvement_proposal(pid: int, payload: ProposalReviewIn, request: Request):
+    """Accept or reject a proposal (Phase 1 review only — does NOT apply it)."""
+    user = get_user(request)
+    status = (payload.status or "").lower()
+    if status not in {"accepted", "rejected"}:
+        raise HTTPException(400, "status must be 'accepted' or 'rejected'")
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE improvement_proposals
+                  SET status=$1, reviewed_by=$2, reviewed_at=now(), review_note=$3
+                WHERE id=$4 RETURNING id""",
+            status, user, payload.note, pid,
+        )
+    if not row:
+        raise HTTPException(404, "proposal not found")
+    return {"ok": True, "id": pid, "status": status, "reviewed_by": user}
 
 
 @app.get("/api/analysis/runs")
