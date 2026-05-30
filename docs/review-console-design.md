@@ -82,7 +82,7 @@ For both, all-checked ≡ null sent (no filter applied; full set used) — the d
 
 **Run drawer sections:**
 - **Compact stats bar** — wall time, phase, GPU energy (kWh), token counts (gen/prompt), session delta tokens
-- **GPU / vLLM tiles** — live Prometheus metrics: GFX activity, VRAM, power, gen tokens/s, prompt tokens/s, queue depth; polled every 3s while run is active
+- **GPU / vLLM tiles** — live Prometheus metrics: GFX activity, VRAM, power, gen tokens/s, prompt tokens/s, queue depth; polled every 3s while run is active. Each tile also carries inline SVG **sparklines** (GPU power/gfx, vLLM gen-tps/running) built from `GET /api/metrics/timeseries`. The timeseries is fetched once on drawer open and re-fetched every 60s for in-flight runs (`_rdSparklines` cache). Because the 3s metrics poll rebuilds the tile innerHTML wholesale, `renderRunDrawerMetrics()` must re-inject the cached sparklines (`_renderSparklines()`) at the end of every render — otherwise they flicker out between the 60s fetches on live runs (fixed `75065be`; completed runs don't poll so they were always stable)
 - **Tasks section** — Tekton TaskRun list with phase + log tail (last 200 lines via `GET /api/runs/{name}/logs?task=…`)
 - **Prompts & responses section** — live tail of per-turn JSONL files written by the engine (see §Engine contract below). Polled every 5s. Expand/collapse per record; "expand all" / "collapse all" toggle persists in localStorage (`davPromptsDefaultMode`)
 - **Review & Plan tab** — arch review (streaming) + enhancement planning (streaming); see §Review & Plan tab below
