@@ -9696,13 +9696,66 @@ function _verdictColor(v) {
   return v === 'promote' ? 'var(--green)' : (v === 'revert' ? 'var(--red)' : (v === 'inconclusive' ? 'var(--accent)' : 'var(--text-faint)'));
 }
 
+function _adhocForm() {
+  return `
+    <details style="border-bottom:1px solid var(--border);padding:8px 14px;">
+      <summary style="cursor:pointer;font-size:11px;color:var(--accent);user-select:none;">+ New A/B experiment</summary>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <select id="adhocType" onchange="document.getElementById('adhocParam').style.display = this.value==='sampling'?'':'none'" style="font-size:11px;padding:3px 5px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);">
+            <option value="sampling">sampling</option><option value="max_tokens">max_tokens</option>
+          </select>
+          <select id="adhocParam" style="font-size:11px;padding:3px 5px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);">
+            <option value="temperature">temperature</option><option value="top_k">top_k</option><option value="top_p">top_p</option><option value="min_p">min_p</option>
+          </select>
+          <input id="adhocCandidate" type="number" step="any" placeholder="candidate" style="width:78px;font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);">
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <select id="adhocSet" style="font-size:11px;padding:3px 5px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);"><option value="">eval set…</option></select>
+          <label style="font-size:10px;color:var(--text-faint);display:flex;align-items:center;gap:3px;" title="Sampling only: auto-write the winning profile (reversible)"><input type="checkbox" id="adhocAuto" style="width:auto;height:auto;accent-color:var(--accent);"> auto-promote</label>
+          <button class="btn primary btn-sm" onclick="launchAdhocExperiment()">🔬 Launch</button>
+        </div>
+        <div style="font-size:9px;color:var(--text-faint);">Runs baseline + candidate on the eval set; the gate auto-reverts a regression or new failure mode. Candidate is per-run — production + spamllm untouched.</div>
+      </div>
+    </details>`;
+}
+
+async function _populateAdhocSets() {
+  try {
+    const data = await api('/api/sets');
+    const sel = document.getElementById('adhocSet');
+    if (sel) sel.innerHTML = '<option value="">eval set…</option>' +
+      (data.sets || []).map(s => `<option value="${s.id}">${esc(s.name)} (${s.member_count})</option>`).join('');
+  } catch (e) {}
+}
+
+async function launchAdhocExperiment() {
+  const type = document.getElementById('adhocType').value;
+  const cand = parseFloat(document.getElementById('adhocCandidate').value);
+  const setId = parseInt(document.getElementById('adhocSet').value) || null;
+  if (!setId) { toast('Pick an eval set', true); return; }
+  if (isNaN(cand)) { toast('Enter a candidate value', true); return; }
+  const spec = type === 'sampling'
+    ? { type: 'sampling', param: document.getElementById('adhocParam').value, candidate: cand }
+    : { type: 'max_tokens', candidate: Math.round(cand) };
+  const auto = document.getElementById('adhocAuto').checked;
+  try {
+    const r = await api('/api/experiments', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ change_spec: spec, set_id: setId, sample_count: 1, auto_promote: auto }) });
+    toast(`A/B experiment #${r.id} launched`, false);
+    await loadExperiments();
+    selectExperiment(r.id);
+  } catch (e) { toast(`Launch failed: ${e.message}`, true); }
+}
+
 function renderExperimentsList() {
   const el = document.getElementById('improveList');
   if (!_improveState.experiments.length) {
-    el.innerHTML = `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);font-size:12px;">No experiments yet. Run an A/B from a max_tokens proposal.</div>`;
+    el.innerHTML = _adhocForm() + `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);font-size:12px;">No experiments yet.</div>`;
+    _populateAdhocSets();
     return;
   }
-  el.innerHTML = _improveState.experiments.map(x => {
+  el.innerHTML = _adhocForm() + _improveState.experiments.map(x => {
     const active = x.id === _improveState.selectedExpId;
     const v = x.verdict || (x.status === 'running' ? 'running' : '—');
     return `
@@ -9717,6 +9770,7 @@ function renderExperimentsList() {
         <div style="font-size:10px;color:var(--text-faint);margin-top:3px;">${esc(x.status)} · ${esc(x.eval_set_name || (x.eval_set_id ? 'set ' + x.eval_set_id : 'ad-hoc'))}</div>
       </div>`;
   }).join('');
+  _populateAdhocSets();
 }
 
 async function selectExperiment(id) {
@@ -9752,12 +9806,30 @@ async function selectExperiment(id) {
     </div>
     ${x.verdict_reason ? `<div style="margin-top:12px;font-size:12px;line-height:1.5;padding:10px;background:var(--bg-raised);border-left:2px solid ${_verdictColor(x.verdict)};border-radius:2px;">${esc(x.verdict_reason)}</div>` : ''}
     ${x.status === 'running' ? `<div style="margin-top:12px;font-size:11px;color:var(--text-faint);">⏳ Runs in flight — refresh to update. (Candidate is a per-run override; production + spamllm untouched.)</div>` : ''}
+    ${x.auto_promote ? `<div style="margin-top:8px;font-size:10px;color:var(--accent);">⚡ auto-promote on (a winning sampling verdict applies automatically, reversibly)</div>` : ''}
     ${x.verdict === 'promote' && x.status !== 'promoted' ? `
       <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
         <button class="btn" style="background:var(--green);color:#fff;" onclick="promoteExperiment(${x.id})">✓ Promote</button>
-        <div style="font-size:9px;color:var(--text-faint);margin-top:6px;">max_tokens lives in the deploy var — Promote returns the exact change to apply (human-gated). The A/B proof is automated.</div>
+        <div style="font-size:9px;color:var(--text-faint);margin-top:6px;">${x.change_spec?.type === 'sampling'
+          ? 'Sampling — Promote writes the production profile (runtime, reversible).'
+          : 'max_tokens — Promote returns the exact deploy-var change (human-gated). The A/B proof is automated.'}</div>
       </div>` : ''}
-    ${x.status === 'promoted' ? `<div style="margin-top:12px;font-size:11px;color:var(--green);">✓ Promoted — apply the deploy-var change to ship it.</div>` : ''}`;
+    ${x.status === 'promoted' ? `
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+        <div style="font-size:11px;color:var(--green);">✓ Promoted${x.change_spec?.applied ? `: ${esc(x.change_spec.applied.param)} → ${esc(String(x.change_spec.applied.to))}` : ''}</div>
+        ${x.change_spec?.type === 'sampling'
+          ? `<button class="btn ghost btn-sm" style="margin-top:8px;" onclick="_armDeleteBtn(this, () => revertExperiment(${x.id}))">↩ Revert</button>`
+          : `<div style="font-size:9px;color:var(--text-faint);margin-top:4px;">Apply the deploy-var change to ship it.</div>`}
+      </div>` : ''}
+    ${x.status === 'reverted' ? `<div style="margin-top:12px;font-size:11px;color:var(--text-faint);">↩ Reverted — production profile restored to its prior state.</div>` : ''}`;
+}
+
+async function revertExperiment(id) {
+  try {
+    await api(`/api/experiments/${id}/revert`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    toast('Reverted — production profile restored', false);
+    selectExperiment(id);
+  } catch (e) { toast(`Revert failed: ${e.message}`, true); }
 }
 
 async function promoteExperiment(id) {
