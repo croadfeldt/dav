@@ -46,6 +46,14 @@ dav_docs_mcp_refresh_schedule: "17 * * * *"   # hourly at :17
 dav_docs_mcp_refresh_deployment: dav-docs-mcp
 dav_docs_mcp_refresh_service_account: dav-mcp-refresh
 
+# --- Self-improvement continual scan (Phase 3) ---
+# Scheduled POST /api/self-improve/scan: diagnoses recent failed runs that
+# haven't been diagnosed yet and files proposals into the Improve-tab review
+# queue (rules-only, nothing applied). The operator wakes to a triaged queue.
+# Disable by setting enabled=false (the CronJob is then removed).
+dav_self_improve_scan_enabled: true
+dav_self_improve_scan_schedule: "37 */6 * * *"   # every 6h at :37
+
 # --- Primary inference endpoint health check ---
 # Primary inference lives on an external host that exposes an OpenAI-compatible
 # /v1 endpoint. The endpoint is managed out of band (not by this Ansible

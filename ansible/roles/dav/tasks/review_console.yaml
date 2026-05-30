@@ -388,3 +388,15 @@
 - name: Report review console URL
   ansible.builtin.debug:
     msg: "Review Console → https://{{ review_console_hostname }}"
+
+- name: Deploy self-improvement scan CronJob (Phase 3)
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'self-improve-scan-cronjob.yaml.j2') | from_yaml_all | list }}"
+  when: dav_self_improve_scan_enabled | bool
+
+- name: Remove self-improvement scan CronJob when disabled
+  ansible.builtin.command:
+    cmd: "oc -n {{ dav_namespace }} delete cronjob/dav-self-improve-scan --ignore-not-found"
+  when: not (dav_self_improve_scan_enabled | bool)
+  changed_when: false

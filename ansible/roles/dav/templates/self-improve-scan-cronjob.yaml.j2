@@ -1,0 +1,60 @@
+{# Self-improvement continual scan (Phase 3).
+   Periodically POSTs /api/self-improve/scan on the review-console API, which
+   diagnoses recent failed runs that haven't been diagnosed yet and files
+   proposals into the Improve-tab review queue. Rules-only, nothing applied —
+   the operator reviews + A/B-tests + promotes. Just an in-cluster HTTP call,
+   so no RBAC is needed (unlike the MCP-refresh CronJob which patches a
+   Deployment). Schedule + enable flag come from role defaults:
+     dav_self_improve_scan_enabled
+     dav_self_improve_scan_schedule
+#}
+{% if dav_self_improve_scan_enabled | bool %}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dav-self-improve-scan
+  namespace: {{ dav_namespace }}
+  labels:
+    app.kubernetes.io/part-of: dav
+    app.kubernetes.io/component: self-improve-scan
+spec:
+  schedule: "{{ dav_self_improve_scan_schedule }}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: dav
+            app.kubernetes.io/component: self-improve-scan
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: scan
+              image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  # X-Forwarded-User identifies the caller for proposal
+                  # attribution (the in-cluster API service is not behind the
+                  # oauth-proxy; the UI route is).
+                  curl -sS -X POST \
+                    -H "X-Forwarded-User: self-improve-cron" \
+                    "http://dav-review-api.{{ dav_namespace }}.svc.cluster.local:8000/api/self-improve/scan"
+                  echo
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+{% endif %}

@@ -3717,6 +3717,81 @@ class ProposalReviewIn(BaseModel):
     note: Optional[str] = None
 
 
+async def _store_diagnosis(conn, run_id, run_name, taxonomy, diagnosis, user):
+    """Persist a diagnosis batch + its proposals. Returns (batch_id, stored)."""
+    import uuid
+    batch_id = uuid.uuid4().hex
+    await conn.execute(
+        """INSERT INTO run_diagnoses
+             (batch_id, run_id, run_name, taxonomy, used_llm, rule_count, llm_count, created_by)
+           VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8)""",
+        batch_id, run_id, run_name, json.dumps(taxonomy),
+        diagnosis["used_llm"], diagnosis["rule_count"], diagnosis["llm_count"], user,
+    )
+    stored = []
+    for p in diagnosis["proposals"]:
+        pid = await conn.fetchval(
+            """INSERT INTO improvement_proposals
+                 (batch_id, run_id, run_name, signature_class, kind, target, rationale,
+                  proposed_change, predicted_effect, confidence, source, evidence,
+                  change_spec, created_by)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14)
+               RETURNING id""",
+            batch_id, run_id, run_name, p["signature_class"], p["kind"], p["target"],
+            p["rationale"], p["proposed_change"], p["predicted_effect"], p["confidence"],
+            p["source"], json.dumps(p.get("evidence") or {}),
+            json.dumps(p["change_spec"]) if p.get("change_spec") else None, user,
+        )
+        stored.append({"id": pid, **p})
+    return batch_id, stored
+
+
+@app.post("/api/self-improve/scan")
+async def self_improve_scan(request: Request,
+                            limit_runs: int = Query(20, ge=1, le=100),
+                            max_diagnose: int = Query(8, ge=1, le=50)):
+    """Phase 3 — continual observe+diagnose. Scan recent workspace runs; for any
+    that failed and haven't been diagnosed yet, run the rules diagnoser and file
+    proposals into the review queue. Rules-only (no LLM) to stay cheap for a
+    scheduled call. Idempotent: a run is diagnosed at most once here (operators
+    can re-diagnose with the LLM from the Improve tab). Intended for the
+    dav-self-improve-scan CronJob; nothing is applied — proposals are filed."""
+    user = get_user(request)
+    if not _results.is_available():
+        raise HTTPException(503, "workspace PVC not mounted")
+    scanned = diagnosed = filed = 0
+    results = []
+    async with pool.acquire() as conn:
+        for run in _results.list_runs()[:limit_runs]:
+            if diagnosed >= max_diagnose:
+                break
+            run_id = run.get("run_id")
+            if not run_id:
+                continue
+            scanned += 1
+            already = await conn.fetchval(
+                "SELECT 1 FROM run_diagnoses WHERE run_id=$1 LIMIT 1", run_id)
+            if already:
+                continue
+            failures = _results.get_failures(run_id)
+            if not failures:
+                continue                          # only diagnose runs that actually failed
+            summary = _results.get_run_summary(run_id)
+            taxonomy = _ft.build_taxonomy(summary, failures)
+            diagnosis = await _diagnose.diagnose(taxonomy, call_fn=None)   # rules-only
+            run_name = await conn.fetchval(
+                "SELECT run_name FROM analysis_runs WHERE run_id=$1 LIMIT 1", run_id)
+            _bid, stored = await _store_diagnosis(conn, run_id, run_name, taxonomy, diagnosis, user)
+            diagnosed += 1
+            filed += len(stored)
+            results.append({"run_id": run_id, "run_name": run_name,
+                            "signatures": [s["signature_class"] for s in taxonomy["signatures"]],
+                            "proposals": len(stored)})
+    log.info("self-improve scan: scanned=%d diagnosed=%d proposals=%d", scanned, diagnosed, filed)
+    return {"ok": True, "scanned": scanned, "diagnosed": diagnosed,
+            "proposals_filed": filed, "runs": results}
+
+
 @app.post("/api/diagnose/{run_id:path}")
 async def diagnose_run(run_id: str, request: Request, use_llm: bool = Query(True)):
     """Diagnose a run's failures and file typed improvement proposals.
@@ -3752,30 +3827,7 @@ async def diagnose_run(run_id: str, request: Request, use_llm: bool = Query(True
                             "model resolved — rules-only")
 
         diagnosis = await _diagnose.diagnose(taxonomy, call_fn=call_fn)
-
-        batch_id = uuid.uuid4().hex
-        await conn.execute(
-            """INSERT INTO run_diagnoses
-                 (batch_id, run_id, run_name, taxonomy, used_llm, rule_count, llm_count, created_by)
-               VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8)""",
-            batch_id, run_id, run_name, json.dumps(taxonomy),
-            diagnosis["used_llm"], diagnosis["rule_count"], diagnosis["llm_count"], user,
-        )
-        stored = []
-        for p in diagnosis["proposals"]:
-            pid = await conn.fetchval(
-                """INSERT INTO improvement_proposals
-                     (batch_id, run_id, run_name, signature_class, kind, target, rationale,
-                      proposed_change, predicted_effect, confidence, source, evidence,
-                      change_spec, created_by)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14)
-                   RETURNING id""",
-                batch_id, run_id, run_name, p["signature_class"], p["kind"], p["target"],
-                p["rationale"], p["proposed_change"], p["predicted_effect"], p["confidence"],
-                p["source"], json.dumps(p.get("evidence") or {}),
-                json.dumps(p["change_spec"]) if p.get("change_spec") else None, user,
-            )
-            stored.append({"id": pid, **p})
+        batch_id, stored = await _store_diagnosis(conn, run_id, run_name, taxonomy, diagnosis, user)
 
     return {
         "ok": True,
