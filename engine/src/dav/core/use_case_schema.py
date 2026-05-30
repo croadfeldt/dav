@@ -96,15 +96,21 @@ _SEVERITY_DEFAULTS: dict[str, int] = {
     "critical": 90,
 }
 
-# Natural-language synonyms the LLM sometimes emits instead of the
-# canonical label. `medium` is the observed case (OSAC 2026-05-29):
-# the confidence axis uses low/medium/high, so the model carried
-# `medium` over to severity where the canonical midpoint label is
-# `moderate`. Only add unambiguous mappings — e.g. `high` and `low`
-# could mean either `major`/`critical` or `minor`/`advisory`, so they
-# stay un-aliased and continue to error.
+# Natural-language synonyms the LLM emits instead of the canonical
+# severity label. The model reuses the confidence axis's 3-bucket
+# low/medium/high scale for severity (observed across OSAC runs
+# 2026-05-29/30: `medium` first, then `low` killed an otherwise-complete
+# 270s analysis). Mapping all three covers that entire alternate scale
+# and keeps the model's casual judgments in the middle of the 5-level
+# severity range — `advisory` (informational, no real issue) and
+# `critical` (blocking) stay reserved for when the model explicitly uses
+# those words. Ordering is preserved: low<medium<high → minor<moderate<major.
+# Truly unknown labels still raise — this coerces a known vocabulary, not
+# arbitrary garbage.
 _SEVERITY_ALIASES: dict[str, str] = {
+    "low": "minor",
     "medium": "moderate",
+    "high": "major",
 }
 
 _CONFIDENCE_DEFAULTS: dict[str, int] = {
@@ -218,19 +224,27 @@ def normalize_severity(value: Any) -> SeverityDescriptor:
         if not isinstance(label_raw, str):
             raise ValueError(f"severity dict missing 'label' or not a string: {value!r}")
         label = label_raw.strip().lower()
+        aliased = label in _SEVERITY_ALIASES
         label = _SEVERITY_ALIASES.get(label, label)
         if label not in _SEVERITY_DEFAULTS:
             raise ValueError(
                 f"invalid severity label '{label_raw}'; expected one of {sorted(_SEVERITY_DEFAULTS)}"
             )
-        score = value.get("score", _SEVERITY_DEFAULTS[label])
-        if not isinstance(score, int):
-            raise ValueError(f"severity score must be int, got {type(score).__name__}: {score!r}")
-        lo, hi = _SEVERITY_BAND_RANGES[label]
-        if not (lo <= score <= hi):
-            raise ValueError(
-                f"severity score {score} outside band for label '{label}' (expected {lo}-{hi})"
-            )
+        if aliased:
+            # A synonym label means the model is on a non-canonical scale
+            # (e.g. low/medium/high with confidence-style scores like 85);
+            # its score can't be trusted against our bands. Use the
+            # canonical default for the resolved label.
+            score = _SEVERITY_DEFAULTS[label]
+        else:
+            score = value.get("score", _SEVERITY_DEFAULTS[label])
+            if not isinstance(score, int):
+                raise ValueError(f"severity score must be int, got {type(score).__name__}: {score!r}")
+            lo, hi = _SEVERITY_BAND_RANGES[label]
+            if not (lo <= score <= hi):
+                raise ValueError(
+                    f"severity score {score} outside band for label '{label}' (expected {lo}-{hi})"
+                )
         factors = dict(value.get("factors") or {})
         factors.setdefault("base_from_label", _SEVERITY_DEFAULTS[label])
         factors.setdefault("override_rationale", None)

@@ -117,11 +117,22 @@ def test_normalize_severity_case_insensitive():
     sev = normalize_severity("MAJOR")
     assert_eq(sev.label, "major", "case normalized")
 
-def test_normalize_severity_medium_aliases_to_moderate():
-    sev = normalize_severity("medium")
-    assert_eq(sev.label, "moderate", "string alias")
-    sev2 = normalize_severity({"label": "Medium", "score": 50})
-    assert_eq(sev2.label, "moderate", "dict alias, case-insensitive")
+def test_normalize_severity_lmh_scale_aliases():
+    # The model reuses the confidence axis's low/medium/high scale for
+    # severity; all three map to the middle of the 5-level range.
+    assert_eq(normalize_severity("low").label, "minor", "low -> minor")
+    assert_eq(normalize_severity("medium").label, "moderate", "medium -> moderate")
+    assert_eq(normalize_severity("high").label, "major", "high -> major")
+    assert_eq(normalize_severity({"label": "Medium", "score": 50}).label,
+              "moderate", "dict alias, case-insensitive")
+
+def test_normalize_severity_aliased_label_ignores_mismatched_score():
+    # {label: high, score: 85} uses a confidence-style score that doesn't
+    # fit major's band (61-80); aliasing must fall back to the canonical
+    # default rather than raising an out-of-band error.
+    sev = normalize_severity({"label": "high", "score": 85})
+    assert_eq(sev.label, "major", "high -> major")
+    assert_eq(sev.score, 70, "score reset to major default, not 85")
 
 def test_normalize_severity_rejects_invalid_label():
     assert_raises(
