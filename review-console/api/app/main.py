@@ -3630,6 +3630,26 @@ async def ingest_analysis(run_id: str, request: Request):
 _PROPOSAL_STATUSES = {"proposed", "accepted", "rejected", "applied", "superseded"}
 
 
+def _resolve_run_id(id_or_name: str) -> Optional[str]:
+    """Accept either a workspace run_id (timestamped results dir) or a Tekton
+    PipelineRun name, and return the workspace run_id. Lets the UI pass whichever
+    it has (the run drawer has the Tekton name; the queue stores the run_id)."""
+    if not _results.is_available():
+        return None
+    if _results.get_run_summary(id_or_name) is not None:
+        return id_or_name  # already a workspace run_id
+    try:
+        detail = validations.get_run_detail(id_or_name)
+        started = detail.get("started_at") or detail.get("created_at")
+        if started:
+            prog = _results.find_progress_near(started, tolerance_seconds=600)
+            if prog:
+                return prog.get("_run_dir")
+    except Exception:
+        pass
+    return None
+
+
 async def _resolve_diagnosis_model(conn) -> Optional[dict]:
     """The model to diagnose with: the arch-review default, else any enabled
     arch-review-capable model. Returns a model_configs row dict or None."""
@@ -3705,6 +3725,7 @@ async def diagnose_run(run_id: str, request: Request, use_llm: bool = Query(True
     user = get_user(request)
     if not _results.is_available():
         raise HTTPException(503, "workspace PVC not mounted")
+    run_id = _resolve_run_id(run_id) or run_id
     summary = _results.get_run_summary(run_id)
     if summary is None:
         raise HTTPException(404, f"run {run_id!r} not found on workspace PVC")
@@ -3765,6 +3786,7 @@ async def diagnose_run(run_id: str, request: Request, use_llm: bool = Query(True
 @app.get("/api/diagnose/{run_id:path}")
 async def get_run_diagnosis(run_id: str):
     """Return the latest stored diagnosis (taxonomy + proposals) for a run."""
+    run_id = _resolve_run_id(run_id) or run_id
     async with pool.acquire() as conn:
         batch = await conn.fetchrow(
             """SELECT * FROM run_diagnoses WHERE run_id=$1 ORDER BY created_at DESC LIMIT 1""",

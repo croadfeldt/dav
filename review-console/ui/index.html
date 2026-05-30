@@ -751,6 +751,9 @@
       <a class="pf-nav-item" data-view="review" href="javascript:void(0)">
         <span class="nav-icon">✦</span><span class="nav-label">Review &amp; Plan</span>
       </a>
+      <a class="pf-nav-item" data-view="improve" href="javascript:void(0)" title="Self-improvement — diagnose run failures and review proposed fixes">
+        <span class="nav-icon">🩺</span><span class="nav-label">Improve <span class="badge" id="badgeImprove" style="font-size:9px;"></span></span>
+      </a>
       <a class="pf-nav-item" data-view="config" href="javascript:void(0)">
         <span class="nav-icon">⚙</span><span class="nav-label">Config</span>
       </a>
@@ -790,6 +793,7 @@
               <div class="rd-panel-sub" id="rdSub"></div>
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
+              <button class="btn ghost btn-sm" id="rdDiagnoseBtn" style="display:none;font-size:10px;" title="Diagnose this run's failures and propose fixes (Improve tab)">🩺 Diagnose</button>
               <button class="btn ghost btn-sm" id="rdViewResultsBtn" style="display:none;font-size:10px;">View Results →</button>
             </div>
           </div>
@@ -1172,6 +1176,50 @@
               <span id="rpPrMsg" style="font-size:11px;color:var(--text-faint);"></span>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ IMPROVE (self-improvement: diagnose & propose) ══════════════ -->
+    <section class="pf-view" id="view-improve">
+      <div style="display:grid;grid-template-columns:1fr 1.5fr;gap:14px;padding:14px;height:calc(100vh - 60px);">
+        <!-- Left: proposal queue + diagnose control -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div>
+                <div style="font-weight:600;font-size:13px;">Improvement proposals</div>
+                <div style="font-size:10px;color:var(--text-faint);">Typed fixes diagnosed from run failures — review, don't auto-apply</div>
+              </div>
+              <button class="btn ghost btn-icon" id="improveRefreshBtn" title="Refresh">↻</button>
+            </div>
+            <!-- Diagnose a run -->
+            <div style="display:flex;gap:6px;align-items:center;">
+              <select id="improveRunSelect" style="flex:1;min-width:0;font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);">
+                <option value="">Diagnose a run…</option>
+              </select>
+              <label style="font-size:10px;color:var(--text-faint);display:flex;align-items:center;gap:3px;" title="Also ask the configured arch-review model for a second opinion">
+                <input type="checkbox" id="improveLLMChk" checked style="width:auto;height:auto;accent-color:var(--accent);"> LLM
+              </label>
+              <button class="btn primary btn-sm" id="improveDiagnoseBtn">Diagnose</button>
+            </div>
+            <!-- Status filter chips -->
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+              <span style="font-size:10px;color:var(--text-faint);">Status:</span>
+              <button class="btn ghost btn-sm improve-status-chip active" data-status="proposed">Proposed</button>
+              <button class="btn ghost btn-sm improve-status-chip" data-status="accepted">Accepted</button>
+              <button class="btn ghost btn-sm improve-status-chip" data-status="rejected">Rejected</button>
+              <button class="btn ghost btn-sm improve-status-chip" data-status="">All</button>
+            </div>
+          </div>
+          <div id="improveList" style="flex:1;overflow-y:auto;min-height:0;"></div>
+        </div>
+        <!-- Right: proposal detail -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div id="improveDetailEmpty" style="padding:32px;text-align:center;color:var(--text-faint);font-size:12px;">
+            Select a proposal to review, or diagnose a run to generate proposals.
+          </div>
+          <div id="improveDetailBody" style="display:none;flex:1;overflow-y:auto;min-height:0;padding:16px;"></div>
         </div>
       </div>
     </section>
@@ -2493,6 +2541,7 @@ function switchView(name) {
   if (name === 'results')  loadResults();
   if (name === 'usecases') { loadUCs(); loadSets(); }
   if (name === 'review')   loadReviewTab();
+  if (name === 'improve')  loadImproveQueue();
   if (name === 'config')   loadConfig();
   if (name === 'inbox')    loadInbox();
 }
@@ -2946,6 +2995,11 @@ function selectRun(name) {
   const resultBtn = document.getElementById('rdViewResultsBtn');
   const hasResult = allResults.find(r => r.run_id === name);
   resultBtn.style.display = hasResult ? '' : 'none';
+
+  // Show "Diagnose" — available for any run (the diagnoser resolves the run
+  // name to its workspace results dir; a clean run simply yields 0 proposals).
+  const diagBtn = document.getElementById('rdDiagnoseBtn');
+  if (diagBtn) diagBtn.style.display = '';
 
   // Start polling
   stopRunPolling();
@@ -7332,6 +7386,23 @@ document.getElementById('rdViewResultsBtn')?.addEventListener('click', () => {
   }
 });
 
+// Diagnose button in run detail header — jump to the Improve tab, preselect
+// this run, and run the diagnoser.
+document.getElementById('rdDiagnoseBtn')?.addEventListener('click', async () => {
+  const run = _rdName;
+  if (!run) return;
+  switchView('improve');
+  await loadImproveQueue();
+  const sel = document.getElementById('improveRunSelect');
+  if (sel) {
+    if (![...sel.options].some(o => o.value === run)) {
+      sel.add(new Option(run, run), 0);
+    }
+    sel.value = run;
+  }
+  diagnoseSelectedRun();
+});
+
 document.getElementById('newRunBtn').addEventListener('click', () => openNewRun());
 document.getElementById('closeNewRun').addEventListener('click', closeNewRun);
 document.getElementById('cancelNewRun').addEventListener('click', closeNewRun);
@@ -9396,6 +9467,183 @@ let _inboxState = {
   statusFilter: 'new',
   repoFilter: '',
 };
+
+// ════════════════ IMPROVE — self-improvement: diagnose & propose ════════════════
+// Review queue for the typed change proposals the diagnoser (diagnose.py) files
+// against failed runs. Review-only: accept/reject does NOT apply a change.
+const _improveState = { list: [], selectedId: null, statusFilter: 'proposed', bound: false };
+
+function _improveBind() {
+  if (_improveState.bound) return;
+  _improveState.bound = true;
+  document.getElementById('improveRefreshBtn')?.addEventListener('click', loadImproveQueue);
+  document.getElementById('improveDiagnoseBtn')?.addEventListener('click', diagnoseSelectedRun);
+  document.querySelectorAll('.improve-status-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.improve-status-chip').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _improveState.statusFilter = btn.dataset.status;
+      loadImproveQueue();
+    });
+  });
+}
+
+async function loadImproveQueue() {
+  _improveBind();
+  // Populate the "diagnose a run" dropdown (failed runs first — those have signatures).
+  try {
+    const resp = await api('/api/runs').catch(() => ({ runs: [] }));
+    const runs = (resp.runs || []).slice();
+    runs.sort((a, b) => (a.phase === 'Failed' ? -1 : 0) - (b.phase === 'Failed' ? -1 : 0));
+    const sel = document.getElementById('improveRunSelect');
+    if (sel) {
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">Diagnose a run…</option>' +
+        runs.slice(0, 40).map(r =>
+          `<option value="${esc(r.name)}">${r.phase === 'Failed' ? '⚠ ' : ''}${esc(r.name)} · ${esc(r.phase || '')}</option>`
+        ).join('');
+      sel.value = cur;
+    }
+  } catch (e) { /* dropdown best-effort */ }
+
+  // Load the proposal queue.
+  const qs = _improveState.statusFilter ? `?status=${encodeURIComponent(_improveState.statusFilter)}` : '';
+  try {
+    const data = await api(`/api/improvement-proposals${qs}`);
+    _improveState.list = data.proposals || [];
+    renderImproveList();
+    // Badge: count of proposed (unreviewed) across all.
+    const pending = await api('/api/improvement-proposals?status=proposed').catch(() => ({ count: 0 }));
+    const badge = document.getElementById('badgeImprove');
+    if (badge) badge.textContent = pending.count ? pending.count : '';
+  } catch (e) {
+    document.getElementById('improveList').innerHTML =
+      `<div class="empty" style="padding:22px;text-align:center;color:var(--red);">${esc(e.message)}</div>`;
+  }
+}
+
+function _confColor(c) { return c === 'high' ? 'var(--green)' : (c === 'medium' ? 'var(--accent)' : 'var(--text-faint)'); }
+function _statusBadge(s) {
+  const col = s === 'accepted' ? 'var(--green)' : (s === 'rejected' ? 'var(--red)' : (s === 'applied' ? 'var(--blue,#4a90c9)' : 'var(--text-faint)'));
+  const bg = s === 'accepted' ? 'rgba(123,168,79,0.12)' : (s === 'rejected' ? 'rgba(217,101,58,0.12)' : 'transparent');
+  return `<span style="color:${col};background:${bg};padding:1px 5px;border-radius:2px;font-size:9px;text-transform:uppercase;letter-spacing:.05em;">${esc(s)}</span>`;
+}
+
+function renderImproveList() {
+  const el = document.getElementById('improveList');
+  if (!_improveState.list.length) {
+    el.innerHTML = `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);font-size:12px;">No proposals${_improveState.statusFilter ? ` (${esc(_improveState.statusFilter)})` : ''}. Diagnose a run to generate some.</div>`;
+    return;
+  }
+  el.innerHTML = _improveState.list.map(p => {
+    const active = p.id === _improveState.selectedId;
+    return `
+      <div class="improve-row" data-id="${p.id}"
+           style="padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;
+                  ${active ? 'background:var(--bg-raised);border-left:2px solid var(--accent);' : 'border-left:2px solid transparent;'}"
+           onclick="selectProposal(${p.id})">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
+          <div style="font-size:11px;font-weight:600;display:flex;align-items:center;gap:6px;min-width:0;">
+            <span style="width:7px;height:7px;border-radius:50%;background:${_confColor(p.confidence)};flex-shrink:0;" title="${esc(p.confidence)} confidence"></span>
+            <span style="background:var(--bg-raised);border:1px solid var(--border);padding:0 5px;border-radius:2px;font-size:9px;text-transform:uppercase;flex-shrink:0;">${esc(p.kind)}</span>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(p.target || '')}</span>
+          </div>
+          ${_statusBadge(p.status)}
+        </div>
+        <div style="font-size:10px;color:var(--text-faint);margin-top:3px;">
+          ${esc(p.signature_class || '')} · ${esc(p.source)} · ${esc((p.run_name || p.run_id || '').slice(0, 28))}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function selectProposal(id) {
+  _improveState.selectedId = id;
+  renderImproveList();
+  const p = _improveState.list.find(x => x.id === id);
+  if (!p) return;
+  const body = document.getElementById('improveDetailBody');
+  document.getElementById('improveDetailEmpty').style.display = 'none';
+  body.style.display = '';
+  const reviewable = p.status === 'proposed';
+  body.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;border-bottom:1px solid var(--border);padding-bottom:10px;">
+      <div style="min-width:0;">
+        <div style="font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="width:8px;height:8px;border-radius:50%;background:${_confColor(p.confidence)};"></span>
+          <span style="background:var(--bg-raised);border:1px solid var(--border);padding:1px 6px;border-radius:2px;font-size:10px;text-transform:uppercase;">${esc(p.kind)}</span>
+          <span>${esc(p.target || '')}</span>
+        </div>
+        <div style="font-size:10px;color:var(--text-faint);margin-top:4px;">
+          ${esc(p.confidence)} confidence · source: ${esc(p.source)} · signature: ${esc(p.signature_class || '—')}
+        </div>
+      </div>
+      ${_statusBadge(p.status)}
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:12px;">
+      ${_detailBlock('Proposed change', p.proposed_change)}
+      ${_detailBlock('Rationale', p.rationale)}
+      ${_detailBlock('Predicted effect', p.predicted_effect)}
+      <div style="font-size:10px;color:var(--text-faint);">
+        From run <span style="color:var(--text-dim);">${esc(p.run_name || p.run_id || '')}</span>
+        ${p.reviewed_by ? ` · reviewed by ${esc(p.reviewed_by)}` : ''}
+        ${p.review_note ? `<div style="margin-top:4px;font-style:italic;">“${esc(p.review_note)}”</div>` : ''}
+      </div>
+    </div>
+    ${reviewable ? `
+      <div style="display:flex;gap:8px;align-items:center;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
+        <input id="improveReviewNote" placeholder="optional note…" style="flex:1;font-size:11px;padding:5px 8px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);">
+        <button class="btn" style="background:var(--green);color:#fff;" onclick="reviewProposal(${p.id}, 'accepted')">✓ Accept</button>
+        <button class="btn ghost" id="improveRejectBtn-${p.id}" onclick="_armDeleteBtn(this, () => reviewProposal(${p.id}, 'rejected'))">✕ Reject</button>
+      </div>
+      <div style="font-size:9px;color:var(--text-faint);margin-top:6px;">Review only — accepting does not apply the change (that is Phase 2). It flags the proposal for an operator or the future auto-apply gate.</div>
+    ` : ''}`;
+}
+
+function _detailBlock(label, text) {
+  return `<div>
+    <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">${esc(label)}</div>
+    <div style="font-size:12px;line-height:1.5;color:var(--text);white-space:pre-wrap;">${esc(text || '—')}</div>
+  </div>`;
+}
+
+async function reviewProposal(id, status) {
+  const note = document.getElementById('improveReviewNote')?.value || null;
+  try {
+    await api(`/api/improvement-proposals/${id}/review`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, note }),
+    });
+    toast(`Proposal ${status}`, false);
+    await loadImproveQueue();
+    // Re-select to show the updated status, if still in the filtered list.
+    if (_improveState.list.find(x => x.id === id)) selectProposal(id);
+    else { _improveState.selectedId = null;
+           document.getElementById('improveDetailBody').style.display = 'none';
+           document.getElementById('improveDetailEmpty').style.display = ''; }
+  } catch (e) { toast(`Review failed: ${e.message}`, true); }
+}
+
+async function diagnoseSelectedRun() {
+  const sel = document.getElementById('improveRunSelect');
+  const run = sel?.value;
+  if (!run) { toast('Pick a run to diagnose', true); return; }
+  const useLlm = document.getElementById('improveLLMChk')?.checked ? 'true' : 'false';
+  const btn = document.getElementById('improveDiagnoseBtn');
+  const orig = btn.textContent; btn.textContent = '…'; btn.disabled = true;
+  try {
+    const r = await api(`/api/diagnose/${encodeURIComponent(run)}?use_llm=${useLlm}`, { method: 'POST' });
+    const n = (r.proposals || []).length;
+    toast(`Diagnosed: ${n} proposal${n === 1 ? '' : 's'}${r.used_llm ? ' (incl. LLM)' : ''}`, false);
+    // Show proposed regardless of current filter so the new ones are visible.
+    document.querySelectorAll('.improve-status-chip').forEach(b => b.classList.toggle('active', b.dataset.status === 'proposed'));
+    _improveState.statusFilter = 'proposed';
+    await loadImproveQueue();
+    if ((r.proposals || [])[0]) selectProposal(r.proposals[0].id);
+  } catch (e) {
+    toast(`Diagnose failed: ${e.message}`, true);
+  } finally { btn.textContent = orig; btn.disabled = false; }
+}
 
 async function loadInbox() {
   // Hydrate repo filter dropdown from the registry (uses the same
