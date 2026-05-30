@@ -124,11 +124,35 @@ the Tekton task arg wins over any profile): the A/B PROOF is automated, the
 apply is instructed. `migrate_016` adds the `experiments` table + a
 `change_spec` column bridging Phase 1 proposals to applyable deltas.
 
-**Not yet built:** sampling-param experiments (temp/top_k/… via a shadow
-`model_use_profile` — the runtime-applyable, auto-promotable case, vs max_tokens
-which is redeploy-gated); auto-promote-on-win policy (today promotion is always
-operator-confirmed); Phase 3 scheduling/continual operation; richer evidence
-display (per-signature exemplars) in the proposal detail.
+**Sampling-param experiments + auto-promote/revert — SHIPPED** (commit `472d7fc`):
+temperature/top_k/top_p/min_p are the runtime-applyable case. The candidate
+applies its delta as a per-run `use_profile_json` override (isolated, no DB
+mutation); **promote writes the production `model_use_profiles` row (runtime,
+reversible)** and **revert restores the prior state** (delete if none existed).
+An `auto_promote` flag (default off, sampling only) auto-applies a winning
+verdict on scoring — the gate guarantees a real gain with no new high-severity
+failure class, and it's reversible. (max_tokens never auto-promotes — its home
+is the deploy var.) UI: `+ New A/B experiment` ad-hoc launcher (type/param/
+candidate/eval-set/auto-promote) + a Revert button. Validated live: candidate
+gets `{temperature:0.1}`; promote writes the profile; revert removes it.
+
+**Phase 3 — continual scan — SHIPPED** (commit `72ed93a`):
+`POST /api/self-improve/scan` walks recent workspace runs and diagnoses any that
+failed and aren't yet diagnosed, filing proposals (rules-only, idempotent). A
+`dav-self-improve-scan` CronJob (every 6h, in-cluster curl) drives it, so the
+operator wakes to a triaged queue. Validated: it triaged the whole 2-week
+failure backlog into the review queue.
+
+**The loop is now end-to-end:** observe (scan) → diagnose (taxonomy + proposals)
+→ A/B (experiments) → gate (v1.9 guardrail) → apply (auto for sampling,
+human-gated for max_tokens) → revert.
+
+**Remaining nice-to-haves:** richer evidence display (per-signature exemplars)
+in the proposal detail; experiment-from-a-proposal for sampling (today sampling
+experiments are ad-hoc, since the diagnoser only emits max_tokens change_specs);
+auto-experiment (the scan files proposals but doesn't auto-launch A/Bs — kept
+operator-initiated by design); a Bayesian/multi-candidate sweep instead of
+single baseline-vs-candidate.
 
 ## 4. Guide ⇄ be-guided (the duality the operator asked for)
 
