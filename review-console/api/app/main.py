@@ -3945,6 +3945,11 @@ class ExperimentIn(BaseModel):
     proposal_id: Optional[int] = None
     # {type:'max_tokens', candidate:<int>} OR {type:'sampling', param, candidate}
     change_spec: dict
+    # Optional: give the BASELINE arm its own per-run override too (head-to-head
+    # of two configs instead of candidate-vs-production). Same shape as
+    # change_spec. Both arms stay per-run isolated — production is never touched
+    # during the runs regardless.
+    baseline_change_spec: Optional[dict] = None
     set_id: Optional[int] = None
     managed_uc_uuids: Optional[list[str]] = None
     sample_count: int = 1
@@ -4191,10 +4196,23 @@ async def create_experiment(payload: ExperimentIn, request: Request):
             spec["baseline"] = cur.get(spec["param"], "engine default")
             spec["had_profile_row"] = cur != {}
 
+        # Optional baseline-arm override (head-to-head of two configs). Both arms
+        # stay per-run; production is untouched during the runs.
+        b_max_tokens, b_override = None, None
+        bspec = payload.baseline_change_spec
+        if bspec:
+            if bspec.get("type") == "max_tokens":
+                b_max_tokens = bspec.get("candidate")
+            elif bspec.get("type") == "sampling" and bspec.get("param") in _SAMPLING_PARAMS:
+                b_override = {bspec["param"]: bspec.get("candidate")}
+            else:
+                raise HTTPException(400, "invalid baseline_change_spec")
+            spec["baseline_spec"] = bspec
+
         try:
             baseline_run = await _trigger_eval_run(
                 conn, mc=mc, managed_uuids=uuids, sample_count=payload.sample_count,
-                max_tokens=None, profile_override=None, reviewer=user)
+                max_tokens=b_max_tokens, profile_override=b_override, reviewer=user)
             # PipelineRun names are derived from int(time.time())[-6:]; two
             # triggers in the same second collide (409). Space the arms out.
             await asyncio.sleep(1.3)
