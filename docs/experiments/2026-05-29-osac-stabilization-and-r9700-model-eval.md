@@ -77,7 +77,7 @@ Every model tried on this stack, with the full serving config and the verdict. C
 | Throughput | ~12–18 tok/s (≈half the 32 B) — **route timeout raised to 900 s** on this ISVC to absorb it (see §3) |
 | Key args | `--tensor-parallel-size 2 --quantization awq --dtype auto --max-model-len 32768 --gpu-memory-utilization 0.92 --enable-prefix-caching --enable-auto-tool-choice --tool-call-parser hermes`; env `VLLM_USE_TRITON_AWQ=1` |
 | NOT needed | the FP8 W8A8 block-kernel ConfigMaps (those are FP8-specific; AWQ uses INT4 kernels) |
-| Verdict | **<<RESULTS PENDING — run `dav-stage2-console-109569`, see §9>>** |
+| Verdict | **Not worth it for DAV on this hardware** (run `109569`, 5/6). ~5–7× slower than the 32 B, ⅓ the context, 1 truncation failure, only mixed/comparable quality. Kept as a stopped, preserved option. Full analysis in §9. |
 
 ### 2.5 Config knobs that matter on this stack (apply to any model)
 
@@ -174,7 +174,7 @@ Run progression: **`088639` 0/15 → `092466` 11/15 → [4-UC isolation runs `09
 | `098818` | + section cap (`a0dee22`) | 4 | 3/4 | matrix cap recovers 3; 1 over-gen 504 |
 | `101108` | + max-tokens 10240 (`0f6346d`) | 4 | 3/4 | 0 504s; 1 `severity 'low'` reject |
 | `103283` | + full severity scale (`10fe660`) | 15 | **15/15** | clean — chain complete |
-| `109569` | **Qwen2.5-72B-AWQ**, max-len 32768, route 900 s | 6 | **<<pending>>** | larger-model quality comparison |
+| `109569` | **Qwen2.5-72B-AWQ**, max-len 32768, route 900 s | 6 | **5/6** | larger model ~5–7× slower, ⅓ context, mixed quality, 1 truncation fail → not worth it; 32 B kept |
 
 ---
 
@@ -186,9 +186,28 @@ Run progression: **`088639` 0/15 → `092466` 11/15 → [4-UC isolation runs `09
 
 **De-risked along the way:** AWQ-72B boots and serves on gfx1201; hermes tool-calling produces valid JSON tool calls in the live DAV agent loop; no RAM offload (fits 64 GB VRAM at TP=2).
 
-**Results:** `<<PENDING — run 109569 completing; fill metrics table + verdict here>>`
+**Results (run `109569`, 5/6 — one JSON-truncation failure):**
 
-**Standing tradeoff regardless of quality:** the 72 B costs ~2× wall time and a much smaller context window on this hardware. For DAV's long-context stage-2, the context ceiling is the more limiting of the two.
+| UC | 32B (comp/data/cap/gaps · tools · wall) | 72B (comp/data/cap/gaps · tools · wall) |
+|---|---|---|
+| 1a2c9d8e | 2/2/2/1 · 7t · 40 s | 1/1/1/1 · 2t · 198 s |
+| 2b3c4d5e | 4/3/5/2 · 11t · 72 s | 4/3/4/2 · 10t · 487 s |
+| 3c4d5e6f | **8/5/8/2 · 17t · 101 s** | 4/3/4/1 · 8t · 470 s |
+| 45a1f7e9 | 1/2/1/1 · 9t · 34 s | **6/2/6/2 · 8t · 543 s** |
+| 7c8d9e0f | 3/2/3/2 · 10t · 65 s | 2/2/2/1 · 8t · 289 s |
+| 1a2b3c4d | 3/3/8/2 · 17t · 79 s | **FAILED** — JSON parse (unbalanced braces) at 928 s |
+
+**What the numbers + the analyses say:**
+
+1. **Throughput: 32 B wins decisively — ~5–7× faster** (34–101 s/UC vs 198–543 s/UC). A full 15-UC OSAC run is ~75 min on the 32 B vs an extrapolated ~3 h on the 72 B.
+2. **Exploration breadth: 32 B explores more.** Fewer tool calls on the 72 B (2–10 vs 7–17) → **43 distinct spec IDs cited across the 5 shared UCs vs the 72 B's 22.** The slow 72 B commits to an answer earlier.
+3. **Quality: genuinely mixed, no decisive 72 B edge.** On the hard UC `3c4d5e6f` the 32 B was richer *and* better-grounded — 8 components tied to spec IDs (`RSE-001…004`, `OBS-001/002`, `CMP-001`, `SUB-001`) vs the 72 B's 4 *generic* labels ("Resource/Service Request", "DCM Tenant"). But on `45a1f7e9` the 32 B was lazy (1 generic `cost_analysis`) while the 72 B dug deeper — 6 grounded IDs (`OBS-002/005`, `REQ-001/004/007/008`). So each model is better on different UCs; neither dominates on quality.
+4. **Reliability: 72 B failed 1/6 on output truncation** — `max-tokens=10240` was too small for its more verbose final emit on the capability-heavy `1a2b3c4d`, cutting the JSON mid-object (unbalanced braces). The 32 B did that UC cleanly. (Raising the 72 B's `max-tokens` fights its 900 s route timeout — `10240/15 ≈ 683 s` already.)
+5. **Context: 32 B's 86 K vs the 72 B's 32 K** — the larger window is part of *why* the 32 B explores more before committing.
+
+**Verdict: keep Qwen3-32B-FP8 as the default. The 72 B does not justify its costs** (~5–7× slower, ~⅓ the context, one reliability failure) given only mixed/comparable quality. The 72 B was stopped and the 32 B restored as the stable default; the 72 B manifests + downloaded weights are preserved (ISVC stopped, not deleted) for future revisit.
+
+**The most useful insight — and it points at the self-improvement work:** DAV analysis quality here is gated more by **exploration depth + consistency** than by raw model size. The 32 B's *inconsistency* (rich on `3c4d5e6f`, lazy on `45a1f7e9`) is the real opportunity — a self-improving loop that detects shallow analyses (low tool-call count / few spec refs) and nudges for more grounding would likely beat swapping to a bigger, slower model. See `docs/dav-self-improvement-vision.md`.
 
 ---
 
