@@ -97,10 +97,19 @@ domain knowledge, pin invariants.
   distinguishes "no model" from "no contribution" (this caught a real bug on
   first run — an empty `Bearer` header to the local vLLM).
 
-**Not yet built:** the Config/run-drawer **UI** for the review queue (the API +
-data model are done); Phase 2 candidate-eval + auto-revert; Phase 3 scheduling.
-Next increment: the review-queue UI, then Phase 2's A/B-gated apply for the
-low-blast-radius kinds (prompt/profile).
+**Review-queue UI — SHIPPED** (commit `f92c799`): a top-level **"Improve" tab**
+(🩺) with a two-pane review queue — status-filtered proposal list + a
+"diagnose a run" picker (LLM toggle) on the left; proposal detail
+(kind/target/confidence/source, proposed change, rationale, predicted effect)
++ Accept/Reject (review-only, two-click) on the right. A run-drawer "🩺 Diagnose"
+button runs the diagnoser in context. The `/api/diagnose/{id}` endpoint accepts
+either a workspace run_id or a Tekton run name (resolves via timestamp
+correlation), so both entry points work.
+
+**Not yet built:** Phase 2 candidate-eval + auto-revert (the A/B-gated apply for
+the low-blast-radius kinds prompt/profile — where the v1.9 "always measure"
+guardrail becomes load-bearing); Phase 3 scheduling/continual operation; richer
+evidence display (per-signature exemplars) in the proposal detail.
 
 ## 4. Guide ⇄ be-guided (the duality the operator asked for)
 
