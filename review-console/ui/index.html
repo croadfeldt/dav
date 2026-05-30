@@ -9692,7 +9692,7 @@ async function loadExperiments() {
   }
 }
 
-function _verdictColor(v) {
+function _expVerdictColor(v) {
   return v === 'promote' ? 'var(--green)' : (v === 'revert' ? 'var(--red)' : (v === 'inconclusive' ? 'var(--accent)' : 'var(--text-faint)'));
 }
 
@@ -9765,7 +9765,7 @@ function renderExperimentsList() {
            onclick="selectExperiment(${x.id})">
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
           <div style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(x.title || ('experiment #' + x.id))}</div>
-          <span style="font-size:9px;text-transform:uppercase;color:${_verdictColor(x.verdict)};">${esc(v)}</span>
+          <span style="font-size:9px;text-transform:uppercase;color:${_expVerdictColor(x.verdict)};">${esc(v)}</span>
         </div>
         <div style="font-size:10px;color:var(--text-faint);margin-top:3px;">${esc(x.status)} · ${esc(x.eval_set_name || (x.eval_set_id ? 'set ' + x.eval_set_id : 'ad-hoc'))}</div>
       </div>`;
@@ -9790,7 +9790,7 @@ async function selectExperiment(id) {
     <div style="border-bottom:1px solid var(--border);padding-bottom:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
       <div><div style="font-size:14px;font-weight:600;">${esc(x.title || ('Experiment #' + x.id))}</div>
         <div style="font-size:10px;color:var(--text-faint);margin-top:3px;">${esc(x.status)} · eval ${esc(x.eval_set_name || x.eval_set_id || 'ad-hoc')} · ${x.sample_count} sample(s)</div></div>
-      ${x.verdict ? `<span style="font-size:11px;text-transform:uppercase;font-weight:600;color:${_verdictColor(x.verdict)};">${esc(x.verdict)}</span>` : ''}
+      ${x.verdict ? `<span style="font-size:11px;text-transform:uppercase;font-weight:600;color:${_expVerdictColor(x.verdict)};">${esc(x.verdict)}</span>` : ''}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
       <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
@@ -9804,7 +9804,7 @@ async function selectExperiment(id) {
         <div style="font-size:9px;color:var(--text-faint);margin-top:4px;">${esc(x.candidate_run || '')}</div>
       </div>
     </div>
-    ${x.verdict_reason ? `<div style="margin-top:12px;font-size:12px;line-height:1.5;padding:10px;background:var(--bg-raised);border-left:2px solid ${_verdictColor(x.verdict)};border-radius:2px;">${esc(x.verdict_reason)}</div>` : ''}
+    ${x.verdict_reason ? `<div style="margin-top:12px;font-size:12px;line-height:1.5;padding:10px;background:var(--bg-raised);border-left:2px solid ${_expVerdictColor(x.verdict)};border-radius:2px;">${esc(x.verdict_reason)}</div>` : ''}
     ${x.status === 'running' ? `<div style="margin-top:12px;font-size:11px;color:var(--text-faint);">⏳ Runs in flight — refresh to update. (Candidate is a per-run override; production + spamllm untouched.)</div>` : ''}
     ${x.auto_promote ? `<div style="margin-top:8px;font-size:10px;color:var(--accent);">⚡ auto-promote on (a winning sampling verdict applies automatically, reversibly)</div>` : ''}
     ${x.verdict === 'promote' && x.status !== 'promoted' ? `
