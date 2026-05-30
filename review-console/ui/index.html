@@ -3473,6 +3473,16 @@ function renderRunDrawerMetrics(snap) {
     _rdVllmLastChange = Math.floor(Date.now()/1000);
   }
   updateFreshnessLabels();
+
+  // Re-inject sparklines: this function wipes #rdGpus / vLLM cell
+  // innerHTML on every poll (every 3s for an in-flight run), which
+  // destroys the SVGs injected by _renderSparklines(). The timeseries
+  // is only re-fetched every 60s, so without this the sparklines flash
+  // in for one poll after each fetch then vanish for ~57s ("comes and
+  // goes while running"). _rdSparklines is cached between fetches, so
+  // re-rendering it here keeps them visible continuously. No-op when no
+  // data is cached yet (completed runs render once and already persist).
+  _renderSparklines();
 }
 
 async function loadNewRunDefaults(forcedSubpath) {
