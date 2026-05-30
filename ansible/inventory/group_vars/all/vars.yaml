@@ -36,6 +36,25 @@ inference_primary_model_params: "32B"
 inference_primary_model_topology: "dual-GPU split-layer"
 inference_primary_context_length: 32768
 
+# --- Stage-2 inference tuning (throughput-dependent) ---
+# Per-turn LLM output token budget for the dav-run-corpus task.
+# This is intentionally a deployment variable, NOT a code constant,
+# because the safe value depends on YOUR inference throughput and the
+# HAProxy route timeout in front of YOUR endpoint:
+#
+#   max_tokens / throughput(tok/s)  must stay <  route timeout(s)
+#
+# On the homelab AMD R9700 stack (~20-26 tok/s, 600s route timeout) the
+# honest ceiling is ~10,800 tokens (600s x 18 tok/s worst case). A
+# legitimate verbose analysis tops out around ~9,000 tokens (the UC #6
+# greenfield case), so 10240 covers real analyses with headroom while
+# keeping any single generation under the route timeout. 16384 used to
+# be set here, but on this slow stack any generation that actually used
+# that headroom (>13K tokens, almost always degenerate over-generation)
+# blew the route timeout and 504'd — wasting ~600s of GPU per failure.
+# Raise this only in lock-step with the route timeout on a faster GPU.
+dav_stage2_max_tokens: 10240
+
 # --- Inference Tier 2 (in-cluster vLLM fallback) — OPT-IN ---
 # These vars only take effect when the playbook is invoked with
 # --tags vllm. By default, the in-cluster vLLM is NOT deployed.

@@ -164,18 +164,21 @@ spec:
 
     - name: max-tokens
       type: string
-      # Per-turn LLM output budget. Iterated 2026-05-28:
-      #   6144 → 8192 → 16384.
-      # First bump (6144 → 8192, +33%) was based on the Phase 1 A/B
-      # baseline failure on UC #6 (infrastructure/prod/greenfield); a
-      # validation re-run (`dav-stage2-console-968497`) showed UC #6's
-      # final-response content was 33,907 chars (~9000 tokens) — the
-      # model emits a 20+ component analysis on that UC and 8192 still
-      # chopped it mid-component. 16384 covers it cleanly with margin.
-      # Zero VRAM / wall-time cost when the model doesn't actually emit
-      # more (stops at end-of-stream naturally). 16384 stays well below
-      # the 86K context ceiling even after typical 25-30K input.
-      default: "16384"
+      # Per-turn LLM output budget. Now a deployment variable
+      # (dav_stage2_max_tokens) because the safe ceiling is
+      # throughput-dependent — see group_vars/all/vars.yaml for the
+      # full rationale.
+      #
+      # History: iterated 6144 → 8192 → 16384 on 2026-05-28 because
+      # UC #6 (infrastructure/prod/greenfield) emits a ~9000-token,
+      # 33,907-char analysis that 8192 chopped mid-component. But on
+      # the slow AMD stack 16384 let degenerate over-generations run
+      # past the 600s route timeout → 504 (OSAC 2026-05-29/30, runs
+      # 092466/098818). The budget must satisfy
+      # max_tokens/throughput < route_timeout; the default below
+      # (10240) covers UC #6 with margin while staying under 600s at
+      # this stack's ~20 tok/s.
+      default: "{{ dav_stage2_max_tokens }}"
 
     - name: cache-prompt
       type: string
