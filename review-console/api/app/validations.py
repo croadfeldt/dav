@@ -93,6 +93,7 @@ def _mk_pipelinerun(
     capabilities_json: Optional[str] = None,
     use_profile_json: Optional[str] = None,
     stage2_two_pass: Optional[str] = None,
+    max_tokens: Optional[int] = None,
 ) -> dict:
     """Build a PipelineRun object targeting the DAV Pipeline."""
     suffix = str(int(time.time()))[-6:]
@@ -109,6 +110,12 @@ def _mk_pipelinerun(
         params.append({"name": "mode", "value": mode})
     if sample_count is not None:
         params.append({"name": "sample-count", "value": str(sample_count)})
+    if max_tokens is not None:
+        # Per-run output budget override (the Tekton task's max-tokens param,
+        # default = dav_stage2_max_tokens). Used by the self-improvement loop's
+        # A/B experiments to test a candidate max_tokens in isolation — no
+        # profile or deploy-var mutation, so production + spamllm are untouched.
+        params.append({"name": "max-tokens", "value": str(max_tokens)})
     if corpus_subpath:
         params.append({"name": "corpus-uc-subpath", "value": corpus_subpath})
     if corpus_repo_url:
@@ -206,6 +213,7 @@ def trigger_run(
     capabilities_json: Optional[str] = None,
     use_profile_json: Optional[str] = None,
     stage2_two_pass: Optional[str] = None,
+    max_tokens: Optional[int] = None,
 ) -> dict:
     """Create a PipelineRun. Returns the created object's status summary."""
     if not ENABLED:
@@ -235,6 +243,7 @@ def trigger_run(
         capabilities_json=capabilities_json,
         use_profile_json=use_profile_json,
         stage2_two_pass=stage2_two_pass,
+        max_tokens=max_tokens,
     )
 
     try:

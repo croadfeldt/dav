@@ -40,7 +40,8 @@ _LMH_TO_SEVERITY = {"low": "minor", "medium": "moderate", "high": "major"}
 
 
 def _proposal(signature_class, kind, target, rationale, proposed_change,
-              predicted_effect, confidence, *, source="rule", evidence=None) -> dict:
+              predicted_effect, confidence, *, source="rule", evidence=None,
+              change_spec=None) -> dict:
     return {
         "signature_class": signature_class,
         "kind": kind,
@@ -51,6 +52,9 @@ def _proposal(signature_class, kind, target, rationale, proposed_change,
         "confidence": confidence,      # high | medium | low
         "source": source,              # rule | llm
         "evidence": evidence or {},
+        # Structured, A/B-testable delta (Phase 2) when the change is mechanical;
+        # None for prose-only proposals. {type:'max_tokens', direction, current}.
+        "change_spec": change_spec,
     }
 
 
@@ -87,6 +91,7 @@ def _rule_route_504(sig, cfg):
         predicted_effect="Eliminates 504 gateway timeouts on long generations.",
         confidence="high",
         evidence={"count": sig["count"], "exemplars": sig["exemplars"], "max_tokens": mt},
+        change_spec={"type": "max_tokens", "direction": "lower", "current": mt},
     )]
 
 
@@ -110,6 +115,7 @@ def _rule_output_truncation(sig, cfg):
         predicted_effect="Final analyses parse cleanly instead of dying on truncated JSON.",
         confidence="medium",
         evidence={"count": sig["count"], "exemplars": sig["exemplars"], "max_tokens": mt},
+        change_spec={"type": "max_tokens", "direction": "raise", "current": mt},
     )]
 
 

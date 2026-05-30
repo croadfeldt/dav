@@ -12,6 +12,7 @@ import sys
 
 from app import failure_taxonomy as ft
 from app import diagnose as dg
+from app import experiment_eval as ev
 
 _fails = 0
 
@@ -114,12 +115,42 @@ async def test_diagnose_degrades():
     check(len(d["proposals"]) >= 1 and d["rule_count"] >= 1, "still produces rule proposals")
 
 
+def _run(total, succ, fail_errs):
+    summary = {"total_ucs": total, "successful": succ, "failed": len(fail_errs),
+               "effective_sampling": {"model": "m", "sent": {}}}
+    failures = [{"uc_uuid": f"u{i}", "uc_handle": "x", "error_text": "Error:\n" + e}
+                for i, e in enumerate(fail_errs)]
+    return ev.score_run(summary, failures)
+
+
+def test_phase2_gate():
+    print("Phase 2 gate — A/B decisions on this session's real runs:")
+    r088639 = _run(15, 0, ["primary returned 504"] * 15)   # 0/15 route_504
+    r092466 = _run(15, 11, ["primary returned 504"] * 4)    # 11/15 route_504
+    r103283 = _run(15, 15, [])                              # 15/15 clean
+    r109569 = _run(6, 5, ["unbalanced braces"])             # 5/6 output_truncation
+    check(ev.gate(r088639, r103283)["verdict"] == "promote", "fixes applied (0/15→15/15) → promote")
+    check(ev.gate(r092466, r103283)["verdict"] == "promote", "partial→full (11/15→15/15) → promote")
+    check(ev.gate(r103283, r092466)["verdict"] == "revert", "regression (15/15→11/15) → revert")
+    # The v1.9 guardrail: a NEW high-severity failure class blocks promotion.
+    g = ev.gate(r103283, r109569)
+    check(g["verdict"] == "revert" and "output_truncation" in g.get("new_high_sev", []),
+          "new failure mode (output_truncation) → revert, even before checking success")
+    check(ev.gate(r103283, r103283)["verdict"] == "inconclusive", "no change → inconclusive (ties don't promote)")
+    # min_delta: a tiny win below the margin is inconclusive.
+    a = _run(10, 5, ["x"] * 5)
+    b = _run(10, 6, ["x"] * 4)  # +0.10
+    check(ev.gate(a, b, min_delta=0.2)["verdict"] == "inconclusive", "win below min_delta → inconclusive")
+    check(ev.gate(a, b, min_delta=0.05)["verdict"] == "promote", "win above min_delta → promote")
+
+
 def main():
     test_classify()
     test_rules_rederive_fixes()
     test_merge_and_rank()
     test_extract_json_array()
     asyncio.run(test_diagnose_degrades())
+    test_phase2_gate()
     print()
     if _fails:
         print(f"FAILED: {_fails} check(s)")

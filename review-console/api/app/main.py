@@ -44,6 +44,7 @@ from . import pr_comments as _pr_comments
 from . import credentials as _credentials
 from . import failure_taxonomy as _ft
 from . import diagnose as _diagnose
+from . import experiment_eval as _expeval
 
 log = logging.getLogger("dav-review-api")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -69,6 +70,7 @@ MIGRATE_012_PATH = Path(__file__).parent / "migrate_012_namespace_first_class.sq
 MIGRATE_013_PATH = Path(__file__).parent / "migrate_013_infrastructure_confidence.sql"
 MIGRATE_014_PATH = Path(__file__).parent / "migrate_014_model_capabilities.sql"
 MIGRATE_015_PATH = Path(__file__).parent / "migrate_015_improvement_proposals.sql"
+MIGRATE_016_PATH = Path(__file__).parent / "migrate_016_experiments.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 
@@ -231,6 +233,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_014_PATH.read_text())
         log.info("Applying migration 015 (self-improvement: diagnose & propose)...")
         await conn.execute(MIGRATE_015_PATH.read_text())
+        log.info("Applying migration 016 (self-improvement: A/B experiments)...")
+        await conn.execute(MIGRATE_016_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -3762,12 +3766,14 @@ async def diagnose_run(run_id: str, request: Request, use_llm: bool = Query(True
             pid = await conn.fetchval(
                 """INSERT INTO improvement_proposals
                      (batch_id, run_id, run_name, signature_class, kind, target, rationale,
-                      proposed_change, predicted_effect, confidence, source, evidence, created_by)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)
+                      proposed_change, predicted_effect, confidence, source, evidence,
+                      change_spec, created_by)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14)
                    RETURNING id""",
                 batch_id, run_id, run_name, p["signature_class"], p["kind"], p["target"],
                 p["rationale"], p["proposed_change"], p["predicted_effect"], p["confidence"],
-                p["source"], json.dumps(p.get("evidence") or {}), user,
+                p["source"], json.dumps(p.get("evidence") or {}),
+                json.dumps(p["change_spec"]) if p.get("change_spec") else None, user,
             )
             stored.append({"id": pid, **p})
 
@@ -3811,7 +3817,8 @@ async def get_run_diagnosis(run_id: str):
             {**{k: r[k] for k in ("id", "signature_class", "kind", "target", "rationale",
                                   "proposed_change", "predicted_effect", "confidence",
                                   "source", "status", "reviewed_by", "review_note")},
-             "evidence": _parse_jsonb(r["evidence"])}
+             "evidence": _parse_jsonb(r["evidence"]),
+             "change_spec": _parse_jsonb(r["change_spec"])}
             for r in props
         ],
     }
@@ -3836,7 +3843,7 @@ async def list_improvement_proposals(
         rows = await conn.fetch(
             f"""SELECT id, run_id, run_name, signature_class, kind, target, rationale,
                        proposed_change, predicted_effect, confidence, source, status,
-                       created_at, reviewed_by, reviewed_at, review_note
+                       created_at, reviewed_by, reviewed_at, review_note, change_spec
                   FROM improvement_proposals{where}
                  ORDER BY created_at DESC LIMIT ${len(args)}""",
             *args,
@@ -3847,6 +3854,7 @@ async def list_improvement_proposals(
         for k in ("created_at", "reviewed_at"):
             if d.get(k):
                 d[k] = d[k].isoformat()
+        d["change_spec"] = _parse_jsonb(d.get("change_spec"))
         out.append(d)
     return {"proposals": out, "count": len(out)}
 
@@ -3868,6 +3876,243 @@ async def review_improvement_proposal(pid: int, payload: ProposalReviewIn, reque
     if not row:
         raise HTTPException(404, "proposal not found")
     return {"ok": True, "id": pid, "status": status, "reviewed_by": user}
+
+
+# ---------------------------------------------------------------------------
+# Self-improvement loop — Phase 2: A/B candidate experiments.
+# Trigger a baseline + candidate run over the same eval set (candidate differs
+# by one config delta, e.g. max_tokens via a per-run PipelineRun param — no
+# production/profile mutation, so spamllm + the r9700-llm route are untouched),
+# then experiment_eval.gate() scores both and decides promote/revert/inconclusive.
+# Promotion of a max_tokens change is human-gated (its production home is the
+# dav_stage2_max_tokens deploy var) — the A/B PROOF is automated, the apply is
+# instructed. See docs/dav-self-improvement-vision.md §3.
+# ---------------------------------------------------------------------------
+
+class ExperimentIn(BaseModel):
+    proposal_id: Optional[int] = None
+    change_spec: dict                       # {type:'max_tokens', candidate:<int>, baseline?:<int>}
+    set_id: Optional[int] = None
+    managed_uc_uuids: Optional[list[str]] = None
+    sample_count: int = 1
+    title: Optional[str] = None
+
+
+async def _trigger_eval_run(conn, *, endpoint, model, managed_uuids, sample_count,
+                            max_tokens, reviewer):
+    """Trigger one arm of an experiment (mirrors trigger_run's profile
+    resolution). max_tokens=None → the production task default (baseline)."""
+    use_key = "evaluation_verification"
+    capabilities_json = use_profile_json = None
+    mc = await conn.fetchrow(
+        "SELECT id, capabilities FROM model_configs WHERE model_id=$1 AND enabled ORDER BY id LIMIT 1",
+        model,
+    )
+    if mc:
+        caps = mc["capabilities"]
+        if caps:
+            capabilities_json = caps if isinstance(caps, str) else json.dumps(caps)
+        prof = await conn.fetchrow(
+            "SELECT params FROM model_use_profiles WHERE model_config_id=$1 AND use_key=$2",
+            mc["id"], use_key,
+        )
+        if prof and prof["params"]:
+            prm = prof["params"]
+            use_profile_json = prm if isinstance(prm, str) else json.dumps(prm)
+    result = validations.trigger_run(
+        triggered_by=reviewer, inference_endpoint=endpoint, inference_model=model,
+        mode="verification", sample_count=sample_count, managed_uc_uuids=managed_uuids,
+        use_key=use_key, capabilities_json=capabilities_json,
+        use_profile_json=use_profile_json, max_tokens=max_tokens, halt_on_error=False,
+    )
+    return result["name"]
+
+
+def _score_experiment_arm(run_name: str):
+    """(_expeval.score_run output, terminal?) for one arm. terminal=False while
+    the run is still in flight (no final run-summary.yaml yet)."""
+    if not run_name:
+        return None, False
+    run_id = _resolve_run_id(run_name)
+    if not run_id:
+        return None, False
+    summary = _results.get_run_summary(run_id)
+    if not summary or not summary.get("finished_at"):
+        return None, False
+    return _expeval.score_run(summary, _results.get_failures(run_id)), True
+
+
+async def _maybe_score_experiment(conn, exp: dict) -> dict:
+    """If both arms have finished, score + gate + persist. Returns the (possibly
+    updated) experiment dict."""
+    if exp["status"] != "running":
+        return exp
+    b_score, b_done = _score_experiment_arm(exp["baseline_run"])
+    c_score, c_done = _score_experiment_arm(exp["candidate_run"])
+    if not (b_done and c_done):
+        # If an arm reached a terminal Tekton phase without producing a
+        # run-summary (cancelled / crashed), it will never score — fail the
+        # experiment rather than leave it stuck "running".
+        dead = []
+        for arm, done in (("baseline_run", b_done), ("candidate_run", c_done)):
+            if done:
+                continue
+            try:
+                phase = validations.get_run_detail(exp[arm]).get("phase")
+            except Exception:
+                phase = None
+            if phase in {"Cancelled", "Failed", "PipelineRunCancelled",
+                         "PipelineRunTimeout", "Error", "CouldntGetTask"}:
+                dead.append(f"{arm}={phase}")
+        if dead:
+            reason = f"experiment arm(s) ended without results: {', '.join(dead)}"
+            await conn.execute(
+                "UPDATE experiments SET status='error', verdict_reason=$1, updated_at=now() WHERE id=$2",
+                reason, exp["id"])
+            exp = dict(exp); exp.update(status="error", verdict_reason=reason)
+        return exp
+    g = _expeval.gate(b_score, c_score)
+    await conn.execute(
+        """UPDATE experiments SET baseline_score=$1::jsonb, candidate_score=$2::jsonb,
+               verdict=$3, verdict_reason=$4, status='scored', updated_at=now() WHERE id=$5""",
+        json.dumps(b_score), json.dumps(c_score), g["verdict"], g["reason"], exp["id"],
+    )
+    exp = dict(exp)
+    exp.update(baseline_score=b_score, candidate_score=c_score,
+               verdict=g["verdict"], verdict_reason=g["reason"], status="scored")
+    log.info("experiment %d scored: %s (%s)", exp["id"], g["verdict"], g["reason"])
+    return exp
+
+
+def _exp_out(r) -> dict:
+    d = dict(r)
+    for k in ("created_at", "updated_at"):
+        if d.get(k):
+            d[k] = d[k].isoformat()
+    for k in ("change_spec", "baseline_score", "candidate_score"):
+        d[k] = _parse_jsonb(d.get(k))
+    return d
+
+
+@app.post("/api/experiments", status_code=201)
+async def create_experiment(payload: ExperimentIn, request: Request):
+    user = get_user(request)
+    spec = payload.change_spec or {}
+    if spec.get("type") != "max_tokens":
+        raise HTTPException(400, "only change_spec.type='max_tokens' is A/B-testable today "
+                                 "(sampling profiles are a tracked follow-up)")
+    candidate = spec.get("candidate")
+    if not isinstance(candidate, int) or candidate <= 0:
+        raise HTTPException(400, "change_spec.candidate must be a positive int (max_tokens)")
+
+    async with pool.acquire() as conn:
+        # Resolve eval UCs.
+        uuids = payload.managed_uc_uuids
+        set_name = None
+        if payload.set_id and not uuids:
+            rows = await conn.fetch(
+                "SELECT uc_uuid FROM use_case_set_members WHERE set_id=$1", payload.set_id)
+            uuids = [r["uc_uuid"] for r in rows]
+            sr = await conn.fetchrow("SELECT name FROM use_case_sets WHERE id=$1", payload.set_id)
+            set_name = sr["name"] if sr else None
+        if not uuids:
+            raise HTTPException(400, "provide set_id or managed_uc_uuids")
+
+        # Resolve the evaluation default model (same model both arms).
+        m = await conn.fetchrow(
+            """SELECT mc.endpoint_url, mc.model_id FROM model_defaults md
+                 JOIN model_configs mc ON mc.id = md.model_config_id
+                WHERE md.key='evaluation' AND mc.enabled""")
+        if not m:
+            raise HTTPException(400, "no evaluation default model configured")
+        endpoint, model = m["endpoint_url"], m["model_id"]
+
+        try:
+            baseline_run = await _trigger_eval_run(
+                conn, endpoint=endpoint, model=model, managed_uuids=uuids,
+                sample_count=payload.sample_count, max_tokens=None, reviewer=user)
+            # PipelineRun names are derived from int(time.time())[-6:]; two
+            # triggers in the same second collide (409). Space the arms out.
+            await asyncio.sleep(1.3)
+            candidate_run = await _trigger_eval_run(
+                conn, endpoint=endpoint, model=model, managed_uuids=uuids,
+                sample_count=payload.sample_count, max_tokens=candidate, reviewer=user)
+        except Exception as e:
+            log.exception("experiment launch failed")
+            raise HTTPException(500, f"failed to launch experiment runs: {e}")
+
+        row = await conn.fetchrow(
+            """INSERT INTO experiments
+                 (proposal_id, title, change_spec, eval_set_id, eval_set_name, sample_count,
+                  baseline_run, candidate_run, status, created_by)
+               VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7,$8,'running',$9) RETURNING *""",
+            payload.proposal_id, payload.title or f"max_tokens → {candidate}",
+            json.dumps(spec), payload.set_id, set_name, payload.sample_count,
+            baseline_run, candidate_run, user,
+        )
+    return _exp_out(row)
+
+
+@app.get("/api/experiments")
+async def list_experiments(limit: int = Query(50, ge=1, le=200)):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM experiments ORDER BY created_at DESC LIMIT $1", limit)
+        # Opportunistically finalize any that have completed.
+        out = []
+        for r in rows:
+            out.append(_exp_out(await _maybe_score_experiment(conn, dict(r))))
+    return {"experiments": out, "count": len(out)}
+
+
+@app.get("/api/experiments/{exp_id}")
+async def get_experiment(exp_id: int):
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow("SELECT * FROM experiments WHERE id=$1", exp_id)
+        if not r:
+            raise HTTPException(404, "experiment not found")
+        exp = await _maybe_score_experiment(conn, dict(r))
+        # Live arm phases for the UI while running.
+        phases = {}
+        for arm in ("baseline_run", "candidate_run"):
+            try:
+                phases[arm] = validations.get_run_detail(exp[arm]).get("phase")
+            except Exception:
+                phases[arm] = None
+    out = _exp_out(exp)
+    out["arm_phases"] = phases
+    return out
+
+
+@app.post("/api/experiments/{exp_id}/promote")
+async def promote_experiment(exp_id: int, request: Request):
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow("SELECT * FROM experiments WHERE id=$1", exp_id)
+        if not r:
+            raise HTTPException(404, "experiment not found")
+        exp = await _maybe_score_experiment(conn, dict(r))
+        if exp.get("verdict") != "promote":
+            raise HTTPException(409, f"experiment verdict is {exp.get('verdict')!r}, not 'promote'")
+        spec = _parse_jsonb(exp["change_spec"]) or {}
+        # max_tokens lives in the dav_stage2_max_tokens deploy var (the Tekton
+        # task arg wins over any profile), so production apply is human-gated —
+        # we hand back the exact change. The A/B proof is what was automated.
+        instructions = (
+            f"Set `dav_stage2_max_tokens: {spec.get('candidate')}` in "
+            f"ansible/inventory/group_vars/all/vars.yaml, then re-apply the engine "
+            f"tasks: `ANSIBLE_VAULT_PASSWORD_FILE=… ansible-playbook -i inventory/hosts.yaml "
+            f"playbook.yaml --tags engine -e dav_build_engine_image=false`. "
+            f"(Validated by experiment #{exp_id}: {exp.get('verdict_reason')})"
+        )
+        await conn.execute(
+            "UPDATE experiments SET status='promoted', updated_at=now() WHERE id=$1", exp_id)
+        if exp.get("proposal_id"):
+            await conn.execute(
+                "UPDATE improvement_proposals SET status='applied', reviewed_by=$1, "
+                "reviewed_at=now() WHERE id=$2", user, exp["proposal_id"])
+    return {"ok": True, "id": exp_id, "apply_method": "human-gated (deploy var)",
+            "instructions": instructions}
 
 
 @app.get("/api/analysis/runs")
