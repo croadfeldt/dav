@@ -3891,41 +3891,70 @@ async def review_improvement_proposal(pid: int, payload: ProposalReviewIn, reque
 
 class ExperimentIn(BaseModel):
     proposal_id: Optional[int] = None
-    change_spec: dict                       # {type:'max_tokens', candidate:<int>, baseline?:<int>}
+    # {type:'max_tokens', candidate:<int>} OR {type:'sampling', param, candidate}
+    change_spec: dict
     set_id: Optional[int] = None
     managed_uc_uuids: Optional[list[str]] = None
     sample_count: int = 1
     title: Optional[str] = None
+    # Only honored for runtime-applyable (sampling) changes: auto-write the
+    # winning profile on a 'promote' verdict (reversible). Default off.
+    auto_promote: bool = False
 
 
-async def _trigger_eval_run(conn, *, endpoint, model, managed_uuids, sample_count,
-                            max_tokens, reviewer):
-    """Trigger one arm of an experiment (mirrors trigger_run's profile
-    resolution). max_tokens=None → the production task default (baseline)."""
-    use_key = "evaluation_verification"
-    capabilities_json = use_profile_json = None
-    mc = await conn.fetchrow(
-        "SELECT id, capabilities FROM model_configs WHERE model_id=$1 AND enabled ORDER BY id LIMIT 1",
-        model,
-    )
-    if mc:
-        caps = mc["capabilities"]
-        if caps:
-            capabilities_json = caps if isinstance(caps, str) else json.dumps(caps)
-        prof = await conn.fetchrow(
-            "SELECT params FROM model_use_profiles WHERE model_config_id=$1 AND use_key=$2",
-            mc["id"], use_key,
-        )
-        if prof and prof["params"]:
-            prm = prof["params"]
-            use_profile_json = prm if isinstance(prm, str) else json.dumps(prm)
+async def _eval_model_config(conn):
+    """The (id, model_id, endpoint, use_key) for the evaluation default model."""
+    m = await conn.fetchrow(
+        """SELECT mc.id, mc.model_id, mc.endpoint_url FROM model_defaults md
+             JOIN model_configs mc ON mc.id = md.model_config_id
+            WHERE md.key='evaluation' AND mc.enabled""")
+    if not m:
+        return None
+    return {"id": m["id"], "model_id": m["model_id"], "endpoint": m["endpoint_url"],
+            "use_key": "evaluation_verification"}
+
+
+async def _current_profile(conn, model_config_id, use_key) -> Optional[dict]:
+    """The production sampling profile params dict for (model, use_key), or None
+    if no row exists (engine defaults apply)."""
+    prof = await conn.fetchrow(
+        "SELECT params FROM model_use_profiles WHERE model_config_id=$1 AND use_key=$2",
+        model_config_id, use_key)
+    if not prof or not prof["params"]:
+        return None
+    prm = prof["params"]
+    return prm if isinstance(prm, dict) else json.loads(prm)
+
+
+async def _trigger_eval_run(conn, *, mc, managed_uuids, sample_count,
+                            max_tokens, reviewer, profile_override=None):
+    """Trigger one arm of an experiment. `mc` is _eval_model_config().
+
+    max_tokens=None → production task default (baseline arm). profile_override
+    (e.g. {'temperature': 0.1}) is MERGED onto the production profile and passed
+    as the candidate's per-run use-profile-json — isolated, no DB mutation, so
+    production + spamllm are untouched."""
+    caps_json = None
+    caps_row = await conn.fetchrow(
+        "SELECT capabilities FROM model_configs WHERE id=$1", mc["id"])
+    if caps_row and caps_row["capabilities"]:
+        c = caps_row["capabilities"]
+        caps_json = c if isinstance(c, str) else json.dumps(c)
+    profile = (await _current_profile(conn, mc["id"], mc["use_key"])) or {}
+    if profile_override:
+        profile = {**profile, **profile_override}
+    use_profile_json = json.dumps(profile) if profile else None
     result = validations.trigger_run(
-        triggered_by=reviewer, inference_endpoint=endpoint, inference_model=model,
-        mode="verification", sample_count=sample_count, managed_uc_uuids=managed_uuids,
-        use_key=use_key, capabilities_json=capabilities_json,
+        triggered_by=reviewer, inference_endpoint=mc["endpoint"],
+        inference_model=mc["model_id"], mode="verification",
+        sample_count=sample_count, managed_uc_uuids=managed_uuids,
+        use_key=mc["use_key"], capabilities_json=caps_json,
         use_profile_json=use_profile_json, max_tokens=max_tokens, halt_on_error=False,
     )
     return result["name"]
+
+
+_SAMPLING_PARAMS = {"temperature", "top_k", "top_p", "min_p"}
 
 
 def _score_experiment_arm(run_name: str):
@@ -3942,9 +3971,59 @@ def _score_experiment_arm(run_name: str):
     return _expeval.score_run(summary, _results.get_failures(run_id)), True
 
 
+async def _apply_sampling_promotion(conn, exp: dict, user: str) -> dict:
+    """Write the winning sampling param into the production model_use_profiles
+    (runtime upsert), recording the before-state in change_spec so it's
+    reversible. Returns the updated change_spec dict."""
+    spec = _parse_jsonb(exp.get("change_spec")) or {}
+    mcid, use_key = spec.get("model_config_id"), spec.get("use_key")
+    param, value = spec.get("param"), spec.get("candidate")
+    cur = (await _current_profile(conn, mcid, use_key)) or {}
+    new_params = {**cur, param: value}
+    await conn.execute(
+        """INSERT INTO model_use_profiles (model_config_id, use_key, params, notes, updated_by, updated_at)
+           VALUES ($1,$2,$3::jsonb,$4,$5,NOW())
+           ON CONFLICT (model_config_id, use_key) DO UPDATE
+             SET params=EXCLUDED.params, notes=EXCLUDED.notes,
+                 updated_by=EXCLUDED.updated_by, updated_at=NOW()""",
+        mcid, use_key, json.dumps(new_params),
+        f"self-improvement experiment #{exp['id']}: {param}→{value}", user)
+    spec["applied"] = {"param": param, "to": value, "before_params": cur, "had_row": cur != {}}
+    await conn.execute(
+        "UPDATE experiments SET change_spec=$1::jsonb, status='promoted', updated_at=now() WHERE id=$2",
+        json.dumps(spec), exp["id"])
+    if exp.get("proposal_id"):
+        await conn.execute(
+            "UPDATE improvement_proposals SET status='applied', reviewed_by=$1, reviewed_at=now() WHERE id=$2",
+            user, exp["proposal_id"])
+    log.info("experiment %d: promoted sampling %s→%s to production profile", exp["id"], param, value)
+    return spec
+
+
+async def _revert_sampling_promotion(conn, exp: dict) -> None:
+    """Restore the production profile to its pre-promotion state."""
+    spec = _parse_jsonb(exp.get("change_spec")) or {}
+    applied = spec.get("applied") or {}
+    mcid, use_key = spec.get("model_config_id"), spec.get("use_key")
+    if applied.get("had_row"):
+        await conn.execute(
+            """UPDATE model_use_profiles SET params=$1::jsonb,
+                   notes=$2, updated_at=now() WHERE model_config_id=$3 AND use_key=$4""",
+            json.dumps(applied.get("before_params") or {}),
+            f"reverted experiment #{exp['id']}", mcid, use_key)
+    else:
+        # There was no profile row before — remove the one promotion created.
+        await conn.execute(
+            "DELETE FROM model_use_profiles WHERE model_config_id=$1 AND use_key=$2",
+            mcid, use_key)
+    await conn.execute(
+        "UPDATE experiments SET status='reverted', updated_at=now() WHERE id=$1", exp["id"])
+    log.info("experiment %d: reverted sampling promotion", exp["id"])
+
+
 async def _maybe_score_experiment(conn, exp: dict) -> dict:
-    """If both arms have finished, score + gate + persist. Returns the (possibly
-    updated) experiment dict."""
+    """If both arms have finished, score + gate + persist (and auto-promote a
+    runtime-applyable win when opted in). Returns the updated experiment dict."""
     if exp["status"] != "running":
         return exp
     b_score, b_done = _score_experiment_arm(exp["baseline_run"])
@@ -3981,6 +4060,19 @@ async def _maybe_score_experiment(conn, exp: dict) -> dict:
     exp.update(baseline_score=b_score, candidate_score=c_score,
                verdict=g["verdict"], verdict_reason=g["reason"], status="scored")
     log.info("experiment %d scored: %s (%s)", exp["id"], g["verdict"], g["reason"])
+    # Auto-promote a runtime-applyable (sampling) win when opted in — the gate
+    # guarantees a real improvement with no new high-severity failure class, and
+    # the write is reversible. max_tokens never auto-promotes (deploy-var gated).
+    if g["verdict"] == "promote" and exp.get("auto_promote"):
+        spec = _parse_jsonb(exp.get("change_spec")) or {}
+        if spec.get("type") == "sampling":
+            try:
+                updated = await _apply_sampling_promotion(
+                    conn, exp, exp.get("created_by") or "auto-promote")
+                exp["status"] = "promoted"
+                exp["change_spec"] = json.dumps(updated)
+            except Exception:
+                log.exception("auto-promote failed for experiment %d", exp["id"])
     return exp
 
 
@@ -3997,13 +4089,29 @@ def _exp_out(r) -> dict:
 @app.post("/api/experiments", status_code=201)
 async def create_experiment(payload: ExperimentIn, request: Request):
     user = get_user(request)
-    spec = payload.change_spec or {}
-    if spec.get("type") != "max_tokens":
-        raise HTTPException(400, "only change_spec.type='max_tokens' is A/B-testable today "
-                                 "(sampling profiles are a tracked follow-up)")
+    spec = dict(payload.change_spec or {})
+    stype = spec.get("type")
     candidate = spec.get("candidate")
-    if not isinstance(candidate, int) or candidate <= 0:
-        raise HTTPException(400, "change_spec.candidate must be a positive int (max_tokens)")
+    # Validate by type. max_tokens → per-run param (promote is deploy-var,
+    # human-gated). sampling → per-run use_profile_json (promote is a runtime,
+    # reversible model_use_profiles write → auto-promotable).
+    max_tokens_arg = None
+    profile_override = None
+    if stype == "max_tokens":
+        if not isinstance(candidate, int) or candidate <= 0:
+            raise HTTPException(400, "change_spec.candidate must be a positive int (max_tokens)")
+        max_tokens_arg = candidate
+        title = payload.title or f"max_tokens → {candidate}"
+    elif stype == "sampling":
+        param = spec.get("param")
+        if param not in _SAMPLING_PARAMS:
+            raise HTTPException(400, f"change_spec.param must be one of {sorted(_SAMPLING_PARAMS)}")
+        if not isinstance(candidate, (int, float)):
+            raise HTTPException(400, "change_spec.candidate must be numeric (sampling value)")
+        profile_override = {param: candidate}
+        title = payload.title or f"{param} → {candidate}"
+    else:
+        raise HTTPException(400, "change_spec.type must be 'max_tokens' or 'sampling'")
 
     async with pool.acquire() as conn:
         # Resolve eval UCs.
@@ -4018,25 +4126,29 @@ async def create_experiment(payload: ExperimentIn, request: Request):
         if not uuids:
             raise HTTPException(400, "provide set_id or managed_uc_uuids")
 
-        # Resolve the evaluation default model (same model both arms).
-        m = await conn.fetchrow(
-            """SELECT mc.endpoint_url, mc.model_id FROM model_defaults md
-                 JOIN model_configs mc ON mc.id = md.model_config_id
-                WHERE md.key='evaluation' AND mc.enabled""")
-        if not m:
+        mc = await _eval_model_config(conn)
+        if not mc:
             raise HTTPException(400, "no evaluation default model configured")
-        endpoint, model = m["endpoint_url"], m["model_id"]
+
+        # For a sampling change, record where production lives + its current
+        # value, so promote can write it and revert can restore it.
+        if stype == "sampling":
+            cur = (await _current_profile(conn, mc["id"], mc["use_key"])) or {}
+            spec["model_config_id"] = mc["id"]
+            spec["use_key"] = mc["use_key"]
+            spec["baseline"] = cur.get(spec["param"], "engine default")
+            spec["had_profile_row"] = cur != {}
 
         try:
             baseline_run = await _trigger_eval_run(
-                conn, endpoint=endpoint, model=model, managed_uuids=uuids,
-                sample_count=payload.sample_count, max_tokens=None, reviewer=user)
+                conn, mc=mc, managed_uuids=uuids, sample_count=payload.sample_count,
+                max_tokens=None, profile_override=None, reviewer=user)
             # PipelineRun names are derived from int(time.time())[-6:]; two
             # triggers in the same second collide (409). Space the arms out.
             await asyncio.sleep(1.3)
             candidate_run = await _trigger_eval_run(
-                conn, endpoint=endpoint, model=model, managed_uuids=uuids,
-                sample_count=payload.sample_count, max_tokens=candidate, reviewer=user)
+                conn, mc=mc, managed_uuids=uuids, sample_count=payload.sample_count,
+                max_tokens=max_tokens_arg, profile_override=profile_override, reviewer=user)
         except Exception as e:
             log.exception("experiment launch failed")
             raise HTTPException(500, f"failed to launch experiment runs: {e}")
@@ -4044,11 +4156,10 @@ async def create_experiment(payload: ExperimentIn, request: Request):
         row = await conn.fetchrow(
             """INSERT INTO experiments
                  (proposal_id, title, change_spec, eval_set_id, eval_set_name, sample_count,
-                  baseline_run, candidate_run, status, created_by)
-               VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7,$8,'running',$9) RETURNING *""",
-            payload.proposal_id, payload.title or f"max_tokens → {candidate}",
-            json.dumps(spec), payload.set_id, set_name, payload.sample_count,
-            baseline_run, candidate_run, user,
+                  baseline_run, candidate_run, status, auto_promote, created_by)
+               VALUES ($1,$2,$3::jsonb,$4,$5,$6,$7,$8,'running',$9,$10) RETURNING *""",
+            payload.proposal_id, title, json.dumps(spec), payload.set_id, set_name,
+            payload.sample_count, baseline_run, candidate_run, payload.auto_promote, user,
         )
     return _exp_out(row)
 
@@ -4092,12 +4203,21 @@ async def promote_experiment(exp_id: int, request: Request):
         if not r:
             raise HTTPException(404, "experiment not found")
         exp = await _maybe_score_experiment(conn, dict(r))
+        if exp.get("status") == "promoted":
+            return {"ok": True, "id": exp_id, "already_promoted": True}
         if exp.get("verdict") != "promote":
             raise HTTPException(409, f"experiment verdict is {exp.get('verdict')!r}, not 'promote'")
         spec = _parse_jsonb(exp["change_spec"]) or {}
+        if spec.get("type") == "sampling":
+            # Runtime, reversible: write the production model_use_profiles row.
+            updated = await _apply_sampling_promotion(conn, exp, user)
+            return {"ok": True, "id": exp_id, "apply_method": "applied (model_use_profiles)",
+                    "applied": updated.get("applied"),
+                    "note": f"{spec['param']} → {spec['candidate']} is now the production "
+                            f"profile for {spec['use_key']}. Reversible via "
+                            f"POST /api/experiments/{exp_id}/revert."}
         # max_tokens lives in the dav_stage2_max_tokens deploy var (the Tekton
-        # task arg wins over any profile), so production apply is human-gated —
-        # we hand back the exact change. The A/B proof is what was automated.
+        # task arg wins over any profile), so production apply is human-gated.
         instructions = (
             f"Set `dav_stage2_max_tokens: {spec.get('candidate')}` in "
             f"ansible/inventory/group_vars/all/vars.yaml, then re-apply the engine "
@@ -4113,6 +4233,25 @@ async def promote_experiment(exp_id: int, request: Request):
                 "reviewed_at=now() WHERE id=$2", user, exp["proposal_id"])
     return {"ok": True, "id": exp_id, "apply_method": "human-gated (deploy var)",
             "instructions": instructions}
+
+
+@app.post("/api/experiments/{exp_id}/revert")
+async def revert_experiment(exp_id: int, request: Request):
+    """Restore a promoted SAMPLING change to its pre-promotion state."""
+    get_user(request)
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow("SELECT * FROM experiments WHERE id=$1", exp_id)
+        if not r:
+            raise HTTPException(404, "experiment not found")
+        exp = dict(r)
+        if exp.get("status") != "promoted":
+            raise HTTPException(409, f"experiment status is {exp.get('status')!r}, not 'promoted'")
+        spec = _parse_jsonb(exp["change_spec"]) or {}
+        if spec.get("type") != "sampling" or "applied" not in spec:
+            raise HTTPException(409, "only an applied sampling promotion is revertible "
+                                     "(max_tokens promotions are deploy-var, revert manually)")
+        await _revert_sampling_promotion(conn, exp)
+    return {"ok": True, "id": exp_id, "status": "reverted"}
 
 
 @app.get("/api/analysis/runs")
