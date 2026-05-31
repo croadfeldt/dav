@@ -368,12 +368,19 @@ def compare_runs(run_id_a: str, run_id_b: str) -> dict:
 
 
 def _gaps_of(data: Optional[dict]) -> set:
-    """The set of gap IDs in one analysis dict."""
+    """Stable identities of the gaps in one analysis dict. Gap entries carry no
+    `gap_id` field — they're keyed by `title` — so identity is the normalised
+    title (`gap_id` is still honoured first in case a future schema adds it)."""
     if not data:
         return set()
-    gaps = data.get("gaps_identified") or []
-    return {g.get("gap_id", "") for g in gaps
-            if isinstance(g, dict) and g.get("gap_id")}
+    out = set()
+    for g in data.get("gaps_identified") or []:
+        if not isinstance(g, dict):
+            continue
+        key = g.get("gap_id") or g.get("title")
+        if key:
+            out.add(" ".join(str(key).lower().split()))
+    return out
 
 
 def _sample_gap_sets(run_id: str, uc_uuid: str) -> list:
