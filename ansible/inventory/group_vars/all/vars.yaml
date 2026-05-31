@@ -48,12 +48,16 @@ inference_primary_context_length: 32768
 # honest ceiling is ~10,800 tokens (600s x 18 tok/s worst case). A
 # legitimate verbose analysis tops out around ~9,000 tokens (the UC #6
 # greenfield case), so 10240 covers real analyses with headroom while
-# keeping any single generation under the route timeout. 16384 used to
-# be set here, but on this slow stack any generation that actually used
-# that headroom (>13K tokens, almost always degenerate over-generation)
-# blew the route timeout and 504'd — wasting ~600s of GPU per failure.
-# Raise this only in lock-step with the route timeout on a faster GPU.
-dav_stage2_max_tokens: 10240
+# keeping any single generation under the route timeout. 10240 covered real
+# analyses, but the self-improvement scan kept flagging output_truncation on
+# analyses that legitimately ran longer. Raised to 16384 IN LOCK-STEP with the
+# qwen3-32b-public route timeout going 600s -> 1200s (llm-serving commit
+# 4cd15a5): at ~20 tok/s the engine's 900s client timeout now caps a single
+# generation near ~18K tokens, so 16384 stays safe.
+# APPLY ORDER: raise the route timeout FIRST, or generations >~12K tokens 504
+# again. (Does not fix genuinely degenerate over-generation — that needs better
+# stop conditions, tracked separately.)
+dav_stage2_max_tokens: 16384
 
 # --- Inference Tier 2 (in-cluster vLLM fallback) — OPT-IN ---
 # These vars only take effect when the playbook is invoked with
