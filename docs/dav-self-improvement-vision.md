@@ -143,6 +143,19 @@ failed and aren't yet diagnosed, filing proposals (rules-only, idempotent). A
 operator wakes to a triaged queue. Validated: it triaged the whole 2-week
 failure backlog into the review queue.
 
+**Exploration depth/consistency in the scorer — SHIPPED** (this session): the
+2026-05-30 72B eval isolated the real quality lever — *exploration depth and
+consistency, not model size* (the larger 72B surfaced fewer distinct gaps than
+the 32B). `results.get_run_exploration()` aggregates per-UC gap IDs into a run's
+`distinct_gaps` (breadth), `total_gaps`/`mean_gaps_per_uc` (depth), and
+`consistency` (explore-mode mean cross-sample gap-set Jaccard; `None` for a
+single verification sample). `score_run()` records the block and `gate()`
+attaches `exploration_delta` to every verdict. It is **advisory by default** —
+raw gap counts can be inflated by hallucination, so a success-rate tie only
+promotes on exploration when an operator opts in via `exploration_min_delta`, and
+the high-severity guardrail always wins over it. The lever is now *measured in
+every A/B* before it's ever allowed to be a promote criterion.
+
 **The loop is now end-to-end:** observe (scan) → diagnose (taxonomy + proposals)
 → A/B (experiments) → gate (v1.9 guardrail) → apply (auto for sampling,
 human-gated for max_tokens) → revert.

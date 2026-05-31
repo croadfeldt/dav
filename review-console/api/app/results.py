@@ -367,24 +367,101 @@ def compare_runs(run_id_a: str, run_id_b: str) -> dict:
     }
 
 
-def _get_gap_ids(run_id: str, uc_uuid: str) -> list[str]:
-    """Return the list of gap IDs from a UC's analysis file (best-effort)."""
+def _gaps_of(data: Optional[dict]) -> set:
+    """The set of gap IDs in one analysis dict."""
+    if not data:
+        return set()
+    gaps = data.get("gaps_identified") or []
+    return {g.get("gap_id", "") for g in gaps
+            if isinstance(g, dict) and g.get("gap_id")}
+
+
+def _sample_gap_sets(run_id: str, uc_uuid: str) -> list:
+    """Gap-ID set per analysis sample for a UC: one entry in verification mode,
+    one per `sample-*.yaml` in explore mode. Empty list when the UC has no
+    analysis (e.g. it failed)."""
     run_dir = _results_root() / run_id
     single = run_dir / "analyses" / f"{uc_uuid}.yaml"
-    data = None
     if single.exists():
-        data = _safe_load(single)
-    else:
-        explore_dir = run_dir / "analyses" / uc_uuid
-        if explore_dir.is_dir():
-            for sf in sorted(explore_dir.glob("sample-*.yaml")):
-                data = _safe_load(sf)
-                if data:
-                    break
-    if not data:
-        return []
-    gaps = data.get("gaps_identified") or []
-    return [g.get("gap_id", "") for g in gaps if isinstance(g, dict) and g.get("gap_id")]
+        d = _safe_load(single)
+        return [_gaps_of(d)] if d is not None else []
+    explore_dir = run_dir / "analyses" / uc_uuid
+    if explore_dir.is_dir():
+        sets = []
+        for sf in sorted(explore_dir.glob("sample-*.yaml")):
+            d = _safe_load(sf)
+            if d is not None:
+                sets.append(_gaps_of(d))
+        return sets
+    return []
+
+
+def _get_gap_ids(run_id: str, uc_uuid: str) -> list[str]:
+    """Gap IDs from a UC's analysis (verification: the file; explore: 1st sample)."""
+    sets = _sample_gap_sets(run_id, uc_uuid)
+    return sorted(sets[0]) if sets else []
+
+
+def _mean_pairwise_jaccard(sets: list) -> float:
+    """Mean Jaccard overlap across all sample pairs — 1.0 = every sample found
+    the same gaps (perfectly consistent exploration), lower = the model wanders."""
+    n = len(sets)
+    if n < 2:
+        return 1.0
+    vals = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            a, b = sets[i], sets[j]
+            u = a | b
+            vals.append(len(a & b) / len(u) if u else 1.0)
+    return sum(vals) / len(vals)
+
+
+def get_run_exploration(run_id: str) -> Optional[dict]:
+    """Exploration-depth / consistency metrics for a run — the quality lever the
+    2026-05-30 72B eval isolated (the 72B explored fewer distinct gaps than the
+    32B despite being larger). Aggregates gap IDs across the run's UCs:
+
+      distinct_gaps     breadth: unique gap IDs found across all UCs
+      total_gaps        depth: sum of per-UC distinct gaps
+      mean_gaps_per_uc  total_gaps / UCs analysed
+      ucs_with_gaps     UCs that surfaced >=1 gap
+      consistency       explore mode only: mean cross-sample gap-set Jaccard
+                        (1.0 = identical findings every sample); None when there
+                        is a single verification sample (nothing to compare).
+
+    Counts are NOT a correctness signal on their own (a model can inflate them by
+    hallucinating gaps), so callers treat this as advisory next to success_rate.
+    """
+    summ = get_run_summary_enriched(run_id)
+    if not summ:
+        return None
+    total_gaps = ucs_with_gaps = ucs_analyzed = 0
+    distinct: set = set()
+    consistencies: list = []
+    for uc in (summ.get("ucs") or []):
+        uuid = uc.get("uc_uuid")
+        if not uuid:
+            continue
+        gap_sets = _sample_gap_sets(run_id, uuid)
+        if not gap_sets:
+            continue
+        ucs_analyzed += 1
+        uc_union = set().union(*gap_sets)
+        total_gaps += len(uc_union)
+        distinct |= uc_union
+        if uc_union:
+            ucs_with_gaps += 1
+        if len(gap_sets) > 1:
+            consistencies.append(_mean_pairwise_jaccard(gap_sets))
+    return {
+        "ucs_analyzed": ucs_analyzed,
+        "total_gaps": total_gaps,
+        "distinct_gaps": len(distinct),
+        "mean_gaps_per_uc": round(total_gaps / ucs_analyzed, 2) if ucs_analyzed else 0.0,
+        "ucs_with_gaps": ucs_with_gaps,
+        "consistency": round(sum(consistencies) / len(consistencies), 3) if consistencies else None,
+    }
 
 
 def get_analysis(run_id: str, uc_uuid: str) -> Optional[dict]:

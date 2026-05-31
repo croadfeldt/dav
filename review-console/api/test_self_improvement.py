@@ -144,6 +144,45 @@ def test_phase2_gate():
     check(ev.gate(a, b, min_delta=0.05)["verdict"] == "promote", "win above min_delta → promote")
 
 
+def _run_x(total, succ, fail_errs, distinct_gaps, consistency=None):
+    summary = {"total_ucs": total, "successful": succ, "failed": len(fail_errs),
+               "effective_sampling": {"model": "m", "sent": {}}}
+    failures = [{"uc_uuid": f"u{i}", "uc_handle": "x", "error_text": "Error:\n" + e}
+                for i, e in enumerate(fail_errs)]
+    expl = {"distinct_gaps": distinct_gaps, "total_gaps": distinct_gaps,
+            "mean_gaps_per_uc": round(distinct_gaps / max(total, 1), 2),
+            "ucs_with_gaps": total, "consistency": consistency}
+    return ev.score_run(summary, failures, exploration=expl)
+
+
+def test_phase2_exploration():
+    print("Phase 2 exploration — depth/consistency measured, advisory by default:")
+    s = _run_x(10, 10, [], distinct_gaps=20, consistency=0.8)
+    check(s.get("exploration", {}).get("distinct_gaps") == 20, "score_run records exploration block")
+    check("exploration" not in _run(10, 10, []), "no exploration arg → no block (back-compat)")
+
+    base = _run_x(10, 10, [], distinct_gaps=15)
+    cand = _run_x(10, 10, [], distinct_gaps=22)            # success tie, +7 distinct gaps
+    g = ev.gate(base, cand)
+    check(g["verdict"] == "inconclusive", "tie + more gaps, tie-breaker OFF → inconclusive (default)")
+    check(g.get("exploration_delta", {}).get("distinct_gaps") == 7, "exploration_delta surfaced (advisory)")
+    check("exploration_delta" not in ev.gate(_run(10, 10, []), _run(10, 10, [])),
+          "no exploration data → no exploration_delta key (back-compat)")
+
+    check(ev.gate(base, cand, exploration_min_delta=5)["verdict"] == "promote",
+          "tie + +7 gaps ≥ exploration_min_delta=5 → promote (opt-in)")
+    check(ev.gate(base, cand, exploration_min_delta=10)["verdict"] == "inconclusive",
+          "+7 gaps < exploration_min_delta=10 → still inconclusive")
+
+    # The guardrail wins: a NEW high-sev class blocks promotion even with far more
+    # gaps and the exploration tie-breaker enabled.
+    b2 = _run_x(10, 9, ["primary returned 504"], distinct_gaps=15)        # 9/10, route_504
+    c2 = _run_x(10, 9, ["unbalanced braces"], distinct_gaps=40)           # 9/10, NEW output_truncation
+    gg = ev.gate(b2, c2, exploration_min_delta=5)
+    check(gg["verdict"] == "revert" and "output_truncation" in gg.get("new_high_sev", []),
+          "tie + +25 gaps but NEW high-sev → revert (exploration never overrides the guardrail)")
+
+
 def main():
     test_classify()
     test_rules_rederive_fixes()
@@ -151,6 +190,7 @@ def main():
     test_extract_json_array()
     asyncio.run(test_diagnose_degrades())
     test_phase2_gate()
+    test_phase2_exploration()
     print()
     if _fails:
         print(f"FAILED: {_fails} check(s)")

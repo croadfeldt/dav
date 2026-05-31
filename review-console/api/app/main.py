@@ -4025,7 +4025,9 @@ def _score_experiment_arm(run_name: str):
     summary = _results.get_run_summary(run_id)
     if not summary or not summary.get("finished_at"):
         return None, False
-    return _expeval.score_run(summary, _results.get_failures(run_id)), True
+    exploration = _results.get_run_exploration(run_id)
+    return _expeval.score_run(summary, _results.get_failures(run_id),
+                              exploration=exploration), True
 
 
 async def _apply_sampling_promotion(conn, exp: dict, user: str) -> dict:
