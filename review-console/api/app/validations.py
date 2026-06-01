@@ -94,6 +94,7 @@ def _mk_pipelinerun(
     use_profile_json: Optional[str] = None,
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
+    grounding_nudge: Optional[str] = None,
 ) -> dict:
     """Build a PipelineRun object targeting the DAV Pipeline."""
     suffix = str(int(time.time()))[-6:]
@@ -158,6 +159,8 @@ def _mk_pipelinerun(
         params.append({"name": "use-profile-json", "value": use_profile_json})
     if stage2_two_pass is not None:
         params.append({"name": "stage2-two-pass", "value": stage2_two_pass})
+    if grounding_nudge is not None:
+        params.append({"name": "grounding-nudge", "value": grounding_nudge})
 
     return {
         "apiVersion": f"{_TEKTON_GROUP}/{_TEKTON_VERSION}",
@@ -214,6 +217,7 @@ def trigger_run(
     use_profile_json: Optional[str] = None,
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
+    grounding_nudge: Optional[str] = None,
 ) -> dict:
     """Create a PipelineRun. Returns the created object's status summary."""
     if not ENABLED:
@@ -244,6 +248,7 @@ def trigger_run(
         use_profile_json=use_profile_json,
         stage2_two_pass=stage2_two_pass,
         max_tokens=max_tokens,
+        grounding_nudge=grounding_nudge,
     )
 
     try:

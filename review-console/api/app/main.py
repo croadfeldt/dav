@@ -3963,6 +3963,7 @@ async def review_improvement_proposal(pid: int, payload: ProposalReviewIn, reque
 class ExperimentIn(BaseModel):
     proposal_id: Optional[int] = None
     # {type:'max_tokens', candidate:<int>} OR {type:'sampling', param, candidate}
+    # OR {type:'grounding_nudge'} (#45b — candidate flips the nudge on; baseline off)
     change_spec: dict
     # Optional: give the BASELINE arm its own per-run override too (head-to-head
     # of two configs instead of candidate-vs-production). Same shape as
@@ -4003,7 +4004,8 @@ async def _current_profile(conn, model_config_id, use_key) -> Optional[dict]:
 
 
 async def _trigger_eval_run(conn, *, mc, managed_uuids, sample_count,
-                            max_tokens, reviewer, profile_override=None):
+                            max_tokens, reviewer, profile_override=None,
+                            grounding_nudge=None):
     """Trigger one arm of an experiment. `mc` is _eval_model_config().
 
     max_tokens=None → production task default (baseline arm). profile_override
@@ -4026,6 +4028,7 @@ async def _trigger_eval_run(conn, *, mc, managed_uuids, sample_count,
         sample_count=sample_count, managed_uc_uuids=managed_uuids,
         use_key=mc["use_key"], capabilities_json=caps_json,
         use_profile_json=use_profile_json, max_tokens=max_tokens, halt_on_error=False,
+        grounding_nudge=grounding_nudge,
     )
     return result["name"]
 
@@ -4045,8 +4048,9 @@ def _score_experiment_arm(run_name: str):
     if not summary or not summary.get("finished_at"):
         return None, False
     exploration = _results.get_run_exploration(run_id)
+    grounding = _results.get_run_shallowness(run_id)
     return _expeval.score_run(summary, _results.get_failures(run_id),
-                              exploration=exploration), True
+                              exploration=exploration, grounding=grounding), True
 
 
 async def _apply_sampling_promotion(conn, exp: dict, user: str) -> dict:
@@ -4175,6 +4179,7 @@ async def create_experiment(payload: ExperimentIn, request: Request):
     # reversible model_use_profiles write → auto-promotable).
     max_tokens_arg = None
     profile_override = None
+    grounding_nudge_arg = None
     if stype == "max_tokens":
         if not isinstance(candidate, int) or candidate <= 0:
             raise HTTPException(400, "change_spec.candidate must be a positive int (max_tokens)")
@@ -4188,8 +4193,15 @@ async def create_experiment(payload: ExperimentIn, request: Request):
             raise HTTPException(400, "change_spec.candidate must be numeric (sampling value)")
         profile_override = {param: candidate}
         title = payload.title or f"{param} → {candidate}"
+    elif stype == "grounding_nudge":
+        # #45b: candidate flips the OFF-by-default grounding nudge ON via the
+        # per-run grounding-nudge param; baseline stays off (production prompt).
+        # Promotion is human-gated (its home is the task default), like
+        # max_tokens — the A/B PROOF is automated, the apply is instructed.
+        grounding_nudge_arg = "1"
+        title = payload.title or "grounding nudge → on"
     else:
-        raise HTTPException(400, "change_spec.type must be 'max_tokens' or 'sampling'")
+        raise HTTPException(400, "change_spec.type must be 'max_tokens', 'sampling', or 'grounding_nudge'")
 
     async with pool.acquire() as conn:
         # Resolve eval UCs.
@@ -4219,27 +4231,35 @@ async def create_experiment(payload: ExperimentIn, request: Request):
 
         # Optional baseline-arm override (head-to-head of two configs). Both arms
         # stay per-run; production is untouched during the runs.
-        b_max_tokens, b_override = None, None
+        b_max_tokens, b_override, b_grounding_nudge = None, None, None
         bspec = payload.baseline_change_spec
         if bspec:
             if bspec.get("type") == "max_tokens":
                 b_max_tokens = bspec.get("candidate")
             elif bspec.get("type") == "sampling" and bspec.get("param") in _SAMPLING_PARAMS:
                 b_override = {bspec["param"]: bspec.get("candidate")}
+            elif bspec.get("type") == "grounding_nudge":
+                b_grounding_nudge = "1"
             else:
                 raise HTTPException(400, "invalid baseline_change_spec")
             spec["baseline_spec"] = bspec
+        # A grounding-nudge experiment's baseline is the production prompt (nudge
+        # explicitly OFF) unless the operator gave the baseline its own arm.
+        if stype == "grounding_nudge" and b_grounding_nudge is None:
+            b_grounding_nudge = "0"
 
         try:
             baseline_run = await _trigger_eval_run(
                 conn, mc=mc, managed_uuids=uuids, sample_count=payload.sample_count,
-                max_tokens=b_max_tokens, profile_override=b_override, reviewer=user)
+                max_tokens=b_max_tokens, profile_override=b_override, reviewer=user,
+                grounding_nudge=b_grounding_nudge)
             # PipelineRun names are derived from int(time.time())[-6:]; two
             # triggers in the same second collide (409). Space the arms out.
             await asyncio.sleep(1.3)
             candidate_run = await _trigger_eval_run(
                 conn, mc=mc, managed_uuids=uuids, sample_count=payload.sample_count,
-                max_tokens=max_tokens_arg, profile_override=profile_override, reviewer=user)
+                max_tokens=max_tokens_arg, profile_override=profile_override, reviewer=user,
+                grounding_nudge=grounding_nudge_arg)
         except Exception as e:
             log.exception("experiment launch failed")
             raise HTTPException(500, f"failed to launch experiment runs: {e}")
@@ -4307,15 +4327,27 @@ async def promote_experiment(exp_id: int, request: Request):
                     "note": f"{spec['param']} → {spec['candidate']} is now the production "
                             f"profile for {spec['use_key']}. Reversible via "
                             f"POST /api/experiments/{exp_id}/revert."}
-        # max_tokens lives in the dav_stage2_max_tokens deploy var (the Tekton
-        # task arg wins over any profile), so production apply is human-gated.
-        instructions = (
-            f"Set `dav_stage2_max_tokens: {spec.get('candidate')}` in "
-            f"ansible/inventory/group_vars/all/vars.yaml, then re-apply the engine "
-            f"tasks: `ANSIBLE_VAULT_PASSWORD_FILE=… ansible-playbook -i inventory/hosts.yaml "
-            f"playbook.yaml --tags engine -e dav_build_engine_image=false`. "
-            f"(Validated by experiment #{exp_id}: {exp.get('verdict_reason')})"
-        )
+        # grounding_nudge & max_tokens both live in the Tekton task defaults, so
+        # production apply is human-gated (the A/B PROOF is automated; the apply
+        # is instructed).
+        if spec.get("type") == "grounding_nudge":
+            instructions = (
+                f"Make the grounding nudge the production default: flip the "
+                f"`grounding-nudge` param default from \"0\" to \"1\" in "
+                f"ansible/roles/dav/templates/tekton-tasks/dav-run-corpus.yaml.j2 AND "
+                f"ansible/roles/dav/templates/pipeline-stage2.yaml.j2 (or introduce a "
+                f"dav_stage2_grounding_nudge deploy var), then re-apply: "
+                f"`ansible-playbook playbook.yaml --tags engine,tekton`. "
+                f"(Validated by experiment #{exp_id}: {exp.get('verdict_reason')})"
+            )
+        else:
+            instructions = (
+                f"Set `dav_stage2_max_tokens: {spec.get('candidate')}` in "
+                f"ansible/inventory/group_vars/all/vars.yaml, then re-apply the engine "
+                f"tasks: `ANSIBLE_VAULT_PASSWORD_FILE=… ansible-playbook -i inventory/hosts.yaml "
+                f"playbook.yaml --tags engine -e dav_build_engine_image=false`. "
+                f"(Validated by experiment #{exp_id}: {exp.get('verdict_reason')})"
+            )
         await conn.execute(
             "UPDATE experiments SET status='promoted', updated_at=now() WHERE id=$1", exp_id)
         if exp.get("proposal_id"):

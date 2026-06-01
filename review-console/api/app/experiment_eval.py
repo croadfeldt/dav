@@ -24,9 +24,17 @@ _EXPLORATION_KEYS = (
     "distinct_gaps", "total_gaps", "mean_gaps_per_uc", "ucs_with_gaps", "consistency",
 )
 
+# #45b: grounding-density signal (from results.get_run_shallowness) — the lever the
+# grounding nudge targets. mean_distinct_spec_refs ↑ and shallow_fraction ↓ are the
+# improvements; advisory like exploration (counts can be gamed by hallucination).
+_GROUNDING_KEYS = (
+    "mean_distinct_spec_refs", "shallow_fraction", "ucs_shallow", "ucs_eligible",
+)
+
 
 def score_run(summary: Optional[dict], failures: list[dict],
-              exploration: Optional[dict] = None) -> dict:
+              exploration: Optional[dict] = None,
+              grounding: Optional[dict] = None) -> dict:
     """Score a run for A/B comparison.
 
     Returns {total, succeeded, failed, success_rate, signatures, worst_severity,
@@ -60,6 +68,8 @@ def score_run(summary: Optional[dict], failures: list[dict],
     }
     if exploration:
         score["exploration"] = {k: exploration.get(k) for k in _EXPLORATION_KEYS}
+    if grounding:
+        score["grounding"] = {k: grounding.get(k) for k in _GROUNDING_KEYS}
     return score
 
 
@@ -80,6 +90,25 @@ def _exploration_delta(baseline: dict, candidate: dict) -> Optional[dict]:
     return {"distinct_gaps": d("distinct_gaps"),
             "mean_gaps_per_uc": d("mean_gaps_per_uc"),
             "consistency": d("consistency")}
+
+
+def _grounding_delta(baseline: dict, candidate: dict) -> Optional[dict]:
+    """Candidate-minus-baseline grounding (mean_distinct_spec_refs, shallow_fraction),
+    or None when neither run carried grounding data. The #45b A/B reads this:
+    +mean_distinct_spec_refs and -shallow_fraction mean the nudge worked."""
+    bg = baseline.get("grounding") or {}
+    cg = candidate.get("grounding") or {}
+    if not bg and not cg:
+        return None
+
+    def d(k):
+        bv, cv = bg.get(k), cg.get(k)
+        if isinstance(bv, (int, float)) and isinstance(cv, (int, float)):
+            return round(cv - bv, 3)
+        return None
+
+    return {"mean_distinct_spec_refs": d("mean_distinct_spec_refs"),
+            "shallow_fraction": d("shallow_fraction")}
 
 
 def gate(baseline: dict, candidate: dict, *, min_delta: float = 0.0,
@@ -108,12 +137,15 @@ def gate(baseline: dict, candidate: dict, *, min_delta: float = 0.0,
     c_rate = candidate.get("success_rate", 0.0)
     delta = round(c_rate - b_rate, 4)
     expl = _exploration_delta(baseline, candidate)
+    grnd = _grounding_delta(baseline, candidate)
 
     def verdict(kind: str, reason: str, new_high_sev=None) -> dict:
         out = {"verdict": kind, "reason": reason, "success_delta": delta,
                "new_high_sev": new_high_sev or []}
         if expl is not None:
             out["exploration_delta"] = expl
+        if grnd is not None:
+            out["grounding_delta"] = grnd
         return out
 
     new_high = sorted(set(candidate.get("high_sev_classes") or [])
