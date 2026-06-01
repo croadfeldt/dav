@@ -150,41 +150,44 @@ spec:
         writes results to results/<run-id>/.
 
   tasks:
-    # 1. Clean stale workspace state before sync.
-    #    The dav-workspace PVC persists across PipelineRuns, so prior-run
-    #    spec/ and corpus/ directories accumulate on disk. The git-sync
-    #    task can recover from stale state (commit 221b30c) and from
-    #    force-pushed upstream (commit abd46ea), but both add latency
-    #    and cognitive load. Wiping spec/ and corpus/ at pipeline start
-    #    forces a clean fresh-clone every run.
+    # 1. Per-run source isolation + clean slate before sync (task #52).
+    #    Concurrent PipelineRuns (e.g. an A/B experiment's two arms) share
+    #    the dav-workspace PVC, so a single shared spec/ + corpus/ pair made
+    #    them race at sync — one arm rm -rf'd or cloned over the other's tree
+    #    (FileExistsError on corpus/<ns>/...). Each run now clones its source
+    #    under <pipelineRun-name>/{spec,corpus}; the run name is unique, so
+    #    the arms never touch the same files. This task wipes THIS run's own
+    #    source root for a clean fresh-clone (covers a same-name retry); the
+    #    finally block GCs it after run-corpus.
     #
-    #    NOT wiped: results/ — operators need previous runs' analyses
-    #    until they're externally archived. Result retention is a
-    #    separate concern from workspace cleanup.
+    #    NOT touched: results/ — it lives at the workspace top level keyed by
+    #    run-id (shared, read by the review console), never per-run.
     - name: cleanup-workspace
       timeout: "5m"
+      params:
+        - name: run-dir
+          value: $(context.pipelineRun.name)
       taskSpec:
+        params:
+          - name: run-dir
+            type: string
         workspaces:
           - name: source
         steps:
-          - name: wipe-sync-targets
+          - name: wipe-run-source
             image: registry.access.redhat.com/ubi9/ubi-minimal
             script: |
               #!/bin/sh
               set -e
               cd "$(workspaces.source.path)"
-              echo "Workspace contents before cleanup:"
-              ls -la . || true
-              echo ""
-              for d in spec corpus; do
-                if [ -e "$d" ]; then
-                  echo "Removing existing $d/"
-                  rm -rf "$d"
-                fi
-              done
-              echo ""
-              echo "Workspace contents after cleanup:"
-              ls -la .
+              RUN_DIR="$(params.run-dir)"
+              echo "Per-run source root: $RUN_DIR (under $(workspaces.source.path))"
+              if [ -e "$RUN_DIR" ]; then
+                echo "Removing existing $RUN_DIR/ (stale from a same-name retry)"
+                rm -rf "$RUN_DIR"
+              fi
+              mkdir -p "$RUN_DIR"
+              echo "Clean source root ready."
       workspaces:
         - name: source
           workspace: shared-data
@@ -205,7 +208,7 @@ spec:
         - name: repo-branch
           value: $(params.consumer-spec-repo-branch)
         - name: target-subdir
-          value: $(params.spec-subdir)
+          value: $(context.pipelineRun.name)/$(params.spec-subdir)
 
     # 3. Clone each corpus source into <corpus-subdir>/<namespace>/
     #    (per ADR-007 / M11b: multi-source-aware). Falls back to
@@ -225,7 +228,7 @@ spec:
           workspace: shared-data
       params:
         - name: workspace-subdir
-          value: $(params.corpus-subdir)
+          value: $(context.pipelineRun.name)/$(params.corpus-subdir)
         - name: corpus-namespaces
           value: $(params.corpus-namespaces)
         - name: legacy-uc-subpath
@@ -253,9 +256,9 @@ spec:
         # honored only when the legacy clone path produced a flat repo
         # with UCs under a sub-path — we append it conditionally below.
         - name: corpus-subdir
-          value: $(params.corpus-subdir)
+          value: $(context.pipelineRun.name)/$(params.corpus-subdir)
         - name: spec-subdir
-          value: $(params.spec-subdir)
+          value: $(context.pipelineRun.name)/$(params.spec-subdir)
         - name: output-subdir
           value: "results"
         - name: mode
@@ -294,3 +297,37 @@ spec:
           value: $(params.stage2-two-pass)
         - name: grounding-nudge
           value: $(params.grounding-nudge)
+
+  # Per-run source isolation (task #52): spec/ and corpus/ are cloned under
+  # <pipelineRun-name>/ so concurrent A/B arms never collide on the shared
+  # dav-workspace PVC. This finally task removes THIS run's source tree once
+  # run-corpus is done — regardless of success/failure — while results/
+  # (keyed by run-id at the workspace top level) is deliberately left intact.
+  finally:
+    - name: gc-run-source
+      params:
+        - name: run-dir
+          value: $(context.pipelineRun.name)
+      taskSpec:
+        params:
+          - name: run-dir
+            type: string
+        workspaces:
+          - name: source
+        steps:
+          - name: wipe-run-source
+            image: registry.access.redhat.com/ubi9/ubi-minimal
+            script: |
+              #!/bin/sh
+              set -e
+              cd "$(workspaces.source.path)"
+              RUN_DIR="$(params.run-dir)"
+              if [ -n "$RUN_DIR" ] && [ -e "$RUN_DIR" ]; then
+                echo "GC: removing per-run source tree $RUN_DIR/"
+                rm -rf "$RUN_DIR"
+              else
+                echo "GC: nothing to remove for $RUN_DIR/"
+              fi
+      workspaces:
+        - name: source
+          workspace: shared-data

@@ -151,7 +151,11 @@ spec:
                 s = os.path.join(src_dir, entry)
                 d = os.path.join(dst_dir, entry)
                 if os.path.isdir(s):
-                    shutil.copytree(s, d, symlinks=False)
+                    # dirs_exist_ok hardens the copy itself (task #52): per-run
+                    # source isolation already prevents cross-arm races; this
+                    # makes a re-entrant/residual copy idempotent instead of
+                    # throwing FileExistsError.
+                    shutil.copytree(s, d, symlinks=False, dirs_exist_ok=True)
                 else:
                     shutil.copy2(s, d)
             shutil.rmtree(tmp, ignore_errors=True)

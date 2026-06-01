@@ -68,11 +68,26 @@ high-severity failure class.
   produce a `consistency` estimate. Deferred as a deliberate ~90-min-per-run
   follow-up; not chased now while clearing the plate for DCM/UDLM.
 
-## Harness bug found (logged as #52)
+## Harness bug found (#52) — FIXED 2026-06-01
 The A/B harness launches both arms ~1.3 s apart sharing the `dav-workspace` PVC;
-their `cleanup-workspace` + `sync-corpus` tasks race on
+their `cleanup-workspace` + `sync-corpus` tasks raced on
 `/workspace/source/corpus/...` → `FileExistsError` (experiment #9's first
-baseline `284977` died this way). RWX PVC, so it's a concurrent-write race, not
-a mount conflict. **Affects all experiments**, not just grounding_nudge. Worked
-around here by running the arms serially. Proper fix: per-run source isolation
-(per-PipelineRun source subdir) or serialized arms.
+baseline `284977` died this way). RWX PVC, so it was a concurrent-write race,
+not a mount conflict. **Affected all experiments**, not just grounding_nudge.
+This A/B was obtained by running the arms serially as a workaround.
+
+**Fix (pipeline `dav-stage2`):** each run now clones its source under a
+per-PipelineRun root — `<pipelineRun-name>/{spec,corpus}` — via
+`$(context.pipelineRun.name)`, so concurrent arms never touch the same files.
+`results/` is untouched: it stays at the workspace top level keyed by run-id
+(shared, read by the review console). A `finally` task (`gc-run-source`)
+reclaims the per-run source tree after run-corpus, success or fail. The
+multi-corpus copy was additionally hardened with `shutil.copytree(...,
+dirs_exist_ok=True)`. Deployed via `--tags tekton` + the task render.
+
+**Validation:** two concurrent 1-UC runs (`dav-stage2-racetest-a`/`-b`) cloned
+into isolated `…/racetest-a/corpus` vs `…/racetest-b/corpus`, all of
+cleanup/sync-spec/sync-corpus Succeeded concurrently with **zero
+FileExistsError**, `gc-run-source` reclaimed both source trees (filesystem
+confirmed empty), and both runs' results stayed console-visible
+(`get_run_summary` → `total=1 ok=1`). Serial arm-running is no longer needed.
