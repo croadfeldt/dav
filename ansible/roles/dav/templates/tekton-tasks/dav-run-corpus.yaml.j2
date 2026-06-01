@@ -157,6 +157,16 @@ spec:
         Qwen3.6-27B MTP investigation.
       default: "1"
 
+    - name: grounding-nudge
+      type: string
+      description: |
+        #45b grounding nudge. "1"/"true" injects (via DAV_GROUNDING_NUDGE) a
+        terse, OFF-by-default behavioral push toward spec-anchored claims —
+        the lever the 2026-05-30 72B eval isolated. Per-run override so it can
+        be A/B-validated against exploration_delta + the shallow signal before
+        it is ever made the default. "0" (default) = no nudge, production prompt.
+      default: "0"
+
 
     - name: max-tool-calls
       type: string
@@ -250,6 +260,10 @@ spec:
         # keeps the engine default of two-pass.
         - name: DAV_STAGE2_TWO_PASS
           value: "$(params.stage2-two-pass)"
+        # #45b: OFF by default ("0"); a candidate run sets "1" to A/B the
+        # grounding nudge without an engine rebuild.
+        - name: DAV_GROUNDING_NUDGE
+          value: "$(params.grounding-nudge)"
       script: |
         #!/bin/sh
         set -e

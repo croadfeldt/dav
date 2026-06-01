@@ -138,6 +138,9 @@ spec:
     - name: stage2-two-pass
       type: string
       default: "1"
+    - name: grounding-nudge
+      type: string
+      default: "0"
 
   workspaces:
     - name: shared-data
@@ -289,3 +292,5 @@ spec:
           value: $(params.use-profile-json)
         - name: stage2-two-pass
           value: $(params.stage2-two-pass)
+        - name: grounding-nudge
+          value: $(params.grounding-nudge)

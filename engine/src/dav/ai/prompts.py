@@ -163,6 +163,22 @@ def build_stage2_system_prompt(consumer_profile=None) -> str:
                 f"find what you need in the listed namespaces, and note the "
                 f"cross-namespace lookup in your analysis."
             )
+    # #45b grounding nudge — an A/B-able, OFF-by-default behavioral push toward
+    # spec-anchored claims. The 2026-05-30 72B eval isolated ungrounded "generic
+    # label" depth as the real quality gap; this is the terse hypothesis to test
+    # against exploration_delta + the shallow signal BEFORE it's ever the default.
+    # Terse by design — the v1.9 "stop fishing" lecture made things worse, so one
+    # crisp behavioral line (and it leans on the existing confidence field rather
+    # than telling the model to drop claims).
+    if (os.environ.get("DAV_GROUNDING_NUDGE") or "").strip().lower() in ("1", "true", "yes", "on"):
+        prompt += (
+            "\n\n## Grounding emphasis (this run)\n"
+            "Cite at least one consulted `spec_ref` for every component, data "
+            "entity, capability, and policy-mode claim. Favor fewer spec-anchored "
+            "findings over many generic ones; if you genuinely cannot anchor a "
+            "claim to a spec, set its `confidence` to low rather than asserting it "
+            "as though grounded."
+        )
     return prompt
 
 def build_stage2_user_prompt(use_case: UseCase, consumer_profile=None) -> str:
