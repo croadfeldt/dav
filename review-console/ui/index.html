@@ -2437,6 +2437,8 @@ let allSets = [];
 
 let activeRunResultId = null;
 let activeRunSummary  = null;
+let _rdShallowByUuid  = {};     // uc_uuid -> shallowness row (advisory grounding signal, #45a)
+let _rdShallowSummary = null;   // run-level shallowness rollup
 let activeUCResult    = null;
 let _lastAnalysisData = null;
 let activeUCId        = null;
@@ -3920,6 +3922,7 @@ async function selectRunResult(runId) {
     activeRunSummary = summary;
     renderRunSummaryHeader(summary);
     renderUCResultList(summary);
+    _loadShallowness(runId);   // advisory grounding flags (#45a) — async, re-renders badges
   } catch (e) {
     document.getElementById('ucResultList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
   }
@@ -4013,6 +4016,20 @@ function _ucHandleParts(handle) {
   return { category: null, display: handle };
 }
 
+async function _loadShallowness(runId) {
+  // Advisory per-UC grounding signal (#45a). Fetches /api/runs/{id}/shallowness
+  // and re-renders the UC list so thin-but-successful analyses get a badge.
+  _rdShallowByUuid = {}; _rdShallowSummary = null;
+  try {
+    const sh = await api(`/api/runs/${encodeURIComponent(runId)}/shallowness`);
+    (sh.ucs || []).forEach(u => { if (u.uc_uuid) _rdShallowByUuid[u.uc_uuid] = u; });
+    _rdShallowSummary = sh;
+  } catch (e) { /* advisory — stay silent when unavailable */ }
+  if (activeRunResultId === runId && activeRunSummary) {
+    renderUCResultList(activeRunSummary);
+  }
+}
+
 function _ucRowEl(u, { stripCategory = false } = {}) {
   const item = document.createElement('div');
   item.className = 'uc-row' + (activeUCResult===u.uc_uuid ? ' active' : '');
@@ -4030,10 +4047,18 @@ function _ucRowEl(u, { stripCategory = false } = {}) {
     const c = stateColors[u.lifecycle_state_at_run] || 'var(--text-faint)';
     stateBadge = `<span style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;" title="UC lifecycle state when this run was triggered">${esc(u.lifecycle_state_at_run)}</span>`;
   }
+  // Advisory grounding flag (#45a): a thin-but-successful analysis.
+  let shallowBadge = '';
+  const _sh = _rdShallowByUuid[u.uc_uuid];
+  if (_sh && _sh.shallow) {
+    const _r = esc((_sh.reasons || []).join('; '));
+    shallowBadge = `<span style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;color:#d79a3a;border:1px solid #d79a3a;padding:0 4px;border-radius:2px;flex-shrink:0;" title="Thin grounding — ${_r}">⚠ thin</span>`;
+  }
   item.innerHTML = `
     <span class="${vClass}" style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;flex-shrink:0;width:52px;padding-top:1px">${esc(vLabel)}</span>
     <span class="uc-handle">${esc(displayHandle)}</span>
     ${stateBadge}
+    ${shallowBadge}
     <span class="uc-time">${u.wall_time_seconds ? u.wall_time_seconds+'s' : ''}</span>`;
   item.addEventListener('click', () => selectUCResult(u.uc_uuid));
   return item;
