@@ -3792,6 +3792,25 @@ async def self_improve_scan(request: Request,
             "proposals_filed": filed, "runs": results}
 
 
+@app.get("/api/runs/{name}/shallowness")
+async def get_run_shallowness_endpoint(name: str):
+    """Per-UC shallow-analysis flags for a completed run (advisory grounding
+    signal). The failure-driven diagnose loop only sees runs that *failed*; this
+    surfaces successful-but-thin analyses — few distinct spec refs, mostly
+    ungrounded claims, or a too-early commit. `name` accepts a workspace run_id
+    or a Tekton PipelineRun name. See app.shallowness for the scoring.
+    """
+    if not _results.is_available():
+        raise HTTPException(503, "workspace PVC not mounted")
+    run_id = _resolve_run_id(name)
+    if not run_id:
+        raise HTTPException(404, f"no workspace run found for {name!r}")
+    data = _results.get_run_shallowness(run_id)
+    if data is None:
+        raise HTTPException(404, f"run {run_id!r} has no readable summary")
+    return data
+
+
 @app.post("/api/diagnose/{run_id:path}")
 async def diagnose_run(run_id: str, request: Request, use_llm: bool = Query(True)):
     """Diagnose a run's failures and file typed improvement proposals.

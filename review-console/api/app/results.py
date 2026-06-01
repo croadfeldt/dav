@@ -471,6 +471,76 @@ def get_run_exploration(run_id: str) -> Optional[dict]:
     }
 
 
+def _load_analysis_samples(run_id: str, uc_uuid: str) -> list[dict]:
+    """Full analysis dict per sample for a UC (verification: the single file;
+    explore: each sample-*.yaml). Empty when the UC has no analysis (e.g. failed)."""
+    run_dir = _results_root() / run_id
+    single = run_dir / "analyses" / f"{uc_uuid}.yaml"
+    if single.exists():
+        d = _safe_load(single)
+        return [d] if isinstance(d, dict) else []
+    explore_dir = run_dir / "analyses" / uc_uuid
+    if explore_dir.is_dir():
+        out = []
+        for sf in sorted(explore_dir.glob("sample-*.yaml")):
+            d = _safe_load(sf)
+            if isinstance(d, dict):
+                out.append(d)
+        return out
+    return []
+
+
+def get_run_shallowness(run_id: str, thresholds=None) -> Optional[dict]:
+    """Per-UC shallow-analysis flags for a run's *successful* analyses + a rollup.
+
+    The failure-driven self-improvement loop never sees a successful-but-thin
+    analysis. This scores each UC's grounding density (distinct spec refs,
+    ungrounded-claim ratio, tool calls — see app.shallowness) and flags the
+    shallow ones; shallow UCs sort to the front. Advisory only. Returns None when
+    the run has no readable summary.
+    """
+    from . import shallowness as _sh
+    summ = get_run_summary_enriched(run_id)
+    if not summ:
+        return None
+    th = thresholds or _sh.ShallowThresholds()
+    ucs_out: list[dict] = []
+    n_eligible = n_shallow = 0
+    spec_ref_sum = 0.0
+    for uc in (summ.get("ucs") or []):
+        uuid = uc.get("uc_uuid")
+        if not uuid:
+            continue
+        samples = _load_analysis_samples(run_id, uuid)
+        if not samples:
+            continue
+        scored = [_sh.score_and_flag(s, th) for s in samples]
+        agg = _sh.aggregate_samples(scored)
+        ucs_out.append({"uc_uuid": uuid, "uc_handle": uc.get("uc_handle"),
+                        "run_verdict": uc.get("verdict"), **agg})
+        if agg.get("eligible"):
+            n_eligible += 1
+            if isinstance(agg.get("distinct_spec_refs"), (int, float)):
+                spec_ref_sum += agg["distinct_spec_refs"]
+            if agg.get("shallow"):
+                n_shallow += 1
+    # Shallow UCs first, then ascending grounding (thinnest at the top).
+    ucs_out.sort(key=lambda r: (
+        not r.get("shallow"),
+        r["distinct_spec_refs"] if isinstance(r.get("distinct_spec_refs"), (int, float)) else 1e9,
+    ))
+    return {
+        "run_id": run_id,
+        "thresholds": th.to_dict(),
+        "ucs_analyzed": len(ucs_out),
+        "ucs_eligible": n_eligible,
+        "ucs_shallow": n_shallow,
+        "shallow_fraction": round(n_shallow / n_eligible, 3) if n_eligible else None,
+        "mean_distinct_spec_refs": round(spec_ref_sum / n_eligible, 2) if n_eligible else None,
+        "ucs": ucs_out,
+    }
+
+
 def get_analysis(run_id: str, uc_uuid: str) -> Optional[dict]:
     """Return the analysis output for a specific UC within a run.
 
