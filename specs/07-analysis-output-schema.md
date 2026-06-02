@@ -227,8 +227,9 @@ tenant provisioning needs the identity model. Aggregating these edges across a
 run reveals **foundational** capabilities — ones that aren't necessarily demanded
 by many UCs directly, but that many other capabilities transitively depend on, so
 they should be built first. Omitted/empty for analyses that don't assess
-dependencies (backward-compatible). Ids should reference capability ids the
-engine also emits; dangling targets are tolerated but not counted as nodes.
+dependencies (backward-compatible). A dependency id that no UC invokes directly
+still counts as a graph node with zero direct demand — that is precisely the
+foundational-but-undemanded case the analysis is meant to surface.
 
 ### 6.5 `provider_types_involved`
 

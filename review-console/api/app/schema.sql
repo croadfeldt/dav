@@ -245,6 +245,23 @@ CREATE INDEX IF NOT EXISTS idx_uc_caps_run  ON uc_capabilities(run_id);
 CREATE INDEX IF NOT EXISTS idx_uc_caps_uuid ON uc_capabilities(uc_uuid);
 CREATE INDEX IF NOT EXISTS idx_uc_caps_cap  ON uc_capabilities(capability_id);
 
+-- ── Capability dependency edges (DCM feature #3: foundational detection) ──────
+-- One row per (capability depends_on other-capability) edge the engine emits,
+-- projected at ingest. Edge points dependant → dependency (A requires B).
+-- Aggregating these across a run and computing transitive dependents surfaces
+-- foundational capabilities. Cleared with its run via the uc_analyses CASCADE.
+CREATE TABLE IF NOT EXISTS uc_capability_deps (
+  id               BIGSERIAL PRIMARY KEY,
+  analysis_id      BIGINT NOT NULL REFERENCES uc_analyses(id) ON DELETE CASCADE,
+  run_id           TEXT NOT NULL,
+  uc_uuid          TEXT NOT NULL,
+  capability_id    TEXT NOT NULL,   -- the dependant
+  depends_on_id    TEXT NOT NULL,   -- the dependency it requires
+  ingested_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_uc_capdeps_run ON uc_capability_deps(run_id);
+CREATE INDEX IF NOT EXISTS idx_uc_capdeps_cap ON uc_capability_deps(capability_id);
+
 -- ── Centralized model configs ────────────────────────────────────────────────
 -- All LLM endpoint registrations live here.  Per-endpoint use-flags control
 -- which DAV features each model may be selected for.

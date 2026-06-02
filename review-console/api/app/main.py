@@ -36,6 +36,7 @@ from .uc_priority import (
     derive_priority as _derive_uc_priority,
 )
 from . import capability_density as _capability_density
+from . import capability_graph as _capability_graph
 from .uc_list import collapse_duplicates as _collapse_uc_duplicates
 from . import validations
 from . import sources
@@ -3537,6 +3538,7 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
         ingested_ucs = 0
         ingested_gaps = 0
         ingested_caps = 0
+        ingested_deps = 0
         for uc in (summary.get("ucs") or []):
             uc_uuid = uc.get("uc_uuid")
             if not uc_uuid:
@@ -3680,12 +3682,29 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                     _derive_gap_namespace(cap),
                 )
                 ingested_caps += 1
+                # Dependency edges (DCM feature #3). Each depends_on target is a
+                # capability this one requires; dedup per (cap, dep) within a UC.
+                seen_edges = set()
+                for dep in (cap.get("depends_on") or []):
+                    if not isinstance(dep, str) or not dep or dep == cap_id:
+                        continue
+                    if dep in seen_edges:
+                        continue
+                    seen_edges.add(dep)
+                    await conn.execute(
+                        """INSERT INTO uc_capability_deps
+                           (analysis_id, run_id, uc_uuid, capability_id, depends_on_id)
+                           VALUES ($1,$2,$3,$4,$5)""",
+                        analysis_id, run_id, uc_uuid, cap_id, dep,
+                    )
+                    ingested_deps += 1
 
     return {
         "run_id": run_id,
         "ingested_ucs": ingested_ucs,
         "ingested_gaps": ingested_gaps,
         "ingested_capabilities": ingested_caps,
+        "ingested_capability_deps": ingested_deps,
     }
 
 
@@ -3768,6 +3787,71 @@ async def capability_density(
         "run_id": run_id,
         "set_id": set_id,
         "total_ucs": int(total_ucs or 0),
+        "capabilities": capabilities,
+    }
+
+
+@app.get("/api/analysis/foundational-capabilities")
+async def foundational_capabilities(
+    run_id: str = Query(..., description="workspace run_id to analyze"),
+    set_id: Optional[int] = Query(None, description="restrict to UCs in this Set"),
+):
+    """Foundational capability detection for a run (DCM feature #3).
+
+    Ranks capabilities by how many others *transitively* depend on them — the
+    "boring but foundational" building blocks that should be built first even
+    when few UCs demand them directly. Reads the `uc_capability_deps` edges and
+    `uc_capabilities` demand projected at ingest, then runs the graph analysis.
+
+    Empty until analyses carry capability `depends_on` edges (needs the engine
+    prompt tuned to emit them, then a re-ingest). `edge_count` reports how many
+    edges were found so the UI can explain an empty result.
+    """
+    async with pool.acquire() as conn:
+        run_exists = await conn.fetchval(
+            "SELECT 1 FROM analysis_runs WHERE run_id=$1", run_id
+        )
+        if not run_exists:
+            raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
+
+        set_uuids: Optional[set] = None
+        if set_id is not None:
+            member_rows = await conn.fetch(
+                "SELECT uc_uuid FROM use_case_set_members WHERE set_id=$1", set_id
+            )
+            set_uuids = {r["uc_uuid"] for r in member_rows}
+            if not set_uuids:
+                return {"run_id": run_id, "set_id": set_id, "edge_count": 0, "capabilities": []}
+
+        if set_uuids is not None:
+            edge_rows = await conn.fetch(
+                "SELECT capability_id, depends_on_id FROM uc_capability_deps "
+                "WHERE run_id=$1 AND uc_uuid = ANY($2)",
+                run_id, list(set_uuids),
+            )
+            demand_rows = await conn.fetch(
+                "SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n FROM uc_capabilities "
+                "WHERE run_id=$1 AND uc_uuid = ANY($2) GROUP BY capability_id",
+                run_id, list(set_uuids),
+            )
+        else:
+            edge_rows = await conn.fetch(
+                "SELECT capability_id, depends_on_id FROM uc_capability_deps WHERE run_id=$1",
+                run_id,
+            )
+            demand_rows = await conn.fetch(
+                "SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n FROM uc_capabilities "
+                "WHERE run_id=$1 GROUP BY capability_id",
+                run_id,
+            )
+
+    edges = [(r["capability_id"], r["depends_on_id"]) for r in edge_rows]
+    demand = {r["capability_id"]: int(r["n"]) for r in demand_rows}
+    capabilities = _capability_graph.foundational_ranking(edges, demand)
+    return {
+        "run_id": run_id,
+        "set_id": set_id,
+        "edge_count": len(edges),
         "capabilities": capabilities,
     }
 
