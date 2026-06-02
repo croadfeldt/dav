@@ -2448,6 +2448,24 @@ function prioHtml(label, score) {
        + `color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;">${esc(label)}</span>`;
 }
 
+// Surfaces UC-list de-duplication: the same uuid can live in several corpus
+// paths and/or also be managed. The list shows one row per uuid; this badge
+// makes the collapsed copies visible. path_count = corpus paths for this uuid.
+function dupHtml(u) {
+  const n = u.path_count || 0;
+  const ns = (u.namespaces || []).join(', ');
+  if (u.source === 'managed') {
+    if (n < 1) return '';
+    const t = `Also present in ${n} corpus path${n===1?'':'s'}${ns ? ': ' + ns : ''}`;
+    return `<span title="${esc(t)}" style="font-size:8px;color:var(--text-faint);border:1px solid var(--border);padding:0 4px;border-radius:2px;flex-shrink:0;">+${n} corpus</span>`;
+  }
+  if (n > 1) {
+    const t = `Same UC in ${n} corpus paths${ns ? ': ' + ns : ''}`;
+    return `<span title="${esc(t)}" style="font-size:8px;color:var(--text-faint);border:1px solid var(--border);padding:0 4px;border-radius:2px;flex-shrink:0;">×${n} paths</span>`;
+  }
+  return '';
+}
+
 const LC_TRANSITIONS = {
   draft:      [{to:'ready',      label:'Submit for review', cls:'btn ghost'}],
   ready:      [{to:'in_review',  label:'Start review',      cls:'btn primary'},
@@ -4781,6 +4799,7 @@ function renderUCList() {
         <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end;flex-shrink:0;">
           ${u.lifecycle_state ? lcHtml(u.lifecycle_state) : `<span class="src-badge src-${u.source}">${u.source}</span>`}
           ${prioHtml(u.priority, u.priority_score)}
+          ${dupHtml(u)}
         </div>
         ${setRemoveBtn}`;
       // Row click selects/opens the UC; checkbox toggles batch selection

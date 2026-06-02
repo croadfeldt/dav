@@ -36,6 +36,7 @@ from .uc_priority import (
     derive_priority as _derive_uc_priority,
 )
 from . import capability_density as _capability_density
+from .uc_list import collapse_duplicates as _collapse_uc_duplicates
 from . import validations
 from . import sources
 from . import metrics
@@ -2058,7 +2059,9 @@ async def list_use_cases(
             except Exception:
                 continue
 
-    use_cases = managed + corpus_ucs
+    # Collapse the same uuid appearing across multiple corpus paths and/or as a
+    # managed row into one entry (managed preferred), surfacing corpus path_count.
+    use_cases = _collapse_uc_duplicates(managed, corpus_ucs)
     if by_priority:
         # Stable global ordering across both sources: weight desc, unranked last.
         # (None != 0 — a valid low-band score of 0 still outranks unranked.)
