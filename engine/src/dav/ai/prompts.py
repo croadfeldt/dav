@@ -82,7 +82,8 @@ When you have gathered enough information, emit a final analysis as a single JSO
       "usage": "<how it's used in this use case>",
       "rationale": "<why, referencing spec>",
       "spec_refs": [...],
-      "confidence": "high|medium|low"
+      "confidence": "high|medium|low",
+      "depends_on": ["<other capability id this one requires>"]
     }}
   ],
   "provider_types_involved": [
@@ -125,6 +126,7 @@ Rules for the final output:
 - Every rationale field must be non-empty if its list has entries.
 - spec_refs values should look like "doc-handle" or "doc-handle/section-name".
 - spec_refs_missing entries must use "doc-handle" or "doc-handle/section-title" format — not prose.
+- capabilities_invoked[].depends_on is OPTIONAL: list ids of OTHER capabilities (preferably ones also in this capabilities_invoked list) that this capability requires to function. Use [] if none or unsure — do not guess. This surfaces foundational building blocks; only assert a dependency the spec actually implies.
 """
 
 def build_stage2_system_prompt(consumer_profile=None) -> str:
