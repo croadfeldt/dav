@@ -37,6 +37,7 @@ from .uc_priority import (
 )
 from . import capability_density as _capability_density
 from . import capability_graph as _capability_graph
+from . import uc_readiness as _uc_readiness
 from .uc_list import collapse_duplicates as _collapse_uc_duplicates
 from . import validations
 from . import sources
@@ -2011,7 +2012,7 @@ async def list_use_cases(
                  if by_priority else "updated_at DESC")
         where = "WHERE priority = $1" if prio_filter else ""
         sql = (
-            "SELECT uuid, title, tags, lifecycle_state, priority, priority_score, "
+            "SELECT uuid, title, tags, lifecycle_state, priority, priority_score, readiness_score, "
             "created_by, created_at, updated_by, updated_at "
             f"FROM managed_use_cases {where} ORDER BY {order}"
         )
@@ -2053,6 +2054,7 @@ async def list_use_cases(
                     "tags":    data.get("tags", []),
                     "priority": c_priority,
                     "priority_score": c_priority_score,
+                    "readiness_score": _uc_readiness.score_use_case(data)["score"],
                     "path":    r["path"],
                     "source":  "corpus",
                     "set_ids": set_ids_by_uuid.get(uc_uuid, []),
@@ -2141,6 +2143,21 @@ async def validate_use_case(payload: ManagedUCIn):
     return {"ok": not errors, "errors": errors}
 
 
+@app.post("/api/use-cases/readiness")
+async def readiness_use_case(payload: ManagedUCIn):
+    """Score a UC definition's readiness/quality without saving (DCM feature #4).
+
+    Author-facing complement to /validate: validate says "is it legal?",
+    readiness says "is it well-defined enough to analyze well?". Returns the
+    full checklist with hints so the editor can guide the author.
+    """
+    try:
+        data = _parse_uc_yaml(payload.yaml_content)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, **_uc_readiness.score_use_case(data)}
+
+
 @app.post("/api/use-cases")
 async def create_use_case(payload: ManagedUCIn, request: Request):
     """Create a managed use case. UUID is taken from the YAML content."""
@@ -2167,6 +2184,7 @@ async def create_use_case(payload: ManagedUCIn, request: Request):
     title = _derive_uc_title(data, uc_uuid)
     tags = payload.tags or data.get("tags", [])
     priority, priority_score = _derive_uc_priority(data)
+    readiness = _uc_readiness.score_use_case(data)["score"]
 
     async with pool.acquire() as conn:
         existing = await conn.fetchval(
@@ -2177,12 +2195,12 @@ async def create_use_case(payload: ManagedUCIn, request: Request):
         await conn.execute(
             """
             INSERT INTO managed_use_cases
-              (uuid, title, yaml_content, created_by, updated_by, tags, priority, priority_score)
-            VALUES ($1, $2, $3, $4, $4, $5, $6, $7)
+              (uuid, title, yaml_content, created_by, updated_by, tags, priority, priority_score, readiness_score)
+            VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8)
             """,
-            uc_uuid, title, payload.yaml_content, user, tags, priority, priority_score,
+            uc_uuid, title, payload.yaml_content, user, tags, priority, priority_score, readiness,
         )
-    return {"ok": True, "uuid": uc_uuid, "title": title, "priority": priority}
+    return {"ok": True, "uuid": uc_uuid, "title": title, "priority": priority, "readiness_score": readiness}
 
 
 @app.put("/api/use-cases/{uuid}")
@@ -2209,20 +2227,21 @@ async def update_use_case(uuid: str, payload: ManagedUCIn, request: Request):
     title = _derive_uc_title(data, uuid)
     tags = payload.tags or data.get("tags", [])
     priority, priority_score = _derive_uc_priority(data)
+    readiness = _uc_readiness.score_use_case(data)["score"]
 
     async with pool.acquire() as conn:
         result = await conn.execute(
             """
             UPDATE managed_use_cases
             SET yaml_content=$2, title=$3, updated_by=$4, updated_at=now(), tags=$5,
-                priority=$6, priority_score=$7
+                priority=$6, priority_score=$7, readiness_score=$8
             WHERE uuid=$1
             """,
-            uuid, payload.yaml_content, title, user, tags, priority, priority_score,
+            uuid, payload.yaml_content, title, user, tags, priority, priority_score, readiness,
         )
     if result == "UPDATE 0":
         raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
-    return {"ok": True, "uuid": uuid, "title": title, "priority": priority}
+    return {"ok": True, "uuid": uuid, "title": title, "priority": priority, "readiness_score": readiness}
 
 
 @app.delete("/api/use-cases/{uuid}")
@@ -2930,6 +2949,56 @@ async def promote_set_members(set_id: int, payload: SetPromoteIn, request: Reque
             "from_state": payload.from_state, "to_state": payload.to_state}
 
 
+@app.get("/api/sets/{set_id}/readiness")
+async def set_readiness(set_id: int):
+    """Readiness scorecard for a Set's managed UCs (DCM feature #4).
+
+    The "batch check on a Set before triggering a run" from the meeting: score
+    each member's definition so weak UCs can be fixed before they produce weak
+    analyses. Returns per-UC scores (with the failing check ids) and a rollup.
+    """
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval("SELECT 1 FROM use_case_sets WHERE id=$1", set_id)
+        if not exists:
+            raise HTTPException(404, f"set {set_id} not found")
+        rows = await conn.fetch(
+            """SELECT uc.uuid, uc.title, uc.yaml_content FROM managed_use_cases uc
+               JOIN use_case_set_members m ON m.uc_uuid = uc.uuid AND m.uc_source = 'managed'
+               WHERE m.set_id = $1 ORDER BY uc.title""",
+            set_id,
+        )
+
+    items = []
+    for r in rows:
+        try:
+            parsed = _parse_uc_yaml(r["yaml_content"] or "")
+        except ValueError:
+            items.append({"uuid": r["uuid"], "title": r["title"], "score": None,
+                          "band": None, "ready": False, "failing": ["unparseable_yaml"]})
+            continue
+        res = _uc_readiness.score_use_case(parsed)
+        items.append({
+            "uuid": r["uuid"], "title": r["title"],
+            "score": res["score"], "band": res["band"], "ready": res["ready"],
+            "failing": [c["id"] for c in res["checks"] if not c["ok"]],
+        })
+
+    scored = [it["score"] for it in items if it["score"] is not None]
+    by_band: dict[str, int] = {}
+    for it in items:
+        if it["band"]:
+            by_band[it["band"]] = by_band.get(it["band"], 0) + 1
+    items.sort(key=lambda it: (it["score"] is not None, it["score"] if it["score"] is not None else -1))
+    return {
+        "set_id": set_id,
+        "count": len(items),
+        "avg_score": round(sum(scored) / len(scored), 1) if scored else None,
+        "ready_count": sum(1 for it in items if it["ready"]),
+        "by_band": by_band,
+        "use_cases": items,  # lowest score first — worst offenders surface
+    }
+
+
 # ========================= EXPORT / IMPORT =========================
 
 
@@ -3127,6 +3196,7 @@ async def import_use_cases(request: Request, file: UploadFile = File(...)):
                 title = uc_data.get("handle", uc_uuid)
             tags = uc_data.get("tags", [])
             priority, priority_score = _derive_uc_priority(uc_data)
+            readiness = _uc_readiness.score_use_case(uc_data)["score"]
 
             try:
                 async with conn.transaction():
@@ -3136,9 +3206,9 @@ async def import_use_cases(request: Request, file: UploadFile = File(...)):
                     if existing is None:
                         await conn.execute(
                             """INSERT INTO managed_use_cases
-                               (uuid, title, yaml_content, lifecycle_state, created_by, updated_by, tags, priority, priority_score)
-                               VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)""",
-                            uc_uuid, title, content, target_state, user, tags, priority, priority_score,
+                               (uuid, title, yaml_content, lifecycle_state, created_by, updated_by, tags, priority, priority_score, readiness_score)
+                               VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9)""",
+                            uc_uuid, title, content, target_state, user, tags, priority, priority_score, readiness,
                         )
                         await conn.execute(
                             "INSERT INTO lifecycle_events(uc_uuid, from_state, to_state, actor, notes) "
@@ -3150,8 +3220,8 @@ async def import_use_cases(request: Request, file: UploadFile = File(...)):
                         await conn.execute(
                             """UPDATE managed_use_cases SET yaml_content=$2, title=$3,
                                updated_by=$4, updated_at=now(), tags=$5,
-                               priority=$6, priority_score=$7 WHERE uuid=$1""",
-                            uc_uuid, content, title, user, tags, priority, priority_score,
+                               priority=$6, priority_score=$7, readiness_score=$8 WHERE uuid=$1""",
+                            uc_uuid, content, title, user, tags, priority, priority_score, readiness,
                         )
                         from_state = existing["lifecycle_state"]
                         if from_state != target_state:

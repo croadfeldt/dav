@@ -76,6 +76,9 @@ ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT 
 -- `priority_score` is the 0-100 roadmap weight used for sorting (higher first).
 ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS priority       TEXT;
 ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS priority_score INTEGER;
+-- UC definition readiness (DCM feature #4): 0-100 quality score projected from
+-- yaml_content at save, so the list/Set views can show it without re-scoring.
+ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS readiness_score INTEGER;
 CREATE INDEX IF NOT EXISTS idx_managed_uc_updated ON managed_use_cases(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_managed_uc_state   ON managed_use_cases(lifecycle_state);
 -- Priority-ordered roadmap views sort by weight desc, unranked (NULL) last.
