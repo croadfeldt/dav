@@ -141,6 +141,71 @@ Session D (frontend / commenter):
 
 ---
 
+## DCM / Cost-Management feature requests (2026-06-02)
+
+Surfaced when DAV was demoed to the DCM team (Piotr Kliczewski, Kevin Cattell,
+Pau Garcia Quiles, David Cannon), who want to use it for prioritization and
+cross-team coordination. Full meeting notes: `docs/2026-06-02-dcm-cost-mgmt-meeting-takeaways.md`.
+Implementation order below follows Chris's read of the meeting.
+
+### #1 — UC priority / weighting meta-tags — **SHIPPED (2026-06-02)**
+
+UCs carry an optional `priority` so a corpus can be ranked and delivered in
+importance order rather than all at once (asked by Kevin Cattell; reinforced by
+Piotr on estimation-before-commitment).
+
+Modeled as a descriptor (label + derived score + band) reusing the existing
+severity/confidence machinery — `priority.score` is the roadmap weight (higher
+= build first). Four labels (critical/high/medium/low) with band-midpoint
+defaults; shorthand (`priority: high`) and nested (`{label, score, rationale}`)
+forms both parse; optional and alias-free (author-set, never model-emitted).
+
+- Engine: `normalize_priority` + `PriorityDescriptor` in `use_case_schema.py`; spec 05 §6.8
+- Console: `priority`/`priority_score` columns on `managed_use_cases`; `?sort=priority` + `?priority=` on the list API; badge, filter, and sort toggle in the UC tab
+- Tests: 11 engine cases + 8 console cases
+
+### #2 — Cross-UC capability demand density — **NEXT**
+
+After analyzing multiple UCs, aggregate the capabilities each demands and show
+which appear across the most UCs ("density of need") — answers "what should we
+build first?" by showing where demand clusters (Kevin Cattell). Builds on the
+Review & Plan tab's consolidated multi-run review. Requires structured
+capability extraction (the engine already emits `capabilities_invoked` as
+structured data per analysis) aggregated across a Set into a capability map.
+See the meeting notes for the full shape; groundwork starting now.
+
+### #3 — Foundational dependency detection — follow-on to #2
+
+Surface capabilities that aren't heavily demanded on their own but are blocking
+dependencies for many others ("boring but foundational"). Graph analysis layered
+on #2: extract capability→capability dependencies, compute transitive dependent
+counts, float high-leverage foundations to the top. Harder than #2; sequence after.
+
+### #4 — UC quality feedback loop
+
+Score UC definitions for clarity/completeness and feed that back to the author
+to standardize how UCs are written (Kevin Cattell). Author-facing complement to
+the existing shallow-analysis detector (`review-console/api/app/shallowness.py`),
+which today flags thin *analyses* rather than thin *definitions*.
+
+### #5 / #6 — Maturity assessment & customer-facing modes — longer-term
+
+#5: analyze an external system against a spec and produce a conformance/maturity
+score (flips "does the spec support this UC?" to "how well does impl X conform to
+spec Y?"). #6 (Pau): let customers ask "can your product do X?" against released
+product specs. Both are analysis-flow variants; lower near-term priority.
+
+### Operational follow-ups
+
+- **Multi-user auth** — Pau needs access; DAV runs behind OCP oauth-proxy with no
+  multi-user model. Needs external access story (public route + OIDC, VPN, or similar).
+- **Onboard cost-mgmt spec repos** — add koku, cost-mgmt-operator, integrations/sources
+  as spec sources alongside DCM/UDLM (via Config → Repos, role=spec).
+- **Networking/storage UCs** — Kevin connecting Chris with Joe & Brandon to author
+  foundational-domain UCs.
+- **OSAC UC neutrality** — Piotr flagged Michael's OSAC UCs may be biased toward
+  OpenMeter/OSAC; review for neutrality before trusting OSAC analysis results.
+
 ## Future Sessions (rough order, no dates)
 
 ### Mode C2 — Coverage introspection
