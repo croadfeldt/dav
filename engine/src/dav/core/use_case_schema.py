@@ -705,6 +705,12 @@ class CapabilityInvoked:
     rationale: str
     spec_refs: list[str]
     confidence: ConfidenceDescriptor
+    # Other capability ids this one depends on / requires (DCM feature #3,
+    # foundational dependency detection). Optional and backward-compatible —
+    # older analyses omit it (empty). Edges point dependant → dependency
+    # (A depends_on B means A requires B), so a capability that appears in many
+    # other capabilities' depends_on lists is a foundational building block.
+    depends_on: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -713,6 +719,7 @@ class CapabilityInvoked:
             "rationale": self.rationale,
             "spec_refs": list(self.spec_refs),
             "confidence": self.confidence.to_dict(),
+            "depends_on": list(self.depends_on),
         }
 
     @classmethod
@@ -723,6 +730,7 @@ class CapabilityInvoked:
             rationale=data.get("rationale", ""),
             spec_refs=list(data.get("spec_refs", [])),
             confidence=normalize_confidence(data.get("confidence", "medium")),
+            depends_on=list(data.get("depends_on") or []),
         )
 
 @dataclass
@@ -1189,6 +1197,9 @@ def build_analysis_json_schema(consumer_profile=None) -> dict[str, Any]:
                         "rationale": {"type": "string"},
                         "spec_refs": {"type": "array", "items": {"type": "string"}},
                         "confidence": {"enum": [c.value for c in Confidence]},
+                        # Optional (not required): other capability ids this one
+                        # requires. Foundational dependency detection (#3).
+                        "depends_on": {"type": "array", "items": {"type": "string"}},
                     },
                 },
             },

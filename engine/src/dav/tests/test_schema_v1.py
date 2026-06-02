@@ -409,6 +409,28 @@ def test_json_schema_has_moderate():
     assert_true("moderate" in sev_enum, f"moderate in severity enum; got {sev_enum}")
     assert_eq(len(sev_enum), 5, "severity enum has 5 labels")
 
+def test_capability_depends_on_roundtrip():
+    """CapabilityInvoked carries optional depends_on, defaulting empty (#3)."""
+    # Omitted → empty list, backward-compatible with older analyses.
+    c0 = CapabilityInvoked.from_dict({"id": "quota", "usage": "u", "rationale": "r",
+                                      "spec_refs": [], "confidence": "high"})
+    assert_eq(c0.depends_on, [], "depends_on defaults to empty when omitted")
+    assert_eq(c0.to_dict()["depends_on"], [], "empty depends_on serializes as []")
+    # Present → preserved through a roundtrip.
+    c1 = CapabilityInvoked.from_dict({"id": "tenant_provisioning", "usage": "u",
+                                      "rationale": "r", "spec_refs": ["dcm/x"],
+                                      "confidence": "high",
+                                      "depends_on": ["identity_model", "quota"]})
+    assert_eq(c1.depends_on, ["identity_model", "quota"], "depends_on parsed")
+    c2 = CapabilityInvoked.from_dict(c1.to_dict())
+    assert_eq(c2.depends_on, ["identity_model", "quota"], "depends_on survives roundtrip")
+
+def test_capability_depends_on_in_json_schema():
+    """depends_on is an optional (not required) property in the LLM schema."""
+    caps = ANALYSIS_JSON_SCHEMA["properties"]["capabilities_invoked"]["items"]
+    assert_true("depends_on" in caps["properties"], "depends_on present in schema")
+    assert_true("depends_on" not in caps["required"], "depends_on is optional (not required)")
+
 # --- UC priority tests (DCM feature #1) ---
 
 def test_priority_four_labels():
@@ -533,6 +555,8 @@ def main():
         test_analysis_with_sample_annotations,
         test_analysis_with_assertion_result,
         test_json_schema_has_moderate,
+        test_capability_depends_on_roundtrip,
+        test_capability_depends_on_in_json_schema,
         test_priority_four_labels,
         test_normalize_priority_from_shorthand,
         test_normalize_priority_four_labels,

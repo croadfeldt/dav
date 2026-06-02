@@ -214,10 +214,21 @@ capabilities_invoked:
   confidence: <ConfidenceDescriptor>
   rationale: <string>
   spec_refs: [<string>, ...]
+  depends_on: [<capability_id>, ...]        # Optional — other capabilities this one requires
 - ...
 ```
 
 `usage` is unique to this finding type and parallel to `components_required.role`.
+
+`depends_on` (optional; added for foundational dependency detection) lists the
+ids of other capabilities this one requires to function. Edges point dependant →
+dependency: `tenant_provisioning` with `depends_on: [identity_model]` means
+tenant provisioning needs the identity model. Aggregating these edges across a
+run reveals **foundational** capabilities — ones that aren't necessarily demanded
+by many UCs directly, but that many other capabilities transitively depend on, so
+they should be built first. Omitted/empty for analyses that don't assess
+dependencies (backward-compatible). Ids should reference capability ids the
+engine also emits; dangling targets are tolerated but not counted as nodes.
 
 ### 6.5 `provider_types_involved`
 
