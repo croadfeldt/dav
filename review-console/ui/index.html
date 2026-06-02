@@ -1832,6 +1832,7 @@
     <div class="modal-footer">
       <span id="ucModalStatus" style="flex:1; font-size:11px; color:var(--text-faint);"></span>
       <button class="btn ghost" id="validateUCBtn" title="Lint the YAML against engine rules without saving">✓ Validate</button>
+      <button class="btn ghost" id="readinessUCBtn" title="Score this UC definition's clarity/completeness (advisory; does not block save)">⊹ Readiness</button>
       <button class="btn ghost" id="cancelUCModal">Cancel</button>
       <button class="btn primary" id="saveUCModal">Save</button>
     </div>
@@ -2465,6 +2466,26 @@ function dupHtml(u) {
     return `<span title="${esc(t)}" style="font-size:8px;color:var(--text-faint);border:1px solid var(--border);padding:0 4px;border-radius:2px;flex-shrink:0;">×${n} paths</span>`;
   }
   return '';
+}
+
+// UC definition readiness badge (DCM feature #4). Band thresholds mirror the
+// backend's band_for(): strong>=85, good>=70, fair>=50, else needs_work.
+const READINESS_COLORS = {
+  strong: 'var(--green)', good: 'var(--blue)', fair: 'var(--accent)', needs_work: 'var(--red)',
+};
+function readinessBand(score) {
+  if (score == null) return null;
+  if (score >= 85) return 'strong';
+  if (score >= 70) return 'good';
+  if (score >= 50) return 'fair';
+  return 'needs_work';
+}
+function readinessHtml(score) {
+  const b = readinessBand(score);
+  if (!b) return '';
+  const c = READINESS_COLORS[b];
+  return `<span title="definition readiness: ${score}/100 (${esc(b.replace('_',' '))})" style="font-size:8px;`
+       + `color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;">rdy ${score}</span>`;
 }
 
 const LC_TRANSITIONS = {
@@ -4800,6 +4821,7 @@ function renderUCList() {
         <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end;flex-shrink:0;">
           ${u.lifecycle_state ? lcHtml(u.lifecycle_state) : `<span class="src-badge src-${u.source}">${u.source}</span>`}
           ${prioHtml(u.priority, u.priority_score)}
+          ${readinessHtml(u.readiness_score)}
           ${dupHtml(u)}
         </div>
         ${setRemoveBtn}`;
@@ -5028,6 +5050,7 @@ function renderUCDetail(data, lifecycle) {
     </div>
     <div style="margin-bottom:14px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
       ${prioLabel ? prioHtml(prioLabel, prioScore) : ''}
+      ${readinessHtml(data.readiness_score)}
       ${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}
     </div>`;
 
@@ -5713,6 +5736,39 @@ async function validateUC() {
   }
 }
 document.getElementById('validateUCBtn').addEventListener('click', validateUC);
+
+// UC readiness check (DCM feature #4) — advisory definition-quality feedback.
+async function checkReadiness() {
+  const status = document.getElementById('ucModalStatus');
+  const nameInput = (document.getElementById('ucNameInput').value || '').trim();
+  let yamlContent = document.getElementById('ucYamlEditor').value;
+  if (nameInput) yamlContent = _injectTitleIntoYaml(yamlContent, nameInput);
+  status.textContent = 'scoring…'; status.style.color = '';
+  try {
+    const resp = await api('/api/use-cases/readiness', {
+      method: 'POST',
+      body: JSON.stringify({ yaml_content: yamlContent, tags: [] }),
+    });
+    if (!resp.ok) {
+      status.innerHTML = `<span style="color:var(--red)">Readiness: ${esc(resp.error || 'could not parse YAML')}</span>`;
+      return;
+    }
+    const band = (resp.band || '').replace('_', ' ');
+    const col = READINESS_COLORS[resp.band] || 'var(--text-faint)';
+    const failing = (resp.checks || []).filter(c => !c.ok);
+    let html = `<span style="color:${col}">⊹ Readiness ${resp.score}/100 (${esc(band)}) — ${resp.passed}/${resp.total} checks pass</span>`;
+    if (failing.length) {
+      html += `<ul style="margin:6px 0 0 16px;padding:0;font-size:11px;color:var(--text-dim);">`
+        + failing.map(c => `<li>${esc(c.hint)}</li>`).join('') + `</ul>`;
+    } else {
+      html += ` <span style="color:var(--green)">— well-defined.</span>`;
+    }
+    status.innerHTML = html;
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">Readiness failed: ${esc(e.message)}</span>`;
+  }
+}
+document.getElementById('readinessUCBtn').addEventListener('click', checkReadiness);
 
 const UC_TEMPLATE = `# DAV Use Case — v1.0
 title: ""

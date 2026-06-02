@@ -207,12 +207,25 @@ Inert until analyses carry `depends_on` edges: validate the prompt change with a
 eval run, confirm edge quality, then re-ingest. Until then the view explains it's
 empty and why.
 
-### #4 — UC quality feedback loop
+### #4 — UC quality feedback loop — **SHIPPED (2026-06-02)**
 
 Score UC definitions for clarity/completeness and feed that back to the author
 to standardize how UCs are written (Kevin Cattell). Author-facing complement to
-the existing shallow-analysis detector (`review-console/api/app/shallowness.py`),
-which today flags thin *analyses* rather than thin *definitions*.
+the shallow-analysis detector (`shallowness.py`), which flags thin *analyses*;
+this flags thin *definitions* before a run.
+
+- `uc_readiness.py`: pure, deterministic weighted checklist (clear description,
+  explicit intent, testable success criteria, complete dimensions, focused
+  grounding, single unit of work, curation metadata) → 0-100 score + band +
+  per-check hints. No LLM/IO; unit-tested. Advisory — never blocks save.
+- `POST /api/use-cases/readiness` (full checklist; parallels `/validate`);
+  `readiness_score` projected at save and shown in the list; per-UC + rollup
+  `GET /api/sets/{id}/readiness` batch scorecard before triggering a run
+- UI: a **⊹ Readiness** button in the UC editor (score + actionable checklist of
+  what to fix) and a `rdy NN` badge on UC list rows and the detail pane
+
+Possible follow-up: an optional LLM pass for nuance the rules can't catch (e.g.
+"is this genuinely a single unit of work?"), layered on the deterministic score.
 
 ### #5 / #6 — Maturity assessment & customer-facing modes — longer-term
 
