@@ -35,6 +35,7 @@ from .uc_priority import (
     normalize_priority as _normalize_uc_priority,
     derive_priority as _derive_uc_priority,
 )
+from . import capability_density as _capability_density
 from . import validations
 from . import sources
 from . import metrics
@@ -3532,6 +3533,7 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
 
         ingested_ucs = 0
         ingested_gaps = 0
+        ingested_caps = 0
         for uc in (summary.get("ucs") or []):
             uc_uuid = uc.get("uc_uuid")
             if not uc_uuid:
@@ -3545,6 +3547,7 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             endpoint_url = None
             engine_version = None
             gaps = []
+            caps = []          # capabilities_invoked (DCM feature #2)
             infra: dict = {}   # infrastructure_confidence object from analysis metadata
             if analysis and analysis.get("_source") == "single":
                 a_meta = analysis.get("analysis_metadata") or {}
@@ -3557,6 +3560,7 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 engine_version = a_meta.get("engine_version")
                 infra = a_meta.get("infrastructure_confidence") or {}
                 gaps = analysis.get("gaps_identified") or []
+                caps = analysis.get("capabilities_invoked") or []
             elif analysis and analysis.get("_source") == "explore":
                 # Use first sample's metadata
                 first = (analysis.get("samples") or [{}])[0] if analysis.get("samples") else {}
@@ -3567,12 +3571,20 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 infra = a_meta.get("infrastructure_confidence") or {}
                 # Collect gaps from all samples (deduplicated by gap_id)
                 seen_gap_ids = set()
+                seen_cap_ids = set()
                 for sample in (analysis.get("samples") or []):
                     for g in (sample.get("gaps_identified") or []):
                         gid = g.get("gap_id")
                         if gid and gid not in seen_gap_ids:
                             gaps.append(g)
                             seen_gap_ids.add(gid)
+                    # Capabilities dedup by id within a UC — a capability invoked
+                    # across multiple samples still counts once for this UC.
+                    for c in (sample.get("capabilities_invoked") or []):
+                        cid = c.get("id")
+                        if cid and cid not in seen_cap_ids:
+                            caps.append(c)
+                            seen_cap_ids.add(cid)
 
             # R2: state-at-run from the snapshot; if not in the snapshot,
             # the UC was corpus-source (no managed lifecycle).
@@ -3639,10 +3651,38 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 )
                 ingested_gaps += 1
 
+            # Capabilities the UC demands (DCM feature #2). Dedup by id within
+            # this UC so a capability counts once per UC regardless of how many
+            # findings cite it — density is measured across UCs, not findings.
+            seen_caps_this_uc = set()
+            for cap in caps:
+                if not isinstance(cap, dict):
+                    continue
+                cap_id = cap.get("id")
+                if not cap_id or cap_id in seen_caps_this_uc:
+                    continue
+                seen_caps_this_uc.add(cap_id)
+                conf = cap.get("confidence")
+                conf_label = conf.get("label") if isinstance(conf, dict) else conf
+                conf_score = conf.get("score") if isinstance(conf, dict) else None
+                await conn.execute(
+                    """INSERT INTO uc_capabilities
+                       (analysis_id, run_id, uc_uuid, capability_id, usage,
+                        confidence, confidence_score, rationale, namespace)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)""",
+                    analysis_id, run_id, uc_uuid,
+                    cap_id, cap.get("usage"),
+                    conf_label, conf_score,
+                    cap.get("rationale"),
+                    _derive_gap_namespace(cap),
+                )
+                ingested_caps += 1
+
     return {
         "run_id": run_id,
         "ingested_ucs": ingested_ucs,
         "ingested_gaps": ingested_gaps,
+        "ingested_capabilities": ingested_caps,
     }
 
 
@@ -3663,6 +3703,70 @@ async def ingest_analysis(run_id: str, request: Request):
     except Exception as e:
         log.exception("analysis ingest failed for %s", run_id)
         raise HTTPException(500, f"ingest failed: {e}")
+
+
+@app.get("/api/analysis/capability-density")
+async def capability_density(
+    run_id: str = Query(..., description="workspace run_id to aggregate"),
+    set_id: Optional[int] = Query(None, description="restrict to UCs in this Set"),
+):
+    """Cross-UC capability demand density for a run (DCM feature #2).
+
+    Returns capabilities ranked by how many distinct UCs in the run demand them
+    ("capability X demanded by N/M UCs"), optionally scoped to a Set. Reads the
+    `uc_capabilities` rows projected at ingest; if the run predates capability
+    ingest, re-ingest it first. The denominator is the number of *successfully
+    analyzed* UCs in scope, so the ratio reflects real demand coverage.
+    """
+    async with pool.acquire() as conn:
+        run_exists = await conn.fetchval(
+            "SELECT 1 FROM analysis_runs WHERE run_id=$1", run_id
+        )
+        if not run_exists:
+            raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
+
+        set_uuids: Optional[set] = None
+        if set_id is not None:
+            member_rows = await conn.fetch(
+                "SELECT uc_uuid FROM use_case_set_members WHERE set_id=$1", set_id
+            )
+            set_uuids = {r["uc_uuid"] for r in member_rows}
+            if not set_uuids:
+                return {"run_id": run_id, "set_id": set_id, "total_ucs": 0, "capabilities": []}
+
+        # Denominator: distinct successfully-analyzed UCs in scope.
+        if set_uuids is not None:
+            total_ucs = await conn.fetchval(
+                "SELECT COUNT(DISTINCT uc_uuid) FROM uc_analyses "
+                "WHERE run_id=$1 AND status='success' AND uc_uuid = ANY($2)",
+                run_id, list(set_uuids),
+            )
+            cap_rows = await conn.fetch(
+                "SELECT capability_id, uc_uuid, confidence_score, namespace "
+                "FROM uc_capabilities WHERE run_id=$1 AND uc_uuid = ANY($2)",
+                run_id, list(set_uuids),
+            )
+        else:
+            total_ucs = await conn.fetchval(
+                "SELECT COUNT(DISTINCT uc_uuid) FROM uc_analyses "
+                "WHERE run_id=$1 AND status='success'",
+                run_id,
+            )
+            cap_rows = await conn.fetch(
+                "SELECT capability_id, uc_uuid, confidence_score, namespace "
+                "FROM uc_capabilities WHERE run_id=$1",
+                run_id,
+            )
+
+    capabilities = _capability_density.aggregate_density(
+        [dict(r) for r in cap_rows], int(total_ucs or 0)
+    )
+    return {
+        "run_id": run_id,
+        "set_id": set_id,
+        "total_ucs": int(total_ucs or 0),
+        "capabilities": capabilities,
+    }
 
 
 # ---------------------------------------------------------------------------

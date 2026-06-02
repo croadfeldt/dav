@@ -222,6 +222,29 @@ CREATE INDEX IF NOT EXISTS idx_uc_gaps_run    ON uc_gaps(run_id);
 CREATE INDEX IF NOT EXISTS idx_uc_gaps_uuid   ON uc_gaps(uc_uuid);
 CREATE INDEX IF NOT EXISTS idx_uc_gaps_gap_id ON uc_gaps(gap_id);
 
+-- ── UC capabilities (DCM feature #2: cross-UC demand density) ─────────────
+-- One row per capability a UC's analysis says it invokes. Projected from each
+-- analysis's structured `capabilities_invoked` during ingest (mirrors uc_gaps).
+-- Cleared with its run via the analysis_runs → uc_analyses CASCADE, so
+-- re-ingestion stays idempotent. Aggregating capability_id across distinct
+-- uc_uuids in a run/set yields "capability X demanded by N/M UCs".
+CREATE TABLE IF NOT EXISTS uc_capabilities (
+  id               BIGSERIAL PRIMARY KEY,
+  analysis_id      BIGINT NOT NULL REFERENCES uc_analyses(id) ON DELETE CASCADE,
+  run_id           TEXT NOT NULL,
+  uc_uuid          TEXT NOT NULL,
+  capability_id    TEXT NOT NULL,
+  usage            TEXT,
+  confidence       TEXT,                  -- confidence label (high/medium/low)
+  confidence_score INTEGER,
+  rationale        TEXT,
+  namespace        TEXT,                  -- derived from spec_refs, like uc_gaps
+  ingested_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_uc_caps_run  ON uc_capabilities(run_id);
+CREATE INDEX IF NOT EXISTS idx_uc_caps_uuid ON uc_capabilities(uc_uuid);
+CREATE INDEX IF NOT EXISTS idx_uc_caps_cap  ON uc_capabilities(capability_id);
+
 -- ── Centralized model configs ────────────────────────────────────────────────
 -- All LLM endpoint registrations live here.  Per-endpoint use-flags control
 -- which DAV features each model may be selected for.
