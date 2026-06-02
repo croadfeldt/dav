@@ -30,6 +30,11 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .corpus_loader import walk_corpus, parse_patterns
+from .uc_priority import (
+    PRIORITY_DEFAULTS as _PRIORITY_DEFAULTS,
+    normalize_priority as _normalize_uc_priority,
+    derive_priority as _derive_uc_priority,
+)
 from . import validations
 from . import sources
 from . import metrics
@@ -1938,6 +1943,12 @@ def _validate_uc_yaml(parsed: dict) -> list[str]:
             v = dims.get(name)
             if v not in allowed:
                 errors.append(f"dimensions.{name} '{v}' not in {sorted(allowed)}")
+    # priority (optional; spec 05 §6.8)
+    if parsed.get("priority") is not None:
+        try:
+            _normalize_uc_priority(parsed.get("priority"))
+        except ValueError as e:
+            errors.append(str(e))
     return errors
 
 
@@ -1964,14 +1975,24 @@ def _derive_uc_title(parsed: dict, fallback_id: str) -> str:
 @app.get("/api/use-cases")
 async def list_use_cases(
     source: Optional[str] = Query(None, description="'managed', 'corpus', or None for both"),
+    sort: Optional[str] = Query(None, description="'priority' to order by roadmap weight; default is most-recently-updated"),
+    priority: Optional[str] = Query(None, description="filter to a single priority label (critical/high/medium/low)"),
 ):
     """List use cases — from the managed DB, the corpus files, or both.
 
     Each row carries `set_ids: [int]` so the merged UC/Sets UI can
     filter the list by set membership without an N+1 query per UC.
+
+    `sort=priority` orders by roadmap weight (priority.score) descending, with
+    unranked UCs last (DCM feature #1). `priority=<label>` filters to one tier.
     """
     managed = []
     corpus_ucs = []
+
+    prio_filter = priority.strip().lower() if isinstance(priority, str) and priority.strip() else None
+    if prio_filter is not None and prio_filter not in _PRIORITY_DEFAULTS:
+        raise HTTPException(400, f"priority filter '{priority}' not in {sorted(_PRIORITY_DEFAULTS)}")
+    by_priority = (sort == "priority")
 
     # Pre-build uuid → [set_ids] map once for all UCs (managed + corpus).
     async with pool.acquire() as conn:
@@ -1983,12 +2004,16 @@ async def list_use_cases(
         set_ids_by_uuid.setdefault(r["uc_uuid"], []).append(int(r["set_id"]))
 
     if source in (None, "managed"):
+        order = ("priority_score DESC NULLS LAST, updated_at DESC"
+                 if by_priority else "updated_at DESC")
+        where = "WHERE priority = $1" if prio_filter else ""
+        sql = (
+            "SELECT uuid, title, tags, lifecycle_state, priority, priority_score, "
+            "created_by, created_at, updated_by, updated_at "
+            f"FROM managed_use_cases {where} ORDER BY {order}"
+        )
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT uuid, title, tags, lifecycle_state, "
-                "created_by, created_at, updated_by, updated_at "
-                "FROM managed_use_cases ORDER BY updated_at DESC"
-            )
+            rows = await (conn.fetch(sql, prio_filter) if prio_filter else conn.fetch(sql))
         managed = [
             {
                 **dict(r),
@@ -2014,12 +2039,17 @@ async def list_use_cases(
                 if not isinstance(data, dict) or "uuid" not in data:
                     continue
                 uc_uuid = data.get("uuid")
+                c_priority, c_priority_score = _derive_uc_priority(data)
+                if prio_filter and c_priority != prio_filter:
+                    continue
                 corpus_ucs.append({
                     "uuid":    uc_uuid,
                     "title":   data.get("scenario", {}).get("description", "")[:80]
                                if isinstance(data.get("scenario"), dict) else "",
                     "handle":  data.get("handle"),
                     "tags":    data.get("tags", []),
+                    "priority": c_priority,
+                    "priority_score": c_priority_score,
                     "path":    r["path"],
                     "source":  "corpus",
                     "set_ids": set_ids_by_uuid.get(uc_uuid, []),
@@ -2027,7 +2057,15 @@ async def list_use_cases(
             except Exception:
                 continue
 
-    return {"use_cases": managed + corpus_ucs}
+    use_cases = managed + corpus_ucs
+    if by_priority:
+        # Stable global ordering across both sources: weight desc, unranked last.
+        # (None != 0 — a valid low-band score of 0 still outranks unranked.)
+        def _prio_key(u):
+            s = u.get("priority_score")
+            return (1, 0) if s is None else (0, -s)
+        use_cases.sort(key=_prio_key)
+    return {"use_cases": use_cases}
 
 
 @app.get("/api/use-cases/{uuid}")
@@ -2123,6 +2161,7 @@ async def create_use_case(payload: ManagedUCIn, request: Request):
 
     title = _derive_uc_title(data, uc_uuid)
     tags = payload.tags or data.get("tags", [])
+    priority, priority_score = _derive_uc_priority(data)
 
     async with pool.acquire() as conn:
         existing = await conn.fetchval(
@@ -2133,12 +2172,12 @@ async def create_use_case(payload: ManagedUCIn, request: Request):
         await conn.execute(
             """
             INSERT INTO managed_use_cases
-              (uuid, title, yaml_content, created_by, updated_by, tags)
-            VALUES ($1, $2, $3, $4, $4, $5)
+              (uuid, title, yaml_content, created_by, updated_by, tags, priority, priority_score)
+            VALUES ($1, $2, $3, $4, $4, $5, $6, $7)
             """,
-            uc_uuid, title, payload.yaml_content, user, tags,
+            uc_uuid, title, payload.yaml_content, user, tags, priority, priority_score,
         )
-    return {"ok": True, "uuid": uc_uuid, "title": title}
+    return {"ok": True, "uuid": uc_uuid, "title": title, "priority": priority}
 
 
 @app.put("/api/use-cases/{uuid}")
@@ -2164,19 +2203,21 @@ async def update_use_case(uuid: str, payload: ManagedUCIn, request: Request):
 
     title = _derive_uc_title(data, uuid)
     tags = payload.tags or data.get("tags", [])
+    priority, priority_score = _derive_uc_priority(data)
 
     async with pool.acquire() as conn:
         result = await conn.execute(
             """
             UPDATE managed_use_cases
-            SET yaml_content=$2, title=$3, updated_by=$4, updated_at=now(), tags=$5
+            SET yaml_content=$2, title=$3, updated_by=$4, updated_at=now(), tags=$5,
+                priority=$6, priority_score=$7
             WHERE uuid=$1
             """,
-            uuid, payload.yaml_content, title, user, tags,
+            uuid, payload.yaml_content, title, user, tags, priority, priority_score,
         )
     if result == "UPDATE 0":
         raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
-    return {"ok": True, "uuid": uuid, "title": title}
+    return {"ok": True, "uuid": uuid, "title": title, "priority": priority}
 
 
 @app.delete("/api/use-cases/{uuid}")
@@ -3080,6 +3121,7 @@ async def import_use_cases(request: Request, file: UploadFile = File(...)):
             if not title:
                 title = uc_data.get("handle", uc_uuid)
             tags = uc_data.get("tags", [])
+            priority, priority_score = _derive_uc_priority(uc_data)
 
             try:
                 async with conn.transaction():
@@ -3089,9 +3131,9 @@ async def import_use_cases(request: Request, file: UploadFile = File(...)):
                     if existing is None:
                         await conn.execute(
                             """INSERT INTO managed_use_cases
-                               (uuid, title, yaml_content, lifecycle_state, created_by, updated_by, tags)
-                               VALUES ($1, $2, $3, $4, $5, $5, $6)""",
-                            uc_uuid, title, content, target_state, user, tags,
+                               (uuid, title, yaml_content, lifecycle_state, created_by, updated_by, tags, priority, priority_score)
+                               VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)""",
+                            uc_uuid, title, content, target_state, user, tags, priority, priority_score,
                         )
                         await conn.execute(
                             "INSERT INTO lifecycle_events(uc_uuid, from_state, to_state, actor, notes) "
@@ -3102,8 +3144,9 @@ async def import_use_cases(request: Request, file: UploadFile = File(...)):
                     else:
                         await conn.execute(
                             """UPDATE managed_use_cases SET yaml_content=$2, title=$3,
-                               updated_by=$4, updated_at=now(), tags=$5 WHERE uuid=$1""",
-                            uc_uuid, content, title, user, tags,
+                               updated_by=$4, updated_at=now(), tags=$5,
+                               priority=$6, priority_score=$7 WHERE uuid=$1""",
+                            uc_uuid, content, title, user, tags, priority, priority_score,
                         )
                         from_state = existing["lifecycle_state"]
                         if from_state != target_state:

@@ -1038,6 +1038,14 @@
           <option value="managed">managed</option>
           <option value="corpus">corpus</option>
         </select>
+        <select id="ucPriorityFilter" title="Filter by roadmap priority" style="flex:none; width:82px; font-size:10px; padding:3px 5px;">
+          <option value="">priority…</option>
+          <option value="critical">critical</option>
+          <option value="high">high</option>
+          <option value="medium">medium</option>
+          <option value="low">low</option>
+        </select>
+        <button class="btn ghost btn-icon" id="ucSortPriority" title="Sort by roadmap weight (highest priority first)" style="border-color:var(--border-bright)">↑ prio</button>
       </div>
       <div class="scrollable" id="ucList"><div class="empty">loading…</div></div>
     </div>
@@ -2417,6 +2425,20 @@ function lcHtml(state) {
   return `<span class="lc lc-${state}">${esc(label)}</span>`;
 }
 
+// UC priority badge (roadmap weighting, spec 05 §6.8 / DCM feature #1).
+// Color tracks urgency; the score is the roadmap weight (higher = build first).
+const PRIORITY_COLORS = {
+  critical: 'var(--red)', high: 'var(--accent)',
+  medium:   'var(--blue)', low: 'var(--text-faint)',
+};
+function prioHtml(label, score) {
+  if (!label) return '';
+  const c = PRIORITY_COLORS[label] || 'var(--text-faint)';
+  const title = `roadmap priority: ${label}` + (score != null ? ` (weight ${score})` : '');
+  return `<span title="${esc(title)}" style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;`
+       + `color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;">${esc(label)}</span>`;
+}
+
 const LC_TRANSITIONS = {
   draft:      [{to:'ready',      label:'Submit for review', cls:'btn ghost'}],
   ready:      [{to:'in_review',  label:'Start review',      cls:'btn primary'},
@@ -2454,6 +2476,8 @@ let selectedMember  = null;
 let promoteSetId    = null;
 
 let ucStateFilter = '';
+let ucSortByPriority = false;   // DCM feature #1: toggle roadmap-weight ordering
+let ucPriorityFilter = '';      // '' = all; else critical/high/medium/low
 
 // ── Init ─────────────────────────────────────────────────────
 async function init() {
@@ -4695,6 +4719,14 @@ function renderUCList() {
     (u.tags||[]).some(t => t.toLowerCase().includes(filter))
   );
   if (ucStateFilter) filtered = filtered.filter(u => u.source==='corpus' || u.lifecycle_state===ucStateFilter);
+  if (ucPriorityFilter) filtered = filtered.filter(u => u.priority === ucPriorityFilter);
+
+  // Roadmap-weight ordering (DCM feature #1): highest priority.score first,
+  // unranked UCs last. Sorts within each source group below.
+  if (ucSortByPriority) {
+    const w = u => (u.priority_score == null ? -1 : u.priority_score);
+    filtered = filtered.slice().sort((a, b) => w(b) - w(a));
+  }
 
   if (!filtered.length) { el.innerHTML = '<div class="empty">No use cases match.</div>'; return; }
   el.innerHTML = '';
@@ -4737,7 +4769,10 @@ function renderUCList() {
           <div class="li-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.7;">${esc(subText || '')}</div>
           ${tags ? `<div style="margin-top:3px">${tags}</div>` : ''}
         </div>
-        ${u.lifecycle_state ? lcHtml(u.lifecycle_state) : `<span class="src-badge src-${u.source}">${u.source}</span>`}
+        <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end;flex-shrink:0;">
+          ${u.lifecycle_state ? lcHtml(u.lifecycle_state) : `<span class="src-badge src-${u.source}">${u.source}</span>`}
+          ${prioHtml(u.priority, u.priority_score)}
+        </div>
         ${setRemoveBtn}`;
       // Row click selects/opens the UC; checkbox toggles batch selection
       // (checkbox click stops propagation so it doesn't also open the UC)
@@ -4937,6 +4972,12 @@ function renderUCDetail(data, lifecycle) {
   const sets = data.sets || [];
   const titleText = parsed.title || data.title || parsed.handle || uuid;
   const handleText = parsed.handle || data.handle || '';
+  // Priority (DCM feature #1): prefer the projected column (managed UCs), fall
+  // back to the raw YAML value (corpus UCs / shorthand or nested form).
+  const _pr = parsed.priority;
+  const prioLabel = data.priority || (typeof _pr === 'string' ? _pr : (_pr && _pr.label)) || null;
+  const prioScore = (data.priority_score != null) ? data.priority_score
+                    : (_pr && typeof _pr === 'object' ? _pr.score : null);
 
   let html = `<div class="detail-pane">
     <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px">
@@ -4956,7 +4997,10 @@ function renderUCDetail(data, lifecycle) {
              <button class="btn ghost" onclick="cloneUC('${esc(uuid)}')">Clone to managed</button>`}
       </div>
     </div>
-    <div style="margin-bottom:14px">${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>`;
+    <div style="margin-bottom:14px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      ${prioLabel ? prioHtml(prioLabel, prioScore) : ''}
+      ${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}
+    </div>`;
 
   // ── Lifecycle state machine (managed only)
   if (isManaged) {
@@ -7509,6 +7553,16 @@ document.getElementById('cancelUCModal').addEventListener('click', closeUCModal)
 document.getElementById('saveUCModal').addEventListener('click', saveUC);
 document.getElementById('ucFilter').addEventListener('input', renderUCList);
 document.getElementById('ucSourceFilter').addEventListener('change', () => loadUCs());
+document.getElementById('ucPriorityFilter').addEventListener('change', e => {
+  ucPriorityFilter = e.target.value;
+  renderUCList();
+});
+document.getElementById('ucSortPriority').addEventListener('click', e => {
+  ucSortByPriority = !ucSortByPriority;
+  e.currentTarget.style.borderColor = ucSortByPriority ? 'var(--accent)' : 'var(--border-bright)';
+  e.currentTarget.style.color = ucSortByPriority ? 'var(--accent)' : '';
+  renderUCList();
+});
 
 // Lifecycle state filter chips
 document.querySelectorAll('.panel-toolbar [data-lc]').forEach(btn => {

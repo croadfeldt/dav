@@ -71,8 +71,15 @@ CREATE TABLE IF NOT EXISTS managed_use_cases (
 -- Migrate existing deployments that predate lifecycle_state.
 -- Must run before the index on lifecycle_state below.
 ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS lifecycle_state TEXT NOT NULL DEFAULT 'draft';
+-- UC priority (roadmap weighting, spec 05 §6.8). Projected from yaml_content on
+-- write, like title/tags. `priority` holds the label (NULL = unranked);
+-- `priority_score` is the 0-100 roadmap weight used for sorting (higher first).
+ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS priority       TEXT;
+ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS priority_score INTEGER;
 CREATE INDEX IF NOT EXISTS idx_managed_uc_updated ON managed_use_cases(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_managed_uc_state   ON managed_use_cases(lifecycle_state);
+-- Priority-ordered roadmap views sort by weight desc, unranked (NULL) last.
+CREATE INDEX IF NOT EXISTS idx_managed_uc_priority ON managed_use_cases(priority_score DESC NULLS LAST);
 
 -- ── Lifecycle event log ──────────────────────────────────────────────────
 -- Append-only audit trail for UC state transitions.
