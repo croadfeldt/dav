@@ -185,12 +185,27 @@ Note: existing runs must be re-ingested to populate `uc_capabilities`.
 **Next:** #3 layers dependency analysis on the same capability data; optionally
 extend the Capability Map with a Set scope selector (endpoint already supports it).
 
-### #3 — Foundational dependency detection — follow-on to #2
+### #3 — Foundational dependency detection — **SHIPPED (mechanism); needs prompt eval**
 
 Surface capabilities that aren't heavily demanded on their own but are blocking
 dependencies for many others ("boring but foundational"). Graph analysis layered
-on #2: extract capability→capability dependencies, compute transitive dependent
-counts, float high-leverage foundations to the top. Harder than #2; sequence after.
+on #2: capability→capability dependencies → transitive dependent counts → float
+high-leverage foundations to the top.
+
+- Engine: optional `depends_on` on `capabilities_invoked` (spec 07 §6.4),
+  backward-compatible; stage-2 prompt asks for it (isolated commit, **A/B before
+  trusting** — stage-2 prompt changes have regressed runs before)
+- `uc_capability_deps` table records edges at ingest
+- `capability_graph.py`: pure, cycle-safe transitive-dependent scoring + a
+  leverage metric (transitive dependents ÷ direct demand) for the
+  undemanded-but-foundational case; unit-tested
+- `GET /api/analysis/foundational-capabilities?run_id=&set_id=`
+- **Foundational** view in the Capability Map (Review & Plan tab): ranked bars,
+  leverage badges, and each capability's own dependencies
+
+Inert until analyses carry `depends_on` edges: validate the prompt change with an
+eval run, confirm edge quality, then re-ingest. Until then the view explains it's
+empty and why.
 
 ### #4 — UC quality feedback loop
 

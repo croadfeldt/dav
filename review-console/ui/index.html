@@ -1135,6 +1135,7 @@
           <button class="btn primary" id="rpRevRunBtn" style="width:100%;">▶ Run Review</button>
           <button class="btn ghost" id="rpEnhRunBtn" style="width:100%;margin-top:4px;">▶ Run Enhancement Plan</button>
           <button class="btn ghost" id="rpCapMapBtn" style="width:100%;margin-top:4px;" title="Aggregate which capabilities the most UCs in this run demand (run scope; no model needed)">▶ Capability Map</button>
+          <button class="btn ghost" id="rpFoundBtn" style="width:100%;margin-top:4px;" title="Rank capabilities by how many others depend on them — foundational building blocks (run scope)">▶ Foundational</button>
           <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
           <div id="rpUCLink" style="display:none;font-size:11px;color:var(--text-faint);">
             Pre-selected from Results tab
@@ -1142,11 +1143,11 @@
         </div>
         <!-- Output area -->
         <div class="rp-output" id="rpOutput">
-          <!-- Capability demand density (DCM feature #2) -->
+          <!-- Capability map: demand density (#2) + foundational detection (#3) -->
           <div id="rpCapMapSection">
-            <div class="rp-section-title">Capability Demand Density</div>
+            <div class="rp-section-title">Capability Map</div>
             <div id="rpCapMap">
-              <div style="font-size:11px;color:var(--text-faint);">Select a run and click <strong>Capability Map</strong> to see which capabilities the most UCs demand.</div>
+              <div style="font-size:11px;color:var(--text-faint);">Select a run, then <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on).</div>
             </div>
           </div>
           <hr style="border:none;border-top:1px solid var(--border);margin:0;">
@@ -8354,7 +8355,7 @@ document.getElementById('rpRunSel')?.addEventListener('change', function() {
   _rpPopulateUCs(this.value);
   // Stale capability map from the previous run — reset to the prompt.
   const cm = document.getElementById('rpCapMap');
-  if (cm) cm.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Click <strong>Capability Map</strong> to load demand density for this run.</div>';
+  if (cm) cm.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Click <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on) for this run.</div>';
 });
 
 document.getElementById('rpScopeRun')?.addEventListener('change', () => {
@@ -8488,6 +8489,65 @@ function renderCapabilityMap(data) {
 }
 
 document.getElementById('rpCapMapBtn')?.addEventListener('click', loadCapabilityMap);
+
+// ── Foundational capability detection (DCM feature #3) ──────────────────────
+// Ranks capabilities by how many others transitively depend on them. Shares the
+// rpCapMap container with the demand view; reads /api/analysis/foundational-capabilities.
+async function loadFoundational() {
+  const runId = document.getElementById('rpRunSel')?.value;
+  const el = document.getElementById('rpCapMap');
+  if (!el) return;
+  if (!runId) { toast('Select a run first'); return; }
+  el.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Loading…</div>';
+  let data;
+  try {
+    data = await api(`/api/analysis/foundational-capabilities?run_id=${encodeURIComponent(runId)}`);
+  } catch (e) {
+    el.innerHTML = `<div style="font-size:11px;color:var(--red);">${esc(e.message)}</div>`;
+    return;
+  }
+  renderFoundational(data);
+}
+
+function renderFoundational(data) {
+  const el = document.getElementById('rpCapMap');
+  if (!el) return;
+  const caps = (data.capabilities || []).filter(c => c.transitive_dependents > 0);
+  if (!data.edge_count) {
+    el.innerHTML = `<div style="font-size:11px;color:var(--text-faint);">No capability dependencies recorded for this run.`
+      + ` Foundational detection needs analyses that emit capability <code>depends_on</code> edges`
+      + ` — tune the engine prompt to elicit them, then re-ingest the run.</div>`;
+    return;
+  }
+  if (!caps.length) {
+    el.innerHTML = `<div style="font-size:11px;color:var(--text-faint);">${data.edge_count} dependency edge${data.edge_count===1?'':'s'} found, but no capability is depended on by another (no foundations to rank).</div>`;
+    return;
+  }
+  const maxTd = caps[0].transitive_dependents || 1;   // sorted desc → first is max
+  let html = `<div style="font-size:11px;color:var(--text-faint);margin-bottom:10px;">`
+    + `${caps.length} foundational capabilit${caps.length===1?'y':'ies'} across ${data.edge_count} dependency edge${data.edge_count===1?'':'s'} — ranked by how many capabilities transitively depend on each. `
+    + `<span title="transitive dependents ÷ direct UC demand — high means many capabilities rest on it but few UCs ask for it directly">Leverage</span> flags the boring-but-foundational ones.</div>`;
+  caps.forEach((c, i) => {
+    const barPct = Math.max(2, Math.round((c.transitive_dependents / maxTd) * 100));
+    const demand = (c.demand_uc_count != null) ? `${c.demand_uc_count} UC${c.demand_uc_count===1?'':'s'} demand` : 'demand n/a';
+    const lev = (c.leverage != null && c.leverage >= 1) ? `<span title="Leverage: ${esc(String(c.leverage))} (transitive dependents ÷ demand)" style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;color:var(--accent);border:1px solid var(--accent);padding:0 4px;border-radius:2px;flex-shrink:0;">lev ${esc(String(c.leverage))}</span>` : '';
+    const deps = (c.depends_on || []).map(d => `<span class="tag">${esc(d)}</span>`).join(' ');
+    html += `
+      <div style="margin-bottom:9px;">
+        <div style="display:flex;align-items:baseline;gap:8px;justify-content:space-between;">
+          <span style="font-family:var(--mono,monospace);font-size:12px;color:var(--text);display:flex;align-items:center;gap:6px;">${esc(c.capability_id)} ${lev}</span>
+          <span style="font-size:11px;color:var(--text-faint);white-space:nowrap;">${c.transitive_dependents} depend (${c.direct_dependents} direct) · ${esc(demand)}</span>
+        </div>
+        <div style="height:6px;background:var(--bg-raised);border-radius:3px;margin-top:3px;overflow:hidden;">
+          <div style="height:100%;width:${barPct}%;background:var(--accent);"></div>
+        </div>
+        ${deps ? `<div style="margin-top:3px;font-size:10px;color:var(--text-faint);">requires: ${deps}</div>` : ''}
+      </div>`;
+  });
+  el.innerHTML = html;
+}
+
+document.getElementById('rpFoundBtn')?.addEventListener('click', loadFoundational);
 
 document.getElementById('rpRevCopyBtn')?.addEventListener('click', () => {
   const text = localStorage.getItem('rpRevShowReasoning') === '1' ? _rpRevRaw.text : _stripThink(_rpRevRaw.text);
