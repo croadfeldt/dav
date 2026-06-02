@@ -355,6 +355,36 @@ The 0-100 range supports mathematical composition. Under future DCM-DAV integrat
 
 Full discussion of the composition rules — actionability, aggregation across findings, regression gate thresholds — lives in `10-calibration-and-correctness.md`. This section defines the representation; that spec defines how to use it.
 
+### 6.8 UC priority (roadmap weighting)
+
+Severity and confidence describe a *finding* the engine produces. **Priority** describes the *use case itself* — how much it matters for roadmap planning — and is therefore an optional author-set field on the UC input, not engine output. It exists so a corpus of UCs can be ranked and delivered in importance order rather than all at once (DCM/cost-management feature request, 2026-06-02).
+
+Priority reuses the same descriptor-primary representation as severity and confidence (label + derived score + derived band + factors), so the same policy, sorting, and UI machinery applies uniformly. It uses four labels:
+
+| Label | Default score | Band |
+|-------|---------------|------|
+| `critical` | 90 | very_high |
+| `high` | 70 | high |
+| `medium` | 50 | medium |
+| `low` | 20 | very_low |
+
+The `score` is the roadmap weight: consumers sort UCs by `priority.score` descending (highest first). Score-override and band-validation rules are identical to §6.4 — an author-set score must fall within the label's band range (`low` 0–40, `medium` 41–60, `high` 61–80, `critical` 81–100).
+
+Shorthand and nested forms both work, mirroring §6.6:
+
+```yaml
+priority: high            # shorthand — expands to score 70, band high
+```
+
+```yaml
+priority:
+  label: critical
+  score: 95               # override within the critical band (81-100)
+  rationale: "blocks Pau's cost-mgmt team onboarding"   # optional; stored in factors.override_rationale
+```
+
+Unlike severity, priority has **no synonym aliases** — it is author-set, never model-emitted, so labels must be exact (`urgent`, `p0`, etc. are validation errors). Priority is **optional**: a UC with no `priority` is treated as unranked and sorts last in any priority-ordered view.
+
 ## 7. Assertion UC fields
 
 Assertion UCs point at a consumer-supplied Python function. DAV invokes the function; the function returns a result.

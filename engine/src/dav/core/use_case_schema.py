@@ -69,6 +69,19 @@ class Confidence(str, Enum):
     MEDIUM = "medium"
     LOW = "low"
 
+class Priority(str, Enum):
+    """Four UC priority labels per spec 05 §6.8 (roadmap weighting).
+
+    Author-set, optional. Unlike severity/confidence (which the engine emits
+    on analysis output), priority lives on the UC *input* — it expresses how
+    much a use case matters for roadmap planning so UCs can be ranked and
+    delivered in importance order. Higher score sorts first.
+    """
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
 class Band(str, Enum):
     """Five-band DCM taxonomy (spec 05 §1.1).
 
@@ -134,6 +147,25 @@ _CONFIDENCE_BAND_RANGES: dict[str, tuple[int, int]] = {
     "high": (81, 100),
 }
 
+# Priority scoring (spec 05 §6.8). Four labels, band-midpoint defaults, so a
+# bare `priority: high` sorts deterministically without the author picking a
+# number. Score is the roadmap weight (higher = build sooner). Distinct,
+# non-overlapping ranges per label so an explicit score validates against its
+# label the same way severity does.
+_PRIORITY_DEFAULTS: dict[str, int] = {
+    "low": 20,
+    "medium": 50,
+    "high": 70,
+    "critical": 90,
+}
+
+_PRIORITY_BAND_RANGES: dict[str, tuple[int, int]] = {
+    "low": (0, 40),
+    "medium": (41, 60),
+    "high": (61, 80),
+    "critical": (81, 100),
+}
+
 def score_to_band(score: int) -> str:
     """Return the band name for a 0-100 score.
 
@@ -177,6 +209,26 @@ class SeverityDescriptor:
 @dataclass
 class ConfidenceDescriptor:
     """Descriptor form for confidence per spec 05 §6.1."""
+    label: str
+    score: int
+    band: str
+    factors: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "label": self.label,
+            "score": self.score,
+            "band": self.band,
+            "factors": dict(self.factors),
+        }
+
+@dataclass
+class PriorityDescriptor:
+    """Descriptor form for UC priority per spec 05 §6.8.
+
+    Same label + score + band shape as severity/confidence. `score` doubles as
+    the roadmap weight; callers sort UCs by it (descending = build first).
+    """
     label: str
     score: int
     band: str
@@ -313,12 +365,78 @@ def normalize_confidence(value: Any) -> ConfidenceDescriptor:
         f"cannot normalize confidence from {type(value).__name__}: {value!r}"
     )
 
+def normalize_priority(value: Any) -> PriorityDescriptor:
+    """Coerce a UC priority value into PriorityDescriptor.
+
+    Accepts:
+      - str: shorthand form ("high"). Score set to label default (band midpoint).
+      - dict: nested form {"label": "high", "score": 78, "rationale": "..."}.
+      - PriorityDescriptor: passed through unchanged.
+
+    Raises ValueError on invalid label or out-of-band score (spec 05 §9.4).
+    Priority has no LLM-emitted synonym scale (it's author-set, not model
+    output), so unlike severity there are no aliases — labels must be exact.
+    """
+    if isinstance(value, PriorityDescriptor):
+        return value
+
+    if isinstance(value, str):
+        label = value.strip().lower()
+        if label not in _PRIORITY_DEFAULTS:
+            raise ValueError(
+                f"invalid priority label '{value}'; expected one of {sorted(_PRIORITY_DEFAULTS)}"
+            )
+        score = _PRIORITY_DEFAULTS[label]
+        return PriorityDescriptor(
+            label=label,
+            score=score,
+            band=score_to_band(score),
+            factors={"base_from_label": score, "override_rationale": None},
+        )
+
+    if isinstance(value, dict):
+        label_raw = value.get("label")
+        if not isinstance(label_raw, str):
+            raise ValueError(f"priority dict missing 'label' or not a string: {value!r}")
+        label = label_raw.strip().lower()
+        if label not in _PRIORITY_DEFAULTS:
+            raise ValueError(
+                f"invalid priority label '{label_raw}'; expected one of {sorted(_PRIORITY_DEFAULTS)}"
+            )
+        score = value.get("score", _PRIORITY_DEFAULTS[label])
+        if not isinstance(score, int):
+            raise ValueError(f"priority score must be int, got {type(score).__name__}: {score!r}")
+        lo, hi = _PRIORITY_BAND_RANGES[label]
+        if not (lo <= score <= hi):
+            raise ValueError(
+                f"priority score {score} outside band for label '{label}' (expected {lo}-{hi})"
+            )
+        factors = dict(value.get("factors") or {})
+        factors.setdefault("base_from_label", _PRIORITY_DEFAULTS[label])
+        # A free-form rationale is the one extra field authors may attach
+        # (why this UC carries this priority); preserve it in factors so the
+        # round-trip keeps it without widening the descriptor shape.
+        rationale = value.get("rationale")
+        if rationale is not None and "override_rationale" not in factors:
+            factors["override_rationale"] = rationale
+        factors.setdefault("override_rationale", None)
+        return PriorityDescriptor(
+            label=label,
+            score=score,
+            band=score_to_band(score),
+            factors=factors,
+        )
+
+    raise ValueError(
+        f"cannot normalize priority from {type(value).__name__}: {value!r}"
+    )
+
 def _descriptor_to_dict(d: Any) -> Any:
     """Serialize a descriptor (or passthrough non-descriptors).
 
     Used by to_dict methods that need to emit nested-form severity/confidence.
     """
-    if isinstance(d, (SeverityDescriptor, ConfidenceDescriptor)):
+    if isinstance(d, (SeverityDescriptor, ConfidenceDescriptor, PriorityDescriptor)):
         return d.to_dict()
     return d
 
@@ -441,6 +559,12 @@ class UseCase:
     # test DCM-only, UDLM-only, and cross-spec without forcing the operator
     # to pick at run-trigger time.
     spec_namespaces: list[str] = field(default_factory=list)
+    # Optional roadmap-planning weight (DCM/cost-mgmt feature request #1,
+    # 2026-06-02). Authors set a label ("high") or a {label, score, rationale}
+    # dict; normalized to a PriorityDescriptor at parse time so consumers can
+    # rank UCs by priority.score (descending = build first). None = unranked;
+    # such UCs sort last in any priority-ordered view.
+    priority: PriorityDescriptor | None = None
 
     @classmethod
     def new(cls, handle: str, scenario: Scenario, generated_by: GeneratedBy,
@@ -491,6 +615,8 @@ class UseCase:
         generated_by = GeneratedBy(**data["generated_by"])
         metadata_data = data.get("metadata") or {}
         metadata = UseCaseMetadata(**metadata_data)
+        priority_raw = data.get("priority")
+        priority = normalize_priority(priority_raw) if priority_raw is not None else None
         return cls(
             uuid=data["uuid"],
             handle=data["handle"],
@@ -500,6 +626,7 @@ class UseCase:
             version=data.get("version", "1.0.0"),
             metadata=metadata,
             spec_namespaces=data.get("spec_namespaces") or [],
+            priority=priority,
         )
 
 # --- Analysis schema (stage 2 output with descriptor-form severity/confidence) ---

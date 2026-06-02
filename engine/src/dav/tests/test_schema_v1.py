@@ -17,14 +17,14 @@ import sys
 import json
 
 from dav.core.use_case_schema import (
-    Severity, Confidence, Band,
-    SeverityDescriptor, ConfidenceDescriptor,
-    normalize_severity, normalize_confidence, score_to_band,
+    Severity, Confidence, Band, Priority,
+    SeverityDescriptor, ConfidenceDescriptor, PriorityDescriptor,
+    normalize_severity, normalize_confidence, normalize_priority, score_to_band,
     ComponentRequired, CapabilityInvoked, DataModelTouched,
     ProviderTypeInvolved, PolicyModeRequired, GapIdentified,
     Analysis, AnalysisMetadata, AnalysisSummary,
     SampleRecord, SampleAnnotations, AssertionResult,
-    ToolCall,
+    ToolCall, UseCase,
     ANALYSIS_JSON_SCHEMA,
 )
 
@@ -409,6 +409,102 @@ def test_json_schema_has_moderate():
     assert_true("moderate" in sev_enum, f"moderate in severity enum; got {sev_enum}")
     assert_eq(len(sev_enum), 5, "severity enum has 5 labels")
 
+# --- UC priority tests (DCM feature #1) ---
+
+def test_priority_four_labels():
+    """Priority enum has exactly 4 labels."""
+    labels = {p.value for p in Priority}
+    assert_eq(labels, {"critical", "high", "medium", "low"}, "priority labels")
+
+def test_normalize_priority_from_shorthand():
+    p = normalize_priority("high")
+    assert_eq(p.label, "high", "shorthand priority label")
+    assert_eq(p.score, 70, "shorthand priority score (band midpoint)")
+    assert_eq(p.band, "high", "shorthand priority band")
+    assert_eq(p.factors["base_from_label"], 70, "shorthand base_from_label")
+    assert_eq(p.factors["override_rationale"], None, "shorthand override_rationale")
+
+def test_normalize_priority_four_labels():
+    """All four labels normalize to their band-midpoint defaults."""
+    cases = [("low", 20, "very_low"), ("medium", 50, "medium"),
+             ("high", 70, "high"), ("critical", 90, "very_high")]
+    for label, score, band in cases:
+        p = normalize_priority(label)
+        assert_eq(p.score, score, f"priority {label} default score")
+        assert_eq(p.band, band, f"priority {label} band")
+
+def test_normalize_priority_from_nested_dict_with_override():
+    p = normalize_priority({"label": "critical", "score": 95, "rationale": "blocks onboarding"})
+    assert_eq(p.label, "critical", "nested priority label")
+    assert_eq(p.score, 95, "nested priority score override preserved")
+    assert_eq(p.band, "very_high", "nested priority band from score")
+    assert_eq(p.factors["override_rationale"], "blocks onboarding", "rationale stored in factors")
+
+def test_normalize_priority_passthrough():
+    d = PriorityDescriptor(label="low", score=20, band="very_low", factors={})
+    assert_true(normalize_priority(d) is d, "PriorityDescriptor passthrough")
+
+def test_normalize_priority_case_insensitive():
+    assert_eq(normalize_priority("  High ").label, "high", "priority case/whitespace insensitive")
+
+def test_normalize_priority_rejects_invalid_label():
+    assert_raises(lambda: normalize_priority("urgent"), ValueError, "invalid priority label")
+    # No severity-style aliases: bare 'major' is not a priority label.
+    assert_raises(lambda: normalize_priority("major"), ValueError, "priority has no severity aliases")
+
+def test_normalize_priority_rejects_out_of_band_score():
+    # score 50 is in the medium band, not high (61-80)
+    assert_raises(lambda: normalize_priority({"label": "high", "score": 50}),
+                  ValueError, "priority out-of-band score rejected")
+
+def test_normalize_priority_rejects_non_int_score():
+    assert_raises(lambda: normalize_priority({"label": "high", "score": "70"}),
+                  ValueError, "priority non-int score rejected")
+
+def test_use_case_priority_roundtrip():
+    """UC with priority parses, serializes nested, and re-parses identically."""
+    uc_dict = {
+        "uuid": "uc-prio001", "handle": "cost/foo",
+        "scenario": {
+            "description": "d", "intent": "i", "success_criteria": ["x"],
+            "profile": "platform_admin",
+            "actor": {"persona": "p", "profile": "platform_admin"},
+            "dimensions": {
+                "lifecycle_phase": "day2", "resource_complexity": "simple",
+                "policy_complexity": "simple", "provider_landscape": "single",
+                "governance_context": "none", "failure_mode": "none",
+            },
+        },
+        "generated_by": {"mode": "regression", "source": "human-authored"},
+        "priority": "high",
+    }
+    uc = UseCase.from_dict(uc_dict)
+    assert_eq(uc.priority.label, "high", "UC priority parsed")
+    emitted = uc.to_dict()
+    assert_eq(emitted["priority"]["label"], "high", "UC priority serialized nested")
+    uc2 = UseCase.from_dict(emitted)
+    assert_eq(uc2.priority.score, uc.priority.score, "UC priority roundtrip score")
+
+def test_use_case_priority_optional():
+    """A UC with no priority parses to None (unranked)."""
+    uc_dict = {
+        "uuid": "uc-prio002", "handle": "cost/bar",
+        "scenario": {
+            "description": "d", "intent": "i", "success_criteria": ["x"],
+            "profile": "platform_admin",
+            "actor": {"persona": "p", "profile": "platform_admin"},
+            "dimensions": {
+                "lifecycle_phase": "day2", "resource_complexity": "simple",
+                "policy_complexity": "simple", "provider_landscape": "single",
+                "governance_context": "none", "failure_mode": "none",
+            },
+        },
+        "generated_by": {"mode": "regression", "source": "human-authored"},
+    }
+    uc = UseCase.from_dict(uc_dict)
+    assert_eq(uc.priority, None, "UC priority defaults to None")
+    assert_eq(uc.to_dict()["priority"], None, "UC priority serializes as None")
+
 # --- Run all tests ---
 
 def main():
@@ -437,6 +533,17 @@ def main():
         test_analysis_with_sample_annotations,
         test_analysis_with_assertion_result,
         test_json_schema_has_moderate,
+        test_priority_four_labels,
+        test_normalize_priority_from_shorthand,
+        test_normalize_priority_four_labels,
+        test_normalize_priority_from_nested_dict_with_override,
+        test_normalize_priority_passthrough,
+        test_normalize_priority_case_insensitive,
+        test_normalize_priority_rejects_invalid_label,
+        test_normalize_priority_rejects_out_of_band_score,
+        test_normalize_priority_rejects_non_int_score,
+        test_use_case_priority_roundtrip,
+        test_use_case_priority_optional,
     ]
     for t in tests:
         t()
