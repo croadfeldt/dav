@@ -1134,6 +1134,7 @@
           <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
           <button class="btn primary" id="rpRevRunBtn" style="width:100%;">▶ Run Review</button>
           <button class="btn ghost" id="rpEnhRunBtn" style="width:100%;margin-top:4px;">▶ Run Enhancement Plan</button>
+          <button class="btn ghost" id="rpCapMapBtn" style="width:100%;margin-top:4px;" title="Aggregate which capabilities the most UCs in this run demand (run scope; no model needed)">▶ Capability Map</button>
           <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
           <div id="rpUCLink" style="display:none;font-size:11px;color:var(--text-faint);">
             Pre-selected from Results tab
@@ -1141,6 +1142,14 @@
         </div>
         <!-- Output area -->
         <div class="rp-output" id="rpOutput">
+          <!-- Capability demand density (DCM feature #2) -->
+          <div id="rpCapMapSection">
+            <div class="rp-section-title">Capability Demand Density</div>
+            <div id="rpCapMap">
+              <div style="font-size:11px;color:var(--text-faint);">Select a run and click <strong>Capability Map</strong> to see which capabilities the most UCs demand.</div>
+            </div>
+          </div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:0;">
           <div>
             <div class="rp-section-title">Architectural Review</div>
             <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
@@ -8324,6 +8333,9 @@ function _rpGetContext() {
 document.getElementById('rpRunSel')?.addEventListener('change', function() {
   activeRunResultId = this.value;
   _rpPopulateUCs(this.value);
+  // Stale capability map from the previous run — reset to the prompt.
+  const cm = document.getElementById('rpCapMap');
+  if (cm) cm.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Click <strong>Capability Map</strong> to load demand density for this run.</div>';
 });
 
 document.getElementById('rpScopeRun')?.addEventListener('change', () => {
@@ -8377,6 +8389,86 @@ document.getElementById('rpEnhRunBtn')?.addEventListener('click', async () => {
     showReasoningKey: 'rpEnhShowReasoning',
   });
 });
+
+// ── Capability demand density (DCM feature #2) ──────────────────────────────
+// Run-scoped: aggregates which capabilities the most UCs in a run demand.
+// Reads /api/analysis/capability-density (populated at ingest); no model needed.
+async function loadCapabilityMap() {
+  const runId = document.getElementById('rpRunSel')?.value;
+  const el = document.getElementById('rpCapMap');
+  if (!el) return;
+  if (!runId) { toast('Select a run first'); return; }
+  el.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Loading…</div>';
+  let data;
+  try {
+    data = await api(`/api/analysis/capability-density?run_id=${encodeURIComponent(runId)}`);
+  } catch (e) {
+    el.innerHTML = `<div style="font-size:11px;color:var(--red);">${esc(e.message)}</div>`
+      + `<div style="font-size:10px;color:var(--text-faint);margin-top:4px;">If this run predates capability tracking, re-ingest it from the Results tab, then retry.</div>`;
+    return;
+  }
+  renderCapabilityMap(data);
+}
+
+function renderCapabilityMap(data) {
+  const el = document.getElementById('rpCapMap');
+  if (!el) return;
+  const caps = data.capabilities || [];
+  const total = data.total_ucs || 0;
+  if (!caps.length) {
+    el.innerHTML = `<div style="font-size:11px;color:var(--text-faint);">No capabilities recorded for this run`
+      + (total ? ` (${total} UC${total===1?'':'s'} analyzed).` : `.`)
+      + ` Re-ingest the run if it predates capability tracking.</div>`;
+    return;
+  }
+  // uuid → handle labels from the current run summary, when it's the loaded run.
+  const handleByUuid = {};
+  if (activeRunSummary && activeRunSummary.run_id === data.run_id) {
+    (activeRunSummary.ucs || []).forEach(u => { handleByUuid[u.uc_uuid] = u.uc_handle || u.uc_uuid; });
+  }
+  const maxCount = caps[0].uc_count || 1;   // sorted desc → first is the max
+  let html = `<div style="font-size:11px;color:var(--text-faint);margin-bottom:10px;">`
+    + `${caps.length} capabilit${caps.length===1?'y':'ies'} demanded across ${total} analyzed UC${total===1?'':'s'} — ranked by how many UCs need each. Click a row to see which.</div>`;
+  caps.forEach((c, i) => {
+    const pct = total ? Math.round(c.demand_ratio * 100) : 0;
+    const barPct = Math.max(2, Math.round((c.uc_count / maxCount) * 100));
+    const ns = (c.namespaces || []).map(n => `<span class="tag">${esc(n)}</span>`).join(' ');
+    const conf = (c.avg_confidence != null) ? ` · avg conf ${esc(String(c.avg_confidence))}` : '';
+    const ucBtns = (c.uc_uuids || []).map(u =>
+      `<button class="btn ghost btn-sm capmap-uc" data-uuid="${esc(u)}" style="margin:2px 4px 2px 0;font-family:var(--mono,monospace);font-size:10px;" title="Open ${esc(u)}">${esc(handleByUuid[u] || u)}</button>`
+    ).join('');
+    html += `
+      <div class="capmap-row" data-cap="${i}" style="margin-bottom:9px;cursor:pointer;">
+        <div style="display:flex;align-items:baseline;gap:8px;justify-content:space-between;">
+          <span style="font-family:var(--mono,monospace);font-size:12px;color:var(--text);">${esc(c.capability_id)}</span>
+          <span style="font-size:11px;color:var(--text-faint);white-space:nowrap;">${c.uc_count}/${total} UCs · ${pct}%${conf}</span>
+        </div>
+        <div style="height:6px;background:var(--bg-raised);border-radius:3px;margin-top:3px;overflow:hidden;">
+          <div style="height:100%;width:${barPct}%;background:var(--accent);"></div>
+        </div>
+        ${ns ? `<div style="margin-top:3px;">${ns}</div>` : ''}
+        <div class="capmap-ucs" data-cap-ucs="${i}" style="display:none;margin-top:6px;padding-left:8px;border-left:2px solid var(--border);">${ucBtns}</div>
+      </div>`;
+  });
+  el.innerHTML = html;
+  // Row click toggles the demanding-UC drill-in; UC buttons jump to that UC.
+  el.querySelectorAll('.capmap-row').forEach(row => {
+    row.addEventListener('click', e => {
+      if (e.target.closest('.capmap-uc')) return;
+      const sub = el.querySelector(`.capmap-ucs[data-cap-ucs="${row.dataset.cap}"]`);
+      if (sub) sub.style.display = sub.style.display === 'none' ? 'block' : 'none';
+    });
+  });
+  el.querySelectorAll('.capmap-uc').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      switchView('usecases');
+      selectUC(btn.dataset.uuid);
+    });
+  });
+}
+
+document.getElementById('rpCapMapBtn')?.addEventListener('click', loadCapabilityMap);
 
 document.getElementById('rpRevCopyBtn')?.addEventListener('click', () => {
   const text = localStorage.getItem('rpRevShowReasoning') === '1' ? _rpRevRaw.text : _stripThink(_rpRevRaw.text);

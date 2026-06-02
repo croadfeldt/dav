@@ -164,24 +164,26 @@ forms both parse; optional and alias-free (author-set, never model-emitted).
 - Console: `priority`/`priority_score` columns on `managed_use_cases`; `?sort=priority` + `?priority=` on the list API; badge, filter, and sort toggle in the UC tab
 - Tests: 11 engine cases + 8 console cases
 
-### #2 — Cross-UC capability demand density — **BACKEND LANDED (2026-06-02); UI next**
+### #2 — Cross-UC capability demand density — **SHIPPED (2026-06-02)**
 
 After analyzing multiple UCs, aggregate the capabilities each demands and show
 which appear across the most UCs ("density of need") — answers "what should we
 build first?" by showing where demand clusters (Kevin Cattell).
 
-Backend shipped:
 - `uc_capabilities` table projects each analysis's structured `capabilities_invoked`
   at ingest time (deduped by id per UC; idempotent via the run CASCADE)
 - `capability_density.py` aggregates capability → distinct-UC count, demand ratio,
   avg confidence, and namespaces (pure + unit-tested)
 - `GET /api/analysis/capability-density?run_id=&set_id=` ranks by demand, scoped
   to a run or a Set; denominator is successfully-analyzed UCs in scope
+- **Capability Map** view in the Review & Plan tab (top-level): run-scoped button
+  renders the ranked demand bars (N/M UCs, %, namespaces, avg confidence) with a
+  click-to-expand drill-in to the demanding UCs (jumps to the UC on click)
 
-**Next:** a "Capability Map" view in the Review & Plan tab that calls the
-endpoint and renders the ranked density (bar/heat list, drill into the demanding
-UCs). Then #3 layers dependency analysis on the same capability data.
 Note: existing runs must be re-ingested to populate `uc_capabilities`.
+
+**Next:** #3 layers dependency analysis on the same capability data; optionally
+extend the Capability Map with a Set scope selector (endpoint already supports it).
 
 ### #3 — Foundational dependency detection — follow-on to #2
 
