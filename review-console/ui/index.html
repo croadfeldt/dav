@@ -8468,6 +8468,7 @@ document.getElementById('rpRevRunBtn')?.addEventListener('click', async () => {
     nextRow:      null,
     rawHolder:    _rpRevRaw,
     showReasoningKey: 'rpRevShowReasoning',
+    renderMode: 'markdown',
   });
 });
 
@@ -8489,6 +8490,7 @@ document.getElementById('rpEnhRunBtn')?.addEventListener('click', async () => {
     nextRow:      document.getElementById('rpEnhNextRow'),
     rawHolder:    _rpEnhRaw,
     showReasoningKey: 'rpEnhShowReasoning',
+    renderMode: 'enhancement',
   });
 });
 
@@ -8671,14 +8673,14 @@ document.getElementById('rpRevReasoningBtn')?.addEventListener('click', function
   localStorage.setItem('rpRevShowReasoning', on ? '0' : '1');
   this.textContent = on ? '○ Reasoning' : '● Reasoning';
   const el = document.getElementById('rpRevStream');
-  if (el) el.textContent = (!on) ? _rpRevRaw.text : _stripThink(_rpRevRaw.text);
+  if (el) _applyStreamRender(el, (!on) ? _rpRevRaw.text : _stripThink(_rpRevRaw.text), el.dataset.renderMode);
 });
 document.getElementById('rpEnhReasoningBtn')?.addEventListener('click', function() {
   const on = localStorage.getItem('rpEnhShowReasoning') === '1';
   localStorage.setItem('rpEnhShowReasoning', on ? '0' : '1');
   this.textContent = on ? '○ Reasoning' : '● Reasoning';
   const el = document.getElementById('rpEnhStream');
-  if (el) el.textContent = (!on) ? _rpEnhRaw.text : _stripThink(_rpEnhRaw.text);
+  if (el) _applyStreamRender(el, (!on) ? _rpEnhRaw.text : _stripThink(_rpEnhRaw.text), el.dataset.renderMode);
 });
 
 document.getElementById('rpRevUseClaudeBtn')?.addEventListener('click', () => {
@@ -8797,11 +8799,71 @@ function _stripThink(raw) {
 }
 
 // ── Generic SSE stream runner ─────────────────────────────────────────────────
+// ── Output rendering: markdown for prose, structured cards for enhancement
+// blocks. Fully defensive — any parse error falls back to plain/escaped text
+// (i.e. the previous behavior), so a bad render can never break the page.
+const _MD_PRE = 'background:var(--bg-raised);padding:8px;border-radius:3px;overflow-x:auto;white-space:pre-wrap;font-size:11px;margin:4px 0;';
+function mdToHtml(raw){
+  try {
+    let s = esc(raw || '');
+    const code = [];
+    s = s.replace(/```[\w-]*\n?([\s\S]*?)```/g, (m,c)=>{ code.push(c); return ` C${code.length-1} `; });
+    s = s.replace(/^######\s+(.*)$/gm,'<h6>$1</h6>').replace(/^#####\s+(.*)$/gm,'<h5>$1</h5>')
+         .replace(/^####\s+(.*)$/gm,'<h4>$1</h4>').replace(/^###\s+(.*)$/gm,'<h4>$1</h4>')
+         .replace(/^##\s+(.*)$/gm,'<h3>$1</h3>').replace(/^#\s+(.*)$/gm,'<h3>$1</h3>');
+    s = s.replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>').replace(/`([^`\n]+)`/g,'<code>$1</code>');
+    s = s.replace(/(?:^[ \t]*[-*]\s+.*(?:\n|$))+/gm, b => '<ul style="margin:4px 0 4px 18px;">'+b.trim().split('\n').map(l=>`<li>${l.replace(/^[ \t]*[-*]\s+/,'')}</li>`).join('')+'</ul>');
+    s = s.replace(/(?:^[ \t]*\d+\.\s+.*(?:\n|$))+/gm, b => '<ol style="margin:4px 0 4px 18px;">'+b.trim().split('\n').map(l=>`<li>${l.replace(/^[ \t]*\d+\.\s+/,'')}</li>`).join('')+'</ol>');
+    s = s.replace(/\n{2,}/g,'<br><br>');
+    s = s.replace(/ C(\d+) /g,(m,i)=>`<pre style="${_MD_PRE}">${code[i]}</pre>`);
+    return s;
+  } catch(e){ return esc(raw||''); }
+}
+function renderEnhancementCards(raw){
+  try {
+    const clean = _stripThink(raw || '');
+    const blocks = clean.split(/\n(?=ENHANCEMENT\s+\S)/).filter(p => /^\s*ENHANCEMENT\s+\S/.test(p));
+    if (!blocks.length) return mdToHtml(raw);
+    const field = (b,n)=>{ const m=b.match(new RegExp('^'+n+':\\s*(.*)$','m')); return m?m[1].trim():''; };
+    let html = '';
+    for (const b of blocks){
+      const idm = b.match(/^\s*ENHANCEMENT\s+(\S+)\s*(?:\(([^)]*)\))?/);
+      const id = idm?idm[1]:'?', meta = idm&&idm[2]?idm[2]:'';
+      const action = field(b,'action'), target = field(b,'target'), pos = field(b,'position');
+      const sect = field(b,'section_title'), rat = field(b,'rationale'), acc = field(b,'acceptance');
+      const cm = b.match(/```[\w-]*\n?([\s\S]*?)```/); const patch = cm?cm[1]:'';
+      html += `<div style="border:1px solid var(--border);border-radius:3px;padding:8px 10px;margin-bottom:8px;background:var(--bg-panel);">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span style="font-family:var(--mono,monospace);font-weight:600;color:var(--accent);">${esc(id)}</span>
+          ${action?`<span class="tag">${esc(action)}</span>`:''}
+          ${meta?`<span style="font-size:10px;color:var(--text-faint);">${esc(meta)}</span>`:''}
+        </div>
+        ${target?`<div style="font-size:11px;margin-top:4px;"><span style="color:var(--text-faint);">target</span> <code>${esc(target)}</code>${pos?` <span style="color:var(--text-faint);">· ${esc(pos)}</span>`:''}</div>`:''}
+        ${sect?`<div style="font-size:11px;"><span style="color:var(--text-faint);">section</span> ${esc(sect)}</div>`:''}
+        ${rat?`<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${esc(rat)}</div>`:''}
+        ${patch?`<pre style="${_MD_PRE}margin-top:5px;">${esc(patch)}</pre>`:''}
+        ${acc?`<div style="font-size:10px;color:var(--green);margin-top:4px;">✓ ${esc(acc)}</div>`:''}
+      </div>`;
+    }
+    const om = clean.match(/^ORDER:\s*(.*)$/m);
+    if (om) html += `<div style="font-size:11px;margin-top:4px;"><span style="color:var(--text-faint);">apply order:</span> <code>${esc(om[1])}</code></div>`;
+    return html;
+  } catch(e){ return mdToHtml(raw); }
+}
+function _applyStreamRender(el, text, mode){
+  try {
+    if (mode === 'markdown') el.innerHTML = mdToHtml(text);
+    else if (mode === 'enhancement') el.innerHTML = renderEnhancementCards(text);
+    else el.textContent = text;
+  } catch(e){ el.textContent = text; }
+}
+
 async function _runStream({ endpoint, body, streamEl, statusEl, copyBtn, runBtn,
-                            reasoningBtn, nextRow, rawHolder, showReasoningKey, fontBar }) {
+                            reasoningBtn, nextRow, rawHolder, showReasoningKey, fontBar, renderMode }) {
   streamEl.textContent = '';
   rawHolder.text = '';
   streamEl.style.display = '';
+  streamEl.dataset.renderMode = renderMode || 'plain';
   if (fontBar) fontBar.style.display = '';
   streamEl.classList.add('streaming');
   statusEl.style.display = '';
@@ -8859,8 +8921,9 @@ async function _runStream({ endpoint, body, streamEl, statusEl, copyBtn, runBtn,
               statusEl.classList.remove('thinking-status');
               statusEl.textContent = 'Generating…';
             }
-            streamEl.textContent = hasThink && !showReasoning()
-              ? _stripThink(rawHolder.text) : rawHolder.text;
+            const _disp = hasThink && !showReasoning() ? _stripThink(rawHolder.text) : rawHolder.text;
+            // Render markdown live; defer enhancement cards to completion (no jitter on partial blocks).
+            _applyStreamRender(streamEl, _disp, renderMode === 'markdown' ? 'markdown' : 'plain');
             streamEl.scrollTop = streamEl.scrollHeight;
           }
         } catch(pe) { if (pe.message !== 'undefined') throw pe; }
@@ -8870,6 +8933,8 @@ async function _runStream({ endpoint, body, streamEl, statusEl, copyBtn, runBtn,
     statusEl.classList.remove('thinking-status');
     statusEl.textContent = 'Complete.';
     streamEl.classList.remove('streaming');
+    { const _fin = (rawHolder.text.includes('<think>') && localStorage.getItem(showReasoningKey) !== '1') ? _stripThink(rawHolder.text) : rawHolder.text;
+      _applyStreamRender(streamEl, _fin, renderMode || 'plain'); }
     if (copyBtn) copyBtn.style.display = '';
     if (nextRow) nextRow.style.display = '';
   } catch(e) {
@@ -8889,7 +8954,7 @@ document.getElementById('rdRevReasoningBtn').addEventListener('click', function(
   localStorage.setItem('rdRevShowReasoning', on ? '0' : '1');
   this.textContent = on ? '○ Reasoning' : '● Reasoning';
   const el = document.getElementById('rdRevStream');
-  el.textContent = (!on) ? _rdRevRaw.text : _stripThink(_rdRevRaw.text);
+  _applyStreamRender(el, (!on) ? _rdRevRaw.text : _stripThink(_rdRevRaw.text), el.dataset.renderMode);
   el.scrollTop = el.scrollHeight;
 });
 
@@ -8916,6 +8981,7 @@ document.getElementById('rdRevRunBtn').addEventListener('click', async () => {
     nextRow:      document.getElementById('rdRevNextRow'),
     rawHolder:    _rdRevRaw,
     showReasoningKey: 'rdRevShowReasoning',
+    renderMode: 'markdown',
     fontBar:      document.getElementById('rdRevFontBar'),
   });
 });
@@ -8965,7 +9031,7 @@ document.getElementById('rdEnhReasoningBtn').addEventListener('click', function(
   localStorage.setItem('rdEnhShowReasoning', on ? '0' : '1');
   this.textContent = on ? '○ Reasoning' : '● Reasoning';
   const el = document.getElementById('rdEnhStream');
-  el.textContent = (!on) ? _rdEnhRaw.text : _stripThink(_rdEnhRaw.text);
+  _applyStreamRender(el, (!on) ? _rdEnhRaw.text : _stripThink(_rdEnhRaw.text), el.dataset.renderMode);
   el.scrollTop = el.scrollHeight;
 });
 
@@ -8992,6 +9058,7 @@ document.getElementById('rdEnhRunBtn').addEventListener('click', async () => {
     nextRow:      document.getElementById('rdEnhNextRow'),
     rawHolder:    _rdEnhRaw,
     showReasoningKey: 'rdEnhShowReasoning',
+    renderMode: 'enhancement',
     fontBar:      document.getElementById('rdEnhFontBar'),
   });
 });
