@@ -213,14 +213,19 @@ is a **foundational, cross-cutting** concern — it scopes the data model and ev
 so the cheap-but-critical move is to make new entities **tenancy-ready from birth** rather
 than retrofit `project_id` later. Retrofitting tenancy is its own drift/debt.
 
-**Project = the tenancy boundary.** A project is a target architecture/product under
-evaluation: its consumer profile + spec corpus + UC corpus + repos, producing its own runs,
-capability catalog, sets, roadmaps, and work items. (DCM, cost-mgmt, OSAC would be projects;
-today they're collapsed into one deployment via spec namespaces — multi-project formalizes
-the boundary.) Everything the next phases add — **catalog, generalized Sets, work items,
-roadmaps** — must carry a project scope.
+**Project = a user-defined analysis scope.** A project is whatever set of information a user
+groups to be **analyzed together** — one repo or many, one spec source or several — with its
+UC corpus and consumer profile(s). The unifying criterion is **relatedness: everything in a
+project is meant to be usable together by the gap analysis / capability mapping.** A project
+owns its derived artifacts — runs, analyses, capability catalog, sets, roadmaps, work items.
+The boundary is **not a fixed rule**: cost-mgmt *may* be its own project or folded in with
+DCM — the user decides, based on whether they want them analyzed together. Everything the
+next phases add — **catalog, generalized Sets, work items, roadmaps** — must carry a project
+scope.
 
-**Multi-user = identity + roles + attribution + collaboration.**
+**Multi-user = identity + roles + attribution + collaboration.** Users and projects are
+**many-to-many**: multiple users on one project, users each with their own project, or a
+mix. Membership *and role* are **per project**.
 - *Identity* already exists (oauth-proxy `X-Forwarded-User` → `get_user()`); attribution
   exists (`created_by` / `updated_by`, lifecycle `actor`). Make these first-class:
   ownership, assignment, "my work" filters, review queues.
@@ -232,12 +237,12 @@ roadmaps** — must carry a project scope.
 - *Collaboration* — curation becomes multi-user with review/approval; needs basic
   concurrency safety (optimistic on edits).
 
-**Pragmatic path:** design tenancy + roles into the schema and APIs **now** (project scope
-on new tables, role checks at the curate/approve seams), but **phase the full multi-project
-UX** (project switching, cross-project views) for when a second project actually lands.
-Build tenancy-ready; enable tenancy when needed. Ties to the DCM **#7 multi-user auth**
-follow-up and the in-progress **multi-repo / multi-source** work (managed_repos + sources),
-which is the multi-project scaffolding.
+**Pragmatic path:** bake tenancy into the schema/APIs **now** — `project_id` scope on new
+tables, a `projects` + `project_members(user, role)` model, role checks at the
+curate/approve seams. Since projects are user-defined, a basic **create / select project**
+concept likely needs to be real early; **cross-project aggregation views can defer**. Ties
+to the DCM **#7 multi-user auth** follow-up and the in-progress **multi-repo / multi-source**
+work (managed_repos + sources), the multi-project scaffolding.
 
 ## 10. Single-source principles (the rules that prevent regression)
 
@@ -302,8 +307,10 @@ which is the multi-project scaffolding.
   launch; scope of the re-run (just the linked UCs vs. the whole Set).
 - Out-of-band change detection: should DAV flag a target that changed with no linked work
   item (a fix made outside the loop)?
-- Project boundary granularity: is cost-mgmt a separate **project** or a spec **namespace**
-  within one? (Today it's a namespace; multi-project formalizes the line.)
+- ~~Project boundary granularity~~ — **resolved: project = a user-defined scope** (one or
+  more repos/sources grouped by relatedness; the user draws the line). Remaining: what's
+  **project-scoped vs. global** — repos / sources / UC corpus / catalog / roadmaps are
+  per-project; model configs / credentials / MCP infra are likely shared. Confirm the split.
 - Role model: the concrete roles (author / architect-curator / planner / reviewer / admin)
   and whether they derive from oauth-proxy groups, an external IdP, or DAV-managed.
 - Cross-project coordination: the DCM team wanted cross-team coordination — is that
