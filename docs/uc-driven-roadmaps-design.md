@@ -205,7 +205,41 @@ capability → Jira/eng-PR work item whose synced status means "capability built
 *delivered* reality, so the engineering roadmap shows true progress and a delivered
 capability can trigger re-checking whether its UCs are now satisfiable.
 
-## 9. Single-source principles (the rules that prevent regression)
+## 9. Multi-user & multi-project (tenancy, roles, collaboration)
+
+DAV must be **multi-user**, and **likely multi-project** (the consumer-agnostic design
+already points this way; the DCM/cost-mgmt onboarding implies more than one target). This
+is a **foundational, cross-cutting** concern — it scopes the data model and every surface —
+so the cheap-but-critical move is to make new entities **tenancy-ready from birth** rather
+than retrofit `project_id` later. Retrofitting tenancy is its own drift/debt.
+
+**Project = the tenancy boundary.** A project is a target architecture/product under
+evaluation: its consumer profile + spec corpus + UC corpus + repos, producing its own runs,
+capability catalog, sets, roadmaps, and work items. (DCM, cost-mgmt, OSAC would be projects;
+today they're collapsed into one deployment via spec namespaces — multi-project formalizes
+the boundary.) Everything the next phases add — **catalog, generalized Sets, work items,
+roadmaps** — must carry a project scope.
+
+**Multi-user = identity + roles + attribution + collaboration.**
+- *Identity* already exists (oauth-proxy `X-Forwarded-User` → `get_user()`); attribution
+  exists (`created_by` / `updated_by`, lifecycle `actor`). Make these first-class:
+  ownership, assignment, "my work" filters, review queues.
+- *Roles* give the hybrid propose→curate model real teeth: who authors UCs, who **curates
+  the catalog**, who **approves** spec changes / roadmaps (the "architect disposes" seat),
+  who triggers runs / opens PRs, who administers config/credentials. The existing lifecycle
+  state machine (draft→ready→in_review→approved, with actors) is already the collaboration
+  spine — extend it, don't reinvent.
+- *Collaboration* — curation becomes multi-user with review/approval; needs basic
+  concurrency safety (optimistic on edits).
+
+**Pragmatic path:** design tenancy + roles into the schema and APIs **now** (project scope
+on new tables, role checks at the curate/approve seams), but **phase the full multi-project
+UX** (project switching, cross-project views) for when a second project actually lands.
+Build tenancy-ready; enable tenancy when needed. Ties to the DCM **#7 multi-user auth**
+follow-up and the in-progress **multi-repo / multi-source** work (managed_repos + sources),
+which is the multi-project scaffolding.
+
+## 10. Single-source principles (the rules that prevent regression)
 
 1. **One source of findings:** the ingested analysis. Everything else is a projection.
 2. **One output per stage per track:** don't add a second view that re-answers a
@@ -217,8 +251,11 @@ capability can trigger re-checking whether its UCs are now satisfiable.
 7. **Close the loop:** outputs are tracked work items linked to their findings; acceptance
    triggers re-evaluation; findings are stateful (open → verified). The work item is the
    single source for output status. **Drift is the enemy.**
+8. **Tenancy-ready:** every finding, capability, set, work item, and roadmap is scoped to a
+   project and attributed to a user; curate/approve seams enforce roles. Bake it in from
+   birth — retrofitting tenancy is drift.
 
-## 10. What this means for what exists today
+## 11. What this means for what exists today
 
 - **Architectural Review + Enhancement Plan** → Track 1 (gap roadmap). Keep; the healthy
   spine. Consider feeding demand/foundational signal in as *weighting context*.
@@ -228,8 +265,13 @@ capability can trigger re-checking whether its UCs are now satisfiable.
 - **UC readiness (#4)** → upstream quality gate on the driver (UCs). ✓ already built.
 - **UC Sets** → generalize to UC/gap/capability working sets (§5).
 
-## 11. Proposed phasing (sequence TBD with Chris)
+## 12. Proposed phasing (sequence TBD with Chris)
 
+- **Foundational (precedes / threads Phase 1) — tenancy-ready schema + roles.** Put a
+  project scope on every new table (catalog, Sets, work items, roadmaps) and role checks at
+  the curate/approve seams *before* building them, so they're multi-tenant from birth. Defer
+  the full project-switching / cross-project UX until a second project lands. (Ties to DCM
+  #7 multi-user auth + the in-progress multi-repo/source work.)
 - **Phase 0 — Guided flow + surface the two tracks.** Implement the staged walkthrough
   (§3): a stage navigator with why/output per stage, and split Track 1 / Track 2 onto
   distinct surfaces. This is the de-confusion *and* the workflow articulation in one move;
@@ -246,7 +288,7 @@ capability can trigger re-checking whether its UCs are now satisfiable.
   already exist — with Jira/engineering sync following. This is what keeps the analysis
   honest over time; treat as high-priority, not last.
 
-## 12. Open decisions (deferred)
+## 13. Open decisions (deferred)
 
 - Graph/visualization formats for each roadmap.
 - Canonical-capability mechanism details (catalog is Track-1-owned + spec-anchored; exact
@@ -260,3 +302,9 @@ capability can trigger re-checking whether its UCs are now satisfiable.
   launch; scope of the re-run (just the linked UCs vs. the whole Set).
 - Out-of-band change detection: should DAV flag a target that changed with no linked work
   item (a fix made outside the loop)?
+- Project boundary granularity: is cost-mgmt a separate **project** or a spec **namespace**
+  within one? (Today it's a namespace; multi-project formalizes the line.)
+- Role model: the concrete roles (author / architect-curator / planner / reviewer / admin)
+  and whether they derive from oauth-proxy groups, an external IdP, or DAV-managed.
+- Cross-project coordination: the DCM team wanted cross-team coordination — is that
+  cross-project *views*, or strictly per-project with a shared catalog vocabulary?
