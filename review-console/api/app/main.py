@@ -3883,12 +3883,14 @@ async def capability_density(
                 run_id,
             )
         name_map = await _catalog_name_map(conn, await _default_project_id(conn))
+        usage_map = await _capability_usage_map(conn, run_id)
 
     capabilities = _capability_density.aggregate_density(
         [dict(r) for r in cap_rows], int(total_ucs or 0)
     )
     for c in capabilities:
-        c["name"] = name_map.get(c["capability_id"])  # catalog name, or None → UI falls back to id
+        c["name"] = name_map.get(c["capability_id"])   # catalog name, or None → UI falls back to id
+        c["usage"] = usage_map.get(c["capability_id"])  # readable gloss from analysis (already stored)
     return {
         "run_id": run_id,
         "set_id": set_id,
@@ -3956,8 +3958,10 @@ async def foundational_capabilities(
     capabilities = _capability_graph.foundational_ranking(edges, demand)
     async with pool.acquire() as _c:
         name_map = await _catalog_name_map(_c, await _default_project_id(_c))
+        usage_map = await _capability_usage_map(_c, run_id)
     for c in capabilities:
-        c["name"] = name_map.get(c["capability_id"])  # catalog name, or None → UI falls back to id
+        c["name"] = name_map.get(c["capability_id"])    # catalog name, or None → UI falls back to id
+        c["usage"] = usage_map.get(c["capability_id"])  # readable gloss from analysis (already stored)
     return {
         "run_id": run_id,
         "set_id": set_id,
@@ -6065,6 +6069,19 @@ async def _catalog_name_map(conn, project_id) -> dict:
     return {r["cap_key"]: (r["name"] or r["cap_key"]) for r in rows}
 
 
+async def _capability_usage_map(conn, run_id) -> dict:
+    """capability_id -> a representative usage sentence the analysis already
+    produced (stored at ingest, shown on the Results page). Reused to give
+    capabilities a readable gloss in the aggregate views — not re-derived."""
+    if not run_id:
+        return {}
+    rows = await conn.fetch(
+        "SELECT DISTINCT ON (capability_id) capability_id, usage FROM uc_capabilities "
+        "WHERE run_id=$1 AND COALESCE(usage,'') <> '' ORDER BY capability_id, length(usage) DESC",
+        run_id)
+    return {r["capability_id"]: r["usage"] for r in rows}
+
+
 @app.get("/api/catalog")
 async def list_catalog(project_id: Optional[int] = Query(None)):
     async with pool.acquire() as conn:
@@ -6081,17 +6098,20 @@ async def catalog_suggestions(project_id: Optional[int] = Query(None), run_id: O
     aren't in the catalog yet — the architect confirms/merges these in."""
     async with pool.acquire() as conn:
         pid = project_id if project_id is not None else await _default_project_id(conn)
+        # Also pull a representative usage (the analysis's readable gloss, already
+        # stored) so a suggestion has context without re-deriving anything.
+        _usage = "(array_agg(usage ORDER BY length(usage) DESC) FILTER (WHERE COALESCE(usage,'') <> ''))[1] AS usage"
         if run_id:
             rows = await conn.fetch(
-                "SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n FROM uc_capabilities "
+                f"SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n, {_usage} FROM uc_capabilities "
                 "WHERE run_id=$1 GROUP BY capability_id ORDER BY n DESC", run_id)
         else:
             rows = await conn.fetch(
-                "SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n FROM uc_capabilities "
+                f"SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n, {_usage} FROM uc_capabilities "
                 "GROUP BY capability_id ORDER BY n DESC")
         ex = {r["cap_key"] for r in await conn.fetch(
             "SELECT cap_key FROM capability_catalog WHERE project_id=$1", pid)}
-    suggestions = [{"capability_id": r["capability_id"], "uc_count": int(r["n"])}
+    suggestions = [{"capability_id": r["capability_id"], "uc_count": int(r["n"]), "usage": r["usage"]}
                    for r in rows if r["capability_id"] and r["capability_id"] not in ex]
     return {"project_id": pid, "suggestions": suggestions}
 

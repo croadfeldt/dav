@@ -8615,6 +8615,7 @@ function renderCapabilityMap(data) {
           <span style="font-size:12px;color:var(--text);">${esc(c.name || c.capability_id)}${c.name?` <span style="font-family:var(--mono,monospace);font-size:9px;color:var(--text-faint);">${esc(c.capability_id)}</span>`:''}</span>
           <span style="font-size:11px;color:var(--text-faint);white-space:nowrap;">${c.uc_count}/${total} UCs · ${pct}%${conf}</span>
         </div>
+        ${c.usage?`<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${esc(c.usage)}</div>`:''}
         <div style="height:6px;background:var(--bg-raised);border-radius:3px;margin-top:3px;overflow:hidden;">
           <div style="height:100%;width:${barPct}%;background:var(--accent);"></div>
         </div>
@@ -8690,6 +8691,7 @@ function renderFoundational(data) {
           <span style="font-size:12px;color:var(--text);display:flex;align-items:center;gap:6px;">${esc(c.name || c.capability_id)} ${lev}</span>
           <span style="font-size:11px;color:var(--text-faint);white-space:nowrap;">${c.transitive_dependents} depend (${c.direct_dependents} direct) · ${esc(demand)}</span>
         </div>
+        ${c.usage?`<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${esc(c.usage)}</div>`:''}
         <div style="height:6px;background:var(--bg-raised);border-radius:3px;margin-top:3px;overflow:hidden;">
           <div style="height:100%;width:${barPct}%;background:var(--accent);"></div>
         </div>
@@ -8739,24 +8741,24 @@ async function _renderCatalog(){
     _catalogCache = r.capabilities || [];
     if (!_catalogCache.length){ el.innerHTML = '<div class="empty">No capabilities yet. Add one, or confirm a suggestion →</div>'; return; }
     el.innerHTML = _catalogCache.map(c => `
-      <div style="border:1px solid var(--border);border-radius:3px;padding:8px 10px;margin-bottom:8px;">
+      <div class="cat-row" data-id="${c.id}" title="Click anywhere to edit" style="border:1px solid var(--border);border-radius:3px;padding:8px 10px;margin-bottom:8px;cursor:pointer;">
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
           <span style="font-weight:600;">${esc(c.name||c.cap_key)}</span>
-          <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-faint);">${esc(c.status)}</span>
+          <span style="display:flex;gap:8px;align-items:center;flex-shrink:0;">
+            <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:${c.status==='confirmed'?'var(--green)':'var(--text-faint)'};">${esc(c.status)}</span>
+            <button class="btn danger btn-sm cat-del" data-id="${c.id}" title="Delete">✕</button>
+          </span>
         </div>
         <div style="font-family:var(--mono,monospace);font-size:10px;color:var(--text-faint);">${esc(c.cap_key)}${c.domain?` · <span style="color:var(--blue);">${esc(c.domain)}</span>`:''}</div>
         ${c.definition?`<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${esc(c.definition)}</div>`:''}
         ${(c.depends_on&&c.depends_on.length)?`<div style="font-size:10px;color:var(--text-faint);margin-top:3px;">requires: ${esc(c.depends_on.join(', '))}</div>`:''}
-        <div style="margin-top:5px;display:flex;gap:6px;">
-          <button class="btn ghost btn-sm cat-edit" data-id="${c.id}">Edit</button>
-          <button class="btn danger btn-sm cat-del" data-id="${c.id}">Delete</button>
-        </div>
       </div>`).join('');
-    el.querySelectorAll('.cat-del').forEach(b => b.addEventListener('click', async () => {
-      try { await api(`/api/catalog/${b.dataset.id}`, {method:'DELETE'}); loadCatalogTab(); } catch(e){ toast(e.message,true); }
+    el.querySelectorAll('.cat-del').forEach(b => b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try { await api(`/api/catalog/${b.dataset.id}`, {method:'DELETE'}); loadCatalogTab(); } catch(err){ toast(err.message,true); }
     }));
-    el.querySelectorAll('.cat-edit').forEach(b => b.addEventListener('click', () => {
-      const c = _catalogCache.find(x => String(x.id) === b.dataset.id);
+    el.querySelectorAll('.cat-row').forEach(row => row.addEventListener('click', () => {
+      const c = _catalogCache.find(x => String(x.id) === row.dataset.id);
       if (!c) return;
       document.getElementById('catKey').value = c.cap_key;
       document.getElementById('catName').value = c.name||'';
@@ -8766,6 +8768,7 @@ async function _renderCatalog(){
       _catEditId = c.id;
       document.getElementById('catClearBtn').style.display='';
       document.getElementById('catSaveBtn').textContent='Save changes';
+      document.getElementById('catKey').scrollIntoView({block:'nearest'});
     }));
   } catch(e){ el.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`; }
 }
@@ -8778,7 +8781,10 @@ async function _renderCatalogSuggestions(){
     if (!sugg.length){ el.innerHTML = '<div class="empty">No new suggestions. Re-ingest a run to populate analysis capabilities.</div>'; return; }
     el.innerHTML = sugg.map(s => `
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;border-bottom:1px solid var(--border);padding:5px 0;">
-        <span style="font-family:var(--mono,monospace);font-size:11px;">${esc(s.capability_id)}</span>
+        <span style="min-width:0;flex:1;">
+          <span style="font-family:var(--mono,monospace);font-size:11px;">${esc(s.capability_id)}</span>
+          ${s.usage?`<div style="font-size:10px;color:var(--text-dim);">${esc(s.usage)}</div>`:''}
+        </span>
         <span style="display:flex;gap:6px;align-items:center;">
           <span style="font-size:10px;color:var(--text-faint);">${s.uc_count} UC${s.uc_count===1?'':'s'}</span>
           <button class="btn ghost btn-sm cat-draft" data-key="${esc(s.capability_id)}" title="LLM: draft a readable name + description, then review and Add">✨ draft</button>
