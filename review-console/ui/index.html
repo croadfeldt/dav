@@ -2638,9 +2638,9 @@ async function init() {
     _populateUCAssistModelSel();
   }).catch(() => {});
   switchView('usecases');
-  // Populate the masthead run selector once on boot so the single current-run
-  // picker is ready on every tab, not just after visiting an analysis tab.
-  api('/api/results').then(resp => { allResults = resp.results || []; _populateGlobalRunSel(); }).catch(()=>{});
+  // Load the run list on boot so the masthead run selector is ready on every tab
+  // (same archived-aware source as the Runs tab).
+  loadRuns();
 }
 
 async function loadMe() {
@@ -2769,6 +2769,7 @@ async function loadRuns(opts) {
     const resp = await api('/api/runs?limit=100' + (_showArchivedRuns ? '&show_archived=true' : ''));
     allRuns = resp.runs || [];
     document.getElementById('badgeRuns').textContent = allRuns.length;
+    _populateGlobalRunSel();   // keep the masthead selector in sync with the Runs list
     renderRunsList();
     const noteEl = document.getElementById('runsNote');
     noteEl.textContent = resp.enabled ? '' : 'Pipeline trigger not available.';
@@ -7767,8 +7768,11 @@ function _populateGlobalRunSel(){
   const sel = document.getElementById('globalRunSel');
   if (!sel) return;
   const cur = activeRunResultId || '';
-  sel.innerHTML = '<option value="">— select run —</option>' + (allResults||[]).map(r =>
-    `<option value="${esc(r.run_id)}"${r.run_id===cur?' selected':''}>${esc(r.session_name ? r.session_name + ' (' + r.run_id.slice(0,12) + '…)' : r.run_id)}</option>`
+  // Same source as the Runs tab (allRuns), excluding archived and not-yet-analyzed
+  // runs, so the top selector and the left list always agree.
+  const runs = (allRuns||[]).filter(r => r.run_id && !r.archived);
+  sel.innerHTML = '<option value="">— select run —</option>' + runs.map(r =>
+    `<option value="${esc(r.run_id)}"${r.run_id===cur?' selected':''}>${esc(r.session_name || r.name || r.run_id)}</option>`
   ).join('');
   sel.value = cur;
 }
