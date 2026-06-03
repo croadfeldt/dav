@@ -788,6 +788,12 @@
               <button class="btn ghost btn-icon" id="refreshRunsBtn" title="Refresh">↻</button>
             </div>
           </div>
+          <div id="runSelectionToolbar" style="display:none;padding:6px 10px;background:var(--accent-bg);border-bottom:1px solid var(--accent-soft);align-items:center;gap:6px;font-size:11px;flex-shrink:0;">
+            <span id="runSelectionCount" style="flex:1;color:var(--accent);font-weight:500;"></span>
+            <button class="btn ghost btn-sm" id="runSelArchiveBtn" title="Archive the selected runs (hide)">Archive</button>
+            <button class="btn danger btn-sm" id="runSelDeleteBtn" title="Delete the selected runs completely (irreversible)">Delete</button>
+            <button class="btn ghost btn-sm" id="runSelClearBtn" title="Clear selection">×</button>
+          </div>
           <div style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:10px;color:var(--text-faint);flex-shrink:0;" id="runsNote"></div>
           <div class="scrollable" id="runsList"><div class="empty">loading…</div></div>
         </div>
@@ -2577,6 +2583,7 @@ const LC_TRANSITIONS = {
 // ── State ────────────────────────────────────────────────────
 let me = { reviewer: null, authenticated: false };
 let allRuns = [];
+const _selectedRuns = new Set(); // run names checked for batch archive/delete
 let allResults = [];
 let allUCs = [];
 let allSets = [];
@@ -2790,6 +2797,7 @@ function _renderRunItemHtml(r) {
       ((r.uc_failed || 0) > 0 ? ` <span style="font-size:10px;color:var(--red);">${r.uc_failed} fail</span>` : '');
   }
   return `
+    <input type="checkbox" class="run-sel-cb" onclick="event.stopPropagation()" onchange="toggleRunSelect('${r.name}', this.checked)" ${_selectedRuns.has(r.name) ? 'checked' : ''} title="Select for batch archive/delete" style="margin:3px 6px 0 0;width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;align-self:flex-start;cursor:pointer;" />
     <div class="rli-main" style="${r.archived ? 'opacity:0.55;' : ''}">
       <div class="rli-name">${esc(friendly)}${r.archived ? ' <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-faint);border:1px solid var(--border);padding:0 3px;border-radius:2px;">archived</span>' : ''}</div>
       <div class="rli-sub">${scopeBits.join(' · ')}${countsHtml ? ' · ' + countsHtml : ''}</div>
@@ -2856,6 +2864,7 @@ function renderRunsList() {
 
   // Single DOM op: re-attach the (possibly-reordered) rows
   el.appendChild(fragment);
+  _renderRunSelectionBar();
 }
 
 // ── Run management (archive / complete delete) ──────────────────
@@ -2884,6 +2893,48 @@ async function deleteRunConfirm(name){
     loadRuns();
   } catch(e){ toast(e.message, true); }
 }
+
+// Multi-select for batch archive/delete (mirrors the Use Cases selection pattern).
+function toggleRunSelect(name, checked){
+  if (checked) _selectedRuns.add(name); else _selectedRuns.delete(name);
+  _renderRunSelectionBar();
+}
+function _renderRunSelectionBar(){
+  const bar = document.getElementById('runSelectionToolbar');
+  const count = document.getElementById('runSelectionCount');
+  if (!bar || !count) return;
+  const present = new Set(allRuns.map(r => r.name));
+  for (const n of [..._selectedRuns]) if (!present.has(n)) _selectedRuns.delete(n);
+  const n = _selectedRuns.size;
+  if (!n){ bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  count.textContent = `${n} run${n===1?'':'s'} selected`;
+}
+async function archiveSelectedRuns(){
+  const names = [..._selectedRuns];
+  if (!names.length) return;
+  for (const nm of names){ try { await api(`/api/runs/${encodeURIComponent(nm)}/archive`, {method:'POST', body: JSON.stringify({archived:true})}); } catch(e){} }
+  _selectedRuns.clear();
+  toast(`Archived ${names.length} run${names.length===1?'':'s'}`);
+  loadRuns();
+}
+async function deleteSelectedRuns(){
+  const names = [..._selectedRuns];
+  if (!names.length) return;
+  if (!confirm(`Delete ${names.length} run${names.length===1?'':'s'} COMPLETELY?\n\nRemoves each run's analysis, workspace result files, and Tekton PipelineRun. This cannot be undone.\n\nUse Archive to just hide them.`)) return;
+  let ok=0, fail=0;
+  for (const nm of names){ try { await api(`/api/runs/${encodeURIComponent(nm)}`, {method:'DELETE'}); ok++; } catch(e){ fail++; } }
+  _selectedRuns.clear();
+  toast(`Deleted ${ok} run${ok===1?'':'s'}${fail?`, ${fail} failed`:''}`, fail>0);
+  loadRuns();
+}
+document.getElementById('runSelArchiveBtn')?.addEventListener('click', archiveSelectedRuns);
+document.getElementById('runSelDeleteBtn')?.addEventListener('click', deleteSelectedRuns);
+document.getElementById('runSelClearBtn')?.addEventListener('click', () => {
+  _selectedRuns.clear();
+  document.querySelectorAll('#runsList .run-sel-cb').forEach(cb => { cb.checked = false; });
+  _renderRunSelectionBar();
+});
 
 // ── Run detail panel ──────────────────────────────────────────
 let _rdName = null;
