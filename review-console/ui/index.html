@@ -748,8 +748,11 @@
       <a class="pf-nav-item" data-view="inbox" href="javascript:void(0)" title="PR-comment Inbox — draft UCs from ingested comments">
         <span class="nav-icon">📬</span><span class="nav-label">Inbox <span class="badge" id="badgeInbox" style="font-size:9px;"></span></span>
       </a>
-      <a class="pf-nav-item" data-view="review" href="javascript:void(0)">
-        <span class="nav-icon">✦</span><span class="nav-label">Review &amp; Plan</span>
+      <a class="pf-nav-item" data-view="review" href="javascript:void(0)" title="Track 1 · Architecture &amp; Capability — gap analysis → spec changes">
+        <span class="nav-icon">✦</span><span class="nav-label">Architecture</span>
+      </a>
+      <a class="pf-nav-item" data-view="engineering" href="javascript:void(0)" title="Track 2 · Engineering Roadmap — what to build, in what order, to satisfy the UCs">
+        <span class="nav-icon">🛠</span><span class="nav-label">Engineering</span>
       </a>
       <a class="pf-nav-item" data-view="improve" href="javascript:void(0)" title="Self-improvement — diagnose run failures and review proposed fixes">
         <span class="nav-icon">🩺</span><span class="nav-label">Improve <span class="badge" id="badgeImprove" style="font-size:9px;"></span></span>
@@ -1132,13 +1135,8 @@
             </div>
           </div>
           <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
-          <div style="font-size:9px;text-transform:uppercase;letter-spacing:0.12em;color:var(--accent);margin-bottom:5px;" title="Gap-anchored: find spec deficiencies and turn them into spec changes">Track 1 · Architecture &amp; Capability</div>
           <button class="btn primary" id="rpRevRunBtn" style="width:100%;">▶ Run Review</button>
           <button class="btn ghost" id="rpEnhRunBtn" style="width:100%;margin-top:4px;">▶ Run Enhancement Plan</button>
-          <hr style="border:none;border-top:1px solid var(--border);margin:8px 0 4px;">
-          <div style="font-size:9px;text-transform:uppercase;letter-spacing:0.12em;color:var(--blue);margin-bottom:5px;" title="Capability-driven: what to build, in what order, to satisfy the UCs (provisional until the capability catalog lands)">Track 2 · Engineering Roadmap</div>
-          <button class="btn ghost" id="rpCapMapBtn" style="width:100%;" title="Aggregate which capabilities the most UCs in this run demand (run scope; no model needed)">▶ Capability Map</button>
-          <button class="btn ghost" id="rpFoundBtn" style="width:100%;margin-top:4px;" title="Rank capabilities by how many others depend on them — foundational building blocks (run scope)">▶ Foundational</button>
           <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
           <div id="rpUCLink" style="display:none;font-size:11px;color:var(--text-faint);">
             Pre-selected from Results tab
@@ -1194,8 +1192,27 @@
               <span id="rpPrMsg" style="font-size:11px;color:var(--text-faint);"></span>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ ENGINEERING ROADMAP (Track 2) ══════════════ -->
+    <section class="pf-view" id="view-engineering">
+      <div class="rp-split">
+        <div class="rp-controls" id="engControls">
+          <div>
+            <label>Run</label>
+            <select id="engRunSel" style="width:100%;font-size:11px;">
+              <option value="">— select a run —</option>
+            </select>
+          </div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
+          <button class="btn ghost" id="rpCapMapBtn" style="width:100%;" title="Aggregate which capabilities the most UCs in this run demand (run scope; no model needed)">▶ Capability Map</button>
+          <button class="btn ghost" id="rpFoundBtn" style="width:100%;margin-top:4px;" title="Rank capabilities by how many others depend on them — foundational building blocks (run scope)">▶ Foundational</button>
+        </div>
+        <div class="rp-output" id="engOutput">
           <!-- ── Track 2 · Engineering Roadmap (capability-driven) ── -->
-          <div style="background:var(--bg-raised);border-left:2px solid var(--blue);padding:8px 12px;border-radius:2px;margin-top:6px;">
+          <div style="background:var(--bg-raised);border-left:2px solid var(--blue);padding:8px 12px;border-radius:2px;">
             <div style="font-size:12px;color:var(--text);"><strong>Track 2 · Engineering Roadmap</strong> <span style="color:var(--text-faint);">— capability-driven</span></div>
             <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">What to build, in what order, to satisfy the use cases. <em>Output:</em> a dependency-ordered capability roadmap. <em style="color:var(--text-faint);">Provisional until the capability catalog lands — capability ids are still raw model output.</em></div>
           </div>
@@ -2627,6 +2644,7 @@ function switchView(name) {
   if (name === 'results')  loadResults();
   if (name === 'usecases') { loadUCs(); loadSets(); }
   if (name === 'review')   loadReviewTab();
+  if (name === 'engineering') loadEngineeringTab();
   if (name === 'improve')  loadImproveQueue();
   if (name === 'config')   loadConfig();
   if (name === 'inbox')    loadInbox();
@@ -8420,9 +8438,6 @@ function _rpGetContext() {
 document.getElementById('rpRunSel')?.addEventListener('change', function() {
   activeRunResultId = this.value;
   _rpPopulateUCs(this.value);
-  // Stale capability map from the previous run — reset to the prompt.
-  const cm = document.getElementById('rpCapMap');
-  if (cm) cm.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Click <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on) for this run.</div>';
 });
 
 document.getElementById('rpScopeRun')?.addEventListener('change', () => {
@@ -8481,7 +8496,7 @@ document.getElementById('rpEnhRunBtn')?.addEventListener('click', async () => {
 // Run-scoped: aggregates which capabilities the most UCs in a run demand.
 // Reads /api/analysis/capability-density (populated at ingest); no model needed.
 async function loadCapabilityMap() {
-  const runId = document.getElementById('rpRunSel')?.value;
+  const runId = document.getElementById('engRunSel')?.value;
   const el = document.getElementById('rpCapMap');
   if (!el) return;
   if (!runId) { toast('Select a run first'); return; }
@@ -8561,7 +8576,7 @@ document.getElementById('rpCapMapBtn')?.addEventListener('click', loadCapability
 // Ranks capabilities by how many others transitively depend on them. Shares the
 // rpCapMap container with the demand view; reads /api/analysis/foundational-capabilities.
 async function loadFoundational() {
-  const runId = document.getElementById('rpRunSel')?.value;
+  const runId = document.getElementById('engRunSel')?.value;
   const el = document.getElementById('rpCapMap');
   if (!el) return;
   if (!runId) { toast('Select a run first'); return; }
@@ -8615,6 +8630,32 @@ function renderFoundational(data) {
 }
 
 document.getElementById('rpFoundBtn')?.addEventListener('click', loadFoundational);
+
+// Engineering Roadmap tab (Track 2) — its own run selector feeding the capability views.
+function loadEngineeringTab() {
+  const sel = document.getElementById('engRunSel');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— select a run —</option>';
+  allResults.forEach(r => {
+    const o = document.createElement('option');
+    o.value = r.run_id;
+    o.textContent = r.session_name ? `${r.session_name} (${r.run_id.slice(0,16)}…)` : r.run_id;
+    o.title = r.run_id;
+    sel.appendChild(o);
+  });
+  if (prev) sel.value = prev;
+  if (!allResults.length) {
+    api('/api/results').then(resp => { allResults = resp.results || []; loadEngineeringTab(); }).catch(()=>{});
+  }
+}
+document.getElementById('engRunSel')?.addEventListener('change', async function() {
+  const runId = this.value;
+  const cm = document.getElementById('rpCapMap');
+  if (cm) cm.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Click <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on) for this run.</div>';
+  // Pull the run summary so capability drill-ins can label UCs by handle.
+  if (runId) { try { activeRunSummary = await api(`/api/results/${encodeURIComponent(runId)}`); } catch(e){} }
+});
 
 document.getElementById('rpRevCopyBtn')?.addEventListener('click', () => {
   const text = localStorage.getItem('rpRevShowReasoning') === '1' ? _rpRevRaw.text : _stripThink(_rpRevRaw.text);
