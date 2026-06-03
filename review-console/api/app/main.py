@@ -6029,6 +6029,97 @@ async def put_stage_context(stage: str, payload: StageContextIn, request: Reques
     return {"ok": True, "stage": stage, "project_id": pid}
 
 
+# ── Capability catalog (manual-curated, LLM-suggested) ───────────────────────
+class CatalogIn(BaseModel):
+    cap_key: str = ""
+    name: str = ""
+    definition: str = ""
+    spec_refs: list[str] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)
+    status: str = "confirmed"
+    project_id: Optional[int] = None
+
+
+def _catalog_row(r) -> dict:
+    d = dict(r)
+    d["created_at"] = d["created_at"].isoformat()
+    d["updated_at"] = d["updated_at"].isoformat()
+    return d
+
+
+@app.get("/api/catalog")
+async def list_catalog(project_id: Optional[int] = Query(None)):
+    async with pool.acquire() as conn:
+        pid = project_id if project_id is not None else await _default_project_id(conn)
+        rows = await conn.fetch(
+            "SELECT * FROM capability_catalog WHERE project_id=$1 ORDER BY status, name, cap_key", pid
+        )
+    return {"project_id": pid, "capabilities": [_catalog_row(r) for r in rows]}
+
+
+@app.get("/api/catalog/suggestions")
+async def catalog_suggestions(project_id: Optional[int] = Query(None), run_id: Optional[str] = Query(None)):
+    """Candidate capabilities the LLM emitted in analyses (uc_capabilities) that
+    aren't in the catalog yet — the architect confirms/merges these in."""
+    async with pool.acquire() as conn:
+        pid = project_id if project_id is not None else await _default_project_id(conn)
+        if run_id:
+            rows = await conn.fetch(
+                "SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n FROM uc_capabilities "
+                "WHERE run_id=$1 GROUP BY capability_id ORDER BY n DESC", run_id)
+        else:
+            rows = await conn.fetch(
+                "SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n FROM uc_capabilities "
+                "GROUP BY capability_id ORDER BY n DESC")
+        ex = {r["cap_key"] for r in await conn.fetch(
+            "SELECT cap_key FROM capability_catalog WHERE project_id=$1", pid)}
+    suggestions = [{"capability_id": r["capability_id"], "uc_count": int(r["n"])}
+                   for r in rows if r["capability_id"] and r["capability_id"] not in ex]
+    return {"project_id": pid, "suggestions": suggestions}
+
+
+@app.post("/api/catalog")
+async def add_catalog(payload: CatalogIn, request: Request):
+    user = get_user(request)
+    key = (payload.cap_key or "").strip()
+    if not key:
+        raise HTTPException(400, "cap_key required")
+    async with pool.acquire() as conn:
+        pid = payload.project_id if payload.project_id is not None else await _default_project_id(conn)
+        if await conn.fetchval("SELECT 1 FROM capability_catalog WHERE project_id=$1 AND cap_key=$2", pid, key):
+            raise HTTPException(409, f"capability {key!r} already in catalog")
+        row = await conn.fetchrow(
+            """INSERT INTO capability_catalog
+               (project_id, cap_key, name, definition, spec_refs, depends_on, status, created_by, updated_by)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8) RETURNING id""",
+            pid, key, payload.name or key, payload.definition,
+            payload.spec_refs, payload.depends_on, payload.status, user)
+    return {"ok": True, "id": row["id"], "cap_key": key}
+
+
+@app.put("/api/catalog/{cap_id}")
+async def update_catalog(cap_id: int, payload: CatalogIn, request: Request):
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """UPDATE capability_catalog
+               SET name=$2, definition=$3, spec_refs=$4, depends_on=$5, status=$6, updated_by=$7, updated_at=now()
+               WHERE id=$1""",
+            cap_id, payload.name, payload.definition, payload.spec_refs,
+            payload.depends_on, payload.status, user)
+    if result == "UPDATE 0":
+        raise HTTPException(404, "capability not found")
+    return {"ok": True, "id": cap_id}
+
+
+@app.delete("/api/catalog/{cap_id}")
+async def delete_catalog(cap_id: int, request: Request):
+    get_user(request)
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM capability_catalog WHERE id=$1", cap_id)
+    return {"ok": True, "id": cap_id}
+
+
 @app.post("/api/arch-review")
 async def arch_review(payload: ArchReviewIn, request: Request):
     """Stream an architectural review from a configured model.

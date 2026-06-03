@@ -754,6 +754,9 @@
       <a class="pf-nav-item" data-view="engineering" href="javascript:void(0)" title="Track 2 · Engineering Roadmap — what to build, in what order, to satisfy the UCs">
         <span class="nav-icon">🛠</span><span class="nav-label">Engineering</span>
       </a>
+      <a class="pf-nav-item" data-view="catalog" href="javascript:void(0)" title="Capability Catalog — canonical capabilities (manual-curated, LLM-suggested)">
+        <span class="nav-icon">📒</span><span class="nav-label">Catalog</span>
+      </a>
       <a class="pf-nav-item" data-view="improve" href="javascript:void(0)" title="Self-improvement — diagnose run failures and review proposed fixes">
         <span class="nav-icon">🩺</span><span class="nav-label">Improve <span class="badge" id="badgeImprove" style="font-size:9px;"></span></span>
       </a>
@@ -1231,6 +1234,39 @@
               <div style="font-size:11px;color:var(--text-faint);">Select a run, then <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on).</div>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ CAPABILITY CATALOG (Track 1 — capability identification) ══════════════ -->
+    <section class="pf-view" id="view-catalog">
+      <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:14px;padding:14px;height:calc(100vh - 60px);">
+        <!-- Left: the catalog + add/edit form -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);">
+            <div style="font-size:13px;color:var(--text);"><strong>Capability Catalog</strong></div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Canonical capabilities for this project. Curate manually; confirm suggestions from analysis. The engineering roadmap reads this — not raw model strings.</div>
+          </div>
+          <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:6px;">
+            <input id="catKey" placeholder="capability key (e.g. tenant_provisioning)" style="font-size:11px;" />
+            <input id="catName" placeholder="name" style="font-size:11px;" />
+            <textarea id="catDef" rows="2" placeholder="definition" style="font-size:11px;"></textarea>
+            <input id="catDeps" placeholder="depends_on (comma-separated capability keys)" style="font-size:11px;" />
+            <div style="display:flex;gap:6px;align-items:center;">
+              <button class="btn primary btn-sm" id="catSaveBtn">Add capability</button>
+              <button class="btn ghost btn-sm" id="catClearBtn" style="display:none;">Cancel edit</button>
+              <span id="catMsg" style="font-size:10px;color:var(--text-faint);"></span>
+            </div>
+          </div>
+          <div class="scrollable" id="catList" style="flex:1;overflow-y:auto;padding:8px 14px;"><div class="empty">loading…</div></div>
+        </div>
+        <!-- Right: suggestions from analysis -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);">
+            <div style="font-size:13px;color:var(--text);"><strong>Suggestions from analysis</strong></div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Capabilities the model named across analyses, ranked by how many UCs invoked them. The framework proposes; you confirm into the catalog.</div>
+          </div>
+          <div class="scrollable" id="catSuggList" style="flex:1;overflow-y:auto;padding:8px 14px;"><div class="empty">loading…</div></div>
         </div>
       </div>
     </section>
@@ -2654,6 +2690,7 @@ function switchView(name) {
   if (name === 'usecases') { loadUCs(); loadSets(); }
   if (name === 'review')   loadReviewTab();
   if (name === 'engineering') loadEngineeringTab();
+  if (name === 'catalog')  loadCatalogTab();
   if (name === 'improve')  loadImproveQueue();
   if (name === 'config')   loadConfig();
   if (name === 'inbox')    loadInbox();
@@ -8687,6 +8724,94 @@ document.getElementById('engRunSel')?.addEventListener('change', async function(
   if (cm) cm.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Click <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on) for this run.</div>';
   // Pull the run summary so capability drill-ins can label UCs by handle.
   if (runId) { try { activeRunSummary = await api(`/api/results/${encodeURIComponent(runId)}`); } catch(e){} }
+});
+
+// ── Capability Catalog tab (manual-curated, LLM-suggested) ───────────────────
+let _catalogCache = [];
+let _catEditId = '';
+async function loadCatalogTab(){ _renderCatalog(); _renderCatalogSuggestions(); }
+async function _renderCatalog(){
+  const el = document.getElementById('catList');
+  if (!el) return;
+  try {
+    const r = await api('/api/catalog');
+    _catalogCache = r.capabilities || [];
+    if (!_catalogCache.length){ el.innerHTML = '<div class="empty">No capabilities yet. Add one, or confirm a suggestion →</div>'; return; }
+    el.innerHTML = _catalogCache.map(c => `
+      <div style="border:1px solid var(--border);border-radius:3px;padding:8px 10px;margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
+          <span style="font-weight:600;">${esc(c.name||c.cap_key)}</span>
+          <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-faint);">${esc(c.status)}</span>
+        </div>
+        <div style="font-family:var(--mono,monospace);font-size:10px;color:var(--text-faint);">${esc(c.cap_key)}</div>
+        ${c.definition?`<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${esc(c.definition)}</div>`:''}
+        ${(c.depends_on&&c.depends_on.length)?`<div style="font-size:10px;color:var(--text-faint);margin-top:3px;">requires: ${esc(c.depends_on.join(', '))}</div>`:''}
+        <div style="margin-top:5px;display:flex;gap:6px;">
+          <button class="btn ghost btn-sm cat-edit" data-id="${c.id}">Edit</button>
+          <button class="btn danger btn-sm cat-del" data-id="${c.id}">Delete</button>
+        </div>
+      </div>`).join('');
+    el.querySelectorAll('.cat-del').forEach(b => b.addEventListener('click', async () => {
+      try { await api(`/api/catalog/${b.dataset.id}`, {method:'DELETE'}); loadCatalogTab(); } catch(e){ toast(e.message,true); }
+    }));
+    el.querySelectorAll('.cat-edit').forEach(b => b.addEventListener('click', () => {
+      const c = _catalogCache.find(x => String(x.id) === b.dataset.id);
+      if (!c) return;
+      document.getElementById('catKey').value = c.cap_key;
+      document.getElementById('catName').value = c.name||'';
+      document.getElementById('catDef').value = c.definition||'';
+      document.getElementById('catDeps').value = (c.depends_on||[]).join(', ');
+      _catEditId = c.id;
+      document.getElementById('catClearBtn').style.display='';
+      document.getElementById('catSaveBtn').textContent='Save changes';
+    }));
+  } catch(e){ el.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`; }
+}
+async function _renderCatalogSuggestions(){
+  const el = document.getElementById('catSuggList');
+  if (!el) return;
+  try {
+    const r = await api('/api/catalog/suggestions');
+    const sugg = r.suggestions || [];
+    if (!sugg.length){ el.innerHTML = '<div class="empty">No new suggestions. Re-ingest a run to populate analysis capabilities.</div>'; return; }
+    el.innerHTML = sugg.map(s => `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;border-bottom:1px solid var(--border);padding:5px 0;">
+        <span style="font-family:var(--mono,monospace);font-size:11px;">${esc(s.capability_id)}</span>
+        <span style="display:flex;gap:8px;align-items:center;">
+          <span style="font-size:10px;color:var(--text-faint);">${s.uc_count} UC${s.uc_count===1?'':'s'}</span>
+          <button class="btn ghost btn-sm cat-confirm" data-key="${esc(s.capability_id)}">+ Add</button>
+        </span>
+      </div>`).join('');
+    el.querySelectorAll('.cat-confirm').forEach(b => b.addEventListener('click', async () => {
+      try { await api('/api/catalog', {method:'POST', body: JSON.stringify({cap_key: b.dataset.key, name: b.dataset.key, status:'confirmed'})}); loadCatalogTab(); }
+      catch(e){ toast(e.message, true); }
+    }));
+  } catch(e){ el.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`; }
+}
+function _catClearForm(){
+  ['catKey','catName','catDef','catDeps'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
+  _catEditId = '';
+  const cb=document.getElementById('catClearBtn'); if(cb) cb.style.display='none';
+  const sb=document.getElementById('catSaveBtn'); if(sb) sb.textContent='Add capability';
+  const msg=document.getElementById('catMsg'); if(msg) msg.textContent='';
+}
+document.getElementById('catClearBtn')?.addEventListener('click', _catClearForm);
+document.getElementById('catSaveBtn')?.addEventListener('click', async () => {
+  const key = (document.getElementById('catKey').value||'').trim();
+  const msg = document.getElementById('catMsg');
+  if (!key){ if(msg){ msg.textContent='key required'; msg.style.color='var(--red)'; } return; }
+  const body = {
+    cap_key: key,
+    name: (document.getElementById('catName').value||'').trim(),
+    definition: (document.getElementById('catDef').value||'').trim(),
+    depends_on: (document.getElementById('catDeps').value||'').split(',').map(s=>s.trim()).filter(Boolean),
+    status: 'confirmed',
+  };
+  try {
+    if (_catEditId) await api(`/api/catalog/${_catEditId}`, {method:'PUT', body: JSON.stringify(body)});
+    else await api('/api/catalog', {method:'POST', body: JSON.stringify(body)});
+    _catClearForm(); loadCatalogTab();
+  } catch(e){ if(msg){ msg.textContent=e.message; msg.style.color='var(--red)'; } }
 });
 
 document.getElementById('rpRevCopyBtn')?.addEventListener('click', () => {

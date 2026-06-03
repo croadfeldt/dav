@@ -377,4 +377,25 @@ CREATE TABLE IF NOT EXISTS project_stage_context (
   PRIMARY KEY (project_id, stage)
 );
 
+-- ── Capability catalog (Phase 1 keystone — manual-curated, LLM-suggested) ────
+-- Project-scoped canonical capabilities. The architect curates; suggestions are
+-- derived from analysis-emitted uc_capabilities (the LLM's proposals). This is
+-- the canonical axis Track 2 (engineering roadmap) reads instead of raw strings.
+CREATE TABLE IF NOT EXISTS capability_catalog (
+  id          BIGSERIAL PRIMARY KEY,
+  project_id  BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  cap_key     TEXT NOT NULL,
+  name        TEXT NOT NULL DEFAULT '',
+  definition  TEXT NOT NULL DEFAULT '',
+  spec_refs   TEXT[] NOT NULL DEFAULT '{}',
+  depends_on  TEXT[] NOT NULL DEFAULT '{}',
+  status      TEXT NOT NULL DEFAULT 'confirmed',   -- confirmed | suggested | rejected
+  created_by  TEXT NOT NULL DEFAULT '',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by  TEXT NOT NULL DEFAULT '',
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (project_id, cap_key)
+);
+CREATE INDEX IF NOT EXISTS idx_capability_catalog_project ON capability_catalog(project_id);
+
 COMMIT;
