@@ -272,6 +272,15 @@ work (managed_repos + sources), the multi-project scaffolding.
 
 ## 12. Proposed phasing (sequence TBD with Chris)
 
+> **Progress (2026-06-02 night, branch `feat/dcm-uc-prioritization`, deployed):**
+> Phase 0 **done** — Architecture (Track 1) and Engineering (Track 2) are now
+> separate left-nav tabs; review/enhancement render as Markdown + enhancement
+> cards. Foundational tenancy **started** — `projects` (+ seeded default),
+> `project_members`, `project_stage_context` tables exist; per-stage LLM **context
+> injection** ships (saved to the project, fed into arch-review + enhancement).
+> **Next = Phase 1 capability catalog**, which is blocked on the §13 open decision
+> (resolution mechanism) + the catalog curation UX — needs Chris's input.
+
 - **Foundational (precedes / threads Phase 1) — tenancy-ready schema + roles.** Put a
   project scope on every new table (catalog, Sets, work items, roadmaps) and role checks at
   the curate/approve seams *before* building them, so they're multi-tenant from birth. Defer
