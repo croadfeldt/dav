@@ -278,8 +278,12 @@ work (managed_repos + sources), the multi-project scaffolding.
 > cards. Foundational tenancy **started** — `projects` (+ seeded default),
 > `project_members`, `project_stage_context` tables exist; per-stage LLM **context
 > injection** ships (saved to the project, fed into arch-review + enhancement).
-> **Next = Phase 1 capability catalog**, which is blocked on the §13 open decision
-> (resolution mechanism) + the catalog curation UX — needs Chris's input.
+> **Phase 1 capability catalog — STARTED** (decision: manual-curated + LLM-suggests,
+> its own tab). Shipped: `capability_catalog` table + CRUD API + `/api/catalog/
+> suggestions` (model-emitted capabilities ranked by demand) + a dedicated
+> **Catalog** nav tab (curate left, confirm suggestions right). Also: enhancement
+> patches now render as Markdown. **Next:** point Capability Map / Foundational at
+> the catalog (resolve model ids → catalog entries) instead of raw strings.
 
 - **Foundational (precedes / threads Phase 1) — tenancy-ready schema + roles.** Put a
   project scope on every new table (catalog, Sets, work items, roadmaps) and role checks at
