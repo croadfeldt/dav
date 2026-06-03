@@ -930,7 +930,7 @@
     <!-- ══════════════ RESULTS ══════════════ -->
     <section class="pf-view" id="view-results">
       <div class="split">
-    <div class="split-left" id="resultsRunsPanel" style="width:320px; min-width:200px;">
+    <div class="split-left" id="resultsRunsPanel" style="width:320px; min-width:200px; display:none;"><!-- run picked globally in the masthead -->
       <div class="panel-header">
         <div class="panel-title">Run <em>results</em></div>
         <div style="display:flex;gap:4px;flex-shrink:0;">
@@ -943,7 +943,7 @@
       </div>
       <div class="scrollable" id="resultList"><div class="empty">loading…</div></div>
     </div>
-    <div class="split-resizer" data-rs-left="resultsRunsPanel" data-rs-storage="rsRunsW"></div>
+    <div class="split-resizer" data-rs-left="resultsRunsPanel" data-rs-storage="rsRunsW" style="display:none;"></div>
     <div class="split-right">
       <div class="split" id="resultDetail">
         <div class="split-left" id="ucListPanel" style="width:340px; min-width:200px;">
@@ -2710,7 +2710,7 @@ function switchView(name) {
   if (name === 'runs') _startRunsListPoll();
   else                 _stopRunsListPoll();
   if (name === 'runs')     loadRuns();
-  if (name === 'results')  loadResults();
+  if (name === 'results')  { loadResults(); _showCurrentRunResults(); }
   if (name === 'usecases') { loadUCs(); loadSets(); }
   if (name === 'review')   loadReviewTab();
   if (name === 'engineering') loadEngineeringTab();
@@ -3184,6 +3184,10 @@ function rdRenderPrompts() {
 
 function selectRun(name) {
   _rdName = name;
+  // This run is now the system's current run: if it has ingested analysis, make
+  // it the current analysis run (drives Results/Architecture/Engineering + masthead).
+  const _r = allRuns.find(x => x.name === name);
+  if (_r && _r.run_id && _r.run_id !== activeRunResultId) selectRunResult(_r.run_id);
   // Highlight in list
   document.querySelectorAll('.run-list-item').forEach(el =>
     el.classList.toggle('active', el.querySelector('.rli-main .rli-name') &&
@@ -4183,6 +4187,23 @@ function renderResultList() {
     item.addEventListener('click', () => selectRunResult(r.run_id));
     el.appendChild(item);
   });
+}
+
+// The Results tab no longer has its own run list — it shows the current run's
+// analysis (run is picked once, in the masthead / Runs tab).
+function _showCurrentRunResults(){
+  const el = document.getElementById('ucResultList');
+  if (!activeRunResultId) {
+    if (el) el.innerHTML = '<div class="empty">Pick a run from the selector at the top.</div>';
+    return;
+  }
+  if (activeRunSummary && activeRunSummary.run_id === activeRunResultId) {
+    renderRunSummaryHeader(activeRunSummary);
+    renderUCResultList(activeRunSummary);
+    const p = document.getElementById('ucListPanel'); if (p) p.style.display = '';
+  } else {
+    selectRunResult(activeRunResultId);
+  }
 }
 
 async function selectRunResult(runId) {

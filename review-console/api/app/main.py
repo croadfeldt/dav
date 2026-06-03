@@ -764,6 +764,7 @@ async def list_runs(limit: int = Query(50, ge=1, le=200), show_archived: bool = 
     # Bulk-fetch session rows by run_name; the table is small (one row per run)
     names = [r.get("name") for r in runs if r.get("name")]
     sessions_by_name: dict[str, dict] = {}
+    runid_by_name: dict[str, str] = {}   # PipelineRun name → its ingested analysis run_id
     if names:
         try:
             async with pool.acquire() as conn:
@@ -775,11 +776,19 @@ async def list_runs(limit: int = Query(50, ge=1, le=200), show_archived: bool = 
                     "FROM run_sessions WHERE run_name = ANY($1::text[])",
                     names,
                 )
+                rid_rows = await conn.fetch(
+                    "SELECT DISTINCT ON (run_name) run_name, run_id FROM analysis_runs "
+                    "WHERE run_name = ANY($1::text[]) ORDER BY run_name, ingested_at DESC",
+                    names,
+                )
             for row in rows:
                 sessions_by_name[row["run_name"]] = dict(row)
+            for row in rid_rows:
+                runid_by_name[row["run_name"]] = row["run_id"]
         except Exception as e:
             log.warning("list_runs session join failed: %s", e)
     for r in runs:
+        r["run_id"] = runid_by_name.get(r.get("name"))   # null until analysis is ingested
         s = sessions_by_name.get(r.get("name"))
         if s:
             r["session_name"] = s.get("name") or None
