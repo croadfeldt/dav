@@ -790,6 +790,16 @@
               <button class="btn ghost btn-icon" id="refreshRunsBtn" title="Refresh">↻</button>
             </div>
           </div>
+          <div class="panel-toolbar" style="gap:6px;flex-shrink:0;">
+            <input id="runFilter" placeholder="filter runs…" style="flex:1;" />
+            <select id="runPhaseFilter" style="flex:none;width:88px;font-size:10px;padding:3px 5px;">
+              <option value="">all</option>
+              <option value="Running">running</option>
+              <option value="Succeeded">succeeded</option>
+              <option value="Failed">failed</option>
+            </select>
+            <button class="btn ghost btn-sm" id="runSelectAllBtn" title="Select / deselect all visible runs">☑ All</button>
+          </div>
           <div id="runSelectionToolbar" style="display:none;padding:6px 10px;background:var(--accent-bg);border-bottom:1px solid var(--accent-soft);align-items:center;gap:6px;font-size:11px;flex-shrink:0;">
             <span id="runSelectionCount" style="flex:1;color:var(--accent);font-weight:500;"></span>
             <button class="btn ghost btn-sm" id="runSelArchiveBtn" title="Archive the selected runs (hide)">Archive</button>
@@ -2828,6 +2838,11 @@ function renderRunsList() {
     el.innerHTML = '<div class="empty">No runs found. Use + New Run to trigger one.</div>';
     return;
   }
+  const visible = allRuns.filter(_matchRunFilter);
+  if (!visible.length) {
+    el.innerHTML = '<div class="empty">No runs match the filter.</div>';
+    return;
+  }
   // Recover from a previous empty/loading/error placeholder cleanly
   if (!el.querySelector('.run-list-item')) {
     el.innerHTML = '';
@@ -2843,7 +2858,7 @@ function renderRunsList() {
   // fingerprint matches. Detaching into the fragment + a single appendChild
   // at the end keeps the user's scroll position and avoids visible flash.
   const fragment = document.createDocumentFragment();
-  for (const r of allRuns) {
+  for (const r of visible) {
     const fp = _runItemFingerprint(r);
     let item = existing.get(r.name);
     if (item) {
@@ -2938,6 +2953,31 @@ document.getElementById('runSelDeleteBtn')?.addEventListener('click', deleteSele
 document.getElementById('runSelClearBtn')?.addEventListener('click', () => {
   _selectedRuns.clear();
   document.querySelectorAll('#runsList .run-sel-cb').forEach(cb => { cb.checked = false; });
+  _renderRunSelectionBar();
+});
+
+// Runs list filtering + select/deselect-all.
+let _runFilter = '';
+let _runPhaseFilter = '';
+function _matchRunFilter(r){
+  if (_runPhaseFilter && r.phase !== _runPhaseFilter) return false;
+  if (!_runFilter) return true;
+  const f = _runFilter.toLowerCase();
+  return (r.name||'').toLowerCase().includes(f)
+      || (r.session_name||'').toLowerCase().includes(f)
+      || (r.category||'').toLowerCase().includes(f)
+      || (r.phase||'').toLowerCase().includes(f);
+}
+document.getElementById('runFilter')?.addEventListener('input', function(){ _runFilter = this.value; renderRunsList(); });
+document.getElementById('runPhaseFilter')?.addEventListener('change', function(){ _runPhaseFilter = this.value; renderRunsList(); });
+document.getElementById('runSelectAllBtn')?.addEventListener('click', () => {
+  const visible = allRuns.filter(_matchRunFilter);
+  const allSel = visible.length && visible.every(r => _selectedRuns.has(r.name));
+  visible.forEach(r => { if (allSel) _selectedRuns.delete(r.name); else _selectedRuns.add(r.name); });
+  document.querySelectorAll('#runsList .run-sel-cb').forEach(cb => {
+    const nm = cb.closest('.run-list-item')?.dataset.runName;
+    if (nm) cb.checked = _selectedRuns.has(nm);
+  });
   _renderRunSelectionBar();
 });
 
