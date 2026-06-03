@@ -208,6 +208,38 @@ async def _analysis_ingest_loop():
             await asyncio.sleep(SLEEP_SECONDS)
 
 
+async def _backfill_uc_projections(conn: "asyncpg.Connection") -> int:
+    """Self-healing: fill priority + readiness projections for managed UCs saved
+    before those columns existed (DCM features #1/#4). Keyed on readiness_score
+    IS NULL — readiness is always computable, so NULL unambiguously means "never
+    projected" (priority legitimately stays NULL for unranked UCs, so it can't be
+    the signal). Idempotent: a no-op once every row is projected, since save and
+    import now stamp these columns. Unparseable legacy rows are left NULL (they
+    re-scan harmlessly next boot) rather than stamped with misleading scores."""
+    rows = await conn.fetch(
+        "SELECT uuid, yaml_content FROM managed_use_cases WHERE readiness_score IS NULL"
+    )
+    if not rows:
+        return 0
+    n = 0
+    for r in rows:
+        try:
+            data = _parse_uc_yaml(r["yaml_content"] or "")
+        except ValueError:
+            log.warning("backfill: skipping unparseable UC %s", r["uuid"])
+            continue
+        priority, priority_score = _derive_uc_priority(data)
+        readiness = _uc_readiness.score_use_case(data)["score"]
+        await conn.execute(
+            "UPDATE managed_use_cases SET priority=$2, priority_score=$3, readiness_score=$4 WHERE uuid=$1",
+            r["uuid"], priority, priority_score, readiness,
+        )
+        n += 1
+    if n:
+        log.info("Backfilled priority/readiness projections for %d managed UC(s)", n)
+    return n
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pool
@@ -249,6 +281,7 @@ async def lifespan(app: FastAPI):
         await _seed_corpus(conn)
         await _seed_managed_repos(conn)
         await _migrate_code_repo_configs(conn)
+        await _backfill_uc_projections(conn)
     log.info("Ready.")
     import asyncio
     finalizer_task = asyncio.create_task(_finalizer_loop())
