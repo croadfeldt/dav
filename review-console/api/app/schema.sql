@@ -340,4 +340,41 @@ INSERT INTO mcp_server_configs (name, description, sse_url, enabled, created_by)
    true, 'seed')
 ON CONFLICT DO NOTHING;
 
+-- ── Projects (tenancy foundation — uc-driven-roadmaps-design.md §9) ──────────
+-- A project is a user-defined analysis scope. Tenancy-ready from birth: new
+-- entities carry project_id. A 'default' project gives existing single-project
+-- data a home; the full multi-project UX comes later.
+CREATE TABLE IF NOT EXISTS projects (
+  id          BIGSERIAL PRIMARY KEY,
+  slug        TEXT UNIQUE NOT NULL,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  created_by  TEXT NOT NULL DEFAULT 'system',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  archived    BOOLEAN NOT NULL DEFAULT false
+);
+INSERT INTO projects (slug, name, description, created_by)
+  VALUES ('default', 'Default', 'Default project (auto-created)', 'system')
+  ON CONFLICT (slug) DO NOTHING;
+
+-- Many-to-many users↔projects with a per-project role.
+CREATE TABLE IF NOT EXISTS project_members (
+  project_id  BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  reviewer    TEXT NOT NULL,
+  role        TEXT NOT NULL DEFAULT 'member',
+  added_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (project_id, reviewer)
+);
+
+-- Per-stage context/instructions the architect injects to further inform the LLM
+-- at each stage; scoped to the project ("saved as part of the project itself").
+CREATE TABLE IF NOT EXISTS project_stage_context (
+  project_id  BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  stage       TEXT NOT NULL,
+  content     TEXT NOT NULL DEFAULT '',
+  updated_by  TEXT NOT NULL DEFAULT '',
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (project_id, stage)
+);
+
 COMMIT;

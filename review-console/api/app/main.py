@@ -5937,6 +5937,98 @@ async def set_model_default(key: str, payload: ModelDefaultIn, request: Request)
 # ========================= ARCHITECTURAL REVIEW =========================
 
 
+# ── Projects (tenancy foundation) + per-stage LLM context ────────────────────
+async def _default_project_id(conn) -> Optional[int]:
+    return await conn.fetchval("SELECT id FROM projects WHERE slug='default'")
+
+
+async def _stage_context(conn, stage: str, project_id: Optional[int] = None) -> str:
+    """Architect-set context/instructions for a stage, scoped to a project."""
+    if project_id is None:
+        project_id = await _default_project_id(conn)
+    if project_id is None:
+        return ""
+    row = await conn.fetchval(
+        "SELECT content FROM project_stage_context WHERE project_id=$1 AND stage=$2",
+        project_id, stage,
+    )
+    return (row or "").strip()
+
+
+def _inject_context(user_prompt: str, context: str, stage_label: str) -> str:
+    """Append architect-set project/stage context to an LLM user prompt."""
+    if not context:
+        return user_prompt
+    return (
+        user_prompt
+        + f"\n\n--- Project context & instructions for the {stage_label} stage "
+          f"(set by the architect — honor these) ---\n{context}\n"
+    )
+
+
+@app.get("/api/projects")
+async def list_projects():
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT id, slug, name, description, created_by, created_at, archived "
+            "FROM projects ORDER BY (slug='default') DESC, name"
+        )
+    return {"projects": [{**dict(r), "created_at": r["created_at"].isoformat()} for r in rows]}
+
+
+class ProjectIn(BaseModel):
+    slug: str
+    name: str
+    description: str = ""
+
+
+@app.post("/api/projects")
+async def create_project(payload: ProjectIn, request: Request):
+    user = get_user(request)
+    slug = (payload.slug or "").strip().lower()
+    if not slug or not re.match(r"^[a-z0-9][a-z0-9-]*$", slug):
+        raise HTTPException(400, "slug must be lowercase alphanumeric/dashes, starting alphanumeric")
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval("SELECT 1 FROM projects WHERE slug=$1", slug)
+        if exists:
+            raise HTTPException(409, f"project {slug!r} already exists")
+        row = await conn.fetchrow(
+            "INSERT INTO projects (slug, name, description, created_by) VALUES ($1,$2,$3,$4) RETURNING id",
+            slug, (payload.name or slug).strip(), payload.description or "", user,
+        )
+    return {"ok": True, "id": row["id"], "slug": slug}
+
+
+class StageContextIn(BaseModel):
+    content: str = ""
+    project_id: Optional[int] = None
+
+
+@app.get("/api/stage-context/{stage}")
+async def get_stage_context(stage: str, project_id: Optional[int] = Query(None)):
+    async with pool.acquire() as conn:
+        pid = project_id if project_id is not None else await _default_project_id(conn)
+        content = await _stage_context(conn, stage, pid)
+    return {"stage": stage, "project_id": pid, "content": content}
+
+
+@app.put("/api/stage-context/{stage}")
+async def put_stage_context(stage: str, payload: StageContextIn, request: Request):
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        pid = payload.project_id if payload.project_id is not None else await _default_project_id(conn)
+        if pid is None:
+            raise HTTPException(404, "no project to attach stage context to")
+        await conn.execute(
+            """INSERT INTO project_stage_context (project_id, stage, content, updated_by, updated_at)
+               VALUES ($1,$2,$3,$4, now())
+               ON CONFLICT (project_id, stage) DO UPDATE
+               SET content=EXCLUDED.content, updated_by=EXCLUDED.updated_by, updated_at=now()""",
+            pid, stage, payload.content or "", user,
+        )
+    return {"ok": True, "stage": stage, "project_id": pid}
+
+
 @app.post("/api/arch-review")
 async def arch_review(payload: ArchReviewIn, request: Request):
     """Stream an architectural review from a configured model.
@@ -6036,6 +6128,10 @@ async def arch_review(payload: ArchReviewIn, request: Request):
             system_prompt = _ar._RUN_SYSTEM
 
     model = dict(model_row)
+    # Inject the architect's project/stage context (DCM per-stage context).
+    async with pool.acquire() as _c:
+        _ctx = await _stage_context(_c, "arch_review")
+    user_prompt = _inject_context(user_prompt, _ctx, "architectural review")
 
     async def _gen():
         try:
@@ -6179,6 +6275,9 @@ async def enhancements(payload: EnhancementIn, request: Request):
         user_prompt, system_prompt = await _enhancement_prompts(
             payload.scope, payload.run_id, payload.uc_uuid, conn
         )
+        # Inject the architect's project/stage context (shared Track-1 stage).
+        _ctx = await _stage_context(conn, "arch_review")
+        user_prompt = _inject_context(user_prompt, _ctx, "enhancement planning")
 
     model = model_row
 

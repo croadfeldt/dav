@@ -1138,6 +1138,15 @@
           <button class="btn primary" id="rpRevRunBtn" style="width:100%;">▶ Run Review</button>
           <button class="btn ghost" id="rpEnhRunBtn" style="width:100%;margin-top:4px;">▶ Run Enhancement Plan</button>
           <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
+          <details id="rpCtxDetails" style="font-size:11px;">
+            <summary style="cursor:pointer;color:var(--text-dim);">⚙ Stage context — informs the LLM</summary>
+            <textarea id="rpStageCtx" rows="4" placeholder="Project-level context / instructions for the architecture review + enhancement (saved to the project, injected into the prompt)…" style="width:100%;font-size:11px;margin-top:5px;"></textarea>
+            <div style="display:flex;gap:6px;align-items:center;margin-top:4px;">
+              <button class="btn ghost btn-sm" id="rpStageCtxSave">Save to project</button>
+              <span id="rpStageCtxMsg" style="font-size:10px;color:var(--text-faint);"></span>
+            </div>
+          </details>
+          <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
           <div id="rpUCLink" style="display:none;font-size:11px;color:var(--text-faint);">
             Pre-selected from Results tab
           </div>
@@ -8389,6 +8398,7 @@ async function loadReviewTab() {
   if (prev) sel.value = prev;
   // Populate model selector
   _populateModelSel('rpModelSel', 'reviewLastModel');
+  _loadStageContext();
   // If results not yet loaded, load them
   if (!allResults.length) {
     try {
@@ -8398,6 +8408,26 @@ async function loadReviewTab() {
     } catch(e) {}
   }
 }
+
+// Per-stage LLM context (DCM), saved to the project and injected into the
+// arch-review + enhancement prompts. Stage key 'arch_review' (Track-1 design stage).
+async function _loadStageContext() {
+  const el = document.getElementById('rpStageCtx');
+  if (!el) return;
+  try { const r = await api('/api/stage-context/arch_review'); el.value = r.content || ''; }
+  catch(e) {}
+}
+document.getElementById('rpStageCtxSave')?.addEventListener('click', async () => {
+  const el = document.getElementById('rpStageCtx');
+  const msg = document.getElementById('rpStageCtxMsg');
+  if (!el) return;
+  try {
+    await api('/api/stage-context/arch_review', { method:'PUT', body: JSON.stringify({ content: el.value }) });
+    if (msg) { msg.textContent = 'saved to project'; msg.style.color = 'var(--green)'; setTimeout(()=>{ if(msg) msg.textContent=''; }, 2500); }
+  } catch(e) {
+    if (msg) { msg.textContent = 'error: ' + e.message; msg.style.color = 'var(--red)'; }
+  }
+});
 
 async function _rpPopulateUCs(runId) {
   const sel = document.getElementById('rpUCSel');
