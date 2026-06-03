@@ -387,6 +387,7 @@ CREATE TABLE IF NOT EXISTS capability_catalog (
   cap_key     TEXT NOT NULL,
   name        TEXT NOT NULL DEFAULT '',
   definition  TEXT NOT NULL DEFAULT '',
+  domain      TEXT NOT NULL DEFAULT '',            -- grouping axis (roadmap lanes / Jira epics)
   spec_refs   TEXT[] NOT NULL DEFAULT '{}',
   depends_on  TEXT[] NOT NULL DEFAULT '{}',
   status      TEXT NOT NULL DEFAULT 'confirmed',   -- confirmed | suggested | rejected
@@ -396,6 +397,8 @@ CREATE TABLE IF NOT EXISTS capability_catalog (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (project_id, cap_key)
 );
+-- Migrate already-deployed catalog tables that predate `domain`.
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS domain TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_capability_catalog_project ON capability_catalog(project_id);
 
 COMMIT;

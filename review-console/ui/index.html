@@ -1249,8 +1249,9 @@
           </div>
           <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:6px;">
             <input id="catKey" placeholder="capability key (e.g. tenant_provisioning)" style="font-size:11px;" />
-            <input id="catName" placeholder="name" style="font-size:11px;" />
-            <textarea id="catDef" rows="2" placeholder="definition" style="font-size:11px;"></textarea>
+            <input id="catName" placeholder="name (e.g. Tenant Provisioning)" style="font-size:11px;" />
+            <input id="catDomain" placeholder="domain (e.g. provisioning)" style="font-size:11px;" />
+            <textarea id="catDef" rows="2" placeholder="description" style="font-size:11px;"></textarea>
             <input id="catDeps" placeholder="depends_on (comma-separated capability keys)" style="font-size:11px;" />
             <div style="display:flex;gap:6px;align-items:center;">
               <button class="btn primary btn-sm" id="catSaveBtn">Add capability</button>
@@ -8611,7 +8612,7 @@ function renderCapabilityMap(data) {
     html += `
       <div class="capmap-row" data-cap="${i}" style="margin-bottom:9px;cursor:pointer;">
         <div style="display:flex;align-items:baseline;gap:8px;justify-content:space-between;">
-          <span style="font-family:var(--mono,monospace);font-size:12px;color:var(--text);">${esc(c.capability_id)}</span>
+          <span style="font-size:12px;color:var(--text);">${esc(c.name || c.capability_id)}${c.name?` <span style="font-family:var(--mono,monospace);font-size:9px;color:var(--text-faint);">${esc(c.capability_id)}</span>`:''}</span>
           <span style="font-size:11px;color:var(--text-faint);white-space:nowrap;">${c.uc_count}/${total} UCs · ${pct}%${conf}</span>
         </div>
         <div style="height:6px;background:var(--bg-raised);border-radius:3px;margin-top:3px;overflow:hidden;">
@@ -8686,7 +8687,7 @@ function renderFoundational(data) {
     html += `
       <div style="margin-bottom:9px;">
         <div style="display:flex;align-items:baseline;gap:8px;justify-content:space-between;">
-          <span style="font-family:var(--mono,monospace);font-size:12px;color:var(--text);display:flex;align-items:center;gap:6px;">${esc(c.capability_id)} ${lev}</span>
+          <span style="font-size:12px;color:var(--text);display:flex;align-items:center;gap:6px;">${esc(c.name || c.capability_id)} ${lev}</span>
           <span style="font-size:11px;color:var(--text-faint);white-space:nowrap;">${c.transitive_dependents} depend (${c.direct_dependents} direct) · ${esc(demand)}</span>
         </div>
         <div style="height:6px;background:var(--bg-raised);border-radius:3px;margin-top:3px;overflow:hidden;">
@@ -8743,7 +8744,7 @@ async function _renderCatalog(){
           <span style="font-weight:600;">${esc(c.name||c.cap_key)}</span>
           <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-faint);">${esc(c.status)}</span>
         </div>
-        <div style="font-family:var(--mono,monospace);font-size:10px;color:var(--text-faint);">${esc(c.cap_key)}</div>
+        <div style="font-family:var(--mono,monospace);font-size:10px;color:var(--text-faint);">${esc(c.cap_key)}${c.domain?` · <span style="color:var(--blue);">${esc(c.domain)}</span>`:''}</div>
         ${c.definition?`<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${esc(c.definition)}</div>`:''}
         ${(c.depends_on&&c.depends_on.length)?`<div style="font-size:10px;color:var(--text-faint);margin-top:3px;">requires: ${esc(c.depends_on.join(', '))}</div>`:''}
         <div style="margin-top:5px;display:flex;gap:6px;">
@@ -8759,6 +8760,7 @@ async function _renderCatalog(){
       if (!c) return;
       document.getElementById('catKey').value = c.cap_key;
       document.getElementById('catName').value = c.name||'';
+      document.getElementById('catDomain').value = c.domain||'';
       document.getElementById('catDef').value = c.definition||'';
       document.getElementById('catDeps').value = (c.depends_on||[]).join(', ');
       _catEditId = c.id;
@@ -8777,8 +8779,9 @@ async function _renderCatalogSuggestions(){
     el.innerHTML = sugg.map(s => `
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;border-bottom:1px solid var(--border);padding:5px 0;">
         <span style="font-family:var(--mono,monospace);font-size:11px;">${esc(s.capability_id)}</span>
-        <span style="display:flex;gap:8px;align-items:center;">
+        <span style="display:flex;gap:6px;align-items:center;">
           <span style="font-size:10px;color:var(--text-faint);">${s.uc_count} UC${s.uc_count===1?'':'s'}</span>
+          <button class="btn ghost btn-sm cat-draft" data-key="${esc(s.capability_id)}" title="LLM: draft a readable name + description, then review and Add">✨ draft</button>
           <button class="btn ghost btn-sm cat-confirm" data-key="${esc(s.capability_id)}">+ Add</button>
         </span>
       </div>`).join('');
@@ -8786,10 +8789,23 @@ async function _renderCatalogSuggestions(){
       try { await api('/api/catalog', {method:'POST', body: JSON.stringify({cap_key: b.dataset.key, name: b.dataset.key, status:'confirmed'})}); loadCatalogTab(); }
       catch(e){ toast(e.message, true); }
     }));
+    el.querySelectorAll('.cat-draft').forEach(b => b.addEventListener('click', async () => {
+      const old = b.textContent; b.textContent = '…'; b.disabled = true;
+      try {
+        const r = await api('/api/catalog/suggest-meta', {method:'POST', body: JSON.stringify({capability_id: b.dataset.key})});
+        document.getElementById('catKey').value = b.dataset.key;
+        document.getElementById('catName').value = r.name || b.dataset.key;
+        document.getElementById('catDomain').value = r.domain || '';
+        document.getElementById('catDef').value = r.description || '';
+        document.getElementById('catKey').scrollIntoView({block:'nearest'});
+        toast('Drafted — review and Add');
+      } catch(e){ toast(e.message, true); }
+      finally { b.textContent = old; b.disabled = false; }
+    }));
   } catch(e){ el.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`; }
 }
 function _catClearForm(){
-  ['catKey','catName','catDef','catDeps'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
+  ['catKey','catName','catDomain','catDef','catDeps'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
   _catEditId = '';
   const cb=document.getElementById('catClearBtn'); if(cb) cb.style.display='none';
   const sb=document.getElementById('catSaveBtn'); if(sb) sb.textContent='Add capability';
@@ -8803,6 +8819,7 @@ document.getElementById('catSaveBtn')?.addEventListener('click', async () => {
   const body = {
     cap_key: key,
     name: (document.getElementById('catName').value||'').trim(),
+    domain: (document.getElementById('catDomain').value||'').trim(),
     definition: (document.getElementById('catDef').value||'').trim(),
     depends_on: (document.getElementById('catDeps').value||'').split(',').map(s=>s.trim()).filter(Boolean),
     status: 'confirmed',

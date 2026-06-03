@@ -3882,10 +3882,13 @@ async def capability_density(
                 "FROM uc_capabilities WHERE run_id=$1",
                 run_id,
             )
+        name_map = await _catalog_name_map(conn, await _default_project_id(conn))
 
     capabilities = _capability_density.aggregate_density(
         [dict(r) for r in cap_rows], int(total_ucs or 0)
     )
+    for c in capabilities:
+        c["name"] = name_map.get(c["capability_id"])  # catalog name, or None → UI falls back to id
     return {
         "run_id": run_id,
         "set_id": set_id,
@@ -3951,6 +3954,10 @@ async def foundational_capabilities(
     edges = [(r["capability_id"], r["depends_on_id"]) for r in edge_rows]
     demand = {r["capability_id"]: int(r["n"]) for r in demand_rows}
     capabilities = _capability_graph.foundational_ranking(edges, demand)
+    async with pool.acquire() as _c:
+        name_map = await _catalog_name_map(_c, await _default_project_id(_c))
+    for c in capabilities:
+        c["name"] = name_map.get(c["capability_id"])  # catalog name, or None → UI falls back to id
     return {
         "run_id": run_id,
         "set_id": set_id,
@@ -6034,6 +6041,7 @@ class CatalogIn(BaseModel):
     cap_key: str = ""
     name: str = ""
     definition: str = ""
+    domain: str = ""
     spec_refs: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
     status: str = "confirmed"
@@ -6045,6 +6053,16 @@ def _catalog_row(r) -> dict:
     d["created_at"] = d["created_at"].isoformat()
     d["updated_at"] = d["updated_at"].isoformat()
     return d
+
+
+async def _catalog_name_map(conn, project_id) -> dict:
+    """cap_key -> display name from the catalog, for resolving raw ids in the
+    Capability Map / Foundational views to a descriptive name."""
+    if project_id is None:
+        return {}
+    rows = await conn.fetch(
+        "SELECT cap_key, name FROM capability_catalog WHERE project_id=$1", project_id)
+    return {r["cap_key"]: (r["name"] or r["cap_key"]) for r in rows}
 
 
 @app.get("/api/catalog")
@@ -6090,9 +6108,9 @@ async def add_catalog(payload: CatalogIn, request: Request):
             raise HTTPException(409, f"capability {key!r} already in catalog")
         row = await conn.fetchrow(
             """INSERT INTO capability_catalog
-               (project_id, cap_key, name, definition, spec_refs, depends_on, status, created_by, updated_by)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8) RETURNING id""",
-            pid, key, payload.name or key, payload.definition,
+               (project_id, cap_key, name, definition, domain, spec_refs, depends_on, status, created_by, updated_by)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) RETURNING id""",
+            pid, key, payload.name or key, payload.definition, payload.domain,
             payload.spec_refs, payload.depends_on, payload.status, user)
     return {"ok": True, "id": row["id"], "cap_key": key}
 
@@ -6103,9 +6121,9 @@ async def update_catalog(cap_id: int, payload: CatalogIn, request: Request):
     async with pool.acquire() as conn:
         result = await conn.execute(
             """UPDATE capability_catalog
-               SET name=$2, definition=$3, spec_refs=$4, depends_on=$5, status=$6, updated_by=$7, updated_at=now()
+               SET name=$2, definition=$3, domain=$4, spec_refs=$5, depends_on=$6, status=$7, updated_by=$8, updated_at=now()
                WHERE id=$1""",
-            cap_id, payload.name, payload.definition, payload.spec_refs,
+            cap_id, payload.name, payload.definition, payload.domain, payload.spec_refs,
             payload.depends_on, payload.status, user)
     if result == "UPDATE 0":
         raise HTTPException(404, "capability not found")
@@ -6118,6 +6136,72 @@ async def delete_catalog(cap_id: int, request: Request):
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM capability_catalog WHERE id=$1", cap_id)
     return {"ok": True, "id": cap_id}
+
+
+class SuggestMetaIn(BaseModel):
+    capability_id: str
+    model_config_id: Optional[int] = None
+
+
+@app.post("/api/catalog/suggest-meta")
+async def catalog_suggest_meta(payload: SuggestMetaIn, request: Request):
+    """Draft a readable name + description + domain for a raw capability id, using
+    how it was used across analyses. The architect edits and confirms into the
+    catalog. Isolated one-shot call to the Arch Review model (NOT the stage-2 prompt)."""
+    from . import arch_review as _ar
+    cid = (payload.capability_id or "").strip()
+    if not cid:
+        raise HTTPException(400, "capability_id required")
+    async with pool.acquire() as conn:
+        if payload.model_config_id is not None:
+            model_row = await conn.fetchrow(
+                "SELECT * FROM model_configs WHERE id=$1 AND enabled", payload.model_config_id)
+        else:
+            default_id = await conn.fetchval(
+                "SELECT model_config_id FROM model_defaults WHERE key='arch-review'")
+            model_row = await conn.fetchrow(
+                "SELECT * FROM model_configs WHERE id=$1 AND enabled", default_id) if default_id else None
+        if not model_row:
+            raise HTTPException(400, "No model available; set a Default Arch Review model in Config")
+        model = dict(model_row)
+        ctx_rows = await conn.fetch(
+            "SELECT usage, rationale FROM uc_capabilities WHERE capability_id=$1 LIMIT 8", cid)
+    usages = "\n".join(f"- {(r['usage'] or '').strip()}" for r in ctx_rows if r['usage'])
+    rationales = "\n".join(f"- {(r['rationale'] or '').strip()}" for r in ctx_rows if r['rationale'])
+    system = (
+        "You name and describe software capabilities for an architecture catalog. "
+        "Given a raw capability id and how it was used across use cases, produce a concise, "
+        "human-readable Name (Title Case), a one-sentence Description, and a short lowercase "
+        "domain/category. Output ONLY a JSON object: "
+        '{"name": "...", "description": "...", "domain": "..."} — no prose, no markdown.'
+    )
+    user = (
+        f"Raw capability id: {cid}\n\n"
+        + (f"Observed usages across UCs:\n{usages}\n\n" if usages else "")
+        + (f"Rationales:\n{rationales}\n\n" if rationales else "")
+        + "Return the JSON object."
+    )
+    text = ""
+    try:
+        async for chunk in _ar.stream_review(
+            provider=model["provider"], endpoint_url=model["endpoint_url"],
+            model_id=model["model_id"], api_key=model["api_key"],
+            system_prompt=system, user_prompt=user,
+        ):
+            text += chunk
+    except Exception as e:
+        raise HTTPException(502, f"model call failed: {e}")
+    clean = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    name = desc = dom = ""
+    try:
+        m = re.search(r"\{[\s\S]*\}", clean)
+        obj = json.loads(m.group(0)) if m else {}
+        name = str(obj.get("name") or "").strip()
+        desc = str(obj.get("description") or "").strip()
+        dom = str(obj.get("domain") or "").strip()
+    except Exception:
+        pass
+    return {"capability_id": cid, "name": name, "description": desc, "domain": dom}
 
 
 @app.post("/api/arch-review")
