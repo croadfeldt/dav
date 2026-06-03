@@ -2933,9 +2933,10 @@ function _renderRunSelectionBar(){
 async function archiveSelectedRuns(){
   const names = [..._selectedRuns];
   if (!names.length) return;
-  for (const nm of names){ try { await api(`/api/runs/${encodeURIComponent(nm)}/archive`, {method:'POST', body: JSON.stringify({archived:true})}); } catch(e){} }
+  let ok=0, fail=0;
+  for (const nm of names){ try { await api(`/api/runs/${encodeURIComponent(nm)}/archive`, {method:'POST', body: JSON.stringify({archived:true})}); ok++; } catch(e){ fail++; } }
   _selectedRuns.clear();
-  toast(`Archived ${names.length} run${names.length===1?'':'s'}`);
+  toast(`Archived ${ok} run${ok===1?'':'s'}${fail?`, ${fail} failed`:''}`, fail>0);
   loadRuns();
 }
 async function deleteSelectedRuns(){

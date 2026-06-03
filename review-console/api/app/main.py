@@ -814,13 +814,18 @@ class RunArchiveIn(BaseModel):
 
 @app.post("/api/runs/{name}/archive")
 async def archive_run(name: str, payload: RunArchiveIn, request: Request):
-    """Soft-archive (hide) or unarchive a run. Reversible; all data is kept."""
-    get_user(request)
+    """Soft-archive (hide) or unarchive a run. Reversible; all data is kept.
+
+    Upserts the archived flag so any run can be hidden — runs that were never
+    triggered through the console have no run_sessions row, so we create a minimal
+    one to hold the flag (other columns take their defaults)."""
+    user = get_user(request)
     async with pool.acquire() as conn:
-        result = await conn.execute(
-            "UPDATE run_sessions SET archived=$2 WHERE run_name=$1", name, payload.archived)
-    if result == "UPDATE 0":
-        raise HTTPException(404, f"run {name!r} has no session record to archive (it can still be deleted)")
+        await conn.execute(
+            """INSERT INTO run_sessions (run_name, created_by, archived)
+               VALUES ($1, $3, $2)
+               ON CONFLICT (run_name) DO UPDATE SET archived = EXCLUDED.archived""",
+            name, payload.archived, user)
     return {"ok": True, "name": name, "archived": payload.archived}
 
 
