@@ -711,10 +711,18 @@ class CapabilityInvoked:
     # (A depends_on B means A requires B), so a capability that appears in many
     # other capabilities' depends_on lists is a foundational building block.
     depends_on: list[str] = field(default_factory=list)
+    # Capability template (DCM 2026-06-03): a human-readable name + one-sentence
+    # description so capabilities are readable AND automatable everywhere, not
+    # bare ids. Optional/backward-compatible (default ""); `id` stays the stable
+    # machine key. The catalog is the canonical store; this is the engine's proposal.
+    name: str = ""
+    description: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "name": self.name,
+            "description": self.description,
             "usage": self.usage,
             "rationale": self.rationale,
             "spec_refs": list(self.spec_refs),
@@ -731,6 +739,8 @@ class CapabilityInvoked:
             spec_refs=list(data.get("spec_refs", [])),
             confidence=normalize_confidence(data.get("confidence", "medium")),
             depends_on=list(data.get("depends_on") or []),
+            name=str(data.get("name") or ""),
+            description=str(data.get("description") or ""),
         )
 
 @dataclass
@@ -1200,6 +1210,9 @@ def build_analysis_json_schema(consumer_profile=None) -> dict[str, Any]:
                         # Optional (not required): other capability ids this one
                         # requires. Foundational dependency detection (#3).
                         "depends_on": {"type": "array", "items": {"type": "string"}},
+                        # Optional capability template (readable name + description).
+                        "name": {"type": "string"},
+                        "description": {"type": "string"},
                     },
                 },
             },

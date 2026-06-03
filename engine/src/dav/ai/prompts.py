@@ -78,7 +78,9 @@ When you have gathered enough information, emit a final analysis as a single JSO
   ],
   "capabilities_invoked": [
     {{
-      "id": "<capability id>",
+      "id": "<capability id — stable snake_case key>",
+      "name": "<short human-readable name, Title Case>",
+      "description": "<one-sentence description of what the capability is>",
       "usage": "<how it's used in this use case>",
       "rationale": "<why, referencing spec>",
       "spec_refs": [...],

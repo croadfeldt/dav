@@ -209,7 +209,9 @@ Capabilities the UC's scenario requires from the architecture.
 
 ```yaml
 capabilities_invoked:
-- id: tenant_provisioning
+- id: tenant_provisioning                   # stable snake_case key (machine id)
+  name: Tenant Provisioning                 # Optional — human-readable name
+  description: <string>                      # Optional — one sentence: what the capability is
   usage: <string>                           # One-sentence description of how the capability is used
   confidence: <ConfidenceDescriptor>
   rationale: <string>
@@ -217,6 +219,13 @@ capabilities_invoked:
   depends_on: [<capability_id>, ...]        # Optional — other capabilities this one requires
 - ...
 ```
+
+`name` and `description` (optional; the **capability template**) make a capability
+readable and automatable rather than a bare id. `id` stays the stable machine key
+everything joins on; `name` is the human title shown in the catalog and every
+capability view; `description` is a one-sentence definition. Omitted/empty on older
+analyses (backward-compatible). The consumer's **capability catalog** is the
+canonical store of these; the engine proposes them, the architect curates.
 
 `usage` is unique to this finding type and parallel to `components_required.role`.
 

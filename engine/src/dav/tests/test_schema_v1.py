@@ -431,6 +431,30 @@ def test_capability_depends_on_in_json_schema():
     assert_true("depends_on" in caps["properties"], "depends_on present in schema")
     assert_true("depends_on" not in caps["required"], "depends_on is optional (not required)")
 
+def test_capability_template_roundtrip():
+    """CapabilityInvoked carries optional name/description (capability template)."""
+    c0 = CapabilityInvoked.from_dict({"id": "quota", "usage": "u", "rationale": "r",
+                                      "spec_refs": [], "confidence": "high"})
+    assert_eq(c0.name, "", "name defaults empty when omitted")
+    assert_eq(c0.description, "", "description defaults empty when omitted")
+    assert_eq(c0.to_dict()["name"], "", "empty name serializes")
+    c1 = CapabilityInvoked.from_dict({"id": "tenant_provisioning", "name": "Tenant Provisioning",
+                                      "description": "Stand up a tenant.", "usage": "u",
+                                      "rationale": "r", "spec_refs": [], "confidence": "high"})
+    assert_eq(c1.name, "Tenant Provisioning", "name parsed")
+    assert_eq(c1.description, "Stand up a tenant.", "description parsed")
+    c2 = CapabilityInvoked.from_dict(c1.to_dict())
+    assert_eq(c2.name, "Tenant Provisioning", "name survives roundtrip")
+    assert_eq(c2.description, "Stand up a tenant.", "description survives roundtrip")
+
+def test_capability_template_in_json_schema():
+    """name/description are optional (not required) properties in the LLM schema."""
+    caps = ANALYSIS_JSON_SCHEMA["properties"]["capabilities_invoked"]["items"]
+    assert_true("name" in caps["properties"] and "description" in caps["properties"],
+                "name/description present in schema")
+    assert_true("name" not in caps["required"] and "description" not in caps["required"],
+                "name/description optional (not required)")
+
 # --- UC priority tests (DCM feature #1) ---
 
 def test_priority_four_labels():
@@ -557,6 +581,8 @@ def main():
         test_json_schema_has_moderate,
         test_capability_depends_on_roundtrip,
         test_capability_depends_on_in_json_schema,
+        test_capability_template_roundtrip,
+        test_capability_template_in_json_schema,
         test_priority_four_labels,
         test_normalize_priority_from_shorthand,
         test_normalize_priority_four_labels,
