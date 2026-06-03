@@ -704,11 +704,13 @@
   <div class="pf-masthead-brand">
     <div class="brand-mark">DAV <em>Console</em></div>
   </div>
-  <!-- Active run chip -->
-  <div class="run-context-chip" id="runContextChip" title="Click to go to Runs tab">
+  <!-- Active run: the single, system-wide run selector. Drives every analysis
+       stage (Results / Architecture / Engineering). -->
+  <div class="run-context-chip" id="runContextChip" title="Current run" style="cursor:default;">
     <span class="rcc-dot" id="rccDot"></span>
-    <span class="rcc-name" id="rccName">—</span>
-    <span style="color:var(--text-faint);font-size:9px;margin-left:2px;">✕</span>
+    <select id="globalRunSel" title="Current run — drives all analysis stages" style="font-size:11px;max-width:300px;background:transparent;border:none;color:inherit;cursor:pointer;">
+      <option value="">— select run —</option>
+    </select>
   </div>
   <div class="pf-masthead-right">
     <span id="triggerStatus" style="color:var(--text-faint);font-size:10px;"></span>
@@ -1113,7 +1115,7 @@
       <div class="rp-split">
         <!-- Controls panel -->
         <div class="rp-controls" id="rpControls">
-          <div>
+          <div style="display:none;"><!-- run is selected globally in the masthead -->
             <label>Run</label>
             <select id="rpRunSel" style="width:100%;font-size:11px;">
               <option value="">— select a run —</option>
@@ -1219,7 +1221,7 @@
     <section class="pf-view" id="view-engineering">
       <div class="rp-split">
         <div class="rp-controls" id="engControls">
-          <div>
+          <div style="display:none;"><!-- run is selected globally in the masthead -->
             <label>Run</label>
             <select id="engRunSel" style="width:100%;font-size:11px;">
               <option value="">— select a run —</option>
@@ -2624,6 +2626,9 @@ async function init() {
     _populateUCAssistModelSel();
   }).catch(() => {});
   switchView('usecases');
+  // Populate the masthead run selector once on boot so the single current-run
+  // picker is ready on every tab, not just after visiting an analysis tab.
+  api('/api/results').then(resp => { allResults = resp.results || []; _populateGlobalRunSel(); }).catch(()=>{});
 }
 
 async function loadMe() {
@@ -2709,12 +2714,12 @@ function switchView(name) {
 function updateRunChip(name, phase) {
   const chip = document.getElementById('runContextChip');
   const dot  = document.getElementById('rccDot');
-  const nm   = document.getElementById('rccName');
-  if (!name) { chip.classList.remove('active'); return; }
-  nm.textContent = name;
+  const nm   = document.getElementById('rccName');   // removed from masthead; guarded
+  if (!name) { if (chip) chip.classList.remove('active'); return; }
+  if (nm) nm.textContent = name;
   const terminal = ['Succeeded','Failed','Cancelled','TimedOut'].includes(phase);
-  dot.classList.toggle('done', terminal);
-  chip.classList.add('active');
+  if (dot) dot.classList.toggle('done', terminal);
+  if (chip) chip.classList.add('active');
 }
 
 function clearRunChip() {
@@ -4100,6 +4105,7 @@ async function loadResults() {
     const resp = await api('/api/results');
     allResults = resp.results || [];
     document.getElementById('badgeResults').textContent = allResults.length;
+    _populateGlobalRunSel();
     renderResultList();
     if (!resp.available)
       document.getElementById('resultList').innerHTML =
@@ -4141,6 +4147,9 @@ function renderResultList() {
 
 async function selectRunResult(runId) {
   activeRunResultId = runId; activeUCResult = null;
+  // Keep the single masthead selector in sync (whichever surface picked the run).
+  const _gsel = document.getElementById('globalRunSel');
+  if (_gsel && _gsel.value !== (runId || '')) _gsel.value = runId || '';
   renderResultList();
   document.getElementById('ucResultList').innerHTML = '<div class="empty">loading…</div>';
   document.getElementById('ucListPanel').style.display = '';
@@ -7687,8 +7696,25 @@ document.querySelectorAll('.pf-nav-item').forEach(b =>
 // Masthead hamburger toggle
 document.getElementById('navToggleBtn').addEventListener('click', toggleNav);
 
-// Masthead run chip → return to Runs tab
-document.getElementById('runContextChip').addEventListener('click', () => switchView('runs'));
+// Masthead run selector — the single, system-wide current-run picker. Drives
+// every analysis stage by reusing selectRunResult (loads summary + ingest), then
+// refreshing the run-dependent bits of the analysis tabs.
+function _populateGlobalRunSel(){
+  const sel = document.getElementById('globalRunSel');
+  if (!sel) return;
+  const cur = activeRunResultId || '';
+  sel.innerHTML = '<option value="">— select run —</option>' + (allResults||[]).map(r =>
+    `<option value="${esc(r.run_id)}"${r.run_id===cur?' selected':''}>${esc(r.session_name ? r.session_name + ' (' + r.run_id.slice(0,12) + '…)' : r.run_id)}</option>`
+  ).join('');
+  sel.value = cur;
+}
+document.getElementById('globalRunSel')?.addEventListener('change', async function(){
+  if (!this.value) return;
+  await selectRunResult(this.value);
+  _rpPopulateUCs(activeRunResultId);  // refresh Architecture UC scope
+  const cm = document.getElementById('rpCapMap');  // reset Engineering map prompt
+  if (cm) cm.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Click <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on) for this run.</div>';
+});
 
 // View Results button in run detail header
 document.getElementById('rdViewResultsBtn')?.addEventListener('click', () => {
@@ -8521,6 +8547,8 @@ async function loadReviewTab() {
   // Populate model selector
   _populateModelSel('rpModelSel', 'reviewLastModel');
   _loadStageContext();
+  _populateGlobalRunSel();
+  if (activeRunResultId) _rpPopulateUCs(activeRunResultId);
   // If results not yet loaded, load them
   if (!allResults.length) {
     try {
@@ -8580,7 +8608,7 @@ async function _rpPopulateUCs(runId) {
 }
 
 function _rpGetContext() {
-  const runId   = document.getElementById('rpRunSel')?.value;
+  const runId   = activeRunResultId;   // the single system-wide current run
   const scope   = document.getElementById('rpScopeUC')?.checked ? 'uc' : 'run';
   const ucUuid  = scope === 'uc' ? (document.getElementById('rpUCSel')?.value || null) : null;
   const resolved = _resolveEndpointModel('rpModelSel', 'reviewLastModel');
@@ -8597,7 +8625,7 @@ document.getElementById('rpScopeRun')?.addEventListener('change', () => {
   if (sel) sel.disabled = true;
 });
 document.getElementById('rpScopeUC')?.addEventListener('change', () => {
-  const runId = document.getElementById('rpRunSel')?.value;
+  const runId = activeRunResultId;   // single system-wide current run
   const sel = document.getElementById('rpUCSel');
   if (sel) { sel.disabled = false; _rpPopulateUCs(runId); }
 });
@@ -8650,7 +8678,7 @@ document.getElementById('rpEnhRunBtn')?.addEventListener('click', async () => {
 // Run-scoped: aggregates which capabilities the most UCs in a run demand.
 // Reads /api/analysis/capability-density (populated at ingest); no model needed.
 async function loadCapabilityMap() {
-  const runId = document.getElementById('engRunSel')?.value;
+  const runId = activeRunResultId;   // the single system-wide current run
   const el = document.getElementById('rpCapMap');
   if (!el) return;
   if (!runId) { toast('Select a run first'); return; }
@@ -8731,7 +8759,7 @@ document.getElementById('rpCapMapBtn')?.addEventListener('click', loadCapability
 // Ranks capabilities by how many others transitively depend on them. Shares the
 // rpCapMap container with the demand view; reads /api/analysis/foundational-capabilities.
 async function loadFoundational() {
-  const runId = document.getElementById('engRunSel')?.value;
+  const runId = activeRunResultId;   // the single system-wide current run
   const el = document.getElementById('rpCapMap');
   if (!el) return;
   if (!runId) { toast('Select a run first'); return; }
@@ -8801,6 +8829,7 @@ function loadEngineeringTab() {
     sel.appendChild(o);
   });
   if (prev) sel.value = prev;
+  _populateGlobalRunSel();
   if (!allResults.length) {
     api('/api/results').then(resp => { allResults = resp.results || []; loadEngineeringTab(); }).catch(()=>{});
   }
