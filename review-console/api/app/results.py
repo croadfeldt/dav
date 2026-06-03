@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +35,24 @@ def _results_root() -> Path:
 
 def is_available() -> bool:
     return _results_root().exists()
+
+
+def delete_run_dir(run_id: str) -> bool:
+    """Delete a run's results directory under the workspace root. Returns True if
+    a directory was removed. Path-safe: `run_id` must be a bare directory name
+    that resolves strictly inside the results root (guards against traversal)."""
+    if not run_id or "/" in run_id or "\\" in run_id or run_id in (".", ".."):
+        return False
+    root = _results_root().resolve()
+    target = (root / run_id).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return False  # escapes the results root — refuse
+    if target == root or not target.is_dir():
+        return False
+    shutil.rmtree(target)
+    return True
 
 
 def _safe_load(path: Path) -> Optional[dict]:

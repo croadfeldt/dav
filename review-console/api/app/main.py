@@ -750,8 +750,10 @@ async def me(request: Request):
 
 
 @app.get("/api/runs")
-async def list_runs(limit: int = Query(50, ge=1, le=200)):
-    """List recent PipelineRuns, enriched with run_sessions metadata when available."""
+async def list_runs(limit: int = Query(50, ge=1, le=200), show_archived: bool = Query(False)):
+    """List recent PipelineRuns, enriched with run_sessions metadata when available.
+
+    Archived runs (run_sessions.archived) are hidden unless show_archived=true."""
     if not validations.ENABLED:
         return {"runs": [], "enabled": False}
     try:
@@ -769,7 +771,7 @@ async def list_runs(limit: int = Query(50, ge=1, le=200)):
                     "SELECT run_name, name, description, category, tags, "
                     "gpu_energy_joules, total_gen_tokens, total_prompt_tokens, "
                     "set_id, set_name, selection_mode, "
-                    "uc_total, uc_succeeded, uc_failed "
+                    "uc_total, uc_succeeded, uc_failed, archived "
                     "FROM run_sessions WHERE run_name = ANY($1::text[])",
                     names,
                 )
@@ -791,7 +793,54 @@ async def list_runs(limit: int = Query(50, ge=1, le=200)):
             r["uc_total"]      = s.get("uc_total")
             r["uc_succeeded"]  = s.get("uc_succeeded")
             r["uc_failed"]     = s.get("uc_failed")
+            r["archived"]      = bool(s.get("archived"))
+    if not show_archived:
+        runs = [r for r in runs if not r.get("archived")]
     return {"runs": runs, "enabled": True}
+
+
+class RunArchiveIn(BaseModel):
+    archived: bool = True
+
+
+@app.post("/api/runs/{name}/archive")
+async def archive_run(name: str, payload: RunArchiveIn, request: Request):
+    """Soft-archive (hide) or unarchive a run. Reversible; all data is kept."""
+    get_user(request)
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE run_sessions SET archived=$2 WHERE run_name=$1", name, payload.archived)
+    if result == "UPDATE 0":
+        raise HTTPException(404, f"run {name!r} has no session record to archive (it can still be deleted)")
+    return {"ok": True, "name": name, "archived": payload.archived}
+
+
+@app.delete("/api/runs/{name}")
+async def delete_run(name: str, request: Request):
+    """Completely and irreversibly remove a run: its ingested analysis (cascades to
+    uc_analyses/gaps/capabilities), its workspace result files, its run_session
+    record, and the Tekton PipelineRun object. Archive instead to merely hide it."""
+    get_user(request)
+    removed = {"analysis_runs": 0, "run_sessions": 0, "workspace_dirs": 0, "pipelinerun": False}
+    async with pool.acquire() as conn:
+        run_ids = [r["run_id"] for r in await conn.fetch(
+            "SELECT run_id FROM analysis_runs WHERE run_name=$1", name)]
+        for rid in run_ids:
+            try:
+                if _results.delete_run_dir(rid):
+                    removed["workspace_dirs"] += 1
+            except Exception as e:
+                log.warning("delete workspace dir %s failed: %s", rid, e)
+        r1 = await conn.execute("DELETE FROM analysis_runs WHERE run_name=$1", name)
+        r2 = await conn.execute("DELETE FROM run_sessions WHERE run_name=$1", name)
+    removed["analysis_runs"] = int(r1.split()[-1]) if r1.startswith("DELETE") else 0
+    removed["run_sessions"]  = int(r2.split()[-1]) if r2.startswith("DELETE") else 0
+    try:
+        removed["pipelinerun"] = validations.delete_run(name)
+    except Exception as e:
+        log.warning("delete pipelinerun %s failed: %s", name, e)
+    log.info("Deleted run %s completely: %s", name, removed)
+    return {"ok": True, "name": name, "removed": removed}
 
 
 def _resolve_run_params(payload: "RunTriggerIn") -> dict:

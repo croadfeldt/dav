@@ -784,6 +784,7 @@
             <div class="panel-title">Runs</div>
             <div style="display:flex;gap:6px;">
               <button class="btn primary" style="font-size:10px;padding:4px 10px;" id="newRunBtn">+ New Run</button>
+              <button class="btn ghost btn-icon" id="toggleArchivedRuns" title="Show archived runs">⊟</button>
               <button class="btn ghost btn-icon" id="refreshRunsBtn" title="Refresh">↻</button>
             </div>
           </div>
@@ -2741,7 +2742,7 @@ async function loadRuns(opts) {
     listEl.innerHTML = '<div class="empty">loading…</div>';
   }
   try {
-    const resp = await api('/api/runs?limit=100');
+    const resp = await api('/api/runs?limit=100' + (_showArchivedRuns ? '&show_archived=true' : ''));
     allRuns = resp.runs || [];
     document.getElementById('badgeRuns').textContent = allRuns.length;
     renderRunsList();
@@ -2769,6 +2770,7 @@ function _runItemFingerprint(r) {
     r.set_name, r.selection_mode,
     r.session_name,
     r.started_at, r.completed_at, r.created_at,
+    r.archived ? 'a' : '',
     _rdName === r.name ? '1' : '0',
   ].join('|');
 }
@@ -2788,14 +2790,18 @@ function _renderRunItemHtml(r) {
       ((r.uc_failed || 0) > 0 ? ` <span style="font-size:10px;color:var(--red);">${r.uc_failed} fail</span>` : '');
   }
   return `
-    <div class="rli-main">
-      <div class="rli-name">${esc(friendly)}</div>
+    <div class="rli-main" style="${r.archived ? 'opacity:0.55;' : ''}">
+      <div class="rli-name">${esc(friendly)}${r.archived ? ' <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-faint);border:1px solid var(--border);padding:0 3px;border-radius:2px;">archived</span>' : ''}</div>
       <div class="rli-sub">${scopeBits.join(' · ')}${countsHtml ? ' · ' + countsHtml : ''}</div>
       <div class="rli-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.6;">${esc(r.name||'')}</div>
     </div>
     <div class="rli-right">
       ${phaseHtml(r.phase)}<br>
       <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
+      <div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;">
+        <button class="btn ghost btn-sm" title="${r.archived ? 'Unarchive' : 'Archive (hide from list)'}" onclick="event.stopPropagation();archiveRun('${r.name}',${r.archived ? 'false' : 'true'})">${r.archived ? 'Unarchive' : 'Archive'}</button>
+        <button class="btn danger btn-sm" title="Delete completely — irreversible" onclick="event.stopPropagation();deleteRunConfirm('${r.name}')">Delete</button>
+      </div>
     </div>`;
 }
 
@@ -2850,6 +2856,33 @@ function renderRunsList() {
 
   // Single DOM op: re-attach the (possibly-reordered) rows
   el.appendChild(fragment);
+}
+
+// ── Run management (archive / complete delete) ──────────────────
+let _showArchivedRuns = false;
+document.getElementById('toggleArchivedRuns')?.addEventListener('click', function(){
+  _showArchivedRuns = !_showArchivedRuns;
+  this.style.color = _showArchivedRuns ? 'var(--accent)' : '';
+  this.title = _showArchivedRuns ? 'Hide archived runs' : 'Show archived runs';
+  loadRuns();
+});
+async function archiveRun(name, archived){
+  try {
+    await api(`/api/runs/${encodeURIComponent(name)}/archive`, {method:'POST', body: JSON.stringify({archived})});
+    loadRuns();
+  } catch(e){ toast(e.message, true); }
+}
+async function deleteRunConfirm(name){
+  const r = allRuns.find(x => x.name === name);
+  const label = (r && r.session_name) || name;
+  if (!confirm(`Delete run "${label}" COMPLETELY?\n\nThis removes its analysis, workspace result files, and the Tekton PipelineRun. It cannot be undone.\n\nUse Archive instead to just hide it.`)) return;
+  try {
+    const resp = await api(`/api/runs/${encodeURIComponent(name)}`, {method:'DELETE'});
+    const rm = resp.removed || {};
+    toast(`Deleted "${label}" — ${rm.analysis_runs||0} analysis, ${rm.workspace_dirs||0} result dir(s), PipelineRun ${rm.pipelinerun?'removed':'—'}`);
+    if (_rdName === name) _rdName = null;
+    loadRuns();
+  } catch(e){ toast(e.message, true); }
 }
 
 // ── Run detail panel ──────────────────────────────────────────

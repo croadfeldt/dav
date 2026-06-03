@@ -401,4 +401,8 @@ CREATE TABLE IF NOT EXISTS capability_catalog (
 ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS domain TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_capability_catalog_project ON capability_catalog(project_id);
 
+-- Run management: soft-archive (hide from default lists; reversible). Delete is
+-- a hard purge handled in the API (DB + workspace + Tekton), not a flag.
+ALTER TABLE run_sessions ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false;
+
 COMMIT;

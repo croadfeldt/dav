@@ -276,6 +276,26 @@ def trigger_run(
     }
 
 
+def delete_run(name: str) -> bool:
+    """Delete a PipelineRun by name. Returns True if deleted, False if not found.
+
+    Used by the run-management "complete delete" — removes the Tekton object so
+    the run is fully gone (alongside its DB rows + workspace files)."""
+    if not is_available():
+        return False
+    try:
+        _api().delete_namespaced_custom_object(
+            group=_TEKTON_GROUP, version=_TEKTON_VERSION, namespace=NAMESPACE,
+            plural=_PIPELINERUN_PLURAL, name=name,
+        )
+        return True
+    except ApiException as e:
+        if e.status == 404:
+            return False
+        log.error("Failed to delete PipelineRun %s: %s", name, e)
+        raise
+
+
 def list_recent(limit: int = 20) -> list[dict]:
     """List recent PipelineRuns for the self-test Pipeline."""
     if not ENABLED:

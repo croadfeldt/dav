@@ -12,10 +12,12 @@ metadata:
     app: dav-review
     component: review-console-self-test
 rules:
-  # Create and read PipelineRuns — the trigger endpoint needs both
+  # Create and read PipelineRuns — the trigger endpoint needs both; delete for
+  # run management's complete-delete (removes the Tekton object; child TaskRuns/
+  # pods cascade via ownerReferences).
   - apiGroups: ["tekton.dev"]
     resources: ["pipelineruns"]
-    verbs: ["create", "get", "list", "watch"]
+    verbs: ["create", "get", "list", "watch", "delete"]
   # Read the Pipeline definition to resolve its params before creating a run
   - apiGroups: ["tekton.dev"]
     resources: ["pipelines"]
