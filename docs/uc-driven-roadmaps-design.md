@@ -89,7 +89,7 @@ flow is linear up to analysis, then **branches into the two tracks.**
 - **Why:** turn prioritized gaps into concrete architecture changes.
 - **Action:** Architectural Review (narrative) → Enhancement Plan (spec patches) → PRs.
   *(code-generation is the future target of this stage.)*
-- **Output:** spec edits / PRs.
+- **Output:** spec edits / PRs, emitted **as tracked work items** (see §8).
 
 **Track 1 · Stage 5 — Identify & curate capabilities → the catalog**
 - **Why:** capability identification is Track 1's job; it produces the canonical catalog
@@ -107,7 +107,15 @@ flow is linear up to analysis, then **branches into the two tracks.**
 **Track 2 · Stage 7 — Export & communicate**
 - **Why:** hand the roadmap to planning/execution.
 - **Action:** render the structured roadmap representation.
-- **Output:** slide deck / Jira epics+stories / engineering report (§7).
+- **Output:** slide deck / Jira epics+stories / engineering report — emitted **as tracked
+  work items** so delivery feeds back (§8).
+
+**Stage 8 — Reconcile (close the loop)** *(cross-cutting; fires when a tracked output lands)*
+- **Why:** keep the analysis in sync with the real target; prevent drift.
+- **Action:** on spec-PR-merge / Jira-done / eng-PR-merge (auto where wired, manual
+  otherwise), re-run the affected UCs and reconcile findings.
+- **Output:** updated finding/work-item status (verified-resolved / still-open) and a drift
+  report for anything stale.
 
 ## 4. The capability catalog (keystone)
 
@@ -163,7 +171,41 @@ Every stage is propose → curate, never fully automatic (matches DAV's existing
   (capabilities, dependencies, sequence, UC drivers, priorities), with renderers on top —
   not a prose blob.
 
-## 8. Single-source principles (the rules that prevent regression)
+## 8. Closed-loop tracking & drift prevention
+
+A finding isn't "done" when DAV recommends a fix — it's done when the fix **lands in the
+target** (spec PR merged, Jira delivered) and a **re-evaluation confirms** it. If the
+analysis lifecycle and the real artifacts drift apart, DAV's picture goes stale: it reports
+gaps that were already closed, or misses changes made outside it. **That drift undermines
+trust in both the tool and the architecture it evaluates — it's an existential risk, not a
+nice-to-have.**
+
+Every actionable output is therefore a **tracked work item** that joins a finding to its
+real-world artifact and keeps them in sync:
+
+- **Linkage:** work item ⇄ the finding(s) it addresses (gap / capability / UC) ⇄ the target
+  artifact (spec PR, Jira epic/story, engineering PR/branch).
+- **Status, synced from the target:** proposed → in-progress → merged/accepted → verified
+  (or rejected / superseded). Pull state where we can — GitHub/GitLab PR state, via the
+  same `pr_comments` poller + `managed_repos` credentials that already poll repos — and
+  fall back to **manual status** where we can't yet (Jira at first). Manual is acceptable
+  *as long as the link is explicit and trackable.*
+- **Re-evaluation on acceptance (the loop closing):** when a Track-1 work item is accepted
+  (spec PR merged), DAV **triggers a re-run** of the affected UCs, re-ingests, and
+  reconciles — the gap becomes *verified-resolved* or *still-open* **from evidence**, not
+  assumption. (Re-run → re-ingest already exists; this wires the trigger to acceptance.)
+- **Drift surfacing:** show where the analysis is stale relative to outputs — a gap with a
+  merged PR but no re-eval, an external change with no linked finding, a capability marked
+  built whose UCs were never re-verified.
+
+This makes **findings stateful over time** (open → addressed → verified) instead of
+one-shot, and makes the work item the **single source for "what's the status of addressing
+this finding"** — PR/Jira state lives there, nowhere else. Track 2 uses the same shape: a
+capability → Jira/eng-PR work item whose synced status means "capability built" reflects
+*delivered* reality, so the engineering roadmap shows true progress and a delivered
+capability can trigger re-checking whether its UCs are now satisfiable.
+
+## 9. Single-source principles (the rules that prevent regression)
 
 1. **One source of findings:** the ingested analysis. Everything else is a projection.
 2. **One output per stage per track:** don't add a second view that re-answers a
@@ -172,8 +214,11 @@ Every stage is propose → curate, never fully automatic (matches DAV's existing
 4. **Catalog, not strings:** aggregate capability views read the canonical catalog.
 5. **Propose → curate everywhere:** no fully-automatic roadmap; the human owns the cut.
 6. **Guided flow:** every surface states its stage, why it exists, and its expected output.
+7. **Close the loop:** outputs are tracked work items linked to their findings; acceptance
+   triggers re-evaluation; findings are stateful (open → verified). The work item is the
+   single source for output status. **Drift is the enemy.**
 
-## 9. What this means for what exists today
+## 10. What this means for what exists today
 
 - **Architectural Review + Enhancement Plan** → Track 1 (gap roadmap). Keep; the healthy
   spine. Consider feeding demand/foundational signal in as *weighting context*.
@@ -183,7 +228,7 @@ Every stage is propose → curate, never fully automatic (matches DAV's existing
 - **UC readiness (#4)** → upstream quality gate on the driver (UCs). ✓ already built.
 - **UC Sets** → generalize to UC/gap/capability working sets (§5).
 
-## 10. Proposed phasing (sequence TBD with Chris)
+## 11. Proposed phasing (sequence TBD with Chris)
 
 - **Phase 0 — Guided flow + surface the two tracks.** Implement the staged walkthrough
   (§3): a stage navigator with why/output per stage, and split Track 1 / Track 2 onto
@@ -194,8 +239,14 @@ Every stage is propose → curate, never fully automatic (matches DAV's existing
 - **Phase 2 — Generalized Sets** (UC/gap/capability working sets) as roadmap scope.
 - **Phase 3 — Roadmap generation:** hybrid propose/curate, graphed output, engineering
   roadmap **export** (slides / Jira / reports) over the structured representation.
+- **Phase 4 — Closed-loop tracking (threads through; start with Track 1).** Tracked work
+  items linking findings → PRs/Jiras; status sync (auto for GitHub/GitLab PRs via the
+  existing poller, manual for Jira); **re-evaluation triggered on acceptance**; drift
+  surfacing. The Track-1 spec-PR loop can land early — enhancement→PR + the repo poller
+  already exist — with Jira/engineering sync following. This is what keeps the analysis
+  honest over time; treat as high-priority, not last.
 
-## 11. Open decisions (deferred)
+## 12. Open decisions (deferred)
 
 - Graph/visualization formats for each roadmap.
 - Canonical-capability mechanism details (catalog is Track-1-owned + spec-anchored; exact
@@ -203,3 +254,9 @@ Every stage is propose → curate, never fully automatic (matches DAV's existing
 - Export targets priority order (slides vs Jira vs report) and their schemas.
 - Whether gaps also get a catalog/canonical identity or stay per-analysis.
 - Stage-navigator UX: linear wizard vs. free navigation with progress indicators.
+- Status-sync depth per target: GitHub/GitLab PR auto (existing poller) first; Jira and
+  branches manual → automated later.
+- Re-evaluation trigger policy: auto-run affected UCs on merge vs. queue for a human to
+  launch; scope of the re-run (just the linked UCs vs. the whole Set).
+- Out-of-band change detection: should DAV flag a target that changed with no linked work
+  item (a fix made outside the loop)?
