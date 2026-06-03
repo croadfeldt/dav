@@ -8852,10 +8852,12 @@ function mdToHtml(raw){
 function renderEnhancementCards(raw){
   try {
     const clean = _stripThink(raw || '');
-    const blocks = clean.split(/\n(?=ENHANCEMENT\s+\S)/).filter(p => /^\s*ENHANCEMENT\s+\S/.test(p));
+    const parts = clean.split(/\n(?=ENHANCEMENT\s+\S)/);
+    const preamble = (parts[0] && !/^\s*ENHANCEMENT\s+\S/.test(parts[0])) ? parts[0].trim() : '';
+    const blocks = parts.filter(p => /^\s*ENHANCEMENT\s+\S/.test(p));
     if (!blocks.length) return mdToHtml(raw);
     const field = (b,n)=>{ const m=b.match(new RegExp('^'+n+':\\s*(.*)$','m')); return m?m[1].trim():''; };
-    let html = '';
+    let html = preamble ? `<div style="margin-bottom:8px;">${mdToHtml(preamble)}</div>` : '';
     for (const b of blocks){
       const idm = b.match(/^\s*ENHANCEMENT\s+(\S+)\s*(?:\(([^)]*)\))?/);
       const id = idm?idm[1]:'?', meta = idm&&idm[2]?idm[2]:'';
@@ -8871,7 +8873,7 @@ function renderEnhancementCards(raw){
         ${target?`<div style="font-size:11px;margin-top:4px;"><span style="color:var(--text-faint);">target</span> <code>${esc(target)}</code>${pos?` <span style="color:var(--text-faint);">· ${esc(pos)}</span>`:''}</div>`:''}
         ${sect?`<div style="font-size:11px;"><span style="color:var(--text-faint);">section</span> ${esc(sect)}</div>`:''}
         ${rat?`<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${esc(rat)}</div>`:''}
-        ${patch?`<pre style="${_MD_PRE}margin-top:5px;">${esc(patch)}</pre>`:''}
+        ${patch?`<div style="border:1px solid var(--border);border-radius:3px;padding:6px 9px;margin-top:5px;background:var(--bg-raised);font-size:11px;">${mdToHtml(patch)}</div>`:''}
         ${acc?`<div style="font-size:10px;color:var(--green);margin-top:4px;">✓ ${esc(acc)}</div>`:''}
       </div>`;
     }
