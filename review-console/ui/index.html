@@ -792,11 +792,13 @@
           </div>
           <div class="panel-toolbar" style="gap:6px;flex-shrink:0;">
             <input id="runFilter" placeholder="filter runs…" style="flex:1;" />
-            <select id="runPhaseFilter" style="flex:none;width:88px;font-size:10px;padding:3px 5px;">
+            <select id="runPhaseFilter" style="flex:none;width:96px;font-size:10px;padding:3px 5px;">
               <option value="">all</option>
               <option value="Running">running</option>
               <option value="Succeeded">succeeded</option>
               <option value="Failed">failed</option>
+              <option value="Cancelled">cancelled</option>
+              <option value="TimedOut">timed out</option>
             </select>
             <button class="btn ghost btn-sm" id="runSelectAllBtn" title="Select / deselect all visible runs">☑ All</button>
           </div>
