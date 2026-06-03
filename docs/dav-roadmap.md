@@ -1,7 +1,15 @@
 # DAV Framework Roadmap
 
-**Status:** Living document, last updated 2026-05-21
-**Current state:** Phase 4 baseline complete (run `2026-04-27T02-05-41Z-3b49872`); Review Console v1 shipped (ops frontend, Runs/Results/Use Cases/Config tabs). Framework verified working end-to-end.
+**Status:** Living document, last updated 2026-06-02
+**Current state:** Phase 4 baseline complete (run `2026-04-27T02-05-41Z-3b49872`); Review Console v1 shipped (ops frontend, Runs/Results/Use Cases/Config tabs). Framework verified working end-to-end. DCM/cost-mgmt feature requests #1–#4 shipped (see below).
+
+> **Product direction (2026-06-02):** DAV is evolving from a spec gap-analysis tool into a
+> **UC-driven gap-analysis / prioritization / design tool** with two roadmaps off one
+> analysis source (architecture & capability + engineering). The forward design — guided
+> workflow, capability catalog, generalized Sets, closed-loop tracking, multi-user/
+> multi-project tenancy — lives in **`docs/uc-driven-roadmaps-design.md`** (the living
+> design/requirements doc). That doc reframes #2/#3 below as engineering-roadmap pieces to
+> be consolidated; this roadmap records what shipped, the design doc records where it's going.
 
 This roadmap captures the agreed sequence for evolving DAV beyond its current "produces baseline reports" state into "actively gates spec changes and proposes UCs the architect didn't think of." Each item is its own focused session; the order matters because earlier items provide foundation for later ones.
 
@@ -147,6 +155,13 @@ Surfaced when DAV was demoed to the DCM team (Piotr Kliczewski, Kevin Cattell,
 Pau Garcia Quiles, David Cannon), who want to use it for prioritization and
 cross-team coordination. Full meeting notes: `docs/2026-06-02-dcm-cost-mgmt-meeting-takeaways.md`.
 Implementation order below follows Chris's read of the meeting.
+
+> **Note:** #1–#4 shipped on branch `feat/dcm-uc-prioritization` and deployed for review.
+> The subsequent information-architecture review (see `docs/uc-driven-roadmaps-design.md`)
+> reframed #2 (Capability Map) and #3 (Foundational) as **engineering-roadmap** pieces that
+> belong on their own surface reading a canonical capability catalog — not next to the
+> gap-based Architectural Review. They're shipped but slated for consolidation under that
+> design (Phase 0/1). #5–#8 below remain as captured.
 
 ### #1 — UC priority / weighting meta-tags — **SHIPPED (2026-06-02)**
 
