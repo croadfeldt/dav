@@ -131,8 +131,12 @@ per-UC capabilities **resolve against it** rather than standing on their own. (L
 support already exists: the engine's pass-1 emits `capabilities_observed` with
 `id: <from spec>` + a `spec_ref`.)
 
-- Catalog entry: id, name, definition, spec_ref(s), status (proposed/confirmed),
-  dependencies on other catalog capabilities.
+- **Capability template** (the canonical shape, shipped 2026-06-03): `key` (stable
+  machine id), `name` (human title — shown everywhere), `description`, `domain`
+  (grouping → roadmap lanes / Jira epics), `spec_refs`, `depends_on`, `status`.
+  Readable AND automatable. Layer 1 (console: domain + name-resolution in the views +
+  LLM "✨ draft" naming) is live; Layer 2 (engine emits name/description in
+  capabilities_invoked) is committed but isolated behind an A/B eval.
 - **Hybrid build:** framework *proposes* capabilities from analysis; architect *curates* —
   confirm, rename, merge synonyms, define dependencies.
 - Every aggregate capability view (demand, foundational, engineering roadmap) reads the
