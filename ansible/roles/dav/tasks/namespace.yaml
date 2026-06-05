@@ -22,15 +22,36 @@
 
 # Egress firewall — restrict the namespace's external egress to allowlisted
 # internal infra + the public internet, denying lateral access to the rest of
-# the homelab. Cluster pod/service networks are allowed first so in-cluster
-# (DB, pod-to-pod) traffic is never affected. Ordered: first match wins; no
-# match = allow (so public internet stays reachable).
+# the homelab. Cluster pod/service networks + the cluster's own node IPs are
+# allowed first (node IPs only so probe replies get through — see below); the
+# DB and pod-to-pod traffic ride the overlay and are never affected. Ordered:
+# first match wins; no match = allow (so public internet stays reachable).
+- name: Discover node InternalIPs for the egress allowlist
+  kubernetes.core.k8s_info:
+    kind: Node
+  register: dav_egress_nodes
+  when:
+    - dav_egress_firewall_enabled | bool
+    - dav_egress_discover_nodes | bool
+
+- name: Build node /32 list (kubelet probe replies must be allowed)
+  ansible.builtin.set_fact:
+    dav_egress_node_cidrs: >-
+      {{ dav_egress_nodes.resources
+         | map(attribute='status.addresses') | flatten
+         | selectattr('type', 'equalto', 'InternalIP')
+         | map(attribute='address')
+         | map('regex_replace', '$', '/32') | list }}
+  when:
+    - dav_egress_firewall_enabled | bool
+    - dav_egress_discover_nodes | bool
+
 - name: Create namespace EgressFirewall
   kubernetes.core.k8s:
     state: present
     # Multiline string so the rule list renders via Jinja before YAML parsing.
-    # Order matters (first match wins): cluster nets → allowlisted infra → deny
-    # private space. Anything unmatched (public internet) is allowed by default.
+    # Order (first match wins): overlay nets → node /32s → allowlisted infra →
+    # deny private space. Anything unmatched (public internet) is allowed.
     definition: |
       apiVersion: k8s.ovn.org/v1
       kind: EgressFirewall
@@ -39,7 +60,7 @@
         namespace: "{{ dav_namespace }}"
       spec:
         egress:
-      {% for cidr in dav_egress_cluster_cidrs + dav_egress_allow_cidrs %}
+      {% for cidr in dav_egress_cluster_cidrs + dav_egress_node_cidrs + dav_egress_allow_cidrs %}
           - type: Allow
             to:
               cidrSelector: "{{ cidr }}"

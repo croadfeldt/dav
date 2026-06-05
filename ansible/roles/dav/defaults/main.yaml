@@ -121,17 +121,25 @@ review_console_loadbalancer_cert_renewal_schedule: "0 3 * * 0"
 # APP layer (the pod only dials the active project's configured endpoints). This
 # firewall is a coarse namespace-wide backstop.
 dav_egress_firewall_enabled: false
-# Cluster networks — MUST be allowed (they fall inside the denied RFC1918 ranges).
-# The node subnet is included because kubelet liveness/readiness probes and other
-# pod↔node traffic ride it; dropping it kills the pod's health probes.
+# Cluster overlay networks — MUST be allowed (they fall inside the denied RFC1918
+# ranges). These are the pod + service networks only, NOT the node subnet.
 dav_egress_cluster_cidrs:
   - "10.128.0.0/14"   # pod network
   - "172.30.0.0/16"   # service network
-  - "10.0.0.0/24"     # node subnet (control+workers 10.0.0.81-89) + default ingress 10.0.0.70
-# Allowlisted internal destinations. *.apps.ocp.roadfeldt.com → default ingress
-# 10.0.0.70 (covered by the node /24 above); *.llm.ocp → llm-public router
-# 10.0.90.20. The MCP servers + most local models live behind *.apps.
+# Node IPs must be reachable so the pod can REPLY to kubelet liveness/readiness
+# probes (the kubelet initiates from the node; OVN's broad Deny ACL otherwise
+# drops the replies → the pod crash-loops, exit 137). The pod does NOT initiate
+# connections to nodes — this is reply traffic only. Discovered at deploy time
+# (each node's InternalIP → /32) so the allowlist stays tight AND survives node
+# scaling, instead of opening the whole node subnet. Set discover_nodes: false
+# and populate dav_egress_node_cidrs by hand to pin them.
+dav_egress_discover_nodes: true
+dav_egress_node_cidrs: []     # filled from discovery, or set manually when off
+# Allowlisted destinations (specific /32s — NOT whole subnets). The MCP servers +
+# *.apps models live behind the default ingress; *.llm models behind the llm
+# router; SMTP on buddy. Add a /32 here when you configure a new internal endpoint.
 dav_egress_allow_cidrs:
+  - "10.0.0.70/32"    # OCP default ingress — *.apps routes (MCP servers, *.apps models)
   - "10.0.90.20/32"   # OCP llm-public ingress — *.llm routes (local models)
   - "10.10.90.4/32"   # buddy.roadfeldt.com (SMTP)
 # Private ranges to deny (everything not allowlisted above). Public internet is
