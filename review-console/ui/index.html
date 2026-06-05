@@ -3931,6 +3931,7 @@ function _renderRunItemHtml(r) {
       ${phaseHtml(r.phase)}<br>
       <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
       <div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;">
+        ${!['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase) ? `<button class="btn ghost btn-sm" title="Stop this run (cancel the pipeline)" onclick="event.stopPropagation();stopRunConfirm('${r.name}')">⏹ Stop</button>` : ''}
         <button class="btn ghost btn-sm" title="Re-run with the same Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
         <button class="btn ghost btn-sm" title="${r.archived ? 'Unarchive' : 'Archive (hide from list)'}" onclick="event.stopPropagation();archiveRun('${r.name}',${r.archived ? 'false' : 'true'})">${r.archived ? 'Unarchive' : 'Archive'}</button>
         <button class="btn danger btn-sm" title="Delete completely — irreversible" onclick="event.stopPropagation();deleteRunConfirm('${r.name}')">Delete</button>
@@ -4008,6 +4009,16 @@ document.getElementById('toggleArchivedRuns')?.addEventListener('click', functio
 async function archiveRun(name, archived){
   try {
     await api(`/api/runs/${encodeURIComponent(name)}/archive`, {method:'POST', body: JSON.stringify({archived})});
+    loadRuns();
+  } catch(e){ toast(e.message, true); }
+}
+async function stopRunConfirm(name){
+  const r = allRuns.find(x => x.name === name);
+  const label = (r && r.session_name) || name;
+  if (!confirm(`Stop run "${label}"?\n\nThis cancels the pipeline — in-flight UC analyses are interrupted and won't complete. Any UCs already finished keep their results. This cannot be resumed (use Re-run to start over).`)) return;
+  try {
+    await api(`/api/runs/${encodeURIComponent(name)}/cancel`, {method:'POST'});
+    toast(`Stopping "${label}"…`);
     loadRuns();
   } catch(e){ toast(e.message, true); }
 }
@@ -4476,18 +4487,26 @@ function _flashChanged(domId) {
 
 // Build a small inline SVG sparkline from an array of [ts, val] pairs.
 // Returns an SVG element string (or empty string if no data).
-function _sparklineSVG(pts, cls, w = 110, h = 22) {
+// `domain` (optional [lo,hi]) fixes the y-scale — pass [0,100] for percentage
+// metrics (GFX, KV) so a pinned-high value renders near the top instead of the
+// auto-scaled bottom. Without a domain, a perfectly flat series is drawn through
+// the vertical middle (a constant 100% GFX otherwise collapses to a misleading
+// bottom line — the "flat line at low utilization" artifact).
+function _sparklineSVG(pts, cls, w = 110, h = 22, domain = null) {
   if (!pts || pts.length < 2) return '';
   const vals = pts.map(p => p[1]);
   const times = pts.map(p => p[0]);
-  const minV = Math.min(...vals), maxV = Math.max(...vals);
-  const rangeV = maxV - minV || 1;
+  const minV = domain ? domain[0] : Math.min(...vals);
+  const maxV = domain ? domain[1] : Math.max(...vals);
+  const flat = maxV === minV;
+  const rangeV = flat ? 1 : (maxV - minV);
   const minT = times[0], maxT = times[times.length - 1];
   const rangeT = maxT - minT || 1;
   const pad = 2;
   const points = pts.map(([t, v]) => {
     const x = pad + ((t - minT) / rangeT) * (w - 2 * pad);
-    const y = (h - pad) - ((v - minV) / rangeV) * (h - 2 * pad);
+    const frac = (flat && !domain) ? 0.5 : (v - minV) / rangeV;
+    const y = (h - pad) - Math.max(0, Math.min(1, frac)) * (h - 2 * pad);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
   return `<svg class="sparkline" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
@@ -5113,7 +5132,9 @@ function _populateNrSetSel(selectedId) {
     (allSets || []).map(s =>
       `<option value="${s.id}"${String(s.id)===String(selectedId)?' selected':''}>${esc(s.name)}${s.is_default?' (default)':''}${s.member_count!=null?` — ${s.member_count} UC${s.member_count===1?'':'s'}`:''}</option>`
     ).join('');
-  sel.value = selectedId ? String(selectedId) : '';
+  // 0-aware: the "All Use Cases" synthetic set has id 0, which is falsy — a
+  // plain truthiness test would silently fail to preselect it.
+  sel.value = (selectedId !== null && selectedId !== undefined && selectedId !== '') ? String(selectedId) : '';
 }
 document.getElementById('nrSetSel')?.addEventListener('change', async function() {
   const { subpath, banner } = await _applySetToNewRun(this.value);
@@ -5130,7 +5151,7 @@ async function rerunRun(name) {
   await openNewRun();
   const setSel = document.getElementById('nrSetSel');
   if (setSel) {
-    setSel.value = r.set_id ? String(r.set_id) : '';
+    setSel.value = (r.set_id !== null && r.set_id !== undefined) ? String(r.set_id) : '';
     setSel.dispatchEvent(new Event('change'));   // apply the Set's filter/subpath/banner
   }
   const nameEl = document.getElementById('nrSessionName');
@@ -5160,8 +5181,10 @@ async function openNewRun(banner, subpath, ucFilter, branchOverride, lineage) {
   if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
   let effectiveSubpath = subpath;
   let effectiveBanner = banner;
-  let setForSel = lineage?.set_id || null;
-  if (subpath === undefined && !banner && !ucFilter && !setForSel) {
+  // ?? / == null (not ||) so the "All Use Cases" set (id 0) survives — it's a
+  // valid, falsy set id and must not be mistaken for "no set selected".
+  let setForSel = lineage?.set_id ?? null;
+  if (subpath === undefined && !banner && !ucFilter && setForSel == null) {
     const def = _getDefaultSet();
     if (def) setForSel = def.id;
   }
@@ -5169,7 +5192,7 @@ async function openNewRun(banner, subpath, ucFilter, branchOverride, lineage) {
   // Apply the Set (only when there's no explicit subpath/banner override) so the
   // corpus field + filter + banner reflect it. Callers that pass their own
   // subpath/banner (Run Set / re-analyze) keep those.
-  if (setForSel && subpath === undefined && !banner) {
+  if (setForSel != null && subpath === undefined && !banner) {
     const r = await _applySetToNewRun(setForSel);
     if (r.subpath !== undefined) effectiveSubpath = r.subpath;
     if (r.banner) effectiveBanner = r.banner;
@@ -5189,7 +5212,7 @@ async function openNewRun(banner, subpath, ucFilter, branchOverride, lineage) {
   // banner so they can switch to a long-context model BEFORE triggering.
   try {
     const sid = _pendingRunLineage?.set_id;
-    if (sid) {
+    if (sid != null) {
       const r = await api(`/api/runs/preflight-hint?set_id=${encodeURIComponent(sid)}`);
       if (r && r.hint) {
         const hintEl = document.getElementById('newRunPreflightHint') || (() => {
@@ -5284,7 +5307,7 @@ async function submitNewRun() {
     // start; lets reviewers test pre-promotion without pushing first.
     managed_uc_uuids:   (_pendingRunFilter?.managed?.length ? _pendingRunFilter.managed : null),
     // R2: lineage — which Set + selection mode produced this run.
-    set_id:             _pendingRunLineage?.set_id || null,
+    set_id:             _pendingRunLineage?.set_id ?? null,
     set_name:           _pendingRunLineage?.set_name || null,
     selection_mode:     _pendingRunLineage?.selection_mode || (
       _pendingRunFilter ? 'selection' : 'corpus'
