@@ -3187,8 +3187,14 @@ async def _est_per_uc_seconds() -> tuple[int, bool]:
         async with pool.acquire() as conn:
             med = await conn.fetchval(
                 "SELECT percentile_cont(0.5) WITHIN GROUP "
-                "(ORDER BY wall_time_seconds / uc_total) FROM run_sessions "
-                "WHERE finalized_at IS NOT NULL AND uc_total > 0 AND wall_time_seconds > 0")
+                "(ORDER BY wall_time_seconds / NULLIF(uc_succeeded, 0)) "
+                "FROM run_sessions "
+                "WHERE finalized_at IS NOT NULL AND wall_time_seconds > 0 "
+                # Per-UC pace = total time ÷ UCs that ACTUALLY completed. Using
+                # uc_succeeded (not uc_total) means a timed-out run that did 5 of
+                # 30 still contributes a correct per-UC rate instead of skewing
+                # the estimate low — so history accrues from partial runs too.
+                "  AND COALESCE(uc_succeeded, 0) > 0")
         if med and med > 0:
             val, is_default = int(med), False
     except Exception as e:
