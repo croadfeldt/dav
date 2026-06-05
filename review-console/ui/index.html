@@ -202,6 +202,11 @@
   .gpu-tile-id { font-size:11px; font-weight:500; color:var(--accent); }
   .gpu-tile-node { font-size:10px; color:var(--text-faint); }
   .gpu-tile-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; font-size:11px; }
+  /* Two-half tile: GFX+VRAM (with gfx sparkline) above Power+Temp (with power sparkline). */
+  .gpu-tile-half { margin-top:8px; }
+  .gpu-tile-half:first-of-type { margin-top:4px; }
+  .gpu-tile-stats2 { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; font-size:11px; }
+  .gpu-spk-slot { margin-top:3px; min-height:0; }
   .gpu-stat { display:flex; flex-direction:column; }
   .gpu-stat-label { font-size:9px; text-transform:uppercase; letter-spacing:0.1em; color:var(--text-faint); }
   .gpu-stat-value { font-size:14px; font-family:var(--mono); color:var(--text); margin-top:2px; }
@@ -409,6 +414,10 @@
   .spk-gfx   { stroke:var(--blue); }
   .spk-tps   { stroke:var(--green); }
   .spk-run   { stroke:var(--accent-soft); }
+  .spk-wait  { stroke:var(--red); }
+  .spk-kv    { stroke:var(--blue); }
+  .spk-ptps  { stroke:var(--green); }
+  .spk-ttft  { stroke:var(--text-faint); }
   .sparkline-wrap { margin-top:4px; opacity:0.8; }
   .gpu-tile-sparklines { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-top:6px; }
   .gpu-spk-block { display:flex; flex-direction:column; }
@@ -4137,6 +4146,9 @@ let _rdTokenBaseline  = {gen: null, prompt: null};
 // every 60s for in-flight runs). Null = not yet loaded.
 let _rdSparklines     = null;
 let _rdSparkTimer     = null;  // periodic re-fetch for in-flight runs
+let _rdLastSnap       = null;  // most recent live snapshot — its values are
+                               // appended as each sparkline's latest point so
+                               // the graph tip always matches the live number.
 
 
 function rdRenderCompactStats(snap, vlive) {
@@ -4531,52 +4543,61 @@ async function _fetchSparklines(startedAt, completedAt) {
 
 // Inject sparkline SVGs into the GPU tiles and vLLM cells that are
 // currently rendered in the drawer. Safe to call multiple times.
+// Append the current live snapshot value as the latest point of a series so the
+// graph's right edge always matches the live headline number (the timeseries
+// itself lags by its refresh interval). Synthetic +30s x so it sits just past
+// the last historical sample; the sparkline x-axis is relative so the value is
+// cosmetic. Returns a fresh values array (never mutates the cached series).
+function _liveTip(series, liveVal) {
+  const vals = (series && series.values) ? series.values.slice() : [];
+  if (vals.length && typeof liveVal === 'number' && isFinite(liveVal)) {
+    vals.push([vals[vals.length - 1][0] + 30, liveVal]);
+  }
+  return vals;
+}
+
 function _renderSparklines() {
   if (!_rdSparklines) return;
   const sp = _rdSparklines;
-  // GPU sparklines: match each GPU series by gpu_id label
+  const snapV = (_rdLastSnap && _rdLastSnap.vllm) || {};
+  const snapG = (_rdLastSnap && _rdLastSnap.gpus) || [];
+  // GPU: gfx sparkline under GFX/VRAM, power sparkline under Power/Temp.
   const powerSeries = sp.gpu_power_watts || [];
   const gfxSeries   = sp.gpu_gfx_activity || [];
   document.querySelectorAll('#rdGpus .gpu-tile').forEach((tile, idx) => {
-    // Find matching series by position (same order as snapshot)
-    const ps = powerSeries[idx];
-    const gs = gfxSeries[idx];
-    let spkEl = tile.querySelector('.gpu-tile-sparklines');
-    if (!spkEl) {
-      spkEl = document.createElement('div');
-      spkEl.className = 'gpu-tile-sparklines';
-      tile.appendChild(spkEl);
-    }
-    let html = '';
-    if (ps && ps.values && ps.values.length >= 2) {
-      html += `<div class="gpu-spk-block"><div class="gpu-spk-label">power</div>
-        <div class="sparkline-wrap">${_sparklineSVG(ps.values, 'spk-power')}</div></div>`;
-    }
-    if (gs && gs.values && gs.values.length >= 2) {
-      html += `<div class="gpu-spk-block"><div class="gpu-spk-label">gfx activity</div>
-        <div class="sparkline-wrap">${_sparklineSVG(gs.values, 'spk-gfx')}</div></div>`;
-    }
-    spkEl.innerHTML = html;
+    const g = snapG[idx] || {};
+    const gfxVals = _liveTip(gfxSeries[idx], g.gpu_gfx_activity);
+    const pwrVals = _liveTip(powerSeries[idx], g.gpu_power_watts);
+    const gfxSlot = tile.querySelector('.gpu-spk-slot[data-spk="gfx"]');
+    const pwrSlot = tile.querySelector('.gpu-spk-slot[data-spk="power"]');
+    if (gfxSlot) gfxSlot.innerHTML = gfxVals.length >= 2
+      ? `<div class="gpu-spk-label">gfx activity</div><div class="sparkline-wrap">${_sparklineSVG(gfxVals, 'spk-gfx', 110, 22, [0,100])}</div>` : '';
+    if (pwrSlot) pwrSlot.innerHTML = pwrVals.length >= 2
+      ? `<div class="gpu-spk-label">power</div><div class="sparkline-wrap">${_sparklineSVG(pwrVals, 'spk-power')}</div>` : '';
   });
-  // vLLM sparklines: gen TPS and running requests
-  const tpsSeries = (sp.vllm_gen_tps  || [])[0];
-  const runSeries = (sp.vllm_running   || [])[0];
-  for (const [cellId, series, cls, label] of [
-    ['rdv-gentps', tpsSeries, 'spk-tps', 'gen t/s'],
-    ['rdv-running', runSeries, 'spk-run', 'running'],
+  // vLLM: one sparkline per cell — [cellId, timeseriesKey, liveKey, cls, domain].
+  // Percentage metrics get a fixed [0,100] domain so a pinned value reads true.
+  for (const [cellId, tsKey, liveKey, cls, domain] of [
+    ['rdv-running',   'vllm_running',    'running_requests',  'spk-run',  null],
+    ['rdv-waiting',   'vllm_waiting',    'waiting_requests',  'spk-wait', null],
+    ['rdv-kv',        'vllm_kv_pct',     'kv_cache_pct',      'spk-kv',   [0,100]],
+    ['rdv-gentps',    'vllm_gen_tps',    'generation_tps',    'spk-tps',  null],
+    ['rdv-prompttps', 'vllm_prompt_tps', 'prompt_tps',        'spk-ptps', null],
+    ['rdv-ttft',      'vllm_ttft_p95',   'ttft_p95_seconds',  'spk-ttft', null],
   ]) {
-    if (!series || !series.values || series.values.length < 2) continue;
     const cell = document.getElementById(cellId);
     if (!cell) continue;
     const parent = cell.closest('.vllm-cell');
     if (!parent) continue;
+    const vals = _liveTip((sp[tsKey] || [])[0], snapV[liveKey]);
     let spkWrap = parent.querySelector('.sparkline-wrap');
+    if (vals.length < 2) { if (spkWrap) spkWrap.remove(); continue; }
     if (!spkWrap) {
       spkWrap = document.createElement('div');
       spkWrap.className = 'sparkline-wrap';
       parent.appendChild(spkWrap);
     }
-    spkWrap.innerHTML = _sparklineSVG(series.values, cls);
+    spkWrap.innerHTML = _sparklineSVG(vals, cls, 110, 22, domain);
   }
 }
 
@@ -4623,7 +4644,7 @@ async function refreshRunDrawer() {
       _fetchSparklines(startedAt, completedAt);
       if (!isTerminal) {
         if (_rdSparkTimer) clearInterval(_rdSparkTimer);
-        _rdSparkTimer = setInterval(() => _fetchSparklines(startedAt, null), 60000);
+        _rdSparkTimer = setInterval(() => _fetchSparklines(startedAt, null), 20000);
       }
     } else if (_rdSparklines) {
       // Already loaded — just re-render in case DOM was rebuilt
@@ -4636,6 +4657,12 @@ async function refreshRunDrawer() {
     snap.vllm = snap.vllm || {};
     if (detail.live_session_gen_tokens !== undefined)    snap.vllm._live_session_gen    = detail.live_session_gen_tokens;
     if (detail.live_session_prompt_tokens !== undefined) snap.vllm._live_session_prompt = detail.live_session_prompt_tokens;
+    // Total GPU energy used by the run (cumulative power×time). Prefer the
+    // finalized value; else the live in-flight estimate. Shown in the inference
+    // grid's bottom-right cell.
+    const sess = detail.session || {};
+    const energyJ = (sess.gpu_energy_joules ?? sess.live_gpu_energy_joules);
+    if (energyJ !== undefined && energyJ !== null) snap.vllm._gpu_energy_j = energyJ;
   }
   renderRunDrawerMetrics(snap);
   // Compact one-row stats — only visible in the non-detailed layouts (CSS-gated).
@@ -4811,6 +4838,7 @@ function _fmtN(v, digits) {
 }
 
 function renderRunDrawerMetrics(snap) {
+  _rdLastSnap = snap;   // cache so _renderSparklines can append live tips
   const gpusEl = document.getElementById('rdGpus');
   const vllmEl = document.getElementById('rdVllm');
   if (snap._err) {
@@ -4854,25 +4882,33 @@ function renderRunDrawerMetrics(snap) {
           <span class="gpu-tile-id">GPU ${esc(g.gpu_id ?? '?')}${g.model ? ' · '+esc(g.model) : ''}</span>
           <span class="gpu-tile-node">${esc(g.node || '')}</span>
         </div>
-        <div class="gpu-tile-stats">
-          <div class="gpu-stat">
-            <div class="gpu-stat-label">GFX</div>
-            <div class="gpu-stat-value" id="${idBase}-gfx">${_fmtN(gfx, 0)}<span class="vllm-cell-unit">%</span></div>
-            <div class="gpu-bar"><div class="gpu-bar-fill ${gfxCls}" style="width:${Math.max(0,Math.min(100, gfx||0))}%"></div></div>
+        <div class="gpu-tile-half">
+          <div class="gpu-tile-stats2">
+            <div class="gpu-stat">
+              <div class="gpu-stat-label">GFX</div>
+              <div class="gpu-stat-value" id="${idBase}-gfx">${_fmtN(gfx, 0)}<span class="vllm-cell-unit">%</span></div>
+              <div class="gpu-bar"><div class="gpu-bar-fill ${gfxCls}" style="width:${Math.max(0,Math.min(100, gfx||0))}%"></div></div>
+            </div>
+            <div class="gpu-stat">
+              <div class="gpu-stat-label">VRAM</div>
+              <div class="gpu-stat-value" id="${idBase}-vram">${_fmtN(vramPct, 0)}<span class="vllm-cell-unit">%</span></div>
+              <div class="gpu-bar"><div class="gpu-bar-fill ${vCls}" style="width:${Math.max(0,Math.min(100, vramPct||0))}%"></div></div>
+            </div>
           </div>
-          <div class="gpu-stat">
-            <div class="gpu-stat-label">VRAM</div>
-            <div class="gpu-stat-value" id="${idBase}-vram">${_fmtN(vramPct, 0)}<span class="vllm-cell-unit">%</span></div>
-            <div class="gpu-bar"><div class="gpu-bar-fill ${vCls}" style="width:${Math.max(0,Math.min(100, vramPct||0))}%"></div></div>
+          <div class="gpu-spk-slot" data-spk="gfx"></div>
+        </div>
+        <div class="gpu-tile-half">
+          <div class="gpu-tile-stats2">
+            <div class="gpu-stat">
+              <div class="gpu-stat-label">Power</div>
+              <div class="gpu-stat-value" id="${idBase}-pwr">${_fmtN(power, 0)}<span class="vllm-cell-unit">W</span></div>
+            </div>
+            <div class="gpu-stat">
+              <div class="gpu-stat-label">Temp</div>
+              <div class="gpu-stat-value ${tCls}" id="${idBase}-tmp">${_fmtN(temp, 0)}<span class="vllm-cell-unit">°C</span></div>
+            </div>
           </div>
-          <div class="gpu-stat">
-            <div class="gpu-stat-label">Power</div>
-            <div class="gpu-stat-value" id="${idBase}-pwr">${_fmtN(power, 0)}<span class="vllm-cell-unit">W</span></div>
-          </div>
-          <div class="gpu-stat">
-            <div class="gpu-stat-label">Temp</div>
-            <div class="gpu-stat-value ${tCls}" id="${idBase}-tmp">${_fmtN(temp, 0)}<span class="vllm-cell-unit">°C</span></div>
-          </div>
+          <div class="gpu-spk-slot" data-spk="power"></div>
         </div>`;
       gpusEl.appendChild(tile);
       // Flash any value that changed from the previous poll
@@ -4927,10 +4963,12 @@ function renderRunDrawerMetrics(snap) {
     ['ttft_p95_seconds',       'TTFT p95',         'rdv-ttft',     2, 's'],
     ['session_gen_tokens',     'Gen tokens (session)',    'rdv-sgen',  0, ''],
     ['session_prompt_tokens',  'Prompt tokens (session)', 'rdv-sprm',  0, ''],
+    // Bottom-right: total GPU energy used by the run (custom formatter).
+    ['_gpu_energy_j',          'GPU energy',       'rdv-energy',   0, '', (j)=> (j==null ? '–' : _fmtEnergy(j))],
   ];
-  vllmEl.innerHTML = vKeys.map(([k,label,id,prec,unit]) => `
+  vllmEl.innerHTML = vKeys.map(([k,label,id,prec,unit,fmt]) => `
     <div class="vllm-cell"><div class="vllm-cell-label">${label}</div>
-      <div class="vllm-cell-value" id="${id}">${_fmtN(v[k], prec)}${unit ? `<span class="vllm-cell-unit">${unit}</span>` : ''}</div></div>`).join('');
+      <div class="vllm-cell-value" id="${id}">${fmt ? fmt(v[k]) : _fmtN(v[k], prec)}${unit ? `<span class="vllm-cell-unit">${unit}</span>` : ''}</div></div>`).join('');
   let vllmChanged = false;
   vKeys.forEach(([k,_l,id]) => {
     const prev = _rdLastVllmValues[k];
