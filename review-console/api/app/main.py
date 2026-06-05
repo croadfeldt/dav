@@ -2718,6 +2718,11 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             capabilities_json=capabilities_json,
             use_profile_json=use_profile_json,
             stage2_two_pass=payload.stage2_two_pass,
+            # Planned UC count drives the dynamic failsafe pipeline timeout. From
+            # the explicit selection; 0 (full corpus, unknown count) falls back
+            # to a generous default inside _mk_pipelinerun.
+            uc_count=(len(payload.uc_handles or []) + len(payload.uc_uuids or [])
+                      + len(payload.managed_uc_uuids or [])),
         )
     except Exception as e:
         log.exception("run trigger failed")

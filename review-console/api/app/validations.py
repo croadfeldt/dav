@@ -28,6 +28,27 @@ ENABLED = os.environ.get("DAV_TRIGGER_ENABLED", "true").lower() == "true"
 WORKSPACE_NAME = os.environ.get("DAV_PIPELINE_WORKSPACE", "shared-data")
 WORKSPACE_PVC  = os.environ.get("DAV_PIPELINE_WORKSPACE_PVC", "dav-workspace")
 
+# Run time budgeting. The pipeline timeout ("time allowed") defaults to the
+# estimate (uc_count × per-UC) PLUS a failsafe buffer — a safety net to catch a
+# genuinely hung run, NOT a tight budget that kills working ones. It's editable
+# mid-run via PATCH (set_run_timeout). Per-UC estimate + buffer are env-tunable
+# and refine over time from observed run history (see main.py est_per_uc).
+EST_SEC_PER_UC = int(os.environ.get("DAV_EST_SEC_PER_UC", "600"))        # 10 min
+FAILSAFE_BUFFER_SEC = int(os.environ.get("DAV_FAILSAFE_BUFFER_SEC", "7200"))  # +2 h
+DEFAULT_TIMEOUT_SEC = int(os.environ.get("DAV_DEFAULT_TIMEOUT_SEC", "43200"))  # 12 h (corpus/unknown count)
+_TIMEOUT_FLOOR_SEC = 3600
+_TIMEOUT_CAP_SEC = 24 * 3600
+
+
+def failsafe_timeout_sec(uc_count: Optional[int]) -> int:
+    """Default 'time allowed' = ETA (uc_count × per-UC) + failsafe buffer,
+    clamped. Full-corpus / unknown count → a generous fixed default."""
+    if not uc_count or uc_count <= 0:
+        return min(_TIMEOUT_CAP_SEC, DEFAULT_TIMEOUT_SEC)
+    t = uc_count * EST_SEC_PER_UC + FAILSAFE_BUFFER_SEC
+    return max(_TIMEOUT_FLOOR_SEC, min(_TIMEOUT_CAP_SEC, t))
+
+
 _TEKTON_GROUP = "tekton.dev"
 _TEKTON_VERSION = "v1"
 _PIPELINERUN_PLURAL = "pipelineruns"
@@ -143,6 +164,7 @@ def _mk_pipelinerun(
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
+    uc_count: Optional[int] = None,
 ) -> dict:
     """Build a PipelineRun object targeting the DAV Pipeline."""
     suffix = str(int(time.time()))[-6:]
@@ -235,7 +257,7 @@ def _mk_pipelinerun(
                     "persistentVolumeClaim": {"claimName": WORKSPACE_PVC},
                 }
             ],
-            "timeouts": {"pipeline": "2h"},
+            "timeouts": {"pipeline": f"{failsafe_timeout_sec(uc_count)}s"},
         },
     }
 
@@ -266,6 +288,7 @@ def trigger_run(
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
+    uc_count: Optional[int] = None,
 ) -> dict:
     """Create a PipelineRun. Returns the created object's status summary."""
     if not ENABLED:
@@ -297,6 +320,7 @@ def trigger_run(
         stage2_two_pass=stage2_two_pass,
         max_tokens=max_tokens,
         grounding_nudge=grounding_nudge,
+        uc_count=uc_count,
     )
 
     try:
