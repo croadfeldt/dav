@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-06-05  
-**Current version:** v0.17.0  
+**Current version:** v0.18.0  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -773,6 +773,48 @@ cache; counts (seen / pruned / per-repo) are logged (no silent truncation).
 Verified live: reconciled 195 stale rows → 63 accurate (`dcm` 12 + `udlm` 51, the
 9 `dcm` UCs at `dcm/use-cases/…`); a planted ghost row was pruned (`pruned:1`);
 idempotent.
+
+---
+
+## Run throughput & methodology (v0.18.0)
+
+Profiling a verification run (qwen3-32b, N=3 ensemble, two-pass) surfaced where
+the ~33 min/UC actually goes — and it is **not** the model "thinking":
+
+| Signal | Observed | Read |
+|---|---|---|
+| prompt : generation tokens | **~26 : 1** | mostly re-submitted context (much served from vLLM prefix cache, so this overstates *compute*) |
+| generation rate | **24.7 tok/s** | the binding constraint — decode of one sequence |
+| TTFT p95 | 4.4 s/turn | prefill of the growing tail each turn |
+| running / KV-cache | **1 / 5.8 %** | one sequence at a time; the GPU is ~idle |
+| per ensemble sample | **18 turns · 17 tool calls · ~60k chars tool results · ~63k chars generated** | the agent loop drives the cost |
+
+Decode math: ~18 turns × (4.4 s prefill + ~35 s decode of ~880 tokens at
+24.7 tok/s) ≈ 12 min/sample; **× 3 samples run serially ≈ 36 min/UC** — matching
+observation. So the run is **decode-bound on one sequence while the GPU sits at
+running=1 / KV 5.8 %**.
+
+**Levers (ranked by impact ÷ risk):**
+1. **Concurrent ensemble samples** *(shipped, v0.18.0)* — the N samples are
+   independent random-seed runs, so running them in parallel lets vLLM **batch**
+   them on the idle GPU: ~3× the per-UC throughput with **no effect on results**.
+   Wired as `sample-concurrency` (Tekton param → engine `--sample-concurrency`;
+   API default `min(sample_count, DAV_MAX_SAMPLE_CONCURRENCY=4)`). The engine
+   already supported it (`run_samples` ThreadPoolExecutor; per-sample MCP client,
+   shared thread-safe inference client). *A/B (concurrency 1 vs 3) to quantify.*
+2. **Cut the agent-loop tax** — 17 tool calls × a growing transcript drives the
+   18 turns of decode. Tighter/fewer MCP queries, smaller tool results, or
+   pruning old results between turns reduces turns → less decode. *Affects
+   results — requires careful A/B.*
+3. **Ensemble policy per job** — N=3 + two-pass is the high-assurance setting;
+   N=1 / single-pass is 2–4× faster for routine sweeps.
+4. **Decode speed** — 24.7 tok/s for a 32B is low; serving config / a smaller
+   triage model are follow-ups.
+
+Methodology principle: **results first, speed close behind** — a correct answer
+that arrives too late to act on has little value. Throughput changes that don't
+alter results (lever 1) ship first; anything that touches the analysis (lever 2)
+is A/B'd for quality before adoption.
 
 ---
 

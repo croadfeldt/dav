@@ -382,6 +382,20 @@ registered corpus repos the engine clones, mark-and-swept, on **boot · hourly �
 corpus-push webhook · pre-run · manual**. See review-console-design.md
 §Corpus-files cache reconciliation.
 
+**v0.18.0 (2026-06-05) — run-throughput methodology + concurrent ensemble samples:**
+Profiling showed a verification run is **decode-bound on a single sequence**
+(gen 24.7 tok/s, TTFT 4.4s, prompt:gen ~26:1) while the GPU sits at running=1 /
+KV 5.8% — because the ensemble's N samples ran **serially**. Since the samples
+are independent random-seed runs, parallelising them is a pure throughput win
+(no effect on results) that lets vLLM **batch** them: shipped **`sample-concurrency`**
+(Tekton param → engine `--sample-concurrency`; API default `min(sample_count,
+DAV_MAX_SAMPLE_CONCURRENCY=4)`; the engine already supported it). Also: live
+per-UC ETA from observed pace + ⚠ "exceeds time allowed"; ensemble "iteration
+X of N" in turn records; service-token transient handling (don't cache TokenReview
+blips); API SA `patch`/`update` on pipelineruns (Stop + edit-timeout). See
+review-console-design.md §Run throughput & methodology. *Lever 2 (cut the
+agent-loop tax) is next, A/B'd for quality.*
+
 ### Console v2 — multi-project / multi-repo support — **IN PROGRESS (M1-M8, 2026-05-27+)**
 
 Originally scoped as a `dav-console-projects` ConfigMap. Superseded by the
