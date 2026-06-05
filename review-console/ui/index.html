@@ -4803,7 +4803,7 @@ function renderRunDrawerDetail(d) {
   document.getElementById('rdSub').innerHTML = timeBits;
   // Row 3 — scope / estimate
   const hs = [];
-  if (ucCount != null) hs.push(`<span class="rd-hstat"><span class="l">UCs</span><b>${ucCount}</b></span>`);
+  if (ucCount != null) hs.push(`<span class="rd-hstat"><span class="l" style="text-transform:none">UCs</span><b>${ucCount}</b></span>`);
   if (!_terminal && ucCount != null) {
     const estDef = d.est_per_uc_is_default
       ? `<span style="color:var(--text-faint);font-size:9px;margin-left:3px" title="No run history yet — this estimate adjusts as runs complete">≈ default</span>` : '';
