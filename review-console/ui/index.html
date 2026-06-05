@@ -2061,9 +2061,9 @@
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Use cases</div>
       <div class="form-field"><label>Set (which use cases to run)</label>
         <select id="nrSetSel" style="width:100%;">
-          <option value="">Full corpus (all use cases)</option>
+          <option value="">Full corpus (all corpus UCs, unfiltered)</option>
         </select>
-        <div class="form-hint" id="nrSetHint">Pick a Set to run only its use cases, or run the full corpus.</div>
+        <div class="form-hint" id="nrSetHint">Pick a Set (e.g. <strong>All Use Cases</strong> = every managed + corpus UC) to run exactly its UCs, or <strong>Full corpus</strong> to run the whole corpus repo unfiltered (corpus UCs only).</div>
       </div>
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Session</div>
@@ -5109,7 +5109,7 @@ async function _applySetToNewRun(setId) {
 function _populateNrSetSel(selectedId) {
   const sel = document.getElementById('nrSetSel');
   if (!sel) return;
-  sel.innerHTML = '<option value="">Full corpus (all use cases)</option>' +
+  sel.innerHTML = '<option value="">Full corpus (all corpus UCs, unfiltered)</option>' +
     (allSets || []).map(s =>
       `<option value="${s.id}"${String(s.id)===String(selectedId)?' selected':''}>${esc(s.name)}${s.is_default?' (default)':''}${s.member_count!=null?` — ${s.member_count} UC${s.member_count===1?'':'s'}`:''}</option>`
     ).join('');
