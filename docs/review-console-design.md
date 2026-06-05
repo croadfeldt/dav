@@ -778,6 +778,17 @@ leak, an **archive-bomb** DoS cap on import, and the MCP poll's `verify=False`.
 Outbound **email** now includes mandatory `Date`/`Message-ID` headers (amavis
 was quarantining DAV mail as `BAD-HEADER`).
 
+### Presence gauge (v0.15.0, platform-admin)
+
+The masthead shows a live **"N online · M active"** chip **for platform admins
+only**. The `_approval_gate` records a per-identity last-seen on every
+authenticated request (in-memory; single API replica). `GET /api/presence`
+(platform-admin gated) returns `{online, active}`: *online* = a tab seen in the
+last 2 min (any request, incl. background polls); *active* = a real, non-poll
+request in the last 5 min (background pollers like `/api/me`, `/api/runs`,
+health are excluded from "active"). The UI polls it every 45 s when the caller is
+a platform admin.
+
 ### Outbound email headers (v0.15.0)
 
 `_smtp_message()` builds every outbound message (invites, notifications, SMTP

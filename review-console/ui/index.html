@@ -763,6 +763,11 @@
   </div>
   <div class="pf-masthead-right">
     <span id="triggerStatus" style="color:var(--text-faint);font-size:10px;"></span>
+    <span id="presenceChip" title="People with the console open / actively using it (last 2 / 5 min)"
+          style="display:none;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);white-space:nowrap;cursor:default;">
+      <span style="opacity:.8;">●</span><span id="presenceOnline">–</span> online
+      <span style="opacity:.45;">·</span><span id="presenceActive">–</span> active
+    </span>
     <div class="theme-chip">
       <button class="theme-chip-btn" id="acctChipBtn"><span id="acctChipLabel">—</span> <span style="opacity:.55;">▾</span></button>
       <div class="theme-menu" id="acctMenu">
@@ -3069,6 +3074,30 @@ function _applyAccessVisibility() {
   document.querySelectorAll('[data-needs-priv]').forEach(el => {
     el.style.display = can(el.getAttribute('data-needs-priv')) ? '' : 'none';
   });
+  // Presence gauge — platform admins only.
+  _startPresence(platAdmin);
+}
+
+let _presenceTimer = null;
+async function loadPresence() {
+  const chip = document.getElementById('presenceChip');
+  if (!chip || chip.style.display === 'none') return;
+  try {
+    const p = await api('/api/presence');
+    const o = document.getElementById('presenceOnline'); if (o) o.textContent = p.online ?? '–';
+    const a = document.getElementById('presenceActive'); if (a) a.textContent = p.active ?? '–';
+  } catch(e) { /* keep last values on a transient failure */ }
+}
+function _startPresence(on) {
+  const chip = document.getElementById('presenceChip');
+  if (on) {
+    if (chip) chip.style.display = 'inline-flex';
+    loadPresence();
+    if (!_presenceTimer) _presenceTimer = setInterval(loadPresence, 45000);
+  } else {
+    if (chip) chip.style.display = 'none';
+    if (_presenceTimer) { clearInterval(_presenceTimer); _presenceTimer = null; }
+  }
 }
 
 function loadAccessPanels() {

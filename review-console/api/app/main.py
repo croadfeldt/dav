@@ -648,6 +648,44 @@ app.add_middleware(
 _GATE_EXEMPT_PREFIXES = ("/readyz", "/healthz", "/livez", "/metrics", "/docs", "/openapi",
                          "/api/auth/", "/api/invites/", "/api/me")
 
+# ── Presence tracking (platform-admin status bar) ────────────────────────────
+# In-memory last-seen per identity, updated in the gate on every authenticated
+# request. "online" = a tab seen recently (any request, incl. background polls);
+# "active" = a recent NON-poll request (a real action). Single API replica, so a
+# plain dict is fine; it resets on pod restart (acceptable for a live gauge).
+_presence_seen: dict = {}     # user(lower) -> last request epoch
+_presence_active: dict = {}   # user(lower) -> last non-poll request epoch
+_PRESENCE_ONLINE_WINDOW = 120   # seconds — a 60s client poll keeps a tab "online"
+_PRESENCE_ACTIVE_WINDOW = 300   # seconds — "actively using" within 5 min
+# GET requests to these paths are background polling, not real activity — they
+# keep a user "online" but do not mark them "active".
+_PRESENCE_POLL_PATHS = frozenset({
+    "/api/presence", "/api/me", "/api/runs/status", "/api/runs", "/healthz",
+    "/readyz", "/api/mcp-servers/health", "/api/inbox/unread-count",
+})
+
+
+def _record_presence(user: str, request: Request) -> None:
+    if not user:
+        return
+    now = time.time()
+    ul = user.lower()
+    _presence_seen[ul] = now
+    if request.method != "GET" or request.url.path not in _PRESENCE_POLL_PATHS:
+        _presence_active[ul] = now
+
+
+def _presence_counts() -> dict:
+    now = time.time()
+    # Prune anything older than the longest window so the dicts stay bounded.
+    cutoff = now - max(_PRESENCE_ONLINE_WINDOW, _PRESENCE_ACTIVE_WINDOW)
+    for d in (_presence_seen, _presence_active):
+        for k in [k for k, t in d.items() if t < cutoff]:
+            d.pop(k, None)
+    online = sum(1 for t in _presence_seen.values() if now - t <= _PRESENCE_ONLINE_WINDOW)
+    active = sum(1 for t in _presence_active.values() if now - t <= _PRESENCE_ACTIVE_WINDOW)
+    return {"online": online, "active": active}
+
 
 @app.middleware("http")
 async def _approval_gate(request: Request, call_next):
@@ -680,6 +718,7 @@ async def _approval_gate(request: Request, call_next):
                 {"detail": "Your account is disabled. Ask a platform admin to enable it."},
                 status_code=403,
             )
+    _record_presence(user, request)
     return await call_next(request)
 
 
@@ -1252,6 +1291,15 @@ async def me(request: Request):
         "default_project_id": default_project_id,
         "active_project_id": active_project_id,
     }
+
+
+@app.get("/api/presence")
+async def presence(request: Request):
+    """Live presence gauge for the platform-admin status bar: how many distinct
+    identities are currently online (a tab seen in the last 2 min) and actively
+    using the system (a real, non-poll request in the last 5 min)."""
+    await require_role(request, "admin")  # platform admin only
+    return _presence_counts()
 
 
 class DefaultProjectIn(BaseModel):
