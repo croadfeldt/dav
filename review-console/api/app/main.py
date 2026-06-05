@@ -137,11 +137,18 @@ async def _validate_service_token(request) -> bool:
         )
     except Exception as e:
         log.warning("service-token validation error: %s", e)
-        ok = False
+        ok = None
+    # ok is None for a TRANSIENT TokenReview failure — do NOT cache it, so the
+    # next request (e.g. the engine's next managed-UC fetch with the same token)
+    # re-validates immediately instead of being locked out. Only cache definite
+    # outcomes: positive 60s; negative a SHORT 2s (just enough to dampen a flood
+    # of distinct bogus tokens without penalising a valid one that blipped).
+    if ok is None:
+        return False
     # Cap the cache so a flood of distinct bogus tokens can't grow it unbounded.
     if len(_svc_token_cache) > 512:
         _svc_token_cache.clear()
-    _svc_token_cache[key] = (ok, now + (60.0 if ok else 10.0))
+    _svc_token_cache[key] = (ok, now + (60.0 if ok else 2.0))
     return ok
 
 

@@ -101,17 +101,22 @@ def review_service_token(token: str, audience: str, trusted_sas: set) -> bool:
     """
     if not token:
         return False
+    # Returns True (valid) / False (definitively rejected) / None (TRANSIENT —
+    # the TokenReview call itself errored). Callers must NOT cache a None: a
+    # valid token must not be locked out for a transient apiserver blip (the
+    # engine reuses one token for ~23 managed-UC fetches at run start, so a
+    # cached negative would silently drop several UCs).
     try:
         body = client.V1TokenReview(
             spec=client.V1TokenReviewSpec(token=token, audiences=[audience])
         )
         resp = _authn().create_token_review(body)
     except ApiException as e:
-        log.warning("TokenReview API error: %s", getattr(e, "reason", e))
-        return False
+        log.warning("TokenReview API error (transient): %s", getattr(e, "reason", e))
+        return None
     except Exception as e:
-        log.warning("TokenReview error: %s", e)
-        return False
+        log.warning("TokenReview error (transient): %s", e)
+        return None
     st = getattr(resp, "status", None)
     if not st or not getattr(st, "authenticated", False):
         return False
