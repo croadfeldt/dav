@@ -4300,7 +4300,7 @@ function rdRenderPrompts() {
   document.getElementById('rdPromptsCount').textContent = all.length
     ? `· ${all.length} turn records · default ${_rdPromptsState.defaultMode}` : '';
   if (!all.length) {
-    el.innerHTML = '<div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet · written by engine after run-corpus starts</div>';
+    el.innerHTML = '<div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet · written by the engine as it analyzes each UC</div>';
     return;
   }
   // Cap to most recent 400 to keep DOM bounded
