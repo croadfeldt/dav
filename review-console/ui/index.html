@@ -251,6 +251,11 @@
 
   .panel-header { padding:12px 16px; border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; gap:8px; flex-shrink:0; }
   .panel-title  { font-family:var(--serif); font-size:16px; font-weight:400; }
+  /* Header hierarchy: .view-title = a dedicated full-page view's page title
+     (Users, Projects); .panel-title = a list-column / panel header (Runs,
+     Results, Use Cases, Sets, Inbox, Catalog). One style per tier. */
+  .view-title    { font-family:var(--serif); font-size:20px; font-weight:400; margin-bottom:2px; }
+  .view-subtitle { font-size:12px; color:var(--text-dim); margin-bottom:14px; }
   .panel-title em { color:var(--accent); font-style:italic; }
   .panel-toolbar { padding:8px 12px; border-bottom:1px solid var(--border); display:flex; gap:6px; align-items:center; flex-shrink:0; flex-wrap:wrap; }
   .panel-toolbar input, .panel-toolbar select { flex:1; font-size:11px; min-width:80px; }
@@ -1055,8 +1060,10 @@
       <div class="split" id="resultDetail">
         <div class="split-left" id="ucListPanel" style="width:340px; min-width:200px;">
           <div class="panel-header">
-            <span style="font-size:11px; color:var(--text-dim);" id="ucPanelTitle">Use Cases</span>
-            <button class="btn ghost btn-icon" id="cmpToggleBtn" title="Compare with another run" style="font-size:10px;padding:3px 8px;">⇄ Compare</button>
+            <span class="panel-title" id="ucPanelTitle">Use Cases</span>
+            <div class="toolbar-actions">
+              <button class="btn ghost btn-sm" id="cmpToggleBtn" title="Compare with another run">⇄ Compare</button>
+            </div>
           </div>
           <!-- Compare run picker (hidden until compare mode active) -->
           <div id="cmpPickerRow" style="display:none; padding:6px 10px; border-bottom:1px solid var(--border-bright); gap:6px; flex-direction:column;">
@@ -1197,7 +1204,7 @@
           <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">
             <div style="display:flex;justify-content:space-between;align-items:center;">
               <div>
-                <div style="font-weight:600;font-size:13px;">PR Comments</div>
+                <div class="panel-title">PR Comments</div>
                 <div style="font-size:10px;color:var(--text-faint);">Ingested from repos with role=issue-source</div>
               </div>
               <button class="btn ghost btn-icon" id="inboxRefreshBtn" title="Refresh">↻</button>
@@ -1382,7 +1389,7 @@
         <!-- Left: the catalog + add/edit form -->
         <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
           <div style="padding:12px 14px;border-bottom:1px solid var(--border);">
-            <div style="font-size:13px;color:var(--text);"><strong>Capability Catalog</strong></div>
+            <div class="panel-title">Capability Catalog</div>
             <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Canonical capabilities for this project. Curate manually; confirm suggestions from analysis. The engineering roadmap reads this — not raw model strings.</div>
           </div>
           <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:6px;">
@@ -1457,8 +1464,8 @@
     <!-- ══════════════ USERS & ROLES (RBAC console) ══════════════ -->
     <section class="pf-view" id="view-users">
       <div style="padding:18px 22px;overflow-y:auto;height:100%;">
-        <div style="font-family:var(--serif);font-size:20px;margin-bottom:2px;">Users &amp; roles</div>
-        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Accounts, the role × privilege matrix, and role bindings (incl. LDAP group mappings).</div>
+        <div class="view-title">Users &amp; roles</div>
+        <div class="view-subtitle">Accounts, the role × privilege matrix, and role bindings (incl. LDAP group mappings).</div>
         <div id="usersViewBody"></div>
       </div>
     </section>
@@ -1466,8 +1473,8 @@
     <!-- ══════════════ PROJECTS ══════════════ -->
     <section class="pf-view" id="view-projects">
       <div style="padding:18px 22px;overflow-y:auto;height:100%;">
-        <div style="font-family:var(--serif);font-size:20px;margin-bottom:2px;">Projects</div>
-        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Create, manage, archive and delete projects; assign members and their roles.</div>
+        <div class="view-title">Projects</div>
+        <div class="view-subtitle">Create, manage, archive and delete projects; assign members and their roles.</div>
         <div id="projectsViewBody"></div>
       </div>
     </section>
