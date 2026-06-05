@@ -13,11 +13,12 @@ metadata:
     component: review-console-self-test
 rules:
   # Create and read PipelineRuns — the trigger endpoint needs both; delete for
-  # run management's complete-delete (removes the Tekton object; child TaskRuns/
-  # pods cascade via ownerReferences).
+  # complete-delete (removes the Tekton object; child TaskRuns/pods cascade via
+  # ownerReferences); patch/update for Stop (spec.status=Cancelled) and editing
+  # a run's "time allowed" (spec.timeouts.pipeline) mid-run.
   - apiGroups: ["tekton.dev"]
     resources: ["pipelineruns"]
-    verbs: ["create", "get", "list", "watch", "delete"]
+    verbs: ["create", "get", "list", "watch", "delete", "patch", "update"]
   # Read the Pipeline definition to resolve its params before creating a run
   - apiGroups: ["tekton.dev"]
     resources: ["pipelines"]
