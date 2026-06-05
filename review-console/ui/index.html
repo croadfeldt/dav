@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
+<!-- Build stamp — replaced at image build time (sed in the Containerfile) from
+     DAV_REPO_COMMIT. Surfaced in the account menu + console so you can confirm
+     exactly which UI build a browser is running (vs a stale cached copy). -->
+<meta name="dav-build" content="__DAV_BUILD__" />
 <title>DAV Console</title>
 <script>
   // Early-init theme: avoid FOUC by setting data-theme/data-mode on <html>
@@ -823,6 +827,7 @@
         <button class="dropdown-item" data-theme="solarized">Solarized</button>
         <hr>
         <button class="dropdown-item" id="acctLogout">Sign out</button>
+        <div class="theme-menu-section" style="border-top:1px solid var(--border);margin-top:2px;color:var(--text-faint);font-size:10px;">UI build <span id="buildStamp">dev</span></div>
       </div>
     </div>
   </div>
@@ -3187,6 +3192,12 @@ document.addEventListener('click', (e) => {
   const wrap = document.getElementById('presenceWrap');
   if (wrap && !wrap.contains(e.target)) _closePresencePopover();
 });
+// Build stamp — confirm which UI build this browser is actually running.
+(function(){
+  const b = document.querySelector('meta[name="dav-build"]')?.content || 'dev';
+  const el = document.getElementById('buildStamp'); if (el) el.textContent = b;
+  try { console.info('%cDAV UI build: ' + b, 'color:#c8964a'); } catch(_) {}
+})();
 
 function loadAccessPanels() {
   if (me && me.is_admin) loadProjectsAdmin();

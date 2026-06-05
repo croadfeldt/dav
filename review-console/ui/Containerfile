@@ -21,5 +21,8 @@ LABEL org.opencontainers.image.title="dav-review-ui" \
       io.openshift.expose-services="8080:http"
 
 COPY index.html /opt/app-root/src/index.html
+# Stamp the build commit into the page so the running build is visible in-app
+# (account menu + console) — makes a stale browser cache obvious at a glance.
+RUN sed -i "s/__DAV_BUILD__/${DAV_REPO_COMMIT}/g" /opt/app-root/src/index.html
 
 CMD ["nginx", "-g", "daemon off;"]
