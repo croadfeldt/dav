@@ -89,6 +89,35 @@ earlier meaningfully bounds the SSRF surface.
   a `dav-review-admin-bootstrap` Secret via `secretKeyRef` instead of a plaintext
   `value:` in the pod spec.
 
+## Follow-on (2026-06-05): engine→API service auth (v0.16.0)
+
+Closing **H1** (gating `GET /api/use-cases/{uuid}` behind auth + a project check)
+also blocked the *legitimate* in-cluster caller: the engine's run-corpus task
+fetches managed UCs from that endpoint unauthenticated, so under `require_auth`
+every fetch 401'd and runs silently analyzed only corpus-file matches (an "All
+Use Cases" run covered 7 of 32). Rather than re-opening the endpoint, the engine
+now authenticates as a first-class service — and we chose the **cloud-native**
+mechanism over a shared static secret:
+
+- **SA projected token + TokenReview.** The run pod mounts a projected
+  `serviceAccountToken` (audience `dav-api`, ~1h TTL, kubelet-rotated) for its SA
+  (`system:serviceaccount:dav:pipeline`); the engine sends it as a Bearer token;
+  the API validates it via the **TokenReview** API, requiring authentication +
+  the `dav-api` audience + a trusted SA. A pass resolves to `system:engine` and
+  bypasses the gate/privilege checks for that request only. No long-lived secret
+  exists to leak; the token is short-lived and identity-bound.
+- **`system:auth-delegator`** ClusterRole on the API SA (validate-only — it can
+  create TokenReviews, nothing else).
+- **Defense-in-depth NetworkPolicy** (`dav-review-api-allow`): the API has no
+  direct external Route, so ingress on `:8000` is fenced to same-namespace pods —
+  this also closes the *residual* noted under C1 (an in-cluster pod hitting
+  `dav-review-api:8000` directly), since only `dav`-namespace pods can now reach
+  it at all.
+- **Verified:** in-namespace request to `/api/use-cases/{uuid}` → no token **401**,
+  valid pipeline-SA token (aud `dav-api`) **200**, wrong-audience token **401**.
+
+See review-console-design.md §Service-to-service auth (engine → API).
+
 ## Recommended / deferred (with rationale)
 
 - **H7 — dav-docs-mcp unauthenticated exposure.** Remediation is the planned

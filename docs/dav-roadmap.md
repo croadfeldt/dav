@@ -349,6 +349,25 @@ dav-docs-mcp server-side hardening (authored default-off, needs watched rollout)
 pipeline-SA `edit` clusterrole, model api_key encryption-at-rest, image digest
 pinning.
 
+**v0.16.0 (2026-06-05) — engine↔API service auth + "All Use Cases" set + UI consistency:**
+The H1 fix (gating `/api/use-cases`) had blocked the engine's own in-cluster
+managed-UC fetch, so under `require_auth` runs silently dropped every managed UC
+(an "All Use Cases" run covered 7 of 32). Engine→API calls now authenticate with
+the run pod's **ServiceAccount projected token** (audience `dav-api`, validated by
+the API via **TokenReview**, identity `system:engine`) — short-lived + identity-
+bound, **no shared static secret**; supported by the API SA's `system:auth-delegator`
+binding and a defense-in-depth **NetworkPolicy** fencing the API to in-namespace
+callers. **"All Use Cases"** is now a synthetic, immutable **set** (reserved id 0,
+dynamic membership = all managed + all corpus, deduped) that runs/reviews through
+the same paths as any real set — *standardization over customization*; the legacy
+"Full corpus" option is reworded to disambiguate. A **design-system pass** unified
+control scale (`.btn-sm`/`.toolbar-actions`) and section-header typography (plain
+"Use Cases"/"Run Results") across views, added a build-stamp + no-cache so stale
+caches are obvious, and shipped a platform-admin **presence gauge** (live who's-
+online popover). Design principles gained *Standardization over customization*,
+*Whole-system reuse*, and *Secure by construction*. See review-console-design.md
+§Service-to-service auth, §"All Use Cases", §Design-system layer.
+
 ### Console v2 — multi-project / multi-repo support — **IN PROGRESS (M1-M8, 2026-05-27+)**
 
 Originally scoped as a `dav-console-projects` ConfigMap. Superseded by the

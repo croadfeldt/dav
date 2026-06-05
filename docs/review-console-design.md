@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-06-05  
-**Current version:** v0.15.0  
+**Current version:** v0.16.0  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -15,9 +15,12 @@ Update this doc whenever a feature is added, changed, or removed.
 
 ## Design principles
 
-- **Consistency** — UI/UX patterns and process flows must be consistent across all features. If a pattern is used in one place (model selector + Browse button, two-click delete, streaming output with status indicator), it must be applied the same way everywhere. Users should never need to learn a different interaction model for the same type of action.
+- **Consistency** — UI/UX patterns and process flows must be consistent across all features. If a pattern is used in one place (model selector + Browse button, two-click delete, streaming output with status indicator), it must be applied the same way everywhere. Users should never need to learn a different interaction model for the same type of action. This extends to *typography and control affordances*: a section header is rendered one way everywhere (plain "Use Cases", never a mixed-case/italic "Use *cases*"); toolbar actions (Import / Export / Bulk / New) use one shared button scale (`.btn-sm`) and sit in a single `.toolbar-actions` cluster in the same position across views. The design-system layer (`.btn-sm`/`.btn-icon`/`.toolbar-actions`/`.view-title`/`.view-subtitle` + the `u-*` utility classes) is the canonical source — new views compose those classes rather than re-styling inline.
+- **Standardization over customization** — prefer the standard, shared mechanism over a bespoke one-off, even when a special case would be marginally simpler. New behavior should reuse an existing abstraction and extend it for everyone rather than fork a private code path. *Example:* "All Use Cases" is modeled as a (synthetic) **set** so it flows through the exact same run / arch-review / readiness paths as any real set — rather than scattering `if isAllSelected` branches across the codebase. Minimizing custom code is a feature: it keeps the system legible and uniformly testable.
+- **Whole-system reuse** — design with the whole system in mind and reuse existing data and sources before building new ones. Before adding a table, endpoint, or data feed, check whether an existing one already carries (or can carry) the information. Consistency and deliberate reuse beat parallel half-duplicated mechanisms.
 - **Scope clarity** — configuration that affects all users belongs in Config and is stored server-side; personal preferences belong in localStorage and are never shown as shared settings.
 - **Least surprise** — defaults are always visible and editable; overrides are always scoped to the current session and do not mutate the shared default.
+- **Secure by construction** — every trust boundary is authenticated, and service-to-service calls use short-lived, identity-bound credentials, never shared static secrets. In-cluster components authenticate with their Kubernetes ServiceAccount projected token (validated via TokenReview), not a baked-in password; endpoints are defended in depth (auth gate + RBAC + NetworkPolicy). See §Service-to-service auth (engine → API).
 - **Efficient use of screen real estate** — operational views (Runs detail, Results, Review & Plan) must use the available width and height. Stats that fit side-by-side should sit side-by-side at wide widths and stack only when the viewport forces it. Tail panes (live log-like streams) must bound their height so they never blow past the viewport — scroll *within* the pane, not the whole page. The Runs detail panel is the canonical example: GPU + Inference live tiles render as a 2-column grid at ≥1100px; Prompts/Tasks panes cap at `max-height: 48vh` and scroll internally.
 
 ---
@@ -711,6 +714,26 @@ The legacy umbrella `project.data.write` is **retired** (removed from built-in r
 
 ---
 
+## Service-to-service auth (engine → API) (v0.16.0)
+
+The engine (the Tekton **run-corpus** task) materializes *managed* UCs at run start by fetching each from the console API (`GET /api/use-cases/{uuid}` against `dav-review-api.dav.svc:8000`). Once the API enforces auth (multi-user mode), that in-cluster call must authenticate too — otherwise the gate 401s it and the run silently drops every managed UC (the bug that made an "All Use Cases" run cover only the corpus-file matches, e.g. 7 of 32).
+
+**Mechanism — Kubernetes ServiceAccount projected token + TokenReview (no shared secret):**
+- The run-corpus Task mounts a **projected `serviceAccountToken`** volume for the run pod's SA (`system:serviceaccount:{ns}:pipeline` — the OpenShift Pipelines default), scoped to **audience `dav-api`**, ~1h TTL, auto-rotated by the kubelet, at `/var/run/secrets/dav/api-token`.
+- The engine reads that file fresh per call and sends it as `Authorization: Bearer <jwt>` (`run_corpus.py`, env `DAV_API_TOKEN_PATH`).
+- The API validates it via the **TokenReview** API (`validations.review_service_token`): the token must cryptographically authenticate, **carry the `dav-api` audience** (so a token minted for any other service can't be replayed here), **and** its SA username must be in `DAV_TRUSTED_SERVICE_ACCOUNTS`. A pass resolves to the synthetic identity **`system:engine`**, which bypasses the approval gate + project privilege checks **for that request only** (`main.py`: `_validate_service_token` runs once up front in `_approval_gate`, sets `request.state._svc_ok`; `get_user` / `require_priv` / `_require_priv_conn` / `require_role` honor it). Results are cached briefly by token digest so a multi-UC fetch issues one TokenReview, not N.
+- **Why not a shared static secret:** short-lived + identity-bound beats a long-lived secret with nothing scoping *who* may present it. Nothing static is baked into an image or Secret to leak or rotate by hand.
+
+**Supporting RBAC + network controls:**
+- The API SA (`dav-review-api`) holds the built-in **`system:auth-delegator`** ClusterRole (the only grant needed to *create* TokenReviews; it can validate tokens but mint/escalate nothing). Bound via a namespaced-named ClusterRoleBinding so multiple DAV installs don't collide.
+- **Defense-in-depth NetworkPolicy** (`dav-review-api-allow`): the API has **no direct external Route** — every legitimate caller (UI nginx proxy, oauth-proxy sidecar, engine run pods, webhook EventListener) lives in the `dav` namespace, so ingress on `:8000` is restricted to same-namespace pods. Kubelet health probes come from the node and are permitted by OVN-Kubernetes regardless.
+
+**Verification (deploy-time):** from an in-namespace pod, a request to `/api/use-cases/{uuid}` with **no token → 401**, with a **valid pipeline-SA token (aud `dav-api`) → 200**, with a **wrong-audience token → 401**.
+
+**Ansible:** `dav_api_token_audience` (default `dav-api`), `dav_pipeline_service_account` (default `pipeline`), `dav_api_networkpolicy_enabled` (default true); the auth-delegator binding ships in `review-console-self-test-rbac.yaml.j2`, the NetworkPolicy in `namespace.yaml`, the projected-token volume in `tekton-tasks/dav-run-corpus.yaml.j2`.
+
+---
+
 ## Deployment toggles — TLS + auth activation (v0.10.1)
 
 All site-specific values live in `ansible/inventory/group_vars/all/vars.local.yaml`; framework defaults (all **off**) are in the `dav` role's `defaults/main.yaml`. Nothing here changes behavior until the operator opts in.
@@ -787,7 +810,11 @@ authenticated request (in-memory; single API replica). `GET /api/presence`
 last 2 min (any request, incl. background polls); *active* = a real, non-poll
 request in the last 5 min (background pollers like `/api/me`, `/api/runs`,
 health are excluded from "active"). The UI polls it every 45 s when the caller is
-a platform admin.
+a platform admin. **Who's-online popover (v0.16.0):** clicking the chip opens a
+popover listing who's online (from `GET /api/presence?detail=1`, which returns the
+per-user list); while open it **live-refreshes every 4 s** so it reads as a
+real-time view. `_startPresence(platAdmin)` (from `_applyAccessVisibility`) gates
+the whole feature on platform-admin.
 
 ### Outbound email headers (v0.15.0)
 
@@ -920,6 +947,10 @@ Why this shape: Sets are functionally tags on UCs. Treating them as a sibling ta
 3. **Per-chip × remove** — each Set chip in the UC detail has an inline × that removes that single membership without confirmation (set memberships are cheap; full Set delete still uses the two-click arm pattern).
 
 All three paths share `_addUCToSet` / `_removeUCFromSet` / `_toggleUCSetMembership` helpers, which re-fetch sets + UCs and re-render the Manage Sets modal so all surfaces stay consistent.
+
+**"All Use Cases" — synthetic, immutable set (v0.16.0):** "All" is exposed as a first-class **set** (reserved id `0`, name "All Use Cases") so it runs / arch-reviews / reports through the *exact same* paths as any real set — the *standardization over customization* principle in practice, instead of `if isAll` branches scattered everywhere. It is **dynamic + immutable**: its membership is computed on read as **every** managed UC (from the DB) **+ every** corpus UC (parsed from the files table), deduped — `_all_set_members(conn, pid)`. `list_sets` prepends it (with a live member count); `get_set(0)` returns `{**_all_set_dict(...), members}`. All mutation endpoints (rename/delete/default/add/remove member) reject id 0 via `_reject_all_set_edit` — you can run it and make *temporary* per-run tweaks, but never edit, filter, or persist changes to it. `set_corpus_subpath` / `promote_set_members` / `set_readiness` special-case id 0 to resolve against the full membership. Because both kinds run, an All-set run materializes managed UCs via the engine→API fetch (see §Service-to-service auth) **and** filters the corpus to its members — so "All" actually means all (the earlier "0 corpus UCs / managed skipped" banner and the 7-of-32 run were the symptoms of the engine-auth gap, now fixed). UI: the left rail renders it once (dedup `s.id !== 0`) and it's selectable as a run target; the client is `0`-aware throughout (`?? null` / `!= null`, not `||`, since id 0 is falsy). **Persisted lineage:** `run_sessions.set_id` is a FK to `use_case_sets`, and the synthetic set has no such row — so an All-set run records `set_id = NULL` with `set_name = "All Use Cases"` carrying the lineage (the server coerces id 0 → NULL on insert; sending the bare 0 would violate the FK and drop the whole session row, making the run vanish from the list). The legacy "Full corpus" run option is reworded **"Full corpus (all corpus UCs, unfiltered)"** to disambiguate it from "All Use Cases".
+
+**Design-system layer + view-header consistency (v0.16.0):** a shared CSS layer enforces the Consistency principle on controls + typography: `.btn-sm` (the single small-button scale used for all toolbar actions), `.btn-icon` (icon-only), `.toolbar-actions` (the standard right-aligned action cluster), `.view-title`/`.view-subtitle` (page headers), `.panel-title` (section headers), and a `u-*` utility layer. The Use Cases toolbar (Import / Export / Bulk / New) was normalized onto `.btn-sm` in one `.toolbar-actions` cluster; section headers across views were unified to plain **"Use Cases"** / **"Run Results"** / **"PR Comments"** / **"Capability Catalog"** as `.panel-title` (eliminating the mixed-style "Use *cases*" that rendered the second word italic + lowercase). New views compose these classes rather than restyling inline. A `<meta name="dav-build">` stamp (set by the UI Containerfile via `sed __DAV_BUILD__`) is surfaced in the account menu so a stale browser cache is obvious at a glance; nginx serves `index.html` with `Cache-Control: no-cache, must-revalidate`.
 
 **Run identifiers — session names everywhere (v0.9.22):** Run dropdowns and the Results-tab run list now show the human-readable session name (entered in the New Run modal as "Name"), not just the workspace `run_id` string. `GET /api/results` enriches each row with `session_name` / `session_description` / `session_category` by joining `analysis_runs` (which carries the Tekton `run_name`) to `run_sessions`. The workspace `run_id` remains the canonical key (used in URLs, history rows, etc.) and is shown as a small mono-spaced sub-line so reviewers can correlate when they need to. Result-list filter now matches name / description / category in addition to run_id. The Review & Plan and comparison dropdowns format options as `<session name> (<run_id prefix>…)` with the full run_id in the `title` for hover.
 

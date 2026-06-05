@@ -199,6 +199,7 @@ All OFF by default (single-user passthrough behind the OCP oauth-proxy). To turn
 | `review_console_loadbalancer_enabled: true` + `_ip` | Host externally on a MetalLB IP + `_loadbalancer_port` (e.g. 8843). Requires `require_auth: true`. nginx terminates TLS with a **DNS-01** cert from `review_console_loadbalancer_cert_issuer` (an existing DNS-01 ClusterIssuer; `create_cert: true`). Internal DNS + firewall point the hostname at the MetalLB IP:port. |
 | `dav_egress_firewall_enabled: true` | Namespace OVN EgressFirewall: the dav pods may reach only a tight set of `/32`s + the public internet; the rest of RFC1918 (lateral homelab) is denied. Node InternalIPs are **auto-discovered** as `/32`s (`dav_egress_discover_nodes: true`) so the pod can reply to kubelet health probes (omitting them crash-loops the pod, exit 137) **without** opening the whole node subnet — the rest of `10.0.0.0/24` (API VIP, gateway, your other hosts) stays denied. **Edit `dav_egress_allow_cidrs`** (specific `/32`s only) to add a new internal API/MCP endpoint. Verify after deploy: `oc get egressfirewall default -n dav -o jsonpath='{.status.status}'` → `EgressFirewall Rules applied`, the rule list shows node `/32`s (not a `/24`), and the API pod stays `1/1` with 0 restarts. |
 | `dav_docs_mcp_lb_enabled: true` (+ `vault_dav_docs_mcp_token`) | **Secure the dav-docs-mcp server** (otherwise its `*.apps` Route serves the whole DCM corpus unauthenticated — see security-audit.md H7). Fronts it with an nginx bearer-token TLS sidecar on a dedicated internal MetalLB IP (`dav_docs_mcp_lb_ip`, default `10.0.90.23`, host `dav_docs_mcp_hostname`), DNS-01 cert, FastMCP bound to `127.0.0.1`, public Route removed. The API self-registers the secured URL + token on boot. **Needs a WATCHED first rollout** (cert issuance + OpenShift-UID-sensitive sidecar). After verifying `https://<host>/sse` returns 401 without the bearer and 200 with it, **drop `10.0.0.70/32`** from `dav_egress_allow_cidrs` and **add `10.0.90.23/32`**. |
+| `dav_api_token_audience` / `dav_pipeline_service_account` / `dav_api_networkpolicy_enabled` (all defaulted) | **Engine→API service auth** (managed-UC fetch). Once `require_auth` is on, the engine authenticates its in-cluster `/api/use-cases` fetch with its **ServiceAccount projected token** (audience `dav-api`, validated by the API via TokenReview) — no shared secret. Requires the API SA's `system:auth-delegator` binding (ships in `--tags review-console`) and the projected-token volume on the run-corpus task (`--tags engine`). `dav_pipeline_service_account` defaults to `pipeline` (the OpenShift Pipelines default SA the run pods actually use — **not** `dav-pipeline-sa`); override only if you set a custom `taskRunTemplate.serviceAccountName`. `dav_api_networkpolicy_enabled` adds a defense-in-depth ingress fence so only in-namespace pods reach the API on `:8000`. **Without this, an All-set / managed-UC run silently drops every managed UC (401) and analyzes only corpus matches.** See review-console-design.md §Service-to-service auth. |
 
 **MCP server auth (any server):** in Config → Integrations, an MCP server can carry
 a **Bearer token** (stored Fernet-encrypted, masked). DAV sends it on the health
@@ -400,6 +401,21 @@ oc get pods -n dav
 oc get pipeline.tekton.dev dav-stage2 -n dav
 oc get task -n dav
 # Expect dav-git-sync and dav-run-corpus tasks.
+
+# Engine→API service auth wired? (only relevant once require_auth is on)
+oc get clusterrolebinding dav-review-api-auth-delegator-dav \
+  -o jsonpath='{.roleRef.name}{"\n"}'                       # → system:auth-delegator
+oc get task dav-run-corpus -n dav -o jsonpath=\
+'{.spec.volumes[?(@.name=="dav-api-token")].projected.sources[0].serviceAccountToken.audience}{"\n"}'  # → dav-api
+# Prove the TokenReview path from an in-namespace pod (no token=401, valid SA
+# token=200, wrong audience=401):
+UUID=$(oc exec deploy/dav-review-db -n dav -- psql -U dav_review -d dav_review \
+  -tAc "SELECT uuid FROM managed_use_cases LIMIT 1;" | tr -d '[:space:]')
+TOK=$(oc create token pipeline -n dav --audience dav-api --duration=10m)
+oc exec deploy/dav-review-ui -c nginx -n dav -- sh -c \
+  "curl -s -o /dev/null -w '%{http_code}\n' http://dav-review-api:8000/api/use-cases/$UUID;
+   curl -s -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer $TOK' http://dav-review-api:8000/api/use-cases/$UUID"
+# Expect: 401 then 200.
 
 # MCP server healthy?
 oc exec -n dav deploy/dav-docs-mcp -- curl -sf http://localhost:8080/health
