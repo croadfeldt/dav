@@ -379,14 +379,16 @@ async def lifespan(app: FastAPI):
     finalizer_task = asyncio.create_task(_finalizer_loop())
     pr_comments_task = asyncio.create_task(_pr_comments.poller_loop(pool))
     ingest_task = asyncio.create_task(_analysis_ingest_loop())
+    corpus_sync_task = asyncio.create_task(_corpus_sync_loop())
     ldap_task = asyncio.create_task(_ldap_sync_loop()) if _ldap_is_configured() else None
     yield
     finalizer_task.cancel()
     pr_comments_task.cancel()
     ingest_task.cancel()
+    corpus_sync_task.cancel()
     if ldap_task:
         ldap_task.cancel()
-    for t in (finalizer_task, pr_comments_task, ingest_task, ldap_task):
+    for t in (finalizer_task, pr_comments_task, ingest_task, corpus_sync_task, ldap_task):
         if t is None:
             continue
         try:
@@ -470,6 +472,144 @@ async def _seed_corpus(conn: asyncpg.Connection) -> None:
             await _upsert_file(conn, entry["path"], entry["content"])
     else:
         log.error("Unknown CORPUS_MODE=%s; skipping seed", CORPUS_MODE)
+
+
+# ── Corpus-files cache reconciliation (multi-source) ─────────────────────────
+# The `files` table backs All-set membership, the catalog, and /api/corpus. In
+# multi-source mode the legacy boot pre-seed is disabled (the engine clones the
+# corpus at run time), which left this cache a stale orphan. sync_corpus_files()
+# reconciles it from the SAME registered corpus repos the engine uses, with
+# mark-and-sweep so removed/renamed UCs are pruned. Paths mirror the engine's
+# staging exactly: <namespace>/<path under the corpus role's root_path>.
+_last_corpus_sync: dict = {"at": None, "result": None}
+
+
+async def _clone_corpus_repo(repo_url: str, branch: str, pat: str,
+                             root_path: str, namespace: str) -> tuple[list, Optional[str]]:
+    """Shallow-clone a corpus repo and return (entries, error). Each entry is
+    {path: '<namespace>/<rel>', content}, <rel> relative to the corpus role's
+    root_path — mirroring the engine's <namespace>/ staging. A branch starting
+    with '-' is rejected (git arg-injection); git stderr is never echoed (PAT)."""
+    if not repo_url or not branch:
+        return [], "missing repo_url/branch"
+    if branch.startswith("-"):
+        return [], f"invalid branch {branch!r}"
+
+    def _run():
+        import subprocess
+        import tempfile
+        import shutil
+        tmp = tempfile.mkdtemp(prefix="dav-corpus-sync-")
+        try:
+            u = repo_url
+            if pat and repo_url.startswith("https://"):
+                u = repo_url.replace("https://", f"https://x-access-token:{pat}@", 1)
+            r = subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", branch, "--", u, tmp],
+                capture_output=True, text=True, timeout=180,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"})
+            if r.returncode != 0:
+                return None, f"clone failed for {repo_url} (branch {branch!r})"
+            base = Path(tmp)
+            if root_path:
+                base = base / root_path
+            if not base.exists():
+                return [], None   # root_path absent in this repo → no corpus files
+            out = []
+            for e in walk_corpus(base, CORPUS_INCLUDE, CORPUS_EXCLUDE):
+                out.append({"path": f"{namespace}/{e['path']}", "content": e["content"]})
+            return out, None
+        except Exception as ex:
+            return None, f"clone error for {repo_url}: {type(ex).__name__}"
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    entries, err = await asyncio.to_thread(_run)
+    return (entries or []), err
+
+
+async def sync_corpus_files(conn: asyncpg.Connection, reason: str = "manual") -> dict:
+    """Reconcile the `files` cache from the registered corpus repos (roles @>
+    {corpus}). Upserts all current files then sweeps rows not seen this sync.
+    GUARD: the sweep runs ONLY when every configured repo cloned successfully
+    and ≥1 file was loaded — so a transient clone failure never wipes the
+    cache. Logs added/pruned counts (no silent truncation)."""
+    rows = await conn.fetch(
+        "SELECT namespace, repo_url, repo_branch, root_path, metadata, "
+        "       github_pat_encrypted "
+        "FROM managed_repos WHERE 'corpus' = ANY(roles)")
+    if not rows:
+        return {"ok": False, "reason": "no corpus repos registered", "repos": []}
+    sync_start = await conn.fetchval("SELECT now()")
+    seen_total, all_ok, per_repo = 0, True, []
+    for r in rows:
+        ns = (r["namespace"] or "").strip("/") or "corpus"
+        repo = {"root_path": r["root_path"], "metadata": _repos._parse_jsonb(r["metadata"])}
+        root = _repos.resolve_root_path(repo, "corpus")
+        pat = ""
+        try:
+            if r["github_pat_encrypted"]:
+                pat = crypto.decrypt(r["github_pat_encrypted"]) or ""
+        except Exception:
+            pat = ""
+        entries, err = await _clone_corpus_repo(
+            r["repo_url"], r["repo_branch"] or "main", pat, root, ns)
+        if err:
+            all_ok = False
+            per_repo.append({"namespace": ns, "error": err})
+            log.warning("corpus sync: %s clone failed: %s", ns, err)
+            continue
+        for e in entries:
+            await _upsert_file(conn, e["path"], e["content"])
+        seen_total += len(entries)
+        per_repo.append({"namespace": ns, "files": len(entries)})
+    pruned, swept = 0, False
+    if seen_total > 0 and all_ok:
+        res = await conn.execute("DELETE FROM files WHERE last_seen_at < $1", sync_start)
+        try:
+            pruned = int(res.split()[-1])
+        except (ValueError, IndexError):
+            pruned = 0
+        swept = True
+    elif not all_ok:
+        log.warning("corpus sync (%s): a repo clone failed — skipping sweep "
+                    "(upsert-only) to avoid wiping the cache", reason)
+    log.info("corpus sync (%s): %d files / %d repos, pruned %d (swept=%s)",
+             reason, seen_total, len(rows), pruned, swept)
+    result = {"ok": True, "reason": reason, "files_seen": seen_total,
+              "pruned": pruned, "swept": swept, "repos": per_repo}
+    _last_corpus_sync["at"] = time.time()
+    _last_corpus_sync["result"] = result
+    return result
+
+
+async def _corpus_sync_loop():
+    """Boot (first pass after a short settle) + hourly safety-net reconcile of
+    the corpus-files cache. Webhook + manual endpoint cover event-driven
+    refreshes; this is the backstop for missed webhooks / out-of-band edits."""
+    await asyncio.sleep(20)   # let the pool + migrations settle
+    while True:
+        try:
+            async with pool.acquire() as conn:
+                await sync_corpus_files(conn, reason="periodic")
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            log.warning("corpus sync loop hiccup: %s", e)
+        await asyncio.sleep(3600)
+
+
+async def _ensure_corpus_fresh(conn: asyncpg.Connection, max_age: int = 600) -> None:
+    """Pre-run validation: reconcile the corpus cache if it's stale (or never
+    synced this process) before building a run's selection, so the UC count +
+    membership reflect the current corpus. Best-effort — never blocks the run."""
+    at = _last_corpus_sync["at"]
+    if at is not None and (time.time() - at) < max_age:
+        return
+    try:
+        await sync_corpus_files(conn, reason="pre-run")
+    except Exception as e:
+        log.warning("pre-run corpus freshen failed: %s", e)
 
 
 async def _seed_managed_repos(conn: asyncpg.Connection) -> None:
@@ -5392,6 +5532,30 @@ async def import_use_cases(request: Request, file: UploadFile = File(...)):
 
 
 # ========================= CORPUS FILES (legacy) =========================
+
+
+@app.post("/api/corpus/resync")
+async def corpus_resync(request: Request):
+    """Reconcile the corpus-files cache from the registered corpus repos (the
+    same source the engine clones), with mark-and-sweep. Manual trigger for when
+    you know the corpus changed; boot + hourly loop + the corpus webhook keep it
+    fresh otherwise. Platform-admin gated."""
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        return await sync_corpus_files(conn, reason="manual")
+
+
+@app.get("/api/corpus/sync-status")
+async def corpus_sync_status():
+    """Last corpus-cache reconcile: when it ran + per-repo file counts + pruned.
+    Drives the freshness indicator + Resync button in Config."""
+    at = _last_corpus_sync["at"]
+    return {
+        "last_sync_at": (datetime.fromtimestamp(at, tz=timezone.utc).isoformat()
+                         if at else None),
+        "age_seconds": (int(time.time() - at) if at else None),
+        "result": _last_corpus_sync["result"],
+    }
 
 
 @app.get("/api/corpus")
