@@ -77,6 +77,13 @@ data:
         proxy_read_timeout    600s;
     }
 
+    # The whole SPA is one index.html that changes on every deploy, so the
+    # browser must revalidate it — otherwise users keep serving a stale cached
+    # copy and don't see new releases until a manual hard-refresh.
+    location = /index.html {
+        add_header Cache-Control "no-cache, must-revalidate" always;
+        try_files /index.html =404;
+    }
     location / {
         try_files $uri $uri/ /index.html;
     }

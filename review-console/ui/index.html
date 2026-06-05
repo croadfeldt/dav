@@ -285,6 +285,34 @@
   /* Toolbar action cluster — consistent right-aligned button group in panel
      headers / list-view headers (replaces ad-hoc inline flex). */
   .toolbar-actions { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+  @keyframes presence-pulse { 0%,100%{opacity:1;} 50%{opacity:.3;} }
+  .presence-live-dot { animation: presence-pulse 1.6s ease-in-out infinite; flex-shrink:0; }
+
+  /* ── Utility layer (Phase 3) ────────────────────────────────────────────────
+     A small, documented set of layout/typography helpers to replace the most
+     repeated inline patterns. Prefixed `u-` to avoid collisions. Adopt
+     incrementally — these change nothing until applied. */
+  .u-row    { display:flex; align-items:center; }            /* horizontal, v-centered */
+  .u-row-t  { display:flex; align-items:flex-start; }
+  .u-col    { display:flex; flex-direction:column; }
+  .u-between{ justify-content:space-between; }
+  .u-wrap   { flex-wrap:wrap; }
+  .u-grow   { flex:1; min-width:0; }                          /* fill + allow ellipsis */
+  .u-gap-4  { gap:4px; } .u-gap-6 { gap:6px; } .u-gap-8 { gap:8px; } .u-gap-12 { gap:12px; }
+  .u-ellipsis { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .u-muted  { color:var(--text-dim); }
+  .u-faint  { color:var(--text-faint); }
+  .u-sub    { font-size:11px; color:var(--text-faint); }     /* secondary/help text */
+  .u-mono   { font-family:var(--mono, ui-monospace, monospace); }
+  /* Inline status chip (the "UC assist" / "disabled" pill pattern). */
+  .u-chip   { font-size:9px; padding:1px 5px; border-radius:2px; border:1px solid var(--border);
+              color:var(--text-faint); flex-shrink:0; white-space:nowrap; }
+  .u-chip.accent { color:var(--accent); border-color:var(--accent-soft); }
+  .u-chip.green  { color:var(--green);  border-color:var(--green); }
+  .u-chip.red    { color:var(--red);    border-color:var(--red); }
+  /* Labeled form field (label stacked over input) — the dominant form pattern. */
+  .u-field { display:flex; flex-direction:column; gap:4px; }
+  .u-field > label { font-size:11px; color:var(--text-dim); }
 
   /* ── List items ── */
   .list-item { display:flex; align-items:center; gap:8px; padding:8px 14px; font-size:12px; color:var(--text-dim); cursor:pointer; border-left:2px solid transparent; transition:background .1s,color .1s,border-color .1s; }
@@ -3111,19 +3139,24 @@ function _startPresence(on) {
     if (_presenceTimer) { clearInterval(_presenceTimer); _presenceTimer = null; }
   }
 }
+let _presencePopTimer = null;
 function _closePresencePopover() {
   const pop = document.getElementById('presencePopover'); if (pop) pop.style.display = 'none';
+  if (_presencePopTimer) { clearInterval(_presencePopTimer); _presencePopTimer = null; }
 }
-async function _togglePresencePopover() {
+async function _renderPresenceDetail(first) {
   const pop = document.getElementById('presencePopover');
-  if (!pop) return;
-  if (pop.style.display !== 'none') { _closePresencePopover(); return; }
-  pop.innerHTML = '<div style="padding:8px 10px;color:var(--text-faint);font-size:11px;">loading…</div>';
-  pop.style.display = 'block';
+  if (!pop || pop.style.display === 'none') return;
+  if (first) pop.innerHTML = '<div style="padding:8px 10px;color:var(--text-faint);font-size:11px;">loading…</div>';
   try {
     const p = await api('/api/presence?detail=1');
+    // Keep the chip headline counts in sync with the live detail.
+    const co = document.getElementById('presenceOnline'); if (co) co.textContent = p.online ?? '–';
+    const ca = document.getElementById('presenceActive'); if (ca) ca.textContent = p.active ?? '–';
     const me_id = (me && me.reviewer) ? me.reviewer.toLowerCase() : '';
-    const head = `<div style="padding:4px 8px 6px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-faint);border-bottom:1px solid var(--border);">${p.online||0} online · ${p.active||0} active</div>`;
+    const head = `<div style="display:flex;align-items:center;gap:6px;padding:4px 8px 6px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-faint);border-bottom:1px solid var(--border);">
+        <span class="presence-live-dot" style="width:6px;height:6px;border-radius:50%;background:var(--green);"></span>
+        ${p.online||0} online · ${p.active||0} active</div>`;
     const rows = (p.users && p.users.length) ? p.users.map(u => {
       const idle = u.active ? 'active now'
         : (u.idle_secs < 60 ? `${u.idle_secs}s idle` : `${Math.floor(u.idle_secs/60)}m idle`);
@@ -3137,8 +3170,17 @@ async function _togglePresencePopover() {
     }).join('') : '<div style="padding:8px;color:var(--text-faint);font-size:11px;">No one online.</div>';
     pop.innerHTML = head + rows;
   } catch(e) {
-    pop.innerHTML = `<div style="padding:8px;color:var(--red);font-size:11px;">${esc(e.message||'failed')}</div>`;
+    if (first) pop.innerHTML = `<div style="padding:8px;color:var(--red);font-size:11px;">${esc(e.message||'failed')}</div>`;
   }
+}
+function _togglePresencePopover() {
+  const pop = document.getElementById('presencePopover');
+  if (!pop) return;
+  if (pop.style.display !== 'none') { _closePresencePopover(); return; }
+  pop.style.display = 'block';
+  _renderPresenceDetail(true);
+  // Live refresh while open — fast cadence for a real-time feel; stops on close.
+  if (!_presencePopTimer) _presencePopTimer = setInterval(() => _renderPresenceDetail(false), 4000);
 }
 document.getElementById('presenceChip')?.addEventListener('click', (e) => { e.stopPropagation(); _togglePresencePopover(); });
 document.addEventListener('click', (e) => {
