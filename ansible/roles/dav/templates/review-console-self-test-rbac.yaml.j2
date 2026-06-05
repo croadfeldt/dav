@@ -50,3 +50,26 @@ roleRef:
   kind: Role
   name: dav-review-runs-trigger
   apiGroup: rbac.authorization.k8s.io
+---
+# Lets the review console API validate ServiceAccount projected tokens via the
+# TokenReview API — how it authenticates the in-cluster engine (Bearer token)
+# when the engine fetches managed UCs. `system:auth-delegator` is the standard
+# built-in ClusterRole granting create on tokenreviews/subjectaccessreviews;
+# TokenReview is a cluster-scoped (non-namespaced) resource, so this MUST be a
+# ClusterRoleBinding. The API still only *validates* tokens — it cannot mint or
+# escalate anything. Name is namespaced so multiple DAV installs don't collide.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: dav-review-api-auth-delegator-{{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-api
+subjects:
+  - kind: ServiceAccount
+    name: dav-review-api
+    namespace: {{ dav_namespace }}
+roleRef:
+  kind: ClusterRole
+  name: system:auth-delegator
+  apiGroup: rbac.authorization.k8s.io

@@ -264,6 +264,17 @@ spec:
         # grounding nudge without an engine rebuild.
         - name: DAV_GROUNDING_NUDGE
           value: "$(params.grounding-nudge)"
+        # Where the engine reads its ServiceAccount projected token to
+        # authenticate to the console API (Bearer) when fetching managed UCs.
+        # The kubelet mints + auto-rotates this token (audience {{ dav_api_token_audience | default('dav-api') }},
+        # ~1h TTL) into the projected volume below; the API validates it via
+        # TokenReview. No shared static secret.
+        - name: DAV_API_TOKEN_PATH
+          value: /var/run/secrets/dav/api-token
+      volumeMounts:
+        - name: dav-api-token
+          mountPath: /var/run/secrets/dav
+          readOnly: true
       script: |
         #!/bin/sh
         set -e
@@ -347,3 +358,16 @@ spec:
           --no-enable-thinking \
           --log-level "$(params.log-level)" \
           $OPTIONAL_ARGS
+  # Projected ServiceAccount token the engine presents to the console API
+  # (Bearer) when fetching managed UCs. The kubelet mints it for the pod's SA
+  # ({{ dav_namespace }}:pipeline), scoped to audience "{{ dav_api_token_audience | default('dav-api') }}" with a short TTL,
+  # and auto-rotates the file in place. The API validates it via TokenReview —
+  # short-lived + identity-bound, nothing static to leak.
+  volumes:
+    - name: dav-api-token
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: api-token
+              audience: {{ dav_api_token_audience | default('dav-api') }}
+              expirationSeconds: 3600

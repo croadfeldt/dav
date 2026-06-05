@@ -2,6 +2,19 @@
 # Role defaults — overridden by inventory/group_vars/all/vars.yaml
 dav_namespace: dav
 dav_service_account: dav-pipeline-sa
+
+# --- Engine→API service-to-service auth (managed-UC fetch) ---
+# The engine authenticates to the console API with its ServiceAccount projected
+# token (validated by the API via TokenReview), instead of a shared static
+# secret. The audience the token is minted/validated with, and the SA the run
+# pods actually execute as (OpenShift Pipelines default is `pipeline`, NOT
+# dav_service_account — that one backs the EventListener/trigger path).
+dav_api_token_audience: dav-api
+dav_pipeline_service_account: pipeline
+# Defense-in-depth: a NetworkPolicy so only in-namespace pods (the UI nginx
+# proxy + the engine run pods) can reach the API on :8000. The API has no
+# direct external Route — all external traffic arrives via the UI nginx.
+dav_api_networkpolicy_enabled: true
 dav_workspace_pvc_size: 20Gi
 dav_workspace_pvc_name: dav-workspace
 # The workspace PVC must be RWX so Tekton pipeline pods (which can land

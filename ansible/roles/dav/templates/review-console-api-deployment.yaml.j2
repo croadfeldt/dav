@@ -134,6 +134,16 @@ spec:
                   name: dav-fernet-key
                   key: key
                   optional: true
+            # Engine→API service auth: the engine presents its ServiceAccount
+            # projected token (audience below) as a Bearer token; this API
+            # validates it via TokenReview (needs the system:auth-delegator
+            # ClusterRole on the dav-review-api SA) and authorizes it as
+            # system:engine. No shared static secret. DAV_API_AUDIENCE must
+            # match the audience the Tekton task mints the projected token with.
+            - name: DAV_API_AUDIENCE
+              value: "{{ dav_api_token_audience | default('dav-api') }}"
+            - name: DAV_TRUSTED_SERVICE_ACCOUNTS
+              value: "system:serviceaccount:{{ dav_namespace }}:{{ dav_pipeline_service_account | default('pipeline') }}"
             # Multi-user auth enforcement. When true the API enforces app
             # sessions, the approval gate, and role scoping (single-user
             # passthrough otherwise). Pair with review_console_relaxed_proxy

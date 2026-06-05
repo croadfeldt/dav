@@ -72,6 +72,43 @@
       {% endfor %}
   when: dav_egress_firewall_enabled | bool
 
+# Defense-in-depth ingress fence on the console API. The API carries the
+# session-cookie auth + RBAC + the TokenReview service-auth, but it has no
+# direct external Route — every legitimate caller (the UI nginx proxy, the
+# oauth-proxy sidecar, the engine run pods, the webhook EventListener) lives in
+# THIS namespace. So restrict ingress on :8000 to same-namespace pods, shrinking
+# the API's reachable surface to nothing outside `dav`. Kubelet health probes
+# originate from the node and are permitted by OVN-Kubernetes regardless of
+# NetworkPolicy, so readiness/liveness keep working.
+- name: Restrict console API ingress to same-namespace clients (NetworkPolicy)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: dav-review-api-allow
+        namespace: "{{ dav_namespace }}"
+        labels:
+          app: dav-review
+          component: review-console-api
+      spec:
+        podSelector:
+          matchLabels:
+            app: dav-review
+            component: review-console-api
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: "{{ dav_namespace }}"
+            ports:
+              - protocol: TCP
+                port: 8000
+  when: dav_api_networkpolicy_enabled | bool
+
 - name: Create pipeline role
   kubernetes.core.k8s:
     state: present
