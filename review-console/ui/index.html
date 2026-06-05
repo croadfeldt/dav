@@ -276,7 +276,15 @@
   .btn.danger:hover:not(:disabled) { background:rgba(217,101,58,0.15); }
   .btn.success { border-color:var(--green); color:var(--green); }
   .btn.success:hover:not(:disabled) { background:rgba(123,168,79,0.15); }
-  .btn-icon { padding:4px 8px; font-size:12px; }
+  /* Button scale — ONE compact size. .btn-sm is the canonical small text button
+     (was previously undefined → silently rendered at base size). .btn-icon is
+     reserved for ICON-ONLY buttons (a single glyph, no text label). */
+  .btn-sm   { padding:4px 10px; font-size:10px; letter-spacing:0.07em; }
+  .btn-icon { padding:4px 7px;  font-size:12px; letter-spacing:0; line-height:1; }
+  .btn-icon.btn-sm { padding:3px 6px; font-size:11px; }
+  /* Toolbar action cluster — consistent right-aligned button group in panel
+     headers / list-view headers (replaces ad-hoc inline flex). */
+  .toolbar-actions { display:flex; align-items:center; gap:6px; flex-shrink:0; }
 
   /* ── List items ── */
   .list-item { display:flex; align-items:center; gap:8px; padding:8px 14px; font-size:12px; color:var(--text-dim); cursor:pointer; border-left:2px solid transparent; transition:background .1s,color .1s,border-color .1s; }
@@ -763,10 +771,13 @@
   </div>
   <div class="pf-masthead-right">
     <span id="triggerStatus" style="color:var(--text-faint);font-size:10px;"></span>
-    <span id="presenceChip" title="People with the console open / actively using it (last 2 / 5 min)"
-          style="display:none;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);white-space:nowrap;cursor:default;">
-      <span style="opacity:.8;">●</span><span id="presenceOnline">–</span> online
-      <span style="opacity:.45;">·</span><span id="presenceActive">–</span> active
+    <span style="position:relative;display:none;" id="presenceWrap">
+      <button id="presenceChip" title="Who's online — click for details (online ≤2 min · active ≤5 min)"
+            style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);white-space:nowrap;cursor:pointer;background:transparent;border:none;padding:2px 4px;font-family:inherit;">
+        <span style="opacity:.8;color:var(--green);">●</span><span id="presenceOnline">–</span> online
+        <span style="opacity:.45;">·</span><span id="presenceActive">–</span> active
+      </button>
+      <div id="presencePopover" style="display:none;position:absolute;right:0;top:100%;margin-top:6px;z-index:80;min-width:220px;max-height:340px;overflow-y:auto;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:3px;box-shadow:0 6px 18px rgba(0,0,0,0.4);padding:6px;"></div>
     </span>
     <div class="theme-chip">
       <button class="theme-chip-btn" id="acctChipBtn"><span id="acctChipLabel">—</span> <span style="opacity:.55;">▾</span></button>
@@ -847,10 +858,10 @@
         <div class="runs-list-panel" id="runsListPanel">
           <div class="panel-header" style="flex-shrink:0;">
             <div class="panel-title">Runs</div>
-            <div style="display:flex;gap:6px;">
-              <button class="btn primary" style="font-size:10px;padding:4px 10px;" id="newRunBtn">+ New Run</button>
+            <div class="toolbar-actions">
               <button class="btn ghost btn-icon" id="toggleArchivedRuns" title="Show archived runs">⊟</button>
               <button class="btn ghost btn-icon" id="refreshRunsBtn" title="Refresh">↻</button>
+              <button class="btn primary btn-sm" id="newRunBtn">+ New Run</button>
             </div>
           </div>
           <div class="panel-toolbar" style="gap:6px;flex-shrink:0;">
@@ -1071,9 +1082,9 @@
     <div class="split-left" style="width:200px; min-width:160px; max-width:280px;">
       <div class="panel-header">
         <div class="panel-title">Sets</div>
-        <div style="display:flex;gap:4px;flex-shrink:0;">
+        <div class="toolbar-actions">
           <button class="btn ghost btn-icon" id="manageSetsBtn" title="Manage Sets (rename, delete, promote, export, …)">⚙</button>
-          <button class="btn primary" style="font-size:10px; padding:4px 10px;" id="newSetBtn">+ New</button>
+          <button class="btn primary btn-sm" id="newSetBtn">+ New</button>
         </div>
       </div>
       <div class="scrollable" id="setFilterRail"><div class="empty">loading…</div></div>
@@ -1082,18 +1093,18 @@
     <div class="split-left" style="width:340px; min-width:260px;">
       <div class="panel-header">
         <div class="panel-title">Use <em>cases</em></div>
-        <div style="display:flex;gap:4px;flex-shrink:0;">
-          <button class="btn ghost btn-icon" id="importUCBtn" title="Import archive (.tar.gz / .zip)">↑ Import</button>
-          <div style="position:relative;display:inline-block;">
-            <button class="btn ghost btn-icon" id="exportUCBtn" title="Export all managed UCs">↓ Export</button>
+        <div class="toolbar-actions">
+          <button class="btn ghost btn-sm" id="importUCBtn" title="Import archive (.tar.gz / .zip)">Import</button>
+          <div style="position:relative;display:flex;">
+            <button class="btn ghost btn-sm" id="exportUCBtn" title="Export all managed UCs">Export ▾</button>
             <div id="exportUCMenu" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:130px;">
               <button class="dropdown-item" onclick="exportUCs('tar.gz')">tar.gz (gzip)</button>
               <button class="dropdown-item" onclick="exportUCs('zip')">zip</button>
               <button class="dropdown-item" onclick="exportUCs('tar')">tar (uncompressed)</button>
             </div>
           </div>
-          <button class="btn ghost btn-icon" id="bulkImportUCBtn" title="📋 Bulk import — paste a transcript / notes and extract multiple UCs at once (M12a)">📋 Bulk</button>
-          <button class="btn primary" style="font-size:10px; padding:4px 10px;" id="newUCBtn">+ New</button>
+          <button class="btn ghost btn-sm" id="bulkImportUCBtn" title="Bulk import — paste a transcript / notes and extract multiple UCs at once">Bulk</button>
+          <button class="btn primary btn-sm" id="newUCBtn">+ New</button>
         </div>
       </div>
       <!-- Active-set banner (visible only when a Set filter is applied) -->
@@ -3080,8 +3091,8 @@ function _applyAccessVisibility() {
 
 let _presenceTimer = null;
 async function loadPresence() {
-  const chip = document.getElementById('presenceChip');
-  if (!chip || chip.style.display === 'none') return;
+  const wrap = document.getElementById('presenceWrap');
+  if (!wrap || wrap.style.display === 'none') return;
   try {
     const p = await api('/api/presence');
     const o = document.getElementById('presenceOnline'); if (o) o.textContent = p.online ?? '–';
@@ -3089,16 +3100,51 @@ async function loadPresence() {
   } catch(e) { /* keep last values on a transient failure */ }
 }
 function _startPresence(on) {
-  const chip = document.getElementById('presenceChip');
+  const wrap = document.getElementById('presenceWrap');
   if (on) {
-    if (chip) chip.style.display = 'inline-flex';
+    if (wrap) wrap.style.display = 'inline-block';
     loadPresence();
     if (!_presenceTimer) _presenceTimer = setInterval(loadPresence, 45000);
   } else {
-    if (chip) chip.style.display = 'none';
+    if (wrap) wrap.style.display = 'none';
+    _closePresencePopover();
     if (_presenceTimer) { clearInterval(_presenceTimer); _presenceTimer = null; }
   }
 }
+function _closePresencePopover() {
+  const pop = document.getElementById('presencePopover'); if (pop) pop.style.display = 'none';
+}
+async function _togglePresencePopover() {
+  const pop = document.getElementById('presencePopover');
+  if (!pop) return;
+  if (pop.style.display !== 'none') { _closePresencePopover(); return; }
+  pop.innerHTML = '<div style="padding:8px 10px;color:var(--text-faint);font-size:11px;">loading…</div>';
+  pop.style.display = 'block';
+  try {
+    const p = await api('/api/presence?detail=1');
+    const me_id = (me && me.reviewer) ? me.reviewer.toLowerCase() : '';
+    const head = `<div style="padding:4px 8px 6px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-faint);border-bottom:1px solid var(--border);">${p.online||0} online · ${p.active||0} active</div>`;
+    const rows = (p.users && p.users.length) ? p.users.map(u => {
+      const idle = u.active ? 'active now'
+        : (u.idle_secs < 60 ? `${u.idle_secs}s idle` : `${Math.floor(u.idle_secs/60)}m idle`);
+      const dot = u.active ? 'var(--green)' : 'var(--text-faint)';
+      const meTag = (u.id === me_id) ? ' <span style="color:var(--text-faint);">(you)</span>' : '';
+      return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;font-size:12px;">
+        <span style="color:${dot};font-size:9px;">●</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(u.id)}${meTag}</span>
+        <span style="color:var(--text-faint);font-size:10px;white-space:nowrap;">${idle}</span>
+      </div>`;
+    }).join('') : '<div style="padding:8px;color:var(--text-faint);font-size:11px;">No one online.</div>';
+    pop.innerHTML = head + rows;
+  } catch(e) {
+    pop.innerHTML = `<div style="padding:8px;color:var(--red);font-size:11px;">${esc(e.message||'failed')}</div>`;
+  }
+}
+document.getElementById('presenceChip')?.addEventListener('click', (e) => { e.stopPropagation(); _togglePresencePopover(); });
+document.addEventListener('click', (e) => {
+  const wrap = document.getElementById('presenceWrap');
+  if (wrap && !wrap.contains(e.target)) _closePresencePopover();
+});
 
 function loadAccessPanels() {
   if (me && me.is_admin) loadProjectsAdmin();
@@ -10805,8 +10851,8 @@ function renderMCPList() {
       ${m.use_uc_assist ? '<span style="font-size:9px;color:var(--accent);border:1px solid var(--accent-soft);padding:1px 5px;border-radius:2px;flex-shrink:0;">UC assist</span>' : ''}
       ${!m.enabled ? '<span style="font-size:9px;color:var(--text-faint);border:1px solid var(--border);padding:1px 5px;border-radius:2px;">disabled</span>' : ''}
       <span class="mcp-actions">
-        <button class="btn ghost btn-icon" style="font-size:10px;" onclick="openMCPForm(${m.id})">Edit</button>
-        <button class="btn ghost btn-icon" style="font-size:10px;color:var(--error);" onclick="deleteMCP(${m.id},this)">✕</button>
+        <button class="btn ghost btn-sm" onclick="openMCPForm(${m.id})">Edit</button>
+        <button class="btn ghost btn-icon" style="color:var(--red);" title="Delete" onclick="deleteMCP(${m.id},this)">✕</button>
       </span>
     </div>`).join('');
 }

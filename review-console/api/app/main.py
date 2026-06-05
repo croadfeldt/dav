@@ -1294,12 +1294,27 @@ async def me(request: Request):
 
 
 @app.get("/api/presence")
-async def presence(request: Request):
+async def presence(request: Request, detail: bool = Query(False)):
     """Live presence gauge for the platform-admin status bar: how many distinct
     identities are currently online (a tab seen in the last 2 min) and actively
-    using the system (a real, non-poll request in the last 5 min)."""
+    using the system (a real, non-poll request in the last 5 min). `detail=1`
+    also returns the per-identity list (who's online) for the popover."""
     await require_role(request, "admin")  # platform admin only
-    return _presence_counts()
+    out = _presence_counts()
+    if detail:
+        now = time.time()
+        users = []
+        for uid, seen in _presence_seen.items():
+            if now - seen <= _PRESENCE_ONLINE_WINDOW:
+                last_active = _presence_active.get(uid, 0)
+                users.append({
+                    "id": uid,
+                    "idle_secs": int(now - seen),
+                    "active": (now - last_active) <= _PRESENCE_ACTIVE_WINDOW,
+                })
+        users.sort(key=lambda u: (not u["active"], u["idle_secs"]))  # active first, freshest first
+        out["users"] = users
+    return out
 
 
 class DefaultProjectIn(BaseModel):
