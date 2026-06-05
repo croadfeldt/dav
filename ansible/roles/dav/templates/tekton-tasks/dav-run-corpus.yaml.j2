@@ -66,6 +66,16 @@ spec:
         mode default (3 / 1 / 10 for verification / reproduce / explore).
       default: ""
 
+    - name: sample-concurrency
+      type: string
+      description: |
+        How many of a UC's ensemble samples to run in parallel. The samples
+        are independent random-seed runs, so this is a pure throughput win
+        (no effect on results) — it lets vLLM batch them on an otherwise
+        idle GPU. Empty / "1" = serial (legacy). Set to the sample count to
+        run the whole ensemble at once.
+      default: ""
+
     - name: seed
       type: string
       description: |
@@ -295,6 +305,9 @@ spec:
         OPTIONAL_ARGS=""
         if [ -n "$(params.sample-count)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --sample-count $(params.sample-count)"
+        fi
+        if [ -n "$(params.sample-concurrency)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --sample-concurrency $(params.sample-concurrency)"
         fi
         if [ -n "$(params.seed)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --seed $(params.seed)"

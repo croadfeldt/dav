@@ -1334,6 +1334,9 @@ class HandoffRequest(BaseModel):
 class RunTriggerIn(BaseModel):
     mode: str = "verification"
     sample_count: Optional[int] = None
+    # How many of a UC's ensemble samples run in parallel (pure throughput —
+    # samples are independent). None = auto (min(sample_count, cap)).
+    sample_concurrency: Optional[int] = None
     corpus_subpath: Optional[str] = None
     corpus_repo_url: Optional[str] = None
     corpus_repo_branch: Optional[str] = None
@@ -2873,6 +2876,13 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
     if not _trig_time_allowed and _trig_uc_count > 0:
         _est, _ = await _est_per_uc_seconds()
         _trig_time_allowed = _trig_uc_count * _est + validations.FAILSAFE_BUFFER_SEC
+    # Sample concurrency: explicit, else auto = min(effective sample count, cap).
+    # The ensemble samples are independent, so running them in parallel is a pure
+    # throughput win that batches on the (typically idle) GPU.
+    _eff_samples = payload.sample_count or {"verification": 3, "explore": 10,
+                                            "reproduce": 1}.get(payload.mode, 1)
+    _trig_sample_conc = (payload.sample_concurrency if payload.sample_concurrency is not None
+                         else min(_eff_samples, int(os.environ.get("DAV_MAX_SAMPLE_CONCURRENCY", "4"))))
     try:
         result = await asyncio.to_thread(validations.trigger_run,
             triggered_by=reviewer,
@@ -2882,6 +2892,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             inference_model=params["inference_model"],
             mode=payload.mode,
             sample_count=payload.sample_count,
+            sample_concurrency=_trig_sample_conc,
             corpus_subpath=params["corpus_subpath"],
             corpus_repo_url=params["corpus_repo_url"],
             corpus_repo_branch=params["corpus_repo_branch"],
