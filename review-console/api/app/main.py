@@ -88,6 +88,9 @@ MIGRATE_015_PATH = Path(__file__).parent / "migrate_015_improvement_proposals.sq
 MIGRATE_016_PATH = Path(__file__).parent / "migrate_016_experiments.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
+# Secured dav-docs-mcp self-registration (its LoadBalancer SSE URL + bearer token).
+DAV_DOCS_MCP_URL = os.environ.get("DAV_DOCS_MCP_URL", "").strip()
+DAV_DOCS_MCP_TOKEN = os.environ.get("DAV_DOCS_MCP_TOKEN", "").strip()
 
 STATUSES = {"unreviewed", "in-review", "needs-work", "approved", "stale"}
 VALID_MODES = {"verification", "reproduce", "explore"}
@@ -286,6 +289,7 @@ async def lifespan(app: FastAPI):
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
         await _seed_managed_repos(conn)
+        await _seed_docs_mcp(conn)
         await _migrate_code_repo_configs(conn)
         await _backfill_uc_projections(conn)
     await _load_ldap_cfg()
@@ -351,6 +355,36 @@ async def _upsert_file(conn: asyncpg.Connection, path: str, content: str) -> Non
         """,
         path, content, sha, size, folder,
     )
+
+
+async def _seed_docs_mcp(conn: asyncpg.Connection) -> None:
+    """Self-register the secured dav-docs-mcp server in the DCM project from env:
+    its LoadBalancer SSE URL (DAV_DOCS_MCP_URL) + Fernet-encrypted bearer token
+    (DAV_DOCS_MCP_TOKEN). Idempotent upsert so URL/token track the deployment.
+    No-op when the env is unset (e.g. dev / before the secured LB is rolled)."""
+    if not DAV_DOCS_MCP_URL:
+        return
+    pid = await conn.fetchval(
+        "SELECT COALESCE((SELECT id FROM projects WHERE id=20),"
+        " (SELECT id FROM projects WHERE slug='default'))")
+    if pid is None:
+        return
+    token_enc = crypto.encrypt(DAV_DOCS_MCP_TOKEN) if DAV_DOCS_MCP_TOKEN else ""
+    await conn.execute(
+        """INSERT INTO mcp_server_configs
+             (name, description, sse_url, enabled, use_uc_assist,
+              auth_token_encrypted, created_by, project_id)
+           VALUES ('dav-docs-mcp', $1, $2, true, false, $3, 'system', $4)
+           ON CONFLICT (project_id, lower(name)) DO UPDATE
+             SET sse_url = EXCLUDED.sse_url,
+                 auth_token_encrypted = EXCLUDED.auth_token_encrypted,
+                 description = EXCLUDED.description,
+                 updated_at = now()""",
+        "DCM architecture spec — served via MCP (secured)",
+        DAV_DOCS_MCP_URL, token_enc, pid,
+    )
+    log.info("dav-docs-mcp self-registered (secured LB URL, token %s)",
+             "set" if token_enc else "none")
 
 
 async def _seed_corpus(conn: asyncpg.Connection) -> None:
@@ -745,6 +779,24 @@ async def _load_smtp_cfg() -> None:
             except Exception:
                 pass
     _smtp_cfg = cfg
+
+
+def _smtp_message(frm: str, to: str, subject: str, body: str):
+    """Build an RFC 5322-complete EmailMessage. Date + Message-ID are mandatory
+    headers — omitting them makes content filters (amavis bad_header) quarantine
+    the mail as malformed (the cause of DAV's BouncedOutbound/BAD-HEADER)."""
+    from email.message import EmailMessage
+    from email.utils import formatdate, make_msgid
+    frm = frm or "dav@localhost"
+    dom = frm.rsplit("@", 1)[-1].strip(" >") if "@" in frm else "dav.local"
+    msg = EmailMessage()
+    msg["From"] = frm
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=dom or "dav.local")
+    msg.set_content(body)
+    return msg
 
 
 def _ldap_is_configured() -> bool:
@@ -1311,6 +1363,11 @@ async def _check_repo_ref(repo_url: str, branch: str, pat: Optional[str] = None)
     None. Uses the inline PAT when provided (for private repos)."""
     if not repo_url or not branch:
         return None
+    # A branch starting with '-' would be parsed by git as an option
+    # (--upload-pack=…), i.e. argument injection. Reject it; the `--` separator
+    # below is belt-and-suspenders.
+    if branch.startswith("-"):
+        return f"invalid branch name {branch!r}"
 
     def _run():
         import subprocess
@@ -1319,14 +1376,15 @@ async def _check_repo_ref(repo_url: str, branch: str, pat: Optional[str] = None)
             u = repo_url.replace("https://", f"https://x-access-token:{pat}@", 1)
         try:
             r = subprocess.run(
-                ["git", "ls-remote", "--heads", u, branch],
+                ["git", "ls-remote", "--heads", "--", u, branch],
                 capture_output=True, text=True, timeout=20,
                 env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"})
         except Exception as e:
             return f"could not reach {repo_url}: {e}"
         if r.returncode != 0:
-            tail = (r.stderr or "").strip().splitlines()
-            return f"repo not reachable: {tail[-1] if tail else 'unknown error'}"
+            # Sanitize: never echo git stderr verbatim — it can contain the
+            # PAT-in-URL form. Return a generic reachability message.
+            return f"repo not reachable or branch '{branch}' missing in {repo_url}"
         if not r.stdout.strip():
             return f"branch '{branch}' not found in {repo_url}"
         return None
@@ -1896,10 +1954,8 @@ async def test_smtp_settings(payload: SmtpTestIn, request: Request):
 
     def _send():
         import smtplib
-        from email.message import EmailMessage
-        msg = EmailMessage()
-        msg["From"], msg["To"], msg["Subject"] = cfg.get("from", "dav@localhost"), to, "DAV SMTP test"
-        msg.set_content("This is a test message from DAV. If you received it, SMTP is configured correctly.")
+        msg = _smtp_message(cfg.get("from", "dav@localhost"), to, "DAV SMTP test",
+                            "This is a test message from DAV. If you received it, SMTP is configured correctly.")
         with smtplib.SMTP(cfg["host"], int(cfg.get("port", 587)), timeout=10) as s:
             if cfg.get("tls"):
                 s.starttls()
@@ -1958,10 +2014,7 @@ def _send_email(to: str, subject: str, body: str) -> bool:
     if not cfg.get("host"):
         return False
     import smtplib
-    from email.message import EmailMessage
-    msg = EmailMessage()
-    msg["From"], msg["To"], msg["Subject"] = cfg.get("from", "dav@localhost"), to, subject
-    msg.set_content(body)
+    msg = _smtp_message(cfg.get("from", "dav@localhost"), to, subject, body)
     with smtplib.SMTP(cfg["host"], int(cfg.get("port", 587)), timeout=10) as s:
         if cfg.get("tls"):
             s.starttls()
@@ -3046,6 +3099,9 @@ class MCPServerIn(BaseModel):
     description: str = Field("", max_length=512)
     enabled: bool = True
     use_uc_assist: bool = False
+    # Bearer token DAV sends to the server. Optional; blank on update preserves
+    # the stored value. Fernet-encrypted at rest, masked on GET.
+    auth_token: Optional[str] = Field(None, max_length=4096)
 
 
 class ModelConfigIn(BaseModel):
@@ -3728,7 +3784,7 @@ async def list_use_cases(
 
 
 @app.get("/api/use-cases/{uuid}")
-async def get_use_case(uuid: str):
+async def get_use_case(uuid: str, request: Request):
     """Return a single use case by uuid — managed DB first, then corpus files.
 
     Route uses `{uuid}` (NOT `{uuid:path}`) so sibling routes like
@@ -3742,6 +3798,9 @@ async def get_use_case(uuid: str):
             "SELECT * FROM managed_use_cases WHERE uuid = $1", uuid
         )
         if row:
+            # A managed UC is project-owned — require read in ITS project (a
+            # member of another project gets 404, not the cross-project content).
+            await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, row["project_id"])
             d = dict(row)
             d["source"] = "managed"
             d["created_at"] = d["created_at"].isoformat()
@@ -4415,8 +4474,10 @@ async def create_set(payload: SetIn, request: Request):
 
 
 @app.get("/api/sets/{set_id}")
-async def get_set(set_id: int):
+async def get_set(set_id: int, request: Request):
     async with pool.acquire() as conn:
+        await _gate_resource(conn, request, "use_case_sets", "id", set_id,
+                             rbac.P_PROJECT_READ, f"set {set_id} not found")
         row = await conn.fetchrow(
             "SELECT s.*, COUNT(m.uc_uuid) AS member_count FROM use_case_sets s "
             "LEFT JOIN use_case_set_members m ON m.set_id = s.id "
@@ -4677,11 +4738,12 @@ async def set_readiness(set_id: int):
 
 @app.get("/api/export")
 async def export_use_cases(
+    request: Request,
     format: str = Query("tar.gz", description="Archive format: tar.gz, zip, or tar"),
     state: Optional[str] = Query(None, description="Filter by lifecycle state"),
     set_id: Optional[int] = Query(None, description="Export members of this set only"),
 ):
-    """Export managed use cases as an archive.
+    """Export the active project's managed use cases as an archive.
 
     Archive structure: {lifecycle_state}/{set_name_or__ungrouped}/{uc_uuid}.yaml
     """
@@ -4691,8 +4753,12 @@ async def export_use_cases(
         raise HTTPException(400, f"invalid state; must be one of {sorted(UC_STATES)}")
 
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
         if set_id is not None:
-            exists = await conn.fetchval("SELECT 1 FROM use_case_sets WHERE id=$1", set_id)
+            # The set must belong to the active project (no cross-project export).
+            exists = await conn.fetchval(
+                "SELECT 1 FROM use_case_sets WHERE id=$1 AND project_id=$2", set_id, pid)
             if not exists:
                 raise HTTPException(404, f"set {set_id} not found")
             set_name_row = await conn.fetchrow("SELECT name FROM use_case_sets WHERE id=$1", set_id)
@@ -4703,31 +4769,31 @@ async def export_use_cases(
                     """SELECT uc.uuid, uc.yaml_content, uc.lifecycle_state
                        FROM managed_use_cases uc
                        JOIN use_case_set_members m ON m.uc_uuid = uc.uuid AND m.uc_source = 'managed'
-                       WHERE m.set_id = $1 AND uc.lifecycle_state = $2
+                       WHERE m.set_id = $1 AND uc.lifecycle_state = $2 AND uc.project_id = $3
                        ORDER BY uc.lifecycle_state, uc.uuid""",
-                    set_id, state,
+                    set_id, state, pid,
                 )
             else:
                 uc_rows = await conn.fetch(
                     """SELECT uc.uuid, uc.yaml_content, uc.lifecycle_state
                        FROM managed_use_cases uc
                        JOIN use_case_set_members m ON m.uc_uuid = uc.uuid AND m.uc_source = 'managed'
-                       WHERE m.set_id = $1
+                       WHERE m.set_id = $1 AND uc.project_id = $2
                        ORDER BY uc.lifecycle_state, uc.uuid""",
-                    set_id,
+                    set_id, pid,
                 )
         else:
             export_set_name = None
             if state:
                 uc_rows = await conn.fetch(
                     "SELECT uuid, yaml_content, lifecycle_state FROM managed_use_cases "
-                    "WHERE lifecycle_state = $1 ORDER BY lifecycle_state, uuid",
-                    state,
+                    "WHERE lifecycle_state = $1 AND project_id = $2 ORDER BY lifecycle_state, uuid",
+                    state, pid,
                 )
             else:
                 uc_rows = await conn.fetch(
                     "SELECT uuid, yaml_content, lifecycle_state FROM managed_use_cases "
-                    "ORDER BY lifecycle_state, uuid"
+                    "WHERE project_id = $1 ORDER BY lifecycle_state, uuid", pid
                 )
 
         # For each UC, fetch its set memberships (only needed when not scoped to a single set)
@@ -4798,6 +4864,14 @@ async def import_use_cases(request: Request, file: UploadFile = File(...)):
     data = await file.read()
     fname = file.filename or ""
 
+    # Archive-bomb / OOM guards: cap the compressed upload, the entry count, and
+    # the cumulative DECOMPRESSED bytes (a small zip can expand to gigabytes).
+    _MAX_UPLOAD = 32 * 1024 * 1024        # 32 MiB compressed
+    _MAX_ENTRIES = 5000
+    _MAX_DECOMPRESSED = 256 * 1024 * 1024  # 256 MiB total decompressed
+    if len(data) > _MAX_UPLOAD:
+        raise HTTPException(413, f"archive too large ({len(data)} bytes; max {_MAX_UPLOAD})")
+
     if fname.endswith(".zip"):
         fmt = "zip"
     elif fname.endswith(".tar.gz") or fname.endswith(".tgz"):
@@ -4810,22 +4884,39 @@ async def import_use_cases(request: Request, file: UploadFile = File(...)):
         fmt = "tar.gz"  # tarfile r:* auto-detects
 
     entries: list[tuple[str, str]] = []
+    _total = 0
     try:
         if fmt == "zip":
             with zipfile.ZipFile(io.BytesIO(data)) as zf:
-                for name in zf.namelist():
-                    if name.endswith("/"):
-                        continue
-                    entries.append((name, zf.read(name).decode("utf-8")))
+                infos = [i for i in zf.infolist() if not i.filename.endswith("/")]
+                if len(infos) > _MAX_ENTRIES:
+                    raise HTTPException(413, f"archive has too many entries (max {_MAX_ENTRIES})")
+                # Reject before reading if the declared uncompressed total is huge.
+                if sum(i.file_size for i in infos) > _MAX_DECOMPRESSED:
+                    raise HTTPException(413, "archive decompresses to too much data")
+                for info in infos:
+                    _total += info.file_size
+                    if _total > _MAX_DECOMPRESSED:
+                        raise HTTPException(413, "archive decompresses to too much data")
+                    entries.append((info.filename, zf.read(info).decode("utf-8")))
         else:
             with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tf:
+                count = 0
                 for member in tf.getmembers():
                     if not member.isfile():
                         continue
+                    count += 1
+                    if count > _MAX_ENTRIES:
+                        raise HTTPException(413, f"archive has too many entries (max {_MAX_ENTRIES})")
+                    _total += member.size
+                    if _total > _MAX_DECOMPRESSED:
+                        raise HTTPException(413, "archive decompresses to too much data")
                     fobj = tf.extractfile(member)
                     if fobj is None:
                         continue
                     entries.append((member.name, fobj.read().decode("utf-8")))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(400, f"could not read archive: {e}")
 
@@ -6755,14 +6846,18 @@ async def clear_repo_secret_api(uuid_or_namespace: str, field: str, request: Req
 
 @app.get("/api/credentials")
 async def list_credentials_api(
+    request: Request,
     credential_type: Optional[str] = Query(None, alias="type", description="filter by credential_type"),
     tenant_id: Optional[str] = Query(None, description="filter by tenant_id"),
 ):
-    """List credentials (metadata only — values are never returned).
+    """List credentials (metadata only — values are never returned). Requires the
+    repo-management privilege (credentials exist to back managed repos).
     Each row includes a `used_by_count` for the UI's "used by N repo(s)" chip.
     """
     try:
         async with pool.acquire() as conn:
+            pid = await _active_project_id(request, conn)
+            await _require_priv_conn(conn, request, rbac.P_PROJECT_REPOS, pid)
             return {"credentials": await _credentials.list_credentials(
                 conn, credential_type=credential_type, tenant_id=tenant_id,
             )}
@@ -6779,12 +6874,14 @@ async def list_credential_types_api():
 @app.get("/api/credentials/{uuid_or_name}")
 async def get_credential_api(
     uuid_or_name: str,
+    request: Request,
     credential_type: Optional[str] = Query(None, alias="type"),
 ):
     """Fetch one credential with `used_by_repos` provenance. Value is
-    never returned. Use the dependent repo list to plan rotation /
-    deletion impact."""
+    never returned. Requires the repo-management privilege."""
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_REPOS, pid)
         c = await _credentials.get_credential(conn, uuid_or_name, credential_type=credential_type)
     if not c:
         raise HTTPException(404, f"credential {uuid_or_name!r} not found")
@@ -7386,6 +7483,15 @@ async def self_test_runs(limit: int = Query(20, ge=1, le=100)):
 
 
 @app.get("/api/mcp-servers")
+def _mcp_public(row) -> dict:
+    """MCP-server row for API responses — never leak the token; expose only
+    whether one is set."""
+    d = dict(row)
+    enc = d.pop("auth_token_encrypted", "") or ""
+    d["has_auth_token"] = bool(enc)
+    return d
+
+
 async def list_mcp_servers(request: Request):
     if pool is None:
         raise HTTPException(503, "pool not initialized")
@@ -7395,7 +7501,7 @@ async def list_mcp_servers(request: Request):
         rows = await conn.fetch(
             "SELECT * FROM mcp_server_configs WHERE project_id=$1 ORDER BY name", pid
         )
-    return [dict(r) for r in rows]
+    return [_mcp_public(r) for r in rows]
 
 
 @app.post("/api/mcp-servers", status_code=201)
@@ -7403,23 +7509,27 @@ async def create_mcp_server(payload: MCPServerIn, request: Request):
     user = get_user(request)
     if pool is None:
         raise HTTPException(503, "pool not initialized")
+    token_enc = crypto.encrypt(payload.auth_token) if payload.auth_token else ""
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
         await _require_priv_conn(conn, request, rbac.P_PROJECT_INTEGRATIONS, pid)
         row = await conn.fetchrow(
             """INSERT INTO mcp_server_configs
-                 (name, sse_url, description, enabled, use_uc_assist, created_by, project_id)
-               VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *""",
+                 (name, sse_url, description, enabled, use_uc_assist, auth_token_encrypted, created_by, project_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *""",
             payload.name, payload.sse_url.rstrip("/"),
-            payload.description, payload.enabled, payload.use_uc_assist, user, pid,
+            payload.description, payload.enabled, payload.use_uc_assist, token_enc, user, pid,
         )
-    return dict(row)
+    return _mcp_public(row)
 
 
 @app.put("/api/mcp-servers/{mid}")
 async def update_mcp_server(mid: int, payload: MCPServerIn, request: Request):
     if pool is None:
         raise HTTPException(503, "pool not initialized")
+    # Blank/omitted auth_token preserves the stored value; a non-empty value
+    # replaces it (encrypted). Pass NULL when preserving so the SQL keeps it.
+    token_enc = crypto.encrypt(payload.auth_token) if payload.auth_token else None
     async with pool.acquire() as conn:
         owner = await conn.fetchval("SELECT project_id FROM mcp_server_configs WHERE id=$1", mid)
         if owner is None:
@@ -7427,15 +7537,16 @@ async def update_mcp_server(mid: int, payload: MCPServerIn, request: Request):
         await _require_priv_conn(conn, request, rbac.P_PROJECT_INTEGRATIONS, owner)
         row = await conn.fetchrow(
             """UPDATE mcp_server_configs
-               SET name=$1, sse_url=$2, description=$3, enabled=$4,
-                   use_uc_assist=$5, updated_at=now()
+               SET name=$1, sse_url=$2, description=$3, enabled=$4, use_uc_assist=$5,
+                   auth_token_encrypted = COALESCE($8, auth_token_encrypted),
+                   updated_at=now()
                WHERE id=$6 AND project_id=$7 RETURNING *""",
             payload.name, payload.sse_url.rstrip("/"),
-            payload.description, payload.enabled, payload.use_uc_assist, mid, owner,
+            payload.description, payload.enabled, payload.use_uc_assist, mid, owner, token_enc,
         )
     if not row:
         raise HTTPException(404, "MCP server not found")
-    return dict(row)
+    return _mcp_public(row)
 
 
 @app.delete("/api/mcp-servers/{mid}", status_code=204)
@@ -7459,7 +7570,8 @@ async def mcp_servers_health(request: Request):
         pid = await _active_project_id(request, conn)
         await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
         rows = await conn.fetch(
-            "SELECT id, name, sse_url, enabled FROM mcp_server_configs WHERE project_id=$1 ORDER BY name", pid
+            "SELECT id, name, sse_url, enabled, auth_token_encrypted "
+            "FROM mcp_server_configs WHERE project_id=$1 ORDER BY name", pid
         )
 
     async def check(row):
@@ -7467,10 +7579,23 @@ async def mcp_servers_health(request: Request):
             return {"id": row["id"], "name": row["name"], "enabled": False, "healthy": False}
         base = row["sse_url"].rsplit("/sse", 1)[0]
         health_url = f"{base}/health"
+        # Present the stored bearer token (servers behind the auth gate require it).
+        headers = {}
+        enc = row["auth_token_encrypted"] or ""
+        if enc:
+            try:
+                tok = crypto.decrypt(enc)
+                if tok:
+                    headers["Authorization"] = f"Bearer {tok}"
+            except Exception:
+                pass
         t0 = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=5.0, verify=False) as cx:
-                resp = await cx.get(health_url)
+            # Verify TLS — the poll carries the bearer token, so an unverified
+            # connection would expose it to a MITM. MCP servers must present a
+            # valid cert (dav-docs-mcp uses a Let's Encrypt cert via its LB).
+            async with httpx.AsyncClient(timeout=5.0) as cx:
+                resp = await cx.get(health_url, headers=headers)
             latency = int((time.monotonic() - t0) * 1000)
             healthy = resp.status_code == 200
             return {"id": row["id"], "name": row["name"], "enabled": True,
@@ -8331,9 +8456,10 @@ class StageContextIn(BaseModel):
 
 
 @app.get("/api/stage-context/{stage}")
-async def get_stage_context(stage: str, project_id: Optional[int] = Query(None)):
+async def get_stage_context(stage: str, request: Request):
     async with pool.acquire() as conn:
-        pid = project_id if project_id is not None else await _default_project_id(conn)
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
         content = await _stage_context(conn, stage, pid)
     return {"stage": stage, "project_id": pid, "content": content}
 
@@ -8399,9 +8525,12 @@ async def _capability_usage_map(conn, run_id) -> dict:
 
 
 @app.get("/api/catalog")
-async def list_catalog(project_id: Optional[int] = Query(None)):
+async def list_catalog(request: Request):
+    """The active project's capability catalog (membership-scoped; the project
+    comes from the validated X-DAV-Project, never a caller-supplied id)."""
     async with pool.acquire() as conn:
-        pid = project_id if project_id is not None else await _default_project_id(conn)
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
         rows = await conn.fetch(
             "SELECT * FROM capability_catalog WHERE project_id=$1 ORDER BY status, name, cap_key", pid
         )
@@ -8409,22 +8538,26 @@ async def list_catalog(project_id: Optional[int] = Query(None)):
 
 
 @app.get("/api/catalog/suggestions")
-async def catalog_suggestions(project_id: Optional[int] = Query(None), run_id: Optional[str] = Query(None)):
+async def catalog_suggestions(request: Request, run_id: Optional[str] = Query(None)):
     """Candidate capabilities the LLM emitted in analyses (uc_capabilities) that
-    aren't in the catalog yet — the architect confirms/merges these in."""
+    aren't in the catalog yet — the architect confirms/merges these in. Scoped to
+    the active project's runs (no cross-project capability enumeration)."""
     async with pool.acquire() as conn:
-        pid = project_id if project_id is not None else await _default_project_id(conn)
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
         # Also pull a representative usage (the analysis's readable gloss, already
         # stored) so a suggestion has context without re-deriving anything.
         _usage = "(array_agg(usage ORDER BY length(usage) DESC) FILTER (WHERE COALESCE(usage,'') <> ''))[1] AS usage"
+        # Constrain to runs in THIS project so capabilities don't leak across projects.
+        _scoped = "run_id IN (SELECT run_id FROM analysis_runs WHERE project_id=$2)"
         if run_id:
             rows = await conn.fetch(
                 f"SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n, {_usage} FROM uc_capabilities "
-                "WHERE run_id=$1 GROUP BY capability_id ORDER BY n DESC", run_id)
+                f"WHERE run_id=$1 AND {_scoped} GROUP BY capability_id ORDER BY n DESC", run_id, pid)
         else:
             rows = await conn.fetch(
                 f"SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n, {_usage} FROM uc_capabilities "
-                "GROUP BY capability_id ORDER BY n DESC")
+                f"WHERE {_scoped} GROUP BY capability_id ORDER BY n DESC", pid)
         ex = {r["cap_key"] for r in await conn.fetch(
             "SELECT cap_key FROM capability_catalog WHERE project_id=$1", pid)}
     suggestions = [{"capability_id": r["capability_id"], "uc_count": int(r["n"]), "usage": r["usage"]}

@@ -149,6 +149,24 @@ dav_egress_deny_cidrs:
   - "172.16.0.0/12"
   - "192.168.0.0/16"
 
+# --- Secured dav-docs-mcp (own MetalLB IP + TLS + bearer auth) ---
+# OFF by default. When enabled, dav-docs-mcp is fronted by an nginx bearer-token
+# TLS sidecar on a dedicated internal MetalLB IP, FastMCP rebinds to 127.0.0.1,
+# and the public *.apps Route is removed — so reaching the route no longer reads
+# the DCM corpus. The API self-registers the secured URL + token on boot
+# (_seed_docs_mcp) from DAV_DOCS_MCP_URL/DAV_DOCS_MCP_TOKEN. Token in vault as
+# `vault_dav_docs_mcp_token`. Requires a WATCHED first rollout (cert issuance +
+# OpenShift-UID-sensitive nginx sidecar) — see docs/security-audit.md (H7) and
+# the operator runbook. After enabling + verifying, drop 10.0.0.70/32 from
+# dav_egress_allow_cidrs and add 10.0.90.23/32.
+dav_docs_mcp_lb_enabled: false
+dav_docs_mcp_lb_ip: "10.0.90.23"
+dav_docs_mcp_hostname: "dav-docs-mcp.roadfeldt.com"
+dav_docs_mcp_lb_port: 443
+dav_docs_mcp_tls_secret: "dav-docs-mcp-public-tls"
+dav_docs_mcp_cert_issuer: "letsencrypt-production"
+dav_docs_mcp_cert_issuer_kind: "ClusterIssuer"
+
 # --- DAV-hosted UC git stores (pvc-local backend) ---
 # A small RWX PVC where the API provisions bare git repos for use cases that
 # don't need an external forge (POST /api/repos/pvc-local). Mounted RW at

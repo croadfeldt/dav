@@ -198,6 +198,19 @@ All OFF by default (single-user passthrough behind the OCP oauth-proxy). To turn
 | `review_console_default_admin_email` | **Dedicated** break-glass admin (keep distinct from a real person; e.g. `admin@dav.local`). Password from `vault_review_console_default_admin_password` (else `changeme`). |
 | `review_console_loadbalancer_enabled: true` + `_ip` | Host externally on a MetalLB IP + `_loadbalancer_port` (e.g. 8843). Requires `require_auth: true`. nginx terminates TLS with a **DNS-01** cert from `review_console_loadbalancer_cert_issuer` (an existing DNS-01 ClusterIssuer; `create_cert: true`). Internal DNS + firewall point the hostname at the MetalLB IP:port. |
 | `dav_egress_firewall_enabled: true` | Namespace OVN EgressFirewall: the dav pods may reach only a tight set of `/32`s + the public internet; the rest of RFC1918 (lateral homelab) is denied. Node InternalIPs are **auto-discovered** as `/32`s (`dav_egress_discover_nodes: true`) so the pod can reply to kubelet health probes (omitting them crash-loops the pod, exit 137) **without** opening the whole node subnet — the rest of `10.0.0.0/24` (API VIP, gateway, your other hosts) stays denied. **Edit `dav_egress_allow_cidrs`** (specific `/32`s only) to add a new internal API/MCP endpoint. Verify after deploy: `oc get egressfirewall default -n dav -o jsonpath='{.status.status}'` → `EgressFirewall Rules applied`, the rule list shows node `/32`s (not a `/24`), and the API pod stays `1/1` with 0 restarts. |
+| `dav_docs_mcp_lb_enabled: true` (+ `vault_dav_docs_mcp_token`) | **Secure the dav-docs-mcp server** (otherwise its `*.apps` Route serves the whole DCM corpus unauthenticated — see security-audit.md H7). Fronts it with an nginx bearer-token TLS sidecar on a dedicated internal MetalLB IP (`dav_docs_mcp_lb_ip`, default `10.0.90.23`, host `dav_docs_mcp_hostname`), DNS-01 cert, FastMCP bound to `127.0.0.1`, public Route removed. The API self-registers the secured URL + token on boot. **Needs a WATCHED first rollout** (cert issuance + OpenShift-UID-sensitive sidecar). After verifying `https://<host>/sse` returns 401 without the bearer and 200 with it, **drop `10.0.0.70/32`** from `dav_egress_allow_cidrs` and **add `10.0.90.23/32`**. |
+
+**MCP server auth (any server):** in Config → Integrations, an MCP server can carry
+a **Bearer token** (stored Fernet-encrypted, masked). DAV sends it on the health
+poll (and future tool calls). `openshift-mcp`/`frc-scheduler-mcp` are no longer
+seeded (DAV doesn't use them).
+
+**Model endpoints — `*.llm` convention:** local models should point at the
+dedicated `*.llm.ocp.roadfeldt.com` router (`10.0.90.20`), not `*.apps`, so the
+egress allowlist needn't include the shared apps ingress. `qwen3-32b` and
+`qwen36-27b` have `*.llm` routes; **`qwen3-coder-30b` has no `*.llm` route yet** —
+create one in `llm-serving` (mirror `qwen3-32b-public`/`qwen36-27b-public`) before
+repointing its model in Config → AI Models. Models are UI-managed (no seed).
 
 **First login:** sign in as the default admin → change password → **Users & roles**: create accounts (no password ⇒ emailed activation invite), assign roles, and add yourself a **project** role on each project whose data you need (platform admins see all projects but must be *members* to access data). Roles compose the granular privilege catalog (use-cases / runs / arch-review / enhancement / catalog / models / integrations / repos) — e.g. give a teammate **Project Edit** for full analysis workflow without external-PR or config rights, or build a custom "Run Operator" from `data.read` + `runs.execute`. See [review-console-design.md](review-console-design.md) §RBAC / §Projects for the full model.
 

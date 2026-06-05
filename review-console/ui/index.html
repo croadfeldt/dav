@@ -1848,6 +1848,8 @@
               <input id="mcpfUrl" placeholder="https://…/sse" /></div>
             <div class="form-field" style="grid-column:1/-1;"><label>Description <span style="color:var(--text-faint);font-weight:400;">(optional)</span></label>
               <input id="mcpfDesc" placeholder="e.g. OpenShift cluster tools — list pods, logs, events" /></div>
+            <div class="form-field" style="grid-column:1/-1;"><label>Bearer token <span style="color:var(--text-faint);font-weight:400;">(optional — sent as Authorization: Bearer …)</span></label>
+              <input id="mcpfAuthToken" type="password" placeholder="" autocomplete="new-password" /></div>
           </div>
           <div style="margin-top:8px;padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">
             <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:6px;">Available for</div>
@@ -10824,6 +10826,9 @@ function openMCPForm(id) {
   document.getElementById('mcpfDesc').value = m ? (m.description || '') : '';
   document.getElementById('mcpfEnabled').checked = m ? m.enabled : true;
   document.getElementById('mcpfUseUCAssist').checked = m ? !!m.use_uc_assist : false;
+  const tok = document.getElementById('mcpfAuthToken');
+  tok.value = '';
+  tok.placeholder = (m && m.has_auth_token) ? '•••• (set — leave blank to keep)' : '';
   document.getElementById('mcpFormMsg').textContent = '';
   document.getElementById('mcpFormCard').style.display = '';
   document.getElementById('mcpfName').focus();
@@ -12220,6 +12225,7 @@ document.getElementById('saveMCPBtn').addEventListener('click', async () => {
     description: document.getElementById('mcpfDesc').value.trim(),
     enabled: document.getElementById('mcpfEnabled').checked,
     use_uc_assist: document.getElementById('mcpfUseUCAssist').checked,
+    auth_token: document.getElementById('mcpfAuthToken').value,
   };
   if (!payload.name || !payload.sse_url) {
     msgEl.textContent = 'Name and SSE URL are required.';

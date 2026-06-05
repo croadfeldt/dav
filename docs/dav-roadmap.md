@@ -333,10 +333,21 @@ repos). Config registries (`model_configs`/`mcp_server_configs`/`managed_repos`/
 every workflow + config endpoint is authorized (reads on `data.read`, mutations
 on the specific privilege, with **resource-ownership** checks closing the prior
 cross-project edit gap). A namespace **EgressFirewall** restricts the dav pods to
-allowlisted internal infra + the internet (lateral homelab denied). Known
-follow-up: spec/corpus projection still writes a cluster-wide ConfigMap
-(aggregate across projects); read-by-id endpoints aren't yet `data.read`-gated
-(active-project membership already prevents cross-project listing).
+allowlisted internal infra + the internet (lateral homelab denied).
+
+**v0.15.0 (2026-06-05) — MCP auth + security hardening:** MCP servers can require
+a **bearer token** (Fernet-encrypted, masked; sent on the TLS-verified health
+poll); `dav-docs-mcp` self-registers its secured URL+token on boot; unused
+`openshift-mcp`/`frc-scheduler-mcp` seeds removed. A full **security sweep**
+([security-audit.md](review-console-design.md)) found + fixed a live auth bypass
+(relaxed-proxy `X-Forwarded-User` spoof), an unauthenticated cross-project
+`/api/export`, the read-by-id `data.read` gap noted above (use-cases/sets/catalog/
+credentials/stage-context now gated), two path traversals, a git arg-injection +
+PAT-stderr leak, an archive-bomb DoS, and the MCP poll TLS bypass; outbound email
+gained mandatory Date/Message-ID (amavis BAD-HEADER fix). Remaining (documented):
+dav-docs-mcp server-side hardening (authored default-off, needs watched rollout),
+pipeline-SA `edit` clusterrole, model api_key encryption-at-rest, image digest
+pinning.
 
 ### Console v2 — multi-project / multi-repo support — **IN PROGRESS (M1-M8, 2026-05-27+)**
 

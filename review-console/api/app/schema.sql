@@ -300,10 +300,14 @@ CREATE TABLE IF NOT EXISTS mcp_server_configs (
   sse_url         TEXT NOT NULL,
   enabled         BOOLEAN NOT NULL DEFAULT true,
   use_uc_assist   BOOLEAN NOT NULL DEFAULT false,
+  -- Fernet-encrypted bearer token DAV presents to the server (Authorization:
+  -- Bearer …); masked on GET, never returned. Empty = no auth.
+  auth_token_encrypted TEXT NOT NULL DEFAULT '',
   created_by      TEXT NOT NULL,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE mcp_server_configs ADD COLUMN IF NOT EXISTS auth_token_encrypted TEXT NOT NULL DEFAULT '';
 -- Name uniqueness is per-project; composite index created in the project-scope
 -- block below (after project_id is added).
 
@@ -325,8 +329,8 @@ CREATE TABLE IF NOT EXISTS code_repo_configs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_code_repos_name ON code_repo_configs(lower(name));
 
--- Seed MCP servers is relocated below — it now targets a project_id, which
--- requires the `projects` table + the project_id column (added further down).
+-- MCP servers are not statically seeded; dav-docs-mcp self-registers at boot
+-- (see _seed_docs_mcp). openshift-mcp / frc-scheduler-mcp are not used by DAV.
 
 -- ── Projects (tenancy foundation — uc-driven-roadmaps-design.md §9) ──────────
 -- A project is a user-defined analysis scope. Tenancy-ready from birth: new
@@ -393,24 +397,10 @@ CREATE INDEX IF NOT EXISTS idx_model_configs_project ON model_configs(project_id
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_project   ON mcp_server_configs(project_id);
 CREATE INDEX IF NOT EXISTS idx_managed_repos_project ON managed_repos(project_id);
 
--- ── Seed MCP servers (relocated; now project-scoped) ─────────────────────────
--- Targets the DCM project (id 20) with a 'default' fallback. Idempotent via the
--- per-project name unique index.
-INSERT INTO mcp_server_configs (name, description, sse_url, enabled, created_by, project_id)
-  SELECT v.name, v.description, v.sse_url, true, 'seed',
-         COALESCE((SELECT id FROM projects WHERE id=20), (SELECT id FROM projects WHERE slug='default'))
-  FROM (VALUES
-    ('openshift-mcp',
-     'OpenShift cluster tools — list pods, logs, events, nodes, inference services',
-     'https://openshift-mcp-mcp-servers.apps.ocp.roadfeldt.com/sse'),
-    ('frc-scheduler-mcp',
-     'FRC scheduler — events, teams, schedules, TBA lookup',
-     'https://frc-scheduler-mcp-mcp-servers.apps.ocp.roadfeldt.com/sse'),
-    ('dav-docs-mcp',
-     'DCM architecture spec — served via MCP for use with Claude Code and agents',
-     'https://dav-docs-mcp-dav.apps.ocp.roadfeldt.com/sse')
-  ) AS v(name, description, sse_url)
-ON CONFLICT (project_id, lower(name)) DO NOTHING;
+-- MCP servers are no longer statically seeded here. openshift-mcp /
+-- frc-scheduler-mcp are not used by DAV. dav-docs-mcp is self-registered at boot
+-- (_seed_docs_mcp) from DAV_DOCS_MCP_URL/DAV_DOCS_MCP_TOKEN so it carries its
+-- secured LoadBalancer URL + Fernet-encrypted bearer token.
 
 -- Many-to-many users↔projects with a per-project role.
 CREATE TABLE IF NOT EXISTS project_members (

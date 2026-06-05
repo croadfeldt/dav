@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-06-05  
-**Current version:** v0.14.0  
+**Current version:** v0.15.0  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -748,6 +748,42 @@ As DAV opens to other users, an OVN `EgressFirewall/default` in the `dav` namesp
 Driven by `dav_egress_cluster_cidrs` / `dav_egress_node_cidrs` (auto-filled) / `dav_egress_allow_cidrs` / `dav_egress_deny_cidrs` — add a `/32` to `dav_egress_allow_cidrs` whenever a new internal API/MCP endpoint is configured. **Verified:** only the node `/32`s + the three endpoint `/32`s are reachable on `10.0.0.0/24`; `10.0.0.1`/`.50`/`.60` and other homelab IPs (`10.0.90.18`, `10.10.90.9`) time out, while the pod stays `1/1` with 0 restarts.
 
 **Architectural limit (single shared pod):** per-project *network* egress is **not** enforceable here — all projects share the pod's network identity. Per-project MCP/model isolation is enforced at the **app layer** (the pod only ever dials the *active project's* configured endpoints — see Config tenancy in the RBAC section). This firewall is a coarse namespace-wide backstop. Verified: the pod reaches the allowlisted ingress/models/SMTP + internet + DB, and an un-allowlisted homelab IP (e.g. `10.0.90.18`, `10.10.90.9`) times out.
+
+### MCP server authentication (v0.15.0)
+
+MCP servers can require a **bearer token**. `mcp_server_configs.auth_token_encrypted`
+(Fernet, masked on GET as `has_auth_token`) holds a per-server token; the
+`/api/mcp-servers` create/update endpoints accept `auth_token` (blank-on-update
+preserves), and the health poll sends `Authorization: Bearer <token>` over a
+**TLS-verified** connection. `dav-docs-mcp` self-registers on boot
+(`_seed_docs_mcp`) from `DAV_DOCS_MCP_URL`/`DAV_DOCS_MCP_TOKEN` (env ← vault). The
+server-side hardening (its own internal MetalLB IP `10.0.90.23` + DNS-01 TLS + an
+nginx bearer-token sidecar, FastMCP bound to `127.0.0.1`, public Route removed)
+is authored in ansible **default-off** (`dav_docs_mcp_lb_enabled`) pending a
+watched rollout — see [security-audit.md](security-audit.md) H7. The unused
+`openshift-mcp` / `frc-scheduler-mcp` seeds were removed.
+
+### Security hardening (v0.15.0)
+
+A full security sweep ([security-audit.md](security-audit.md)) found and fixed a
+**live auth bypass** (relaxed-proxy `/api/` trusted a client-spoofable
+`X-Forwarded-User` — the nginx `/api/` location now clears those headers in
+relaxed mode, identity = signed session cookie), an **unauthenticated
+cross-project export** (`/api/export`), a cluster of **read endpoints that
+authenticated but didn't authorize** (`use-cases/{uuid}`, `sets/{id}`, `catalog`,
+`credentials`, `stage-context` — now gate on `project.data.read` + the
+membership-validated active project), two **path traversals**
+(`results._safe_under` containment), a git **arg-injection** + PAT-in-stderr
+leak, an **archive-bomb** DoS cap on import, and the MCP poll's `verify=False`.
+Outbound **email** now includes mandatory `Date`/`Message-ID` headers (amavis
+was quarantining DAV mail as `BAD-HEADER`).
+
+### Outbound email headers (v0.15.0)
+
+`_smtp_message()` builds every outbound message (invites, notifications, SMTP
+test) with `From`/`To`/`Subject` **plus `Date` and `Message-ID`** — both
+mandatory under RFC 5322. Omitting them caused content filters (amavis
+`bad_header`) to quarantine DAV's mail (`BouncedOutbound`/`BAD-HEADER-0`).
 
 ---
 

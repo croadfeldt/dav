@@ -154,8 +154,24 @@ spec:
             - name: DAV_PUBLIC_BASE_URL
               value: "{{ review_console_public_base_url if (review_console_public_base_url | default('')) else ('https://' + review_console_hostname + (':' ~ _bport if _buseport else '')) }}"
 {% if vault_review_console_default_admin_password is defined and vault_review_console_default_admin_password | length > 0 %}
+            # Break-glass admin bootstrap password — sourced from a Secret (never a
+            # plaintext `value:` in the pod spec / rendered manifest).
             - name: DAV_DEFAULT_ADMIN_PASSWORD
-              value: "{{ vault_review_console_default_admin_password }}"
+              valueFrom:
+                secretKeyRef:
+                  name: dav-review-admin-bootstrap
+                  key: password
+{% endif %}
+{% if dav_docs_mcp_lb_enabled | default(false) %}
+            # Secured dav-docs-mcp self-registration (LB URL + bearer token). The
+            # API upserts the dav-docs-mcp MCP row with these on boot (_seed_docs_mcp).
+            - name: DAV_DOCS_MCP_URL
+              value: "https://{{ dav_docs_mcp_hostname | default('dav-docs-mcp.roadfeldt.com') }}/sse"
+            - name: DAV_DOCS_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dav-docs-mcp-token
+                  key: token
 {% endif %}
           # Optional Secret for tokens the API needs at runtime — currently:
           #   DAV_CORPUS_PUSH_TOKEN   GitHub PAT (repo scope) used by Push-to-corpus

@@ -47,12 +47,25 @@ data:
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
-        # Pass oauth-proxy auth headers through so the API can attribute
-        # reviews to the authenticated user.
+{% if review_console_relaxed_proxy | default(false) %}
+        # SECURITY (relaxed-proxy mode): oauth-proxy SKIPS /api/ (--skip-auth-regex
+        # ^/api/), so any inbound X-Forwarded-*/X-Auth-Request-* identity header is
+        # CLIENT-supplied and trivially spoofable (a full auth bypass to any
+        # identity, incl. platform admin). Identity on /api/ comes ONLY from the
+        # signed session cookie minted at the oauth-protected /sso endpoint —
+        # clear these so the API can never trust a spoofed header here.
+        proxy_set_header X-Forwarded-User "";
+        proxy_set_header X-Forwarded-Email "";
+        proxy_set_header X-Auth-Request-User "";
+        proxy_set_header X-Auth-Request-Email "";
+{% else %}
+        # Strict-proxy mode: oauth-proxy authenticates /api/ and sets these —
+        # pass them through so the API can attribute actions to the OCP user.
         proxy_set_header X-Forwarded-User $http_x_forwarded_user;
         proxy_set_header X-Forwarded-Email $http_x_forwarded_email;
         proxy_set_header X-Auth-Request-User $http_x_auth_request_user;
         proxy_set_header X-Auth-Request-Email $http_x_auth_request_email;
+{% endif %}
 
         proxy_connect_timeout 10s;
         proxy_send_timeout    60s;

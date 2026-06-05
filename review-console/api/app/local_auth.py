@@ -26,6 +26,19 @@ SESSION_COOKIE = "dav_session"
 SESSION_TTL = int(os.environ.get("DAV_SESSION_TTL", "86400"))  # seconds (24h)
 _SECRET = (os.environ.get("DAV_SESSION_SECRET")
            or os.environ.get("DAV_FERNET_KEY") or "").encode()
+# A short signing key yields forgeable session cookies → impersonation. Require
+# ≥32 bytes; otherwise refuse to enable sessions (fail closed) and warn loudly.
+# (A dedicated DAV_SESSION_SECRET is preferred over reusing the Fernet key.)
+_MIN_SECRET_LEN = 32
+if _SECRET and len(_SECRET) < _MIN_SECRET_LEN:
+    log.error("DAV session signing secret is too short (%d < %d bytes) — sessions "
+              "DISABLED. Set a strong DAV_SESSION_SECRET (>=32 bytes).",
+              len(_SECRET), _MIN_SECRET_LEN)
+    _SECRET = b""
+if os.environ.get("DAV_SESSION_SECRET") is None and _SECRET:
+    log.warning("DAV_SESSION_SECRET unset — reusing DAV_FERNET_KEY for session "
+                "signing (key reuse across purposes). Provision a dedicated "
+                "DAV_SESSION_SECRET.")
 
 
 def sessions_enabled() -> bool:

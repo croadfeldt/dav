@@ -55,6 +55,19 @@ def delete_run_dir(run_id: str) -> bool:
     return True
 
 
+def _safe_under(root, *parts):
+    """Join `parts` under `root` and return the resolved Path only if it stays
+    strictly inside `root`. Returns None on traversal (a `..`/absolute component
+    that escapes). Use for any filesystem read built from request input."""
+    root = root.resolve()
+    try:
+        target = root.joinpath(*[str(p) for p in parts]).resolve()
+        target.relative_to(root)
+    except (ValueError, OSError):
+        return None
+    return target
+
+
 def _safe_load(path: Path) -> Optional[dict]:
     try:
         return yaml.safe_load(path.read_text())
@@ -151,8 +164,10 @@ def tail_turns(run_id: str, file_name: str, since_offset: int = 0,
     incremental tail-polling — UI keeps the offset between calls.
     """
     import json as _json
-    path = _results_root() / run_id / "turns" / file_name
-    if not path.is_file():
+    # Path-traversal guard: file_name is request input and must not escape the
+    # run's turns/ dir (`../../etc/passwd`, absolute paths, etc.).
+    path = _safe_under(_results_root(), run_id, "turns", file_name)
+    if path is None or not path.is_file():
         return {"records": [], "next_offset": since_offset, "total_lines": 0,
                 "error": "not found"}
     try:
@@ -568,17 +583,18 @@ def get_analysis(run_id: str, uc_uuid: str) -> Optional[dict]:
     """
     run_dir = _results_root() / run_id
 
-    # Verification / reproduce: <run-dir>/analyses/<uuid>.yaml
-    single = run_dir / "analyses" / f"{uc_uuid}.yaml"
-    if single.exists():
+    # Path-traversal guard: uc_uuid comes from a `:path` route so it can contain
+    # `/` and `..` — confine both lookups strictly under the run's analyses/ dir.
+    single = _safe_under(_results_root(), run_id, "analyses", f"{uc_uuid}.yaml")
+    if single is not None and single.exists():
         data = _safe_load(single)
         if data is not None:
             data["_source"] = "single"
         return data
 
     # Explore mode: <run-dir>/analyses/<uuid>/
-    explore_dir = run_dir / "analyses" / uc_uuid
-    if explore_dir.is_dir():
+    explore_dir = _safe_under(_results_root(), run_id, "analyses", uc_uuid)
+    if explore_dir is not None and explore_dir.is_dir():
         samples = []
         for f in sorted(explore_dir.glob("sample-*.yaml")):
             s = _safe_load(f)
