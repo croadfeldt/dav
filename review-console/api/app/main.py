@@ -2561,6 +2561,25 @@ async def stop_run(name: str, request: Request):
     return {"ok": True, "name": name, "status": "Cancelled"}
 
 
+class RunTimeoutIn(BaseModel):
+    seconds: int
+
+
+@app.post("/api/runs/{name}/timeout")
+async def set_run_time_allowed(name: str, payload: RunTimeoutIn, request: Request):
+    """Edit a run's 'time allowed' (pipeline timeout) — extend or shorten it
+    mid-run. The failsafe is a safety net, not a budget; this lets the operator
+    say "don't go past this long" live. Gated on runs.execute."""
+    async with pool.acquire() as conn:
+        rpid = await _run_project_id(conn, name)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_RUNS_EXECUTE, rpid)
+    ok = await asyncio.to_thread(validations.set_run_timeout, name, payload.seconds)
+    if not ok:
+        raise HTTPException(404, "run not found or already finished")
+    return {"ok": True, "name": name,
+            "timeout_seconds": max(3600, min(86400, int(payload.seconds)))}
+
+
 @app.delete("/api/runs/{name}")
 async def delete_run(name: str, request: Request):
     """Completely and irreversibly remove a run: its ingested analysis (cascades to
@@ -2991,6 +3010,31 @@ async def _maybe_finalize_session(detail: dict) -> Optional[dict]:
     return out
 
 
+_est_per_uc_cache: dict = {"val": None, "exp": 0.0}
+
+
+async def _est_per_uc_seconds() -> int:
+    """Per-UC wall-time estimate: median(wall_time/uc_total) over finalized runs,
+    else the env default. Cached ~5 min — improves as real runs complete."""
+    now = time.monotonic()
+    if _est_per_uc_cache["val"] is not None and _est_per_uc_cache["exp"] > now:
+        return _est_per_uc_cache["val"]
+    val = int(os.environ.get("DAV_EST_SEC_PER_UC", "600"))
+    try:
+        async with pool.acquire() as conn:
+            med = await conn.fetchval(
+                "SELECT percentile_cont(0.5) WITHIN GROUP "
+                "(ORDER BY wall_time_seconds / uc_total) FROM run_sessions "
+                "WHERE finalized_at IS NOT NULL AND uc_total > 0 AND wall_time_seconds > 0")
+        if med and med > 0:
+            val = int(med)
+    except Exception as e:
+        log.debug("est_per_uc median query failed: %s", e)
+    _est_per_uc_cache["val"] = val
+    _est_per_uc_cache["exp"] = now + 300
+    return val
+
+
 @app.get("/api/runs/{name}")
 async def get_run_detail(name: str):
     """Return Tekton PipelineRun spec + per-TaskRun status + session metadata
@@ -3068,6 +3112,9 @@ async def get_run_detail(name: str):
                 detail["live_session_prompt_tokens"] = int(prompt_delta) if prompt_delta is not None else None
         except Exception as e:
             log.info("live token delta failed for %s: %s", name, e)
+    # Per-UC time estimate (median over finalized runs, else default) — the UI
+    # multiplies by the UC count to show est total + ETA in the header.
+    detail["est_per_uc_seconds"] = await _est_per_uc_seconds()
     return detail
 
 

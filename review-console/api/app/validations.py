@@ -368,6 +368,28 @@ def delete_run(name: str) -> bool:
         raise
 
 
+def set_run_timeout(name: str, seconds: int) -> bool:
+    """Edit a run's 'time allowed' mid-flight by patching spec.timeouts.pipeline.
+    Tekton re-evaluates the timeout against the run's startTime, so this extends
+    (or shortens) a running PipelineRun. Returns True if patched, False if gone.
+    Clamped to [1h, 24h]."""
+    if not is_available():
+        return False
+    seconds = max(_TIMEOUT_FLOOR_SEC, min(_TIMEOUT_CAP_SEC, int(seconds)))
+    try:
+        _api().patch_namespaced_custom_object(
+            group=_TEKTON_GROUP, version=_TEKTON_VERSION, namespace=NAMESPACE,
+            plural=_PIPELINERUN_PLURAL, name=name,
+            body={"spec": {"timeouts": {"pipeline": f"{seconds}s"}}},
+        )
+        return True
+    except ApiException as e:
+        if e.status == 404:
+            return False
+        log.error("Failed to set timeout on PipelineRun %s: %s", name, e)
+        raise
+
+
 def cancel_run(name: str) -> bool:
     """Gracefully stop an in-flight PipelineRun by setting spec.status=Cancelled.
 
@@ -606,8 +628,26 @@ def get_run_detail(name: str) -> dict:
             {"name": w.get("name"), "pvc": (w.get("persistentVolumeClaim") or {}).get("claimName")}
             for w in spec.get("workspaces", [])
         ],
+        # Current "time allowed" (editable via set_run_timeout) so the header can
+        # show it + compute the kill clock.
+        "timeout_seconds": _parse_go_duration_sec((spec.get("timeouts") or {}).get("pipeline")),
         "tasks": tasks,
     }
+
+
+def _parse_go_duration_sec(s) -> Optional[int]:
+    """Parse a Tekton/Go duration ('26400s', '2h0m0s', '2h') to seconds."""
+    if not s:
+        return None
+    import re
+    parts = re.findall(r"(\d+)(h|m|s)", str(s))
+    if not parts:
+        try:
+            return int(float(s))
+        except (TypeError, ValueError):
+            return None
+    mult = {"h": 3600, "m": 60, "s": 1}
+    return sum(int(v) * mult[u] for v, u in parts)
 
 
 def _phase_from_condition(cond: dict) -> str:

@@ -724,11 +724,20 @@
   /* Run detail panel sections (moved from drawer) */
   .rd-panel-header {
     padding:12px 20px; border-bottom:1px solid var(--border);
-    display:flex; justify-content:space-between; align-items:center;
+    display:flex; flex-direction:column; gap:6px;
     flex-shrink:0; background:var(--bg-raised);
   }
+  .rd-header-top { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+  .rd-header-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
   .rd-panel-title { font-family:var(--serif); font-size:18px; font-weight:400; }
-  .rd-panel-sub { font-size:11px; color:var(--text-dim); margin-top:2px; }
+  .rd-panel-sub { font-size:11px; color:var(--text-dim); }
+  /* Full-width header stat strips (fill wide-screen space, fold in the old
+     session section). Row 2 = time, row 3 = scope/estimate. */
+  .rd-header-stats { display:flex; flex-wrap:wrap; gap:3px 18px; font-size:11px; align-items:baseline; color:var(--text-dim); }
+  .rd-hstat { white-space:nowrap; }
+  .rd-hstat .l { color:var(--text-faint); text-transform:uppercase; font-size:9px; letter-spacing:0.07em; margin-right:4px; }
+  .rd-hstat b { color:var(--text); font-weight:500; font-family:var(--mono); }
+  .rd-hstat-edit { cursor:pointer; color:var(--accent); margin-left:4px; font-size:10px; }
   .rd-empty { display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-faint); font-family:var(--serif); font-style:italic; font-size:15px; }
 
   /* Review & Plan tab */
@@ -938,14 +947,15 @@
         <!-- Right: run detail -->
         <div class="runs-detail-panel" id="runsDetailPanel">
           <div id="rdPanelHeader" class="rd-panel-header" style="display:none;">
-            <div>
+            <div class="rd-header-top">
               <div class="rd-panel-title" id="rdTitle">—</div>
-              <div class="rd-panel-sub" id="rdSub"></div>
+              <div class="rd-header-actions">
+                <button class="btn ghost btn-sm" id="rdDiagnoseBtn" style="display:none;font-size:10px;" title="Diagnose this run's failures and propose fixes (Improve tab)">🩺 Diagnose</button>
+                <button class="btn ghost btn-sm" id="rdViewResultsBtn" style="display:none;font-size:10px;">View Results →</button>
+              </div>
             </div>
-            <div style="display:flex;align-items:center;gap:8px;">
-              <button class="btn ghost btn-sm" id="rdDiagnoseBtn" style="display:none;font-size:10px;" title="Diagnose this run's failures and propose fixes (Improve tab)">🩺 Diagnose</button>
-              <button class="btn ghost btn-sm" id="rdViewResultsBtn" style="display:none;font-size:10px;">View Results →</button>
-            </div>
+            <div class="rd-panel-sub" id="rdSub"></div>
+            <div class="rd-header-stats" id="rdHeaderStats"></div>
           </div>
           <!-- Tab strip inside run detail -->
           <div id="rdTabStrip" class="rd-tab-strip" style="display:none;">
@@ -2808,6 +2818,35 @@ function fmtDuration(startTs, endTs) {
   if (sec < 60) return `${sec}s`;
   const m = Math.floor(sec / 60), r = sec % 60;
   return r ? `${m}m ${r}s` : `${m}m`;
+}
+
+// Compact duration from seconds: "45s" / "12m" / "5.3h". For estimates + timeout.
+function _fmtDurShort(sec) {
+  if (sec == null || !isFinite(sec)) return '—';
+  if (sec < 90) return `${Math.round(sec)}s`;
+  if (sec < 5400) return `${Math.round(sec/60)}m`;
+  return `${(sec/3600).toFixed(1)}h`;
+}
+// Clock time from an epoch-ms (e.g. ETA): "8:35p".
+function _fmtClock(ms) {
+  if (!ms || !isFinite(ms)) return '—';
+  const d = new Date(ms);
+  let h = d.getHours(); const m = d.getMinutes();
+  const ap = h >= 12 ? 'p' : 'a'; h = h % 12 || 12;
+  return `${h}:${String(m).padStart(2,'0')}${ap}`;
+}
+// Edit a running run's "time allowed" (failsafe timeout) — extend or shorten it.
+async function editRunTimeout(name, curSec) {
+  const curH = curSec ? (curSec/3600).toFixed(1) : '';
+  const inp = prompt(`Time allowed (hours) — the failsafe that stops this run if it runs away. Extend or shorten it; it won't cut short a run that finishes first.\n\nCurrent: ${curH}h`, curH);
+  if (inp === null) return;
+  const h = parseFloat(inp);
+  if (!(h > 0)) { toast('Enter a positive number of hours', true); return; }
+  try {
+    await api(`/api/runs/${encodeURIComponent(name)}/timeout`, {method:'POST', body: JSON.stringify({seconds: Math.round(h*3600)})});
+    toast(`Time allowed set to ${h}h`);
+    refreshRunDrawer();
+  } catch(e){ toast(e.message, true); }
 }
 
 function phaseHtml(phase) {
@@ -4698,10 +4737,38 @@ function renderRunDrawerDetail(d) {
   // Update masthead chip with current phase
   updateRunChip(s?.name || d.name, d.phase);
 
-  document.getElementById('rdSub').innerHTML =
-    `${phaseHtml(d.phase)} · started ${esc(fmtTs(d.started_at||d.created_at))} · ${esc(fmtDuration(d.started_at||d.created_at, d.completed_at))}`
-    + (s && s.category ? ` · <span class="src-badge" style="background:var(--accent-bg);color:var(--accent);text-transform:none;letter-spacing:0">${esc(s.category)}</span>` : '')
-    + (d.status_reason ? ` · <span style="color:var(--text-dim)">${esc(d.status_reason)}</span>` : '');
+  // ── Header strips: row 2 = time, row 3 = scope/estimate (folds in the old
+  //    session section; fills the wide-screen header width). ──
+  const _start = d.started_at || d.created_at;
+  const _startMs = _start ? Date.parse(_start) : null;
+  const _terminal = ['Succeeded','Failed','Cancelled','TimedOut'].includes(d.phase);
+  const ucCount = (d.progress && d.progress.total_ucs) || (s && s.uc_total) || null;
+  const perUc = d.est_per_uc_seconds || 600;
+  const estTotal = ucCount ? ucCount * perUc : null;
+  const etaMs = (_startMs && estTotal && !_terminal) ? _startMs + estTotal*1000 : null;
+  const toSec = d.timeout_seconds || null;
+  // Row 2 — time
+  let timeBits = `${phaseHtml(d.phase)} · started ${esc(fmtTs(_start))} · ${_terminal?'':'elapsed '}${esc(fmtDuration(_start, d.completed_at))}`;
+  if (!_terminal && etaMs) timeBits += ` · ETA ${esc(_fmtClock(etaMs))}`;
+  if (!_terminal && toSec) timeBits += ` · time allowed <b style="color:var(--text);font-family:var(--mono)">${esc(_fmtDurShort(toSec))}</b><span class="rd-hstat-edit" title="Edit time allowed (failsafe — don't go past this long)" onclick="editRunTimeout('${esc(d.name)}',${toSec})">✎</span>`;
+  if (_terminal && d.status_reason) timeBits += ` · <span style="color:var(--text-dim)">${esc(d.status_reason)}</span>`;
+  document.getElementById('rdSub').innerHTML = timeBits;
+  // Row 3 — scope / estimate
+  const hs = [];
+  if (ucCount != null) hs.push(`<span class="rd-hstat"><span class="l">UCs</span><b>${ucCount}</b></span>`);
+  if (!_terminal && ucCount != null) {
+    hs.push(`<span class="rd-hstat"><span class="l">est/UC</span><b>~${esc(_fmtDurShort(perUc))}</b></span>`);
+    if (estTotal) hs.push(`<span class="rd-hstat"><span class="l">est total</span><b>~${esc(_fmtDurShort(estTotal))}</b></span>`);
+  }
+  if (_terminal && s && s.uc_total != null) {
+    hs.push(`<span class="rd-hstat"><span class="l">done</span><b style="color:${(s.uc_failed||0)>0?'var(--accent)':'var(--green)'}">${s.uc_succeeded ?? '?'}/${s.uc_total}</b>${(s.uc_failed||0)>0?` <span style="color:var(--red)">${s.uc_failed} fail</span>`:''}</span>`);
+  }
+  if (s && s.set_name) hs.push(`<span class="rd-hstat"><span class="l">set</span><b style="cursor:pointer;color:var(--accent)" onclick="switchView('usecases');setTimeout(()=>selectSet(${s.set_id}),100)">⊞ ${esc(s.set_name)}</b></span>`);
+  else if (s && s.selection_mode) { const _ml={set:'Set',selection:'Selection',individual:'Individual UC',corpus:'Full corpus'}; hs.push(`<span class="rd-hstat"><span class="l">scope</span><b>${esc(_ml[s.selection_mode]||s.selection_mode)}</b></span>`); }
+  if (s && s.category) hs.push(`<span class="rd-hstat"><span class="l">category</span><b>${esc(s.category)}</b></span>`);
+  if (_terminal && s && s.wall_time_seconds) hs.push(`<span class="rd-hstat"><span class="l">wall</span><b>${esc(_fmtDurShort(s.wall_time_seconds))}</b></span>`);
+  if (s && s.tags && s.tags.length) hs.push(`<span class="rd-hstat">${s.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join(' ')}</span>`);
+  document.getElementById('rdHeaderStats').innerHTML = hs.join('');
 
   // Per-UC progress (in-flight only). Server computes from
   // <run_dir>/run-progress.yaml the engine writes after each UC.
@@ -4737,47 +4804,13 @@ function renderRunDrawerDetail(d) {
   }
 
   // Session block — only render if we have a session row
-  const sectEl = document.getElementById('rdSessionSection');
-  if (s) {
-    sectEl.style.display = '';
-    const tagsHtml = (s.tags && s.tags.length)
-      ? s.tags.map(t => `<span class="tag">${esc(t)}</span>`).join(' ')
-      : '<span style="color:var(--text-faint);font-size:10px">—</span>';
-    let html = '';
-    if (s.description) html += `<div class="kv-label">description</div><div class="kv-val">${esc(s.description)}</div>`;
-    // R2 lineage — what was run (Set + selection mode)
-    if (s.set_name || s.selection_mode) {
-      const modeLabels = {set:'Set', selection:'Selection', individual:'Individual UC', corpus:'Full corpus'};
-      const bits = [];
-      if (s.set_name)        bits.push(`<span style="cursor:pointer;color:var(--accent);" onclick="switchView('usecases');setTimeout(()=>selectSet(${s.set_id}),100);">⊞ ${esc(s.set_name)}</span>`);
-      if (s.selection_mode)  bits.push(`<span style="color:var(--text-faint);">${esc(modeLabels[s.selection_mode] || s.selection_mode)}</span>`);
-      html += `<div class="kv-label">scope</div><div class="kv-val">${bits.join(' · ')}</div>`;
-    }
-    // UC counts (populated after finalize) — total / succeeded / failed
-    if (typeof s.uc_total === 'number') {
-      const okColor = (s.uc_failed || 0) > 0 ? 'var(--accent)' : 'var(--green)';
-      html += `<div class="kv-label">UC counts</div><div class="kv-val">` +
-              `<strong style="color:${okColor};">${s.uc_succeeded ?? '?'}/${s.uc_total} ok</strong>` +
-              ((s.uc_failed || 0) > 0 ? ` <span style="color:var(--red);">${s.uc_failed} failed</span>` : '') +
-              `</div>`;
-    }
-    html += `<div class="kv-label">category</div><div class="kv-val">${esc(s.category||'ad-hoc')}</div>`;
-    if (s.tags && s.tags.length) html += `<div class="kv-label">tags</div><div class="kv-val">${tagsHtml}</div>`;
-    // Finalized stats — only render once the lazy finalizer has populated them
-    // GPU energy + token totals live in the Inference panel (single source of
-    // truth — the live cumulative-counter deltas there). The session section
-    // only carries wall time, so the two never disagree.
-    if (s.finalized_at) {
-      html += `<div class="kv-label">wall time</div><div class="kv-val">${(s.wall_time_seconds||0).toFixed(0)}s</div>`;
-    } else if (s.live_wall_time_seconds !== null && s.live_wall_time_seconds !== undefined) {
-      const liveBadge = '<span style="color:var(--blue);font-size:9px;text-transform:uppercase;letter-spacing:0.1em;margin-left:6px;animation:pulse 1.6s infinite;">● live</span>';
-      html += `<div class="kv-label">wall time</div><div class="kv-val">${(s.live_wall_time_seconds||0).toFixed(0)}s ${liveBadge}</div>`;
-    } else if (['Running','Pending','Started'].includes(d.phase)) {
-      html += `<div class="kv-label">stats</div><div class="kv-val" style="color:var(--text-faint)">computing live values…</div>`;
-    }
-    document.getElementById('rdSession').innerHTML = html;
-  } else {
-    sectEl.style.display = 'none';
+  // Session section folded into the header strips above — keep it hidden.
+  document.getElementById('rdSessionSection').style.display = 'none';
+  if (s && s.description) {
+    // Description is the one free-text field with no header home — show it as a
+    // subtle full-width line under the header stats.
+    const hsEl = document.getElementById('rdHeaderStats');
+    hsEl.innerHTML += `<span class="rd-hstat" style="flex-basis:100%;color:var(--text-faint);font-size:10px">${esc(s.description)}</span>`;
   }
 
   // Task ladder
