@@ -737,10 +737,34 @@ def _cli():
                  len(managed_uuids), args.console_api_url, scratch)
         base = args.console_api_url.rstrip("/")
         fetched = 0
+        # The console API gates /api/use-cases behind auth. As a trusted
+        # in-cluster service we present our Kubernetes ServiceAccount *projected
+        # token* (audience-scoped, short-lived, auto-rotated) as a Bearer token;
+        # the API validates it via TokenReview and authorizes us as the
+        # system:engine identity — no shared static secret. The Tekton task
+        # mounts the projected token at DAV_API_TOKEN_PATH; the kubelet refreshes
+        # the file in place, so we read it fresh at call time.
+        token_path = os.environ.get(
+            "DAV_API_TOKEN_PATH", "/var/run/secrets/dav/api-token")
+
+        def _svc_headers():
+            try:
+                with open(token_path) as tf:
+                    tok = tf.read().strip()
+                if tok:
+                    return {"Authorization": f"Bearer {tok}"}
+            except FileNotFoundError:
+                log.warning("managed-ucs: SA token %s not mounted — fetch will "
+                            "401 if the API requires auth", token_path)
+            except Exception as e:
+                log.warning("managed-ucs: could not read SA token %s (%s)",
+                            token_path, e)
+            return {}
+
         with httpx.Client(timeout=30.0) as cx:
             for uid in managed_uuids:
                 try:
-                    r = cx.get(f"{base}/api/use-cases/{uid}")
+                    r = cx.get(f"{base}/api/use-cases/{uid}", headers=_svc_headers())
                     if r.status_code != 200:
                         log.warning(
                             "managed-ucs: skip %s (HTTP %s: %s)",

@@ -128,7 +128,11 @@ _SNAPSHOT_QUERIES: dict[str, str] = {
     # vLLM aggregates (sum across replicas / GPUs)
     "vllm_running_requests":    "sum(vllm:num_requests_running)",
     "vllm_waiting_requests":    "sum(vllm:num_requests_waiting)",
-    "vllm_kv_cache_pct":        "avg(vllm:gpu_cache_usage_perc) * 100",
+    # KV-cache utilization. vLLM renamed this gauge `gpu_cache_usage_perc` →
+    # `kv_cache_usage_perc`; PromQL `or` prefers the new name and falls back to
+    # the old so we read whichever the running vLLM exposes (otherwise the panel
+    # shows a constant 0% — the metric simply wasn't there under the old name).
+    "vllm_kv_cache_pct":        "avg(vllm:kv_cache_usage_perc or vllm:gpu_cache_usage_perc) * 100",
     "vllm_gen_tps":             "sum(rate(vllm:generation_tokens_total[1m]))",
     "vllm_prompt_tps":          "sum(rate(vllm:prompt_tokens_total[1m]))",
     # Cumulative counters since vLLM process start. Useful as both an
@@ -316,8 +320,11 @@ _TIMESERIES_QUERIES: list[tuple[str, str]] = [
     ("gpu_power_watts",   "gpu_average_package_power"),
     ("gpu_gfx_activity",  "gpu_gfx_activity"),
     ("vllm_gen_tps",      "sum(rate(vllm:generation_tokens_total[1m]))"),
+    ("vllm_prompt_tps",   "sum(rate(vllm:prompt_tokens_total[1m]))"),
     ("vllm_running",      "sum(vllm:num_requests_running)"),
-    ("vllm_kv_pct",       "avg(vllm:gpu_cache_usage_perc) * 100"),
+    ("vllm_waiting",      "sum(vllm:num_requests_waiting)"),
+    ("vllm_kv_pct",       "avg(vllm:kv_cache_usage_perc or vllm:gpu_cache_usage_perc) * 100"),
+    ("vllm_ttft_p95",     "histogram_quantile(0.95, sum by(le)(rate(vllm:time_to_first_token_seconds_bucket[5m])))"),
 ]
 
 

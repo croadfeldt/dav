@@ -57,6 +57,54 @@ def _api() -> client.CustomObjectsApi:
     return _custom_api
 
 
+_authn_api: Optional[client.AuthenticationV1Api] = None
+
+
+def _authn() -> client.AuthenticationV1Api:
+    global _authn_api
+    if _authn_api is None:
+        _load_kube_config()
+        _authn_api = client.AuthenticationV1Api()
+    return _authn_api
+
+
+def review_service_token(token: str, audience: str, trusted_sas: set) -> bool:
+    """Validate a Kubernetes ServiceAccount projected token via the TokenReview
+    API — the cloud-native way to authenticate an in-cluster caller (the engine
+    fetching managed UCs) with NO shared static secret.
+
+    Returns True iff the token cryptographically authenticates, is scoped to
+    `audience` (projected tokens are audience-bound, so a token minted for some
+    other service can't be replayed here), AND its ServiceAccount username is in
+    `trusted_sas`. Requires the API's SA to hold `system:auth-delegator`.
+    """
+    if not token:
+        return False
+    try:
+        body = client.V1TokenReview(
+            spec=client.V1TokenReviewSpec(token=token, audiences=[audience])
+        )
+        resp = _authn().create_token_review(body)
+    except ApiException as e:
+        log.warning("TokenReview API error: %s", getattr(e, "reason", e))
+        return False
+    except Exception as e:
+        log.warning("TokenReview error: %s", e)
+        return False
+    st = getattr(resp, "status", None)
+    if not st or not getattr(st, "authenticated", False):
+        return False
+    auds = set(getattr(st, "audiences", None) or [])
+    if audience not in auds:
+        log.warning("TokenReview: audience %r not granted (got %s)", audience, auds)
+        return False
+    user = (getattr(st.user, "username", "") if getattr(st, "user", None) else "") or ""
+    if user not in trusted_sas:
+        log.warning("TokenReview: authenticated but untrusted SA %r", user)
+        return False
+    return True
+
+
 def is_available() -> bool:
     """Quick check if the feature is enabled and reachable."""
     if not ENABLED:
@@ -293,6 +341,29 @@ def delete_run(name: str) -> bool:
         if e.status == 404:
             return False
         log.error("Failed to delete PipelineRun %s: %s", name, e)
+        raise
+
+
+def cancel_run(name: str) -> bool:
+    """Gracefully stop an in-flight PipelineRun by setting spec.status=Cancelled.
+
+    Tekton stops the running TaskRuns + their pods and still runs the pipeline's
+    `finally` tasks (so the per-run workspace source dir is GC'd). The object is
+    kept (shows as Cancelled) — use delete_run to remove it entirely. Returns
+    True if patched, False if not found / already gone."""
+    if not is_available():
+        return False
+    try:
+        _api().patch_namespaced_custom_object(
+            group=_TEKTON_GROUP, version=_TEKTON_VERSION, namespace=NAMESPACE,
+            plural=_PIPELINERUN_PLURAL, name=name,
+            body={"spec": {"status": "Cancelled"}},
+        )
+        return True
+    except ApiException as e:
+        if e.status == 404:
+            return False
+        log.error("Failed to cancel PipelineRun %s: %s", name, e)
         raise
 
 
