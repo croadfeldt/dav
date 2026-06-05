@@ -4507,13 +4507,38 @@ def _is_all_set(set_id) -> bool:
         return False
 
 
-async def _all_set_dict(conn, pid) -> dict:
-    cnt = int(await conn.fetchval(
-        "SELECT count(*) FROM managed_use_cases WHERE project_id=$1", pid) or 0)
+async def _all_set_members(conn, pid) -> list:
+    """Every UC the project has, as set-member dicts: managed (DB) + corpus
+    (parsed from the corpus files). Corpus UCs already present as a managed UC
+    (pushed to corpus) are de-duped to the managed row."""
+    members, seen = [], set()
+    for r in await conn.fetch(
+            "SELECT uuid FROM managed_use_cases WHERE project_id=$1 ORDER BY title", pid):
+        members.append({"uc_uuid": r["uuid"], "uc_source": "managed", "uc_handle": None,
+                        "uc_path": None, "added_by": "system", "added_at": None})
+        seen.add(r["uuid"])
+    for r in await conn.fetch(
+            "SELECT path, content FROM files WHERE path LIKE '%.yaml' OR path LIKE '%.yml'"):
+        try:
+            data = _yaml.safe_load(r["content"])
+            if not isinstance(data, dict) or "uuid" not in data:
+                continue
+            u = data.get("uuid")
+            if u in seen:
+                continue
+            seen.add(u)
+            members.append({"uc_uuid": u, "uc_source": "corpus", "uc_handle": data.get("handle"),
+                            "uc_path": r["path"], "added_by": "system", "added_at": None})
+        except Exception:
+            continue
+    return members
+
+
+def _all_set_dict(member_count: int) -> dict:
     return {
         "id": ALL_SET_ID, "name": ALL_SET_NAME,
-        "description": "Every use case in this project — auto-maintained, read-only.",
-        "is_default": False, "is_system": True, "member_count": cnt,
+        "description": "Every use case in this project (managed + corpus) — auto-maintained, read-only.",
+        "is_default": False, "is_system": True, "member_count": member_count,
         "created_by": "system", "created_at": None, "updated_at": None,
     }
 
@@ -4549,7 +4574,7 @@ async def list_sets(request: Request):
                GROUP BY s.id ORDER BY s.name""",
             pid,
         )
-        all_set = await _all_set_dict(conn, pid)
+        all_set = _all_set_dict(len(await _all_set_members(conn, pid)))
     # The synthetic "All Use Cases" set is always first.
     return {"sets": [all_set] + [_set_row(r, r["member_count"]) for r in rows]}
 
@@ -4579,11 +4604,8 @@ async def get_set(set_id: int, request: Request):
         if _is_all_set(set_id):
             pid = await _active_project_id(request, conn)
             await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
-            ucs = await conn.fetch(
-                "SELECT uuid, title FROM managed_use_cases WHERE project_id=$1 ORDER BY title", pid)
-            members = [{"uc_uuid": u["uuid"], "uc_source": "managed", "uc_handle": None,
-                        "uc_path": None, "added_by": "system", "added_at": None} for u in ucs]
-            return {**(await _all_set_dict(conn, pid)), "members": members}
+            members = await _all_set_members(conn, pid)
+            return {**_all_set_dict(len(members)), "members": members}
         await _gate_resource(conn, request, "use_case_sets", "id", set_id,
                              rbac.P_PROJECT_READ, f"set {set_id} not found")
         row = await conn.fetchrow(
@@ -4723,13 +4745,24 @@ async def remove_set_member(set_id: int, uc_uuid: str, request: Request):
 async def set_corpus_subpath(set_id: int, request: Request):
     """Return the common corpus path prefix for corpus UCs in this set.
     Used by the UI to pre-fill corpus_subpath when triggering a set run."""
-    # The All set is all managed UCs — no corpus members, no subpath to prefill.
+    # The All set spans managed + corpus — compute both counts + the corpus subpath.
     if _is_all_set(set_id):
         async with pool.acquire() as conn:
             pid = await _active_project_id(request, conn)
-            mc = int(await conn.fetchval(
-                "SELECT count(*) FROM managed_use_cases WHERE project_id=$1", pid) or 0)
-        return {"subpath": None, "corpus_count": 0, "managed_count": mc}
+            members = await _all_set_members(conn, pid)
+        managed_count = sum(1 for m in members if m["uc_source"] == "managed")
+        corpus_paths = [m["uc_path"] for m in members if m["uc_source"] == "corpus" and m.get("uc_path")]
+        subpath = None
+        if corpus_paths:
+            from os.path import commonpath
+            from pathlib import Path as _Path
+            try:
+                cp = _Path(commonpath(corpus_paths))
+                subpath = str(cp) if cp.is_dir() else str(cp.parent)
+            except ValueError:
+                subpath = ""
+        return {"subpath": subpath or None, "corpus_count": len(corpus_paths),
+                "managed_count": managed_count}
     async with pool.acquire() as conn:
         exists = await conn.fetchval("SELECT 1 FROM use_case_sets WHERE id=$1", set_id)
         if not exists:
