@@ -319,6 +319,10 @@ def _matrix_to_series(res: dict) -> list[list[list]]:
 _TIMESERIES_QUERIES: list[tuple[str, str]] = [
     ("gpu_power_watts",   "gpu_average_package_power"),
     ("gpu_gfx_activity",  "gpu_gfx_activity"),
+    # Per-GPU VRAM % and edge temperature, for the per-stat sparklines in the
+    # GPU tiles (labels align by gpu_id so the division is per-GPU).
+    ("gpu_vram_pct",      "100 * gpu_used_vram / gpu_total_vram"),
+    ("gpu_temp",          "gpu_edge_temperature"),
     ("vllm_gen_tps",      "sum(rate(vllm:generation_tokens_total[1m]))"),
     ("vllm_prompt_tps",   "sum(rate(vllm:prompt_tokens_total[1m]))"),
     ("vllm_running",      "sum(vllm:num_requests_running)"),

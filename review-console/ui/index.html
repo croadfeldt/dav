@@ -418,6 +418,8 @@
   .spk-kv    { stroke:var(--blue); }
   .spk-ptps  { stroke:var(--green); }
   .spk-ttft  { stroke:var(--text-faint); }
+  .spk-vram  { stroke:var(--purple); }
+  .spk-temp  { stroke:var(--red); }
   .sparkline-wrap { margin-top:4px; opacity:0.8; }
   .gpu-tile-sparklines { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-top:6px; }
   .gpu-spk-block { display:flex; flex-direction:column; }
@@ -4561,19 +4563,24 @@ function _renderSparklines() {
   const sp = _rdSparklines;
   const snapV = (_rdLastSnap && _rdLastSnap.vllm) || {};
   const snapG = (_rdLastSnap && _rdLastSnap.gpus) || [];
-  // GPU: gfx sparkline under GFX/VRAM, power sparkline under Power/Temp.
-  const powerSeries = sp.gpu_power_watts || [];
-  const gfxSeries   = sp.gpu_gfx_activity || [];
+  // GPU: one sparkline per stat (GFX, VRAM, Power, Temp) under its value.
+  // [data-spk, timeseriesKey, liveValue, strokeClass, domain]. gpu_* timeseries
+  // return one series PER GPU (index by tile); % metrics get a fixed [0,100].
   document.querySelectorAll('#rdGpus .gpu-tile').forEach((tile, idx) => {
     const g = snapG[idx] || {};
-    const gfxVals = _liveTip(gfxSeries[idx], g.gpu_gfx_activity);
-    const pwrVals = _liveTip(powerSeries[idx], g.gpu_power_watts);
-    const gfxSlot = tile.querySelector('.gpu-spk-slot[data-spk="gfx"]');
-    const pwrSlot = tile.querySelector('.gpu-spk-slot[data-spk="power"]');
-    if (gfxSlot) gfxSlot.innerHTML = gfxVals.length >= 2
-      ? `<div class="gpu-spk-label">gfx activity</div><div class="sparkline-wrap">${_sparklineSVG(gfxVals, 'spk-gfx', 110, 22, [0,100])}</div>` : '';
-    if (pwrSlot) pwrSlot.innerHTML = pwrVals.length >= 2
-      ? `<div class="gpu-spk-label">power</div><div class="sparkline-wrap">${_sparklineSVG(pwrVals, 'spk-power')}</div>` : '';
+    const gpuSpk = [
+      ['gfx',   'gpu_gfx_activity', g.gpu_gfx_activity,                          'spk-gfx',   [0,100]],
+      ['vram',  'gpu_vram_pct',     g.used_vram_pct,                             'spk-vram',  [0,100]],
+      ['power', 'gpu_power_watts',  g.gpu_power_watts,                           'spk-power', null],
+      ['temp',  'gpu_temp',         (g.gpu_edge_temp_c ?? g.gpu_junction_temp_c),'spk-temp',  null],
+    ];
+    for (const [spk, tsKey, liveVal, cls, domain] of gpuSpk) {
+      const slot = tile.querySelector(`.gpu-spk-slot[data-spk="${spk}"]`);
+      if (!slot) continue;
+      const vals = _liveTip((sp[tsKey] || [])[idx], liveVal);
+      slot.innerHTML = vals.length >= 2
+        ? `<div class="sparkline-wrap">${_sparklineSVG(vals, cls, 110, 18, domain)}</div>` : '';
+    }
   });
   // vLLM: one sparkline per cell — [cellId, timeseriesKey, liveKey, cls, domain].
   // Percentage metrics get a fixed [0,100] domain so a pinned value reads true.
@@ -4877,38 +4884,34 @@ function renderRunDrawerMetrics(snap) {
       const idBase = `gpu${idx}`;
       const tile = document.createElement('div');
       tile.className = 'gpu-tile';
+      // 2×2 grid: GFX | VRAM on top, Power | Temp below. Each cell = value then
+      // its own sparkline graph, sharing half the row.
       tile.innerHTML = `
         <div class="gpu-tile-header">
           <span class="gpu-tile-id">GPU ${esc(g.gpu_id ?? '?')}${g.model ? ' · '+esc(g.model) : ''}</span>
           <span class="gpu-tile-node">${esc(g.node || '')}</span>
         </div>
-        <div class="gpu-tile-half">
-          <div class="gpu-tile-stats2">
-            <div class="gpu-stat">
-              <div class="gpu-stat-label">GFX</div>
-              <div class="gpu-stat-value" id="${idBase}-gfx">${_fmtN(gfx, 0)}<span class="vllm-cell-unit">%</span></div>
-              <div class="gpu-bar"><div class="gpu-bar-fill ${gfxCls}" style="width:${Math.max(0,Math.min(100, gfx||0))}%"></div></div>
-            </div>
-            <div class="gpu-stat">
-              <div class="gpu-stat-label">VRAM</div>
-              <div class="gpu-stat-value" id="${idBase}-vram">${_fmtN(vramPct, 0)}<span class="vllm-cell-unit">%</span></div>
-              <div class="gpu-bar"><div class="gpu-bar-fill ${vCls}" style="width:${Math.max(0,Math.min(100, vramPct||0))}%"></div></div>
-            </div>
+        <div class="gpu-tile-stats2">
+          <div class="gpu-stat">
+            <div class="gpu-stat-label">GFX</div>
+            <div class="gpu-stat-value" id="${idBase}-gfx">${_fmtN(gfx, 0)}<span class="vllm-cell-unit">%</span></div>
+            <div class="gpu-spk-slot" data-spk="gfx"></div>
           </div>
-          <div class="gpu-spk-slot" data-spk="gfx"></div>
-        </div>
-        <div class="gpu-tile-half">
-          <div class="gpu-tile-stats2">
-            <div class="gpu-stat">
-              <div class="gpu-stat-label">Power</div>
-              <div class="gpu-stat-value" id="${idBase}-pwr">${_fmtN(power, 0)}<span class="vllm-cell-unit">W</span></div>
-            </div>
-            <div class="gpu-stat">
-              <div class="gpu-stat-label">Temp</div>
-              <div class="gpu-stat-value ${tCls}" id="${idBase}-tmp">${_fmtN(temp, 0)}<span class="vllm-cell-unit">°C</span></div>
-            </div>
+          <div class="gpu-stat">
+            <div class="gpu-stat-label">VRAM</div>
+            <div class="gpu-stat-value" id="${idBase}-vram">${_fmtN(vramPct, 0)}<span class="vllm-cell-unit">%</span></div>
+            <div class="gpu-spk-slot" data-spk="vram"></div>
           </div>
-          <div class="gpu-spk-slot" data-spk="power"></div>
+          <div class="gpu-stat">
+            <div class="gpu-stat-label">Power</div>
+            <div class="gpu-stat-value" id="${idBase}-pwr">${_fmtN(power, 0)}<span class="vllm-cell-unit">W</span></div>
+            <div class="gpu-spk-slot" data-spk="power"></div>
+          </div>
+          <div class="gpu-stat">
+            <div class="gpu-stat-label">Temp</div>
+            <div class="gpu-stat-value ${tCls}" id="${idBase}-tmp">${_fmtN(temp, 0)}<span class="vllm-cell-unit">°C</span></div>
+            <div class="gpu-spk-slot" data-spk="temp"></div>
+          </div>
         </div>`;
       gpusEl.appendChild(tile);
       // Flash any value that changed from the previous poll
