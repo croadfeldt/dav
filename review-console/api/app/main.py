@@ -13,8 +13,10 @@ import json
 import logging
 import os
 import re
+import secrets
 import tarfile
 import time
+from datetime import datetime, timedelta, timezone
 import unicodedata
 import zipfile
 from contextlib import asynccontextmanager
@@ -26,7 +28,7 @@ import httpx
 import yaml as _yaml
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .corpus_loader import walk_corpus, parse_patterns
@@ -42,6 +44,7 @@ from .uc_list import collapse_duplicates as _collapse_uc_duplicates
 from . import validations
 from . import sources
 from . import metrics
+from . import rbac
 from . import results as _results
 from . import uc_assist
 from . import corpus_push
@@ -52,6 +55,9 @@ from . import projector as _projector
 from . import pr_comments as _pr_comments
 from . import credentials as _credentials
 from . import failure_taxonomy as _ft
+from . import ldap_auth
+from . import local_auth
+from . import crypto
 from . import diagnose as _diagnose
 from . import experiment_eval as _expeval
 
@@ -282,16 +288,44 @@ async def lifespan(app: FastAPI):
         await _seed_managed_repos(conn)
         await _migrate_code_repo_configs(conn)
         await _backfill_uc_projections(conn)
+    await _load_ldap_cfg()
+    await _load_smtp_cfg()
+    await _seed_default_admin()
+    # Enforce the break-glass invariant: the config default admin is enabled iff
+    # no other enabled platform admin exists (reconciled here + after role changes).
+    if pool is not None:
+        try:
+            async with pool.acquire() as conn:
+                await _reconcile_admin(conn)
+        except Exception:
+            log.exception("default-admin reconcile failed on boot")
+    # ALWAYS load the internal approved set on boot. _seed_default_admin only
+    # reloads it on the boot that first inserts; on later boots it early-returns,
+    # and with no LDAP there's no sync — leaving _approved_lower empty and
+    # locking out every internal user (incl. the break-glass admin) once
+    # DAV_REQUIRE_AUTH disables the fail-open.
+    await _reload_approved()
+    if _ldap_is_configured():
+        log.info("LDAP configured (enforce=%s) — running initial user sync...", _ldap_enforcing())
+        await _sync_ldap_users()
+    else:
+        log.info("Internal-users mode (no LDAP): %d approved identit%s loaded.",
+                 len(_approved_lower), "y" if len(_approved_lower) == 1 else "ies")
     log.info("Ready.")
     import asyncio
     finalizer_task = asyncio.create_task(_finalizer_loop())
     pr_comments_task = asyncio.create_task(_pr_comments.poller_loop(pool))
     ingest_task = asyncio.create_task(_analysis_ingest_loop())
+    ldap_task = asyncio.create_task(_ldap_sync_loop()) if _ldap_is_configured() else None
     yield
     finalizer_task.cancel()
     pr_comments_task.cancel()
     ingest_task.cancel()
-    for t in (finalizer_task, pr_comments_task, ingest_task):
+    if ldap_task:
+        ldap_task.cancel()
+    for t in (finalizer_task, pr_comments_task, ingest_task, ldap_task):
+        if t is None:
+            continue
         try:
             await t
         except Exception:
@@ -562,7 +596,7 @@ async def _migrate_code_repo_configs(conn: asyncpg.Connection) -> None:
     )
 
 
-app = FastAPI(title="DAV Console API", version="0.9.5", lifespan=lifespan)
+app = FastAPI(title="DAV Console API", version="0.10.0", lifespan=lifespan)
 
 _cors = os.environ.get("CORS_ORIGINS", "*")
 app.add_middleware(
@@ -573,8 +607,54 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Approved-user gate. Rejects only when LDAP is configured AND enforcement is on
+# AND a sync has succeeded AND the caller isn't approved — so it is a no-op until
+# you deliberately enable it (DAV_LDAP_ENFORCE=true), preventing accidental
+# lockout. Health/readiness probes and OPTIONS preflight always pass.
+_GATE_EXEMPT_PREFIXES = ("/readyz", "/healthz", "/livez", "/metrics", "/docs", "/openapi",
+                         "/api/auth/", "/api/invites/", "/api/me")
+
+
+@app.middleware("http")
+async def _approval_gate(request: Request, call_next):
+    if (request.method == "OPTIONS"
+            or not ((_ldap_is_configured() and _ldap_enforcing()) or _REQUIRE_AUTH)
+            or request.url.path.startswith(_GATE_EXEMPT_PREFIXES)):
+        return await call_next(request)
+    try:
+        user = get_user(request)
+    except HTTPException:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail": "authentication required"}, status_code=401)
+    if not _is_approved(user):
+        from fastapi.responses import JSONResponse
+        # An internal (session-cookie) identity that isn't approved means the
+        # account was DELETED or DISABLED — reject immediately and NEVER re-create
+        # it. This is what cuts a deleted/disabled user's existing sessions off on
+        # their very next request (the gate re-validates the account every time).
+        if local_auth.read_session(request.cookies.get(local_auth.SESSION_COOKIE, "")):
+            return JSONResponse(
+                {"detail": "Your account no longer exists or has been disabled."},
+                status_code=401,
+            )
+        # Source-agnostic JIT provisioning is ONLY for proxy-authenticated
+        # identities (OCP/LDAP first-login) — map them in as an enabled, role-less
+        # account for an admin to assign roles. A disabled one stays out.
+        enabled = await _ensure_account(user)
+        if not enabled:
+            return JSONResponse(
+                {"detail": "Your account is disabled. Ask a platform admin to enable it."},
+                status_code=403,
+            )
+    return await call_next(request)
+
 
 def get_user(request: Request) -> str:
+    # App-native session (internal users) first, then the oauth-proxy headers
+    # (OCP/FreeIPA users), then anon. Identity is the email/username string.
+    sess = local_auth.read_session(request.cookies.get(local_auth.SESSION_COOKIE, ""))
+    if sess:
+        return sess
     user = (
         request.headers.get("X-Forwarded-User")
         or request.headers.get("X-Forwarded-Email")
@@ -586,6 +666,335 @@ def get_user(request: Request) -> str:
     if ALLOW_ANON_WRITES:
         return ANON_REVIEWER
     raise HTTPException(status_code=401, detail="reviewer identity not provided")
+
+
+# ------------------------- Multi-user / LDAP approval -------------------------
+# Approved identities (usernames + emails, lowercased) cached in-memory for a
+# fast per-request gate. Synced from the LDAP approval group into the `users`
+# table + this set. Survives LDAP downtime (keeps last-known-good).
+_approved_lower: set = set()
+_ldap_state = {"synced_ok": False, "last_sync": None, "last_error": None, "count": 0}
+_ROLE_RANK = {"viewer": 0, "editor": 1, "admin": 2, "platform-admin": 3}
+# `uc-admin` is an orthogonal capability (the right to share/fork use cases
+# across projects and manage UC source bindings), NOT a rung on the rank ladder
+# above — sharing UCs isn't "more powerful than admin", it's a different axis.
+# It can be granted globally (users.role) or per-project (project_members.role)
+# and is checked via _can_manage_uc_sources(), never via _ROLE_RANK comparisons.
+_ASSIGNABLE_GLOBAL_ROLES = set(_ROLE_RANK) | {"uc-admin"}
+_ASSIGNABLE_PROJECT_ROLES = {"viewer", "editor", "admin", "uc-admin"}
+
+# Runtime config (in-app settings → env fallback), refreshed at boot + on change.
+_ldap_cfg: dict = ldap_auth.env_config()
+_smtp_cfg: dict = {}
+
+
+async def _load_setting(key: str) -> dict:
+    if pool is None:
+        return {}
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchval("SELECT value FROM app_settings WHERE key=$1", key)
+        if row is None:
+            return {}
+        return json.loads(row) if isinstance(row, str) else dict(row)
+    except Exception as e:
+        log.warning("load setting %s failed: %s", key, e)
+        return {}
+
+
+async def _load_ldap_cfg() -> None:
+    """Merge the in-app LDAP setting over the env defaults (DB wins; bind
+    password is decrypted)."""
+    global _ldap_cfg
+    cfg = ldap_auth.env_config()
+    data = await _load_setting("ldap")
+    if data:
+        for k in ("url", "bind_dn", "user_base", "group_dn", "user_attr",
+                  "mail_attr", "name_attr", "member_attr"):
+            if data.get(k):
+                cfg[k] = data[k]
+        if data.get("start_tls") is not None:
+            cfg["start_tls"] = bool(data["start_tls"])
+        if data.get("enforce") is not None:
+            cfg["enforce"] = bool(data["enforce"])
+        if data.get("bind_password_enc"):
+            try:
+                cfg["bind_password"] = crypto.decrypt(data["bind_password_enc"]) or cfg.get("bind_password", "")
+            except Exception:
+                pass
+    _ldap_cfg = cfg
+
+
+async def _load_smtp_cfg() -> None:
+    global _smtp_cfg
+    cfg = {"host": DAV_SMTP_HOST, "port": DAV_SMTP_PORT, "user": DAV_SMTP_USER,
+           "password": DAV_SMTP_PASSWORD, "from": DAV_SMTP_FROM, "tls": DAV_SMTP_TLS,
+           "base_url": DAV_BASE_URL}
+    data = await _load_setting("smtp")
+    if data:
+        for k in ("host", "user", "from", "base_url"):
+            if data.get(k):
+                cfg[k] = data[k]
+        if data.get("port"):
+            cfg["port"] = int(data["port"])
+        if data.get("tls") is not None:
+            cfg["tls"] = bool(data["tls"])
+        if data.get("password_enc"):
+            try:
+                cfg["password"] = crypto.decrypt(data["password_enc"]) or cfg["password"]
+            except Exception:
+                pass
+    _smtp_cfg = cfg
+
+
+def _ldap_is_configured() -> bool:
+    return ldap_auth.is_configured(_ldap_cfg)
+
+
+def _ldap_enforcing() -> bool:
+    return bool(_ldap_cfg.get("enforce"))
+
+
+async def _seed_default_admin() -> None:
+    """Ensure the dedicated break-glass platform-admin account ALWAYS exists, so
+    the deployment can never orphan itself. Created with a default password (must
+    change on first login) and the Platform Admin role. When other platform
+    admins already exist it's created DEACTIVATED (present in the accounts list
+    but can't log in); reconcile_default_admin re-activates it only if every
+    platform admin vanishes. Skipped if app sessions aren't configured."""
+    if pool is None or not local_auth.sessions_enabled():
+        return
+    email = os.environ.get("DAV_DEFAULT_ADMIN_EMAIL", "admin@dav.local").strip().lower()
+    pw = os.environ.get("DAV_DEFAULT_ADMIN_PASSWORD", "changeme")
+    async with pool.acquire() as conn:
+        if await conn.fetchval("SELECT 1 FROM users WHERE lower(reviewer)=$1", email):
+            return  # already present — its enabled state is governed by reconcile
+        # Created enabled ONLY when it's the sole admin (true bootstrap); when a
+        # real platform admin already exists, seed it deactivated.
+        enabled = (await rbac.enabled_platform_admin_count(conn)) == 0
+        await conn.execute(
+            """INSERT INTO users (reviewer, email, display_name, role, approved, source,
+                                  password_hash, must_change_password, enabled)
+               VALUES ($1,$1,'Default Admin','platform-admin',true,'internal',$2,true,$3)
+               ON CONFLICT (reviewer) DO NOTHING""",
+            email, local_auth.hash_password(pw), enabled)
+        rid = await conn.fetchval("SELECT id FROM rbac_roles WHERE key='platform-admin'")
+        if rid:
+            await rbac.assign_role(conn, email, rid, None, "seed")
+    await _reload_approved()
+    log.info("Ensured break-glass default admin %r (enabled=%s).", email, enabled)
+
+
+async def _sync_ldap_users() -> None:
+    """Pull the LDAP approval group into the `users` table + in-memory set.
+    Best-effort: on LDAP error, keep the previous approvals (no lockout)."""
+    if not _ldap_is_configured() or pool is None:
+        return
+    try:
+        approved = await asyncio.to_thread(ldap_auth.fetch_approved_users, _ldap_cfg)
+    except Exception as e:
+        _ldap_state["last_error"] = str(e)
+        log.warning("LDAP sync failed (keeping last-known approvals): %s", e)
+        return
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("UPDATE users SET approved=false WHERE source='ldap'")
+            for u in approved:
+                reviewer = (u.get("username") or u.get("email") or "").strip().lower()
+                if not reviewer:
+                    continue
+                await conn.execute(
+                    """INSERT INTO users (reviewer, email, display_name, approved, source)
+                       VALUES ($1,$2,$3,true,'ldap')
+                       ON CONFLICT (reviewer) DO UPDATE
+                         SET email=EXCLUDED.email, display_name=EXCLUDED.display_name,
+                             approved=true,
+                             source=CASE WHEN users.source='bootstrap' THEN 'bootstrap' ELSE 'ldap' END""",
+                    reviewer, u.get("email", ""), u.get("display_name", ""),
+                )
+            for adm in ldap_auth.BOOTSTRAP_ADMINS:
+                await conn.execute(
+                    """INSERT INTO users (reviewer, email, role, approved, source)
+                       VALUES ($1,$1,'platform-admin',true,'bootstrap')
+                       ON CONFLICT (reviewer) DO UPDATE
+                         SET role='platform-admin', approved=true, source='bootstrap'""",
+                    adm,
+                )
+        rows = await conn.fetch("SELECT lower(reviewer) r, lower(email) e FROM users WHERE approved")
+    global _approved_lower
+    _approved_lower = {x["r"] for x in rows} | {x["e"] for x in rows if x["e"]}
+    _ldap_state.update(synced_ok=True, last_error=None, count=len(approved))
+    log.info("LDAP sync: %d group members, %d approved identities", len(approved), len(_approved_lower))
+
+
+async def _ldap_sync_loop() -> None:
+    """Refresh approvals from LDAP every 10 minutes."""
+    while True:
+        try:
+            await _sync_ldap_users()
+        except Exception:
+            log.exception("ldap sync loop error")
+        await asyncio.sleep(600)
+
+
+_REQUIRE_AUTH = os.environ.get("DAV_REQUIRE_AUTH", "false").lower() == "true"
+# Break-glass: the configured default platform-admin is ALWAYS approved, so a
+# stale/empty approved cache can never lock the operator out of their own
+# deployment (the whole point of a seeded admin).
+_DEFAULT_ADMIN_EMAIL = os.environ.get("DAV_DEFAULT_ADMIN_EMAIL", "admin@dav.local").strip().lower()
+
+
+def _is_approved(user: str) -> bool:
+    """True if `user` is an approved identity. Bootstrap admins are always
+    approved (break-glass — survives an LDAP/identity mismatch). Before LDAP has
+    ever synced AND when not requiring auth, fail OPEN to avoid lockout; once
+    DAV_REQUIRE_AUTH is on (relaxed-proxy mode) approval is strict so a skip-auth
+    `/api/*` isn't open to unapproved callers."""
+    u = (user or "").strip().lower()
+    if u in ldap_auth.BOOTSTRAP_ADMINS:
+        return True
+    if not _ldap_state["synced_ok"] and not _REQUIRE_AUTH:
+        return True
+    # 'approved' == an enabled account. The default admin's enablement is governed
+    # by reconcile_default_admin (enabled iff it's the sole platform admin), so we
+    # do NOT unconditionally allow it here — that would defeat the disable rule.
+    return u in _approved_lower
+
+
+async def _privs(user: str, project_id: Optional[int] = None) -> set:
+    """Privilege keys `user` holds in the given project context (RBAC resolver)."""
+    if pool is None or not user:
+        return set()
+    async with pool.acquire() as conn:
+        return await rbac.privileges_for(conn, user, project_id)
+
+
+async def _has_priv(user: str, privilege: str, project_id: Optional[int] = None) -> bool:
+    return privilege in await _privs(user, project_id)
+
+
+async def _user_role(user: str) -> str:
+    """Legacy representative role string for back-compat (/api/me `role`)."""
+    if pool is None:
+        return "platform-admin" if (user or "").lower() in ldap_auth.BOOTSTRAP_ADMINS else "viewer"
+    async with pool.acquire() as conn:
+        return await rbac.representative_role(conn, user)
+
+
+def _multiuser() -> bool:
+    """Multi-user (role-gated) mode: LDAP configured, or auth is required (a
+    relaxed proxy with internal users). Otherwise it's a single operator and
+    role checks are a no-op."""
+    return _ldap_is_configured() or _REQUIRE_AUTH
+
+
+async def _is_project_admin(user: str) -> bool:
+    """Can administer access somewhere: platform.admin, or project.members on any
+    project (used to gate the Users & Access UI). Single-user mode is always true."""
+    if not _multiuser():
+        return True
+    if pool is None:
+        return False
+    async with pool.acquire() as conn:
+        if rbac.P_PLATFORM_ADMIN in await rbac.privileges_for(conn, user):
+            return True
+        return bool(await conn.fetchval(
+            """SELECT 1 FROM rbac_account_roles ar
+               JOIN rbac_role_privileges rp ON rp.role_id = ar.role_id
+               WHERE lower(ar.reviewer)=lower($1) AND rp.privilege_key=$2 LIMIT 1""",
+            user, rbac.P_PROJECT_MEMBERS))
+
+
+async def _can_manage_uc_sources(user: str, project_id: Optional[int] = None) -> bool:
+    """UC-store management folds into project.settings (Project Admin + Platform
+    Admin manage UC stores). Single-user mode is always true."""
+    if not _multiuser():
+        return True
+    if pool is None:
+        return False
+    async with pool.acquire() as conn:
+        if rbac.P_PLATFORM_ADMIN in await rbac.privileges_for(conn, user):
+            return True
+        if project_id is not None:
+            return rbac.P_PROJECT_SETTINGS in await rbac.privileges_for(conn, user, project_id)
+        return bool(await conn.fetchval(
+            """SELECT 1 FROM rbac_account_roles ar
+               JOIN rbac_role_privileges rp ON rp.role_id = ar.role_id
+               WHERE lower(ar.reviewer)=lower($1) AND rp.privilege_key=$2 LIMIT 1""",
+            user, rbac.P_PROJECT_SETTINGS))
+
+
+async def require_uc_admin(request: Request, project_id: Optional[int] = None) -> str:
+    user = get_user(request)
+    if not _multiuser():
+        return user
+    if not await _can_manage_uc_sources(user, project_id):
+        raise HTTPException(403, "requires use-case admin")
+    return user
+
+
+async def require_role(request: Request, minimum: str) -> str:
+    """Legacy guard mapped onto privileges: 'admin' and 'platform-admin' both
+    require platform.admin; lower minimums just require an enabled account."""
+    user = get_user(request)
+    if not _multiuser():
+        return user
+    if minimum in ("admin", "platform-admin"):
+        if not await _has_priv(user, rbac.P_PLATFORM_ADMIN):
+            raise HTTPException(403, f"requires {minimum} role")
+    return user
+
+
+async def require_priv(request: Request, privilege: str, project_id: Optional[int] = None) -> str:
+    """Auth dependency: require a specific privilege (optionally project-scoped).
+    platform.admin is a superuser and passes any check."""
+    user = get_user(request)
+    if not _multiuser():
+        return user
+    privs = await _privs(user, project_id)
+    if privilege in privs or rbac.P_PLATFORM_ADMIN in privs:
+        return user
+    raise HTTPException(403, f"requires privilege {privilege}")
+
+
+async def _require_priv_conn(conn, request: Request, privilege: str,
+                             project_id: Optional[int] = None) -> str:
+    """Like require_priv but uses an already-held connection (avoids a nested
+    pool.acquire when the handler also needs _active_project_id). platform.admin
+    is a superuser."""
+    user = get_user(request)
+    if not _multiuser():
+        return user
+    privs = await rbac.privileges_for(conn, user, project_id)
+    if privilege in privs or rbac.P_PLATFORM_ADMIN in privs:
+        return user
+    raise HTTPException(403, f"requires privilege {privilege}")
+
+
+async def _gate_resource(conn, request: Request, table: str, id_col: str, id_val,
+                         privilege: str, not_found: str = "not found") -> int:
+    """Resolve a resource row's owning project_id, enforce `privilege` in that
+    project, and return the project_id. Raises 404 if the row is absent (also the
+    cross-project case — the active user can't even see it). `table`/`id_col` are
+    code-literal constants, never user input."""
+    owner = await conn.fetchval(f"SELECT project_id FROM {table} WHERE {id_col}=$1", id_val)
+    if owner is None:
+        raise HTTPException(404, not_found)
+    await _require_priv_conn(conn, request, privilege, owner)
+    return owner
+
+
+async def require_project_admin(request: Request, project_id: Optional[int]) -> str:
+    """Manage a project: platform.admin (can manage any project — to add self),
+    or project.members on that project."""
+    user = get_user(request)
+    if not _multiuser():
+        return user
+    if await _has_priv(user, rbac.P_PLATFORM_ADMIN):
+        return user
+    if project_id is not None and await _has_priv(user, rbac.P_PROJECT_MEMBERS, project_id):
+        return user
+    raise HTTPException(403, "requires project admin")
 
 
 # ------------------------- Models -------------------------
@@ -741,19 +1150,1108 @@ async def readyz():
 @app.get("/api/me")
 async def me(request: Request):
     try:
-        return {"reviewer": get_user(request), "authenticated": True}
+        user = get_user(request)
     except HTTPException:
         return {"reviewer": None, "authenticated": False}
+    # True single-user mode (no LDAP AND no auth enforcement): sole operator is
+    # platform admin. Otherwise authorization comes from RBAC.
+    single_user = not _multiuser()
+    must_change = False
+    privileges: list = ["platform.admin"] if single_user else []
+    roles_out: list = []
+    role = "platform-admin"
+    default_project_id = None
+    active_project_id = None
+    if not single_user and pool is not None:
+        try:
+            async with pool.acquire() as conn:
+                # Privileges are resolved for the ACTIVE project so the UI sees the
+                # caller's project-scoped privileges (models/runs/usecases/...) for
+                # whatever project the top-bar switcher currently points at.
+                active_project_id = await _active_project_id(request, conn)
+                privileges = sorted(await rbac.privileges_for(conn, user, active_project_id))
+                role = await rbac.representative_role(conn, user)
+                for r in await rbac.roles_for(conn, user):
+                    roles_out.append({"key": r["key"], "name": r["name"], "scope": r["scope"],
+                                      "project_id": r["project_id"], "project_name": r.get("project_name")})
+                must_change = bool(await conn.fetchval(
+                    "SELECT must_change_password FROM users WHERE lower(reviewer)=lower($1) OR lower(email)=lower($1)",
+                    user))
+                member_ids = list((await _user_project_roles(conn, user)).keys())
+                default_project_id = await _resolve_default_project(conn, user, member_ids)
+        except Exception:
+            log.exception("/api/me RBAC lookup failed")
+    is_platadmin = single_user or (rbac.P_PLATFORM_ADMIN in privileges)
+    proj_admin = await _is_project_admin(user)
+    return {
+        "reviewer": user,
+        "authenticated": True,
+        "role": role,
+        "privileges": privileges,
+        "roles": roles_out,
+        "is_admin": proj_admin,            # back-compat: gates the Users & Access UI
+        "is_project_admin": proj_admin,
+        "is_platform_admin": is_platadmin,
+        "can_manage_uc_sources": await _can_manage_uc_sources(user),
+        "approved": _is_approved(user),
+        "ldap_enabled": _ldap_is_configured(),
+        "must_change_password": must_change,
+        "sessions_enabled": local_auth.sessions_enabled(),
+        "default_project_id": default_project_id,
+        "active_project_id": active_project_id,
+    }
+
+
+class DefaultProjectIn(BaseModel):
+    project_id: Optional[int] = None
+
+
+@app.put("/api/me/default-project")
+async def set_my_default_project(payload: DefaultProjectIn, request: Request):
+    """Set the caller's default project (the one selected on login). Must be a
+    project they're a member of (platform admins may set any)."""
+    user = get_user(request)
+    pid = payload.project_id
+    async with pool.acquire() as conn:
+        if pid is not None and _multiuser():
+            if not await _is_project_member(conn, user, pid) and not await _has_priv(user, rbac.P_PLATFORM_ADMIN):
+                raise HTTPException(403, "you are not a member of that project")
+        await conn.execute(
+            "UPDATE users SET default_project_id=$2 WHERE lower(reviewer)=lower($1) OR lower(email)=lower($1)",
+            user, pid)
+    return {"ok": True, "default_project_id": pid}
+
+
+# ========================= RBAC: accounts / roles / matrix =====================
+# Accounts × roles × privileges. Source-agnostic accounts; roles bundle
+# privileges; assignments are platform (project-independent) or project-scoped.
+
+class AccountCreateIn(BaseModel):
+    email: str
+    display_name: Optional[str] = ""
+    password: Optional[str] = None
+    enabled: bool = True
+
+
+class AccountPatchIn(BaseModel):
+    enabled: Optional[bool] = None
+    display_name: Optional[str] = None
+    password: Optional[str] = None
+
+
+class RoleCreateIn(BaseModel):
+    key: str
+    name: str
+    description: Optional[str] = ""
+    scope: str = "project"
+    privileges: list[str] = Field(default_factory=list)
+
+
+class RolePatchIn(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    privileges: Optional[list[str]] = None
+
+
+class RoleAssignIn(BaseModel):
+    role_id: int
+    project_id: Optional[int] = None
+
+
+def _acct_roles_out(roles: list) -> list:
+    return [{"id": x["id"], "role_id": x["role_id"], "key": x["key"], "name": x["name"],
+             "scope": x["scope"], "project_id": x["project_id"],
+             "project_name": x.get("project_name")} for x in roles]
+
+
+@app.get("/api/accounts")
+async def list_accounts(request: Request):
+    """All accounts with their role assignments (platform admin)."""
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT reviewer, email, display_name, enabled, source, last_seen, "
+            "       (password_hash IS NOT NULL) AS has_password "
+            "FROM users ORDER BY enabled DESC, reviewer")
+        out = []
+        for r in rows:
+            roles = await rbac.roles_for(conn, r["reviewer"])
+            out.append({
+                "reviewer": r["reviewer"], "email": r["email"],
+                "display_name": r["display_name"], "enabled": r["enabled"],
+                "source": r["source"], "has_password": r["has_password"],
+                "last_seen": r["last_seen"].isoformat() if r["last_seen"] else None,
+                "is_default_admin": r["reviewer"].lower() == _DEFAULT_ADMIN_EMAIL,
+                "roles": _acct_roles_out(roles),
+            })
+    return {"accounts": out}
+
+
+def _public_base(request: Request) -> str:
+    """Public base URL for building links (e.g. invites). Precedence:
+      1. DAV_PUBLIC_BASE_URL — config-derived (hostname + custom port), authoritative.
+      2. SMTP base_url — operator-set in the UI.
+      3. the request's own Host (with custom port via nginx $http_host) — fallback."""
+    cfg = (os.environ.get("DAV_PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if cfg:
+        return cfg
+    base = (_smtp_cfg.get("base_url") or "").strip().rstrip("/")
+    if base:
+        return base
+    host = request.headers.get("host", "")
+    if host:
+        proto = request.headers.get("x-forwarded-proto", "https")
+        return f"{proto}://{host}"
+    return ""
+
+
+async def _check_repo_ref(repo_url: str, branch: str, pat: Optional[str] = None) -> Optional[str]:
+    """Best-effort reachability check (git ls-remote, no clone). Returns a human
+    warning string if the repo is unreachable or the branch doesn't exist, else
+    None. Uses the inline PAT when provided (for private repos)."""
+    if not repo_url or not branch:
+        return None
+
+    def _run():
+        import subprocess
+        u = repo_url
+        if pat and repo_url.startswith("https://"):
+            u = repo_url.replace("https://", f"https://x-access-token:{pat}@", 1)
+        try:
+            r = subprocess.run(
+                ["git", "ls-remote", "--heads", u, branch],
+                capture_output=True, text=True, timeout=20,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"})
+        except Exception as e:
+            return f"could not reach {repo_url}: {e}"
+        if r.returncode != 0:
+            tail = (r.stderr or "").strip().splitlines()
+            return f"repo not reachable: {tail[-1] if tail else 'unknown error'}"
+        if not r.stdout.strip():
+            return f"branch '{branch}' not found in {repo_url}"
+        return None
+
+    return await asyncio.to_thread(_run)
+
+
+async def _create_account_invite(conn, email: str, inviter: str, base: str = "") -> dict:
+    """Create an account-activation invitation (no project/roles — roles are
+    assigned separately in the RBAC UI) and return the accept link."""
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(days=7)
+    await conn.execute(
+        "INSERT INTO user_invitations (token, email, display_name, project_id, "
+        "  project_role, global_role, invited_by, expires_at) "
+        "VALUES ($1,$2,'',NULL,'viewer','viewer',$3,$4)",
+        token, email, inviter, expires)
+    base = (base or "").rstrip("/")
+    return {"token": token, "link": (f"{base}/?invite={token}" if base else f"/?invite={token}")}
+
+
+@app.post("/api/accounts")
+async def create_account(payload: AccountCreateIn, request: Request):
+    inviter = await require_role(request, "admin")
+    email = (payload.email or "").strip().lower()
+    if len(email) < 2:
+        raise HTTPException(400, "valid email/username required")
+    pw_hash = local_auth.hash_password(payload.password) if payload.password else None
+    invite = None
+    async with pool.acquire() as conn:
+        if await conn.fetchval("SELECT 1 FROM users WHERE lower(reviewer)=$1 OR lower(email)=$1", email):
+            raise HTTPException(409, "account already exists")
+        await conn.execute(
+            "INSERT INTO users (reviewer, email, display_name, role, approved, source, enabled, "
+            "                   password_hash, must_change_password) "
+            "VALUES ($1,$1,$2,'viewer',true,$3,$4,$5,$6)",
+            email, payload.display_name or "", "internal" if pw_hash else "manual",
+            payload.enabled, pw_hash, bool(pw_hash))
+        # No password → email an activation invite so they set their own.
+        if not pw_hash and "@" in email:
+            invite = await _create_account_invite(conn, email, inviter, _public_base(request))
+    await _reload_approved()
+    emailed = False
+    if invite:
+        try:
+            emailed = await asyncio.to_thread(
+                _send_email, email, "Activate your DAV account",
+                f"You've been added to DAV. Open this link to set your password and sign in:\n\n"
+                f"{invite['link']}\n\nThis link expires in 7 days.")
+        except Exception as e:
+            log.warning("account-invite email failed: %s", e)
+    return {"ok": True, "reviewer": email,
+            "invited": bool(invite), "emailed": emailed,
+            "link": invite["link"] if invite else None}
+
+
+@app.post("/api/accounts/{reviewer}/invite")
+async def invite_existing_account(reviewer: str, request: Request):
+    """(Re)send an activation invite to an existing account that has no password."""
+    inviter = await require_role(request, "admin")
+    r = reviewer.strip().lower()
+    if "@" not in r:
+        raise HTTPException(400, "account has no email address to invite")
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM users WHERE lower(reviewer)=$1", r):
+            raise HTTPException(404, "account not found")
+        invite = await _create_account_invite(conn, r, inviter, _public_base(request))
+    emailed = False
+    try:
+        emailed = await asyncio.to_thread(
+            _send_email, r, "Activate your DAV account",
+            f"Open this link to set your password and sign in to DAV:\n\n{invite['link']}\n\n"
+            f"This link expires in 7 days.")
+    except Exception as e:
+        log.warning("account-invite email failed: %s", e)
+    return {"ok": True, "link": invite["link"], "emailed": emailed}
+
+
+@app.patch("/api/accounts/{reviewer}")
+async def patch_account(reviewer: str, payload: AccountPatchIn, request: Request):
+    await require_role(request, "admin")
+    r = reviewer.strip().lower()
+    sets, args = [], []
+    if payload.enabled is not None:
+        args.append(payload.enabled); sets.append(f"enabled=${len(args)}")
+    if payload.display_name is not None:
+        args.append(payload.display_name); sets.append(f"display_name=${len(args)}")
+    if payload.password:
+        args.append(local_auth.hash_password(payload.password)); sets.append(f"password_hash=${len(args)}")
+        args.append(True); sets.append(f"must_change_password=${len(args)}")
+    if not sets:
+        return {"ok": True}
+    args.append(r)
+    async with pool.acquire() as conn:
+        res = await conn.execute(
+            f"UPDATE users SET {', '.join(sets)} WHERE lower(reviewer)=${len(args)}", *args)
+        if res.endswith(" 0"):
+            raise HTTPException(404, "account not found")
+        warn = await _reconcile_admin(conn)
+    await _reload_approved()
+    return {"ok": True, "warning": warn} if warn else {"ok": True}
+
+
+@app.delete("/api/accounts/{reviewer}")
+async def delete_account(reviewer: str, request: Request):
+    actor = await require_role(request, "admin")
+    r = reviewer.strip().lower()
+    # You can't delete the account you're signed in as.
+    if r == (actor or "").strip().lower():
+        raise HTTPException(400, "you cannot delete the account you are signed in as")
+    # The break-glass default is never truly deleted — it must remain so the
+    # reconcile can re-activate it if all platform admins vanish. "Delete"
+    # deactivates it instead (and immediately cuts off its sessions via the gate).
+    if r == _DEFAULT_ADMIN_EMAIL:
+        async with pool.acquire() as conn:
+            res = await conn.execute("UPDATE users SET enabled=false WHERE lower(reviewer)=$1", r)
+            if res.endswith(" 0"):
+                raise HTTPException(404, "account not found")
+            warn = await _reconcile_admin(conn)
+        await _reload_approved()
+        return {"ok": True, "deactivated": True,
+                "warning": warn or "The default admin is the break-glass account — deactivated, not deleted."}
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM rbac_account_roles WHERE lower(reviewer)=$1", r)
+        await conn.execute("DELETE FROM users WHERE lower(reviewer)=$1", r)
+        warn = await _reconcile_admin(conn)
+    await _reload_approved()
+    return {"ok": True, "warning": warn} if warn else {"ok": True}
+
+
+@app.get("/api/rbac/roles")
+async def list_rbac_roles(request: Request):
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        return {"roles": await rbac.list_roles(conn)}
+
+
+@app.get("/api/rbac/privileges")
+async def list_rbac_privileges(request: Request):
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        return {"privileges": await rbac.list_privileges(conn)}
+
+
+@app.post("/api/rbac/roles")
+async def create_rbac_role(payload: RoleCreateIn, request: Request):
+    await require_role(request, "admin")
+    key = (payload.key or "").strip().lower()
+    if not re.match(r"^[a-z0-9][a-z0-9-]{1,40}$", key):
+        raise HTTPException(400, "invalid role key (lowercase, hyphens)")
+    if payload.scope not in ("platform", "cross-project", "project"):
+        raise HTTPException(400, "scope must be 'platform', 'cross-project' or 'project'")
+    async with pool.acquire() as conn:
+        try:
+            rid = await conn.fetchval(
+                "INSERT INTO rbac_roles (key, name, description, scope, is_system) "
+                "VALUES ($1,$2,$3,$4,false) RETURNING id",
+                key, payload.name.strip() or key, payload.description or "", payload.scope)
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(409, "role key already exists")
+        await rbac.set_role_privileges(conn, rid, payload.privileges)
+    return {"ok": True, "id": rid}
+
+
+@app.put("/api/rbac/roles/{role_id}")
+async def update_rbac_role(role_id: int, payload: RolePatchIn, request: Request):
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        if not await conn.fetchrow("SELECT 1 FROM rbac_roles WHERE id=$1", role_id):
+            raise HTTPException(404, "role not found")
+        sets, args = [], []
+        if payload.name is not None:
+            args.append(payload.name); sets.append(f"name=${len(args)}")
+        if payload.description is not None:
+            args.append(payload.description); sets.append(f"description=${len(args)}")
+        if sets:
+            args.append(role_id)
+            await conn.execute(f"UPDATE rbac_roles SET {', '.join(sets)} WHERE id=${len(args)}", *args)
+        if payload.privileges is not None:
+            await rbac.set_role_privileges(conn, role_id, payload.privileges)
+    return {"ok": True}
+
+
+@app.delete("/api/rbac/roles/{role_id}", status_code=204)
+async def delete_rbac_role(role_id: int, request: Request):
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        role = await conn.fetchrow("SELECT is_system FROM rbac_roles WHERE id=$1", role_id)
+        if not role:
+            raise HTTPException(404, "role not found")
+        if role["is_system"]:
+            raise HTTPException(400, "cannot delete a built-in role")
+        await conn.execute("DELETE FROM rbac_roles WHERE id=$1", role_id)  # cascades
+        await _reconcile_admin(conn)
+    await _reload_approved()
+
+
+@app.post("/api/accounts/{reviewer}/roles")
+async def assign_account_role(reviewer: str, payload: RoleAssignIn, request: Request):
+    """Grant a role to an account. Platform roles → platform admin; project roles
+    → admin of that project (project_id required)."""
+    async with pool.acquire() as conn:
+        role = await conn.fetchrow("SELECT scope FROM rbac_roles WHERE id=$1", payload.role_id)
+    if not role:
+        raise HTTPException(404, "role not found")
+    if role["scope"] in ("platform", "cross-project"):
+        # Platform & cross-project roles bind globally (no project) and are
+        # granted by a platform admin.
+        granter = await require_role(request, "admin")
+        project_id = None
+    else:
+        if payload.project_id is None:
+            raise HTTPException(400, "project_id required for a project-scoped role")
+        granter = await require_project_admin(request, payload.project_id)
+        project_id = payload.project_id
+    r = reviewer.strip().lower()
+    async with pool.acquire() as conn:
+        # Escalation guard: you may only grant a role whose privileges you already
+        # hold in this scope — never a higher level of control than your own.
+        # Platform admins hold everything, so they bypass. Example: a project
+        # editor who also has project.members can grant editor/viewer, not admin.
+        granter_privs = await rbac.privileges_for(conn, granter, project_id)
+        if rbac.P_PLATFORM_ADMIN not in granter_privs:
+            role_privs = {x["privilege_key"] for x in await conn.fetch(
+                "SELECT privilege_key FROM rbac_role_privileges WHERE role_id=$1", payload.role_id)}
+            escalated = role_privs - granter_privs
+            if escalated:
+                raise HTTPException(
+                    403, "you can only grant a role whose privileges you already hold "
+                         f"(this role adds: {', '.join(sorted(escalated))})")
+        await conn.execute(
+            "INSERT INTO users (reviewer,email,role,approved,source,enabled) "
+            "VALUES ($1,$1,'viewer',true,'manual',true) ON CONFLICT (reviewer) DO NOTHING", r)
+        await rbac.assign_role(conn, r, payload.role_id, project_id, granter)
+        await _reconcile_admin(conn)
+    await _reload_approved()
+    return {"ok": True}
+
+
+@app.delete("/api/accounts/{reviewer}/roles", status_code=204)
+async def revoke_account_role(reviewer: str, request: Request,
+                              role_id: int = Query(...),
+                              project_id: Optional[int] = Query(None)):
+    async with pool.acquire() as conn:
+        role = await conn.fetchrow("SELECT scope FROM rbac_roles WHERE id=$1", role_id)
+    if not role:
+        raise HTTPException(404, "role not found")
+    if role["scope"] in ("platform", "cross-project"):
+        await require_role(request, "admin")
+        project_id = None
+    else:
+        await require_project_admin(request, project_id)
+    async with pool.acquire() as conn:
+        await rbac.revoke_role(conn, reviewer.strip().lower(), role_id, project_id)
+        await _reconcile_admin(conn)
+    await _reload_approved()
+
+
+# ── Role bindings (the "who has what, where" view) + LDAP group mapper ────────
+@app.get("/api/rbac/bindings")
+async def list_rbac_bindings(request: Request):
+    """All role bindings: account → role (× project) plus LDAP/OCP group → role
+    mappings. Platform admin."""
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        accts = await conn.fetch(
+            """SELECT ar.id AS binding_id, lower(ar.reviewer) AS subject, u.display_name,
+                      ar.role_id, ro.key AS role_key, ro.name AS role_name, ro.scope,
+                      ar.project_id, p.name AS project_name
+               FROM rbac_account_roles ar
+               JOIN rbac_roles ro ON ro.id=ar.role_id
+               LEFT JOIN users u ON lower(u.reviewer)=lower(ar.reviewer)
+               LEFT JOIN projects p ON p.id=ar.project_id
+               ORDER BY ro.scope DESC, ro.name, ar.reviewer""")
+        groups = await conn.fetch(
+            """SELECT g.id AS mapping_id, g.source, g.group_key AS subject,
+                      g.role_id, ro.key AS role_key, ro.name AS role_name, ro.scope,
+                      g.project_id, p.name AS project_name
+               FROM rbac_group_role_mappings g
+               JOIN rbac_roles ro ON ro.id=g.role_id
+               LEFT JOIN projects p ON p.id=g.project_id
+               ORDER BY g.source, g.group_key""")
+    return {"account_bindings": [dict(r) for r in accts],
+            "group_mappings": [dict(r) for r in groups]}
+
+
+class GroupMappingIn(BaseModel):
+    source: str = "ldap"
+    group_key: str
+    role_id: int
+    project_id: Optional[int] = None
+
+
+@app.post("/api/rbac/group-mappings")
+async def create_group_mapping(payload: GroupMappingIn, request: Request):
+    """Map an external group (LDAP/OCP) → a role. Platform admin. The sync that
+    *applies* these to members is a later slice; this manages the mappings."""
+    await require_role(request, "admin")
+    gk = (payload.group_key or "").strip()
+    if not gk:
+        raise HTTPException(400, "group_key required")
+    async with pool.acquire() as conn:
+        role = await conn.fetchrow("SELECT scope FROM rbac_roles WHERE id=$1", payload.role_id)
+        if not role:
+            raise HTTPException(404, "role not found")
+        project_id = payload.project_id if role["scope"] == "project" else None
+        if role["scope"] == "project" and project_id is None:
+            raise HTTPException(400, "project_id required for a project-scoped role")
+        try:
+            await conn.execute(
+                "INSERT INTO rbac_group_role_mappings (source, group_key, role_id, project_id, created_by) "
+                "VALUES ($1,$2,$3,$4,$5)",
+                (payload.source or "ldap").strip(), gk, payload.role_id, project_id, get_user(request))
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(409, "that group→role mapping already exists")
+    return {"ok": True}
+
+
+@app.delete("/api/rbac/group-mappings/{mapping_id}", status_code=204)
+async def delete_group_mapping(mapping_id: int, request: Request):
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM rbac_group_role_mappings WHERE id=$1", mapping_id)
+
+
+# ========================= USERS & ACCESS (multi-user) =========================
+
+
+@app.get("/api/ldap/status")
+async def ldap_status(request: Request):
+    """LDAP configuration + last sync state. Admin-gated when enforcing."""
+    if _ldap_is_configured() and _ldap_enforcing():
+        await require_role(request, "admin")
+    return {
+        "configured": _ldap_is_configured(),
+        "enforcing": _ldap_enforcing(),
+        "url": _ldap_cfg.get("url", ""),
+        "group_dn": _ldap_cfg.get("group_dn", ""),
+        "synced_ok": _ldap_state["synced_ok"],
+        "group_member_count": _ldap_state["count"],
+        "approved_identity_count": len(_approved_lower),
+        "last_error": _ldap_state["last_error"],
+        "bootstrap_admins": ldap_auth.BOOTSTRAP_ADMINS,
+    }
+
+
+@app.post("/api/ldap/sync")
+async def ldap_sync_now(request: Request):
+    """Force an immediate LDAP approval sync (admin)."""
+    await require_role(request, "admin")
+    if not _ldap_is_configured():
+        raise HTTPException(400, "LDAP not configured")
+    await _sync_ldap_users()
+    return {"ok": True, "synced_ok": _ldap_state["synced_ok"],
+            "approved_identity_count": len(_approved_lower),
+            "last_error": _ldap_state["last_error"]}
+
+
+@app.get("/api/users")
+async def list_users(request: Request):
+    """All known users with roles + approval (admin)."""
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT reviewer, email, display_name, role, approved, source, last_seen "
+            "FROM users ORDER BY approved DESC, role, reviewer")
+    return {"users": [dict(r) for r in rows]}
+
+
+class UserRoleIn(BaseModel):
+    role: str
+
+
+@app.put("/api/users/{reviewer}/role")
+async def set_user_role(reviewer: str, payload: UserRoleIn, request: Request):
+    """Set a user's role (admin)."""
+    await require_role(request, "admin")
+    if payload.role not in _ASSIGNABLE_GLOBAL_ROLES:
+        raise HTTPException(400, f"invalid role; must be one of {sorted(_ASSIGNABLE_GLOBAL_ROLES)}")
+    async with pool.acquire() as conn:
+        res = await conn.execute(
+            "UPDATE users SET role=$2 WHERE lower(reviewer)=lower($1)", reviewer, payload.role)
+    if res.endswith("0"):
+        raise HTTPException(404, "user not found")
+    return {"ok": True, "reviewer": reviewer, "role": payload.role}
+
+
+@app.get("/api/ldap/approved")
+async def ldap_approved_users(request: Request):
+    """Approved users for member pickers (any approved caller)."""
+    get_user(request)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT reviewer, email, display_name, role FROM users WHERE approved "
+            "ORDER BY display_name, reviewer")
+    return {"users": [dict(r) for r in rows]}
+
+
+# ── In-app settings: LDAP + SMTP (platform-admin) ────────────────────────────
+class LdapSettingsIn(BaseModel):
+    url: str = ""
+    bind_dn: str = ""
+    bind_password: Optional[str] = None   # write-only; omit/empty = leave unchanged
+    user_base: str = ""
+    group_dn: str = ""
+    user_attr: str = "uid"
+    mail_attr: str = "mail"
+    name_attr: str = "cn"
+    member_attr: str = "member"
+    start_tls: bool = False
+    enforce: bool = False
+
+
+@app.get("/api/settings/ldap")
+async def get_ldap_settings(request: Request):
+    await require_role(request, "platform-admin")
+    d = await _load_setting("ldap")
+    e = _ldap_cfg
+    g = lambda k, dflt="": d.get(k, e.get(k, dflt))
+    return {
+        "url": g("url"), "bind_dn": g("bind_dn"), "user_base": g("user_base"),
+        "group_dn": g("group_dn"), "user_attr": g("user_attr", "uid"),
+        "mail_attr": g("mail_attr", "mail"), "name_attr": g("name_attr", "cn"),
+        "member_attr": g("member_attr", "member"),
+        "start_tls": bool(g("start_tls", False)), "enforce": bool(g("enforce", False)),
+        "bind_password_set": bool(d.get("bind_password_enc") or e.get("bind_password")),
+        "from_env": not d,
+    }
+
+
+@app.put("/api/settings/ldap")
+async def put_ldap_settings(payload: LdapSettingsIn, request: Request):
+    user = await require_role(request, "platform-admin")
+    cur = await _load_setting("ldap")
+    val = {
+        "url": payload.url.strip(), "bind_dn": payload.bind_dn.strip(),
+        "user_base": payload.user_base.strip(), "group_dn": payload.group_dn.strip(),
+        "user_attr": payload.user_attr.strip() or "uid",
+        "mail_attr": payload.mail_attr.strip() or "mail",
+        "name_attr": payload.name_attr.strip() or "cn",
+        "member_attr": payload.member_attr.strip() or "member",
+        "start_tls": bool(payload.start_tls), "enforce": bool(payload.enforce),
+    }
+    if payload.bind_password:
+        if not crypto.is_available():
+            raise HTTPException(503, "encryption key not configured (DAV_FERNET_KEY)")
+        val["bind_password_enc"] = crypto.encrypt(payload.bind_password)
+    elif cur.get("bind_password_enc"):
+        val["bind_password_enc"] = cur["bind_password_enc"]
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO app_settings (key, value, updated_by, updated_at) VALUES ('ldap',$1,$2,now()) "
+            "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=now()",
+            json.dumps(val), user)
+    await _load_ldap_cfg()
+    if _ldap_is_configured():
+        await _sync_ldap_users()
+    return {"ok": True, "configured": _ldap_is_configured(),
+            "synced_ok": _ldap_state["synced_ok"],
+            "approved_identity_count": len(_approved_lower),
+            "last_error": _ldap_state["last_error"]}
+
+
+class SmtpSettingsIn(BaseModel):
+    host: str = ""
+    port: int = 587
+    user: str = ""
+    password: Optional[str] = None
+    from_addr: str = ""
+    tls: bool = True
+    base_url: str = ""
+
+
+@app.get("/api/settings/smtp")
+async def get_smtp_settings(request: Request):
+    await require_role(request, "platform-admin")
+    d = await _load_setting("smtp")
+    e = _smtp_cfg
+    return {
+        "host": d.get("host", e.get("host", "")), "port": int(d.get("port", e.get("port", 587))),
+        "user": d.get("user", e.get("user", "")), "from_addr": d.get("from", e.get("from", "")),
+        "tls": bool(d.get("tls", e.get("tls", True))),
+        "base_url": d.get("base_url", e.get("base_url", "")),
+        "password_set": bool(d.get("password_enc") or e.get("password")),
+        "from_env": not d,
+    }
+
+
+@app.put("/api/settings/smtp")
+async def put_smtp_settings(payload: SmtpSettingsIn, request: Request):
+    user = await require_role(request, "platform-admin")
+    cur = await _load_setting("smtp")
+    val = {"host": payload.host.strip(), "port": int(payload.port), "user": payload.user.strip(),
+           "from": payload.from_addr.strip(), "tls": bool(payload.tls), "base_url": payload.base_url.strip()}
+    if payload.password:
+        if not crypto.is_available():
+            raise HTTPException(503, "encryption key not configured (DAV_FERNET_KEY)")
+        val["password_enc"] = crypto.encrypt(payload.password)
+    elif cur.get("password_enc"):
+        val["password_enc"] = cur["password_enc"]
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO app_settings (key, value, updated_by, updated_at) VALUES ('smtp',$1,$2,now()) "
+            "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_by=EXCLUDED.updated_by, updated_at=now()",
+            json.dumps(val), user)
+    await _load_smtp_cfg()
+    return {"ok": True}
+
+
+@app.post("/api/settings/ldap/test")
+async def test_ldap_settings(payload: LdapSettingsIn, request: Request):
+    """Test the supplied LDAP settings (form values, not necessarily saved):
+    bind + read the approval group. Returns {ok, count, sample} or {ok:false, error}."""
+    await require_role(request, "platform-admin")
+    cfg = {
+        "url": payload.url.strip(), "bind_dn": payload.bind_dn.strip(),
+        "user_base": payload.user_base.strip(), "group_dn": payload.group_dn.strip(),
+        "user_attr": payload.user_attr.strip() or "uid",
+        "mail_attr": payload.mail_attr.strip() or "mail",
+        "name_attr": payload.name_attr.strip() or "cn",
+        "member_attr": payload.member_attr.strip() or "member",
+        "start_tls": bool(payload.start_tls),
+    }
+    if payload.bind_password:
+        cfg["bind_password"] = payload.bind_password
+    else:
+        cur = await _load_setting("ldap")
+        if cur.get("bind_password_enc"):
+            try: cfg["bind_password"] = crypto.decrypt(cur["bind_password_enc"]) or ""
+            except Exception: cfg["bind_password"] = ""
+        else:
+            cfg["bind_password"] = _ldap_cfg.get("bind_password", "")
+    if not ldap_auth.is_configured(cfg):
+        raise HTTPException(400, "Server URL and approval group DN are required")
+    try:
+        users = await asyncio.to_thread(ldap_auth.fetch_approved_users, cfg)
+        return {"ok": True, "count": len(users),
+                "sample": [u.get("username") or u.get("email") for u in users[:8] if (u.get("username") or u.get("email"))]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+class SmtpTestIn(SmtpSettingsIn):
+    test_to: str = ""
+
+
+@app.post("/api/settings/smtp/test")
+async def test_smtp_settings(payload: SmtpTestIn, request: Request):
+    """Send a test email using the supplied SMTP settings (form values)."""
+    await require_role(request, "platform-admin")
+    cfg = {"host": payload.host.strip(), "port": int(payload.port), "user": payload.user.strip(),
+           "from": payload.from_addr.strip(), "tls": bool(payload.tls)}
+    if payload.password:
+        cfg["password"] = payload.password
+    else:
+        cur = await _load_setting("smtp")
+        if cur.get("password_enc"):
+            try: cfg["password"] = crypto.decrypt(cur["password_enc"]) or ""
+            except Exception: cfg["password"] = ""
+        else:
+            cfg["password"] = _smtp_cfg.get("password", "")
+    if not cfg["host"]:
+        raise HTTPException(400, "SMTP host is required")
+    to = (payload.test_to or cfg["from"] or "").strip()
+    if "@" not in to:
+        raise HTTPException(400, "a test recipient (or a valid From address) is required")
+
+    def _send():
+        import smtplib
+        from email.message import EmailMessage
+        msg = EmailMessage()
+        msg["From"], msg["To"], msg["Subject"] = cfg.get("from", "dav@localhost"), to, "DAV SMTP test"
+        msg.set_content("This is a test message from DAV. If you received it, SMTP is configured correctly.")
+        with smtplib.SMTP(cfg["host"], int(cfg.get("port", 587)), timeout=10) as s:
+            if cfg.get("tls"):
+                s.starttls()
+            if cfg.get("user"):
+                s.login(cfg["user"], cfg.get("password", ""))
+            s.send_message(msg)
+    try:
+        await asyncio.to_thread(_send)
+        return {"ok": True, "sent_to": to}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+class ChangePwIn(BaseModel):
+    current_password: Optional[str] = None
+    new_password: str
+
+
+@app.post("/api/auth/change-password")
+async def change_password(payload: ChangePwIn, request: Request):
+    """Set/change the caller's internal password (used for the default-admin
+    must-change flow, and for any user who wants a local password)."""
+    if not local_auth.sessions_enabled():
+        raise HTTPException(503, "app sessions not configured")
+    user = get_user(request)
+    if len(payload.new_password or "") < 8:
+        raise HTTPException(400, "password must be at least 8 characters")
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT password_hash FROM users WHERE lower(reviewer)=lower($1) OR lower(email)=lower($1)", user)
+        if row and row["password_hash"]:
+            if not (payload.current_password and local_auth.verify_password(row["password_hash"], payload.current_password)):
+                raise HTTPException(403, "current password is incorrect")
+        await conn.execute(
+            "UPDATE users SET password_hash=$2, must_change_password=false "
+            "WHERE lower(reviewer)=lower($1) OR lower(email)=lower($1)",
+            user, local_auth.hash_password(payload.new_password))
+    return {"ok": True}
+
+
+# ── Invitations + app-native login (internal users) ─────────────────────────
+DAV_SMTP_HOST = os.environ.get("DAV_SMTP_HOST", "").strip()
+DAV_SMTP_PORT = int(os.environ.get("DAV_SMTP_PORT", "587"))
+DAV_SMTP_USER = os.environ.get("DAV_SMTP_USER", "")
+DAV_SMTP_PASSWORD = os.environ.get("DAV_SMTP_PASSWORD", "")
+DAV_SMTP_FROM = os.environ.get("DAV_SMTP_FROM", "dav@localhost")
+DAV_SMTP_TLS = os.environ.get("DAV_SMTP_TLS", "true").lower() == "true"
+DAV_BASE_URL = os.environ.get("DAV_BASE_URL", "").rstrip("/")
+
+
+def _send_email(to: str, subject: str, body: str) -> bool:
+    """Best-effort SMTP send (sync; call via to_thread) using the runtime SMTP
+    config (in-app setting → env). Returns False if SMTP is unconfigured so
+    callers can fall back to sharing the link manually."""
+    cfg = _smtp_cfg
+    if not cfg.get("host"):
+        return False
+    import smtplib
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg["From"], msg["To"], msg["Subject"] = cfg.get("from", "dav@localhost"), to, subject
+    msg.set_content(body)
+    with smtplib.SMTP(cfg["host"], int(cfg.get("port", 587)), timeout=10) as s:
+        if cfg.get("tls"):
+            s.starttls()
+        if cfg.get("user"):
+            s.login(cfg["user"], cfg.get("password", ""))
+        s.send_message(msg)
+    return True
+
+
+async def _reload_approved() -> None:
+    """Rebuild the in-memory approved set from the users table. Source-agnostic:
+    'approved' == an ENABLED account exists (roles decide what they can do)."""
+    global _approved_lower
+    if pool is None:
+        return
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT lower(reviewer) r, lower(email) e FROM users WHERE enabled")
+    _approved_lower = {x["r"] for x in rows} | {x["e"] for x in rows if x["e"]}
+
+
+async def _ensure_account(user: str) -> bool:
+    """Source-agnostic just-in-time provisioning: the first time an authenticated
+    identity is seen, map it in as an ENABLED, role-less account so a platform
+    admin can assign roles (it sees nothing until then). Returns the account's
+    enabled state; never re-enables a deliberately-disabled account."""
+    u = (user or "").strip().lower()
+    if not u or pool is None:
+        return False
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT enabled FROM users WHERE lower(reviewer)=$1 OR lower(email)=$1", u)
+        if row is not None:
+            return bool(row["enabled"])
+        await conn.execute(
+            "INSERT INTO users (reviewer, email, display_name, role, approved, source, enabled) "
+            "VALUES ($1,$1,'','viewer',true,'auto',true) ON CONFLICT (reviewer) DO NOTHING", u)
+    await _reload_approved()
+    return True
+
+
+async def _reconcile_admin(conn) -> Optional[str]:
+    """Run the default-admin invariant. On auto-reactivation (no enabled platform
+    admin remained), email + log a notice and return a warning string for the
+    caller to surface in its response; otherwise None."""
+    try:
+        res = await rbac.reconcile_default_admin(conn, _DEFAULT_ADMIN_EMAIL)
+    except Exception:
+        log.exception("default-admin reconcile failed")
+        return None
+    if res and res.get("reactivated"):
+        de = res.get("default_email")
+        msg = (f"No enabled platform admin remained — the default admin "
+               f"account '{de}' was automatically re-activated.")
+        log.warning(msg)
+        try:
+            await asyncio.to_thread(
+                _send_email, de, "DAV: default admin re-activated",
+                msg + "\n\nSign in to the default account and restore a platform admin.")
+        except Exception as e:
+            log.warning("reactivation notice email failed: %s", e)
+        return msg
+    return None
+
+
+def _set_session_cookie(resp: JSONResponse, email: str) -> None:
+    resp.set_cookie(
+        local_auth.SESSION_COOKIE, local_auth.make_session(email),
+        httponly=True, secure=True, samesite="lax", max_age=local_auth.SESSION_TTL, path="/")
+
+
+class InviteIn(BaseModel):
+    email: str
+    display_name: str = ""
+    project_id: Optional[int] = None
+    project_role: str = "editor"
+    global_role: str = "editor"
+
+
+@app.post("/api/invites")
+async def create_invite(payload: InviteIn, request: Request):
+    """Invite a user (by email) into a project. Platform/project admin only.
+    Emails a tokened accept link; if SMTP is unconfigured the link is returned
+    so the admin can share it manually."""
+    # Project-scoped invite → project admin (of that project) may send it; a
+    # project-less (global) invite requires a global admin.
+    if payload.project_id is not None:
+        inviter = await require_project_admin(request, payload.project_id)
+    else:
+        inviter = await require_role(request, "admin")
+    email = (payload.email or "").strip().lower()
+    if "@" not in email:
+        raise HTTPException(400, "valid email required")
+    if payload.project_role not in _ASSIGNABLE_PROJECT_ROLES or payload.global_role not in _ASSIGNABLE_GLOBAL_ROLES:
+        raise HTTPException(400, "invalid role")
+    # A non-platform inviter cannot grant a global role above their own.
+    if _multiuser():
+        inviter_rank = _ROLE_RANK.get(await _user_role(inviter), 0)
+        if _ROLE_RANK.get(payload.global_role, 0) > inviter_rank:
+            raise HTTPException(403, "cannot grant a global role above your own")
+        # uc-admin is off the rank ladder — only someone who already holds the
+        # use-case-admin capability may grant it globally.
+        if payload.global_role == "uc-admin" and not await _can_manage_uc_sources(inviter):
+            raise HTTPException(403, "cannot grant use-case admin without holding it")
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(days=7)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO user_invitations
+                 (token, email, display_name, project_id, project_role, global_role, invited_by, expires_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+            token, email, payload.display_name, payload.project_id,
+            payload.project_role, payload.global_role, inviter, expires)
+    _base = _public_base(request)
+    link = f"{_base}/?invite={token}" if _base else f"/?invite={token}"
+    emailed = False
+    try:
+        emailed = await asyncio.to_thread(
+            _send_email, email, "You're invited to DAV",
+            f"{inviter} invited you to DAV. Open this link to set a password and join:\n\n{link}\n\n"
+            f"This invite expires in 7 days.")
+    except Exception as e:
+        log.warning("invite email send failed: %s", e)
+    return {"ok": True, "token": token, "link": link, "emailed": emailed}
+
+
+@app.get("/api/invites")
+async def list_invites(request: Request):
+    """Pending invitations (admin)."""
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT i.token, i.email, i.display_name, i.project_role, i.global_role,
+                      i.invited_by, i.created_at, i.expires_at, i.accepted_at, p.name AS project_name
+               FROM user_invitations i LEFT JOIN projects p ON p.id=i.project_id
+               WHERE i.accepted_at IS NULL ORDER BY i.created_at DESC""")
+    return {"invites": [{**dict(r),
+                         "created_at": r["created_at"].isoformat(),
+                         "expires_at": r["expires_at"].isoformat()} for r in rows]}
+
+
+@app.delete("/api/invites/{token}", status_code=204)
+async def revoke_invite(token: str, request: Request):
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM user_invitations WHERE token=$1", token)
+
+
+@app.get("/api/invites/{token}")
+async def get_invite(token: str):
+    """Public: view an invite's target so the accept page can show context."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT i.email, i.display_name, i.expires_at, i.accepted_at, p.name AS project_name
+               FROM user_invitations i LEFT JOIN projects p ON p.id=i.project_id
+               WHERE i.token=$1""", token)
+    if not row or row["accepted_at"] or row["expires_at"] < datetime.now(timezone.utc):
+        raise HTTPException(404, "invite invalid, already used, or expired")
+    return {"email": row["email"], "display_name": row["display_name"],
+            "project_name": row["project_name"], "sessions_enabled": local_auth.sessions_enabled()}
+
+
+class AcceptInviteIn(BaseModel):
+    password: str
+    display_name: str = ""
+
+
+@app.post("/api/invites/{token}/accept")
+async def accept_invite(token: str, payload: AcceptInviteIn):
+    """Public: accept an invite — create the internal user (argon2 password),
+    join the project, and log in (session cookie)."""
+    if not local_auth.sessions_enabled():
+        raise HTTPException(503, "app sessions not configured (set DAV_SESSION_SECRET or DAV_FERNET_KEY)")
+    if len(payload.password or "") < 8:
+        raise HTTPException(400, "password must be at least 8 characters")
+    async with pool.acquire() as conn:
+        inv = await conn.fetchrow("SELECT * FROM user_invitations WHERE token=$1", token)
+        if not inv or inv["accepted_at"] or inv["expires_at"] < datetime.now(timezone.utc):
+            raise HTTPException(404, "invite invalid, already used, or expired")
+        email = inv["email"].strip().lower()
+        name = (payload.display_name or inv["display_name"] or email).strip()
+        pwhash = local_auth.hash_password(payload.password)
+        await conn.execute(
+            """INSERT INTO users (reviewer, email, display_name, role, approved, source, enabled, password_hash, must_change_password)
+               VALUES ($1,$1,$2,'viewer',true,'internal',true,$3,false)
+               ON CONFLICT (reviewer) DO UPDATE
+                 SET password_hash=EXCLUDED.password_hash, approved=true, enabled=true,
+                     source='internal', display_name=EXCLUDED.display_name, must_change_password=false""",
+            email, name, pwhash)
+        # Map any legacy invite roles into the RBAC model (account-activation
+        # invites carry none — roles are assigned in the Users & roles UI).
+        if inv["project_id"] is not None and inv["project_role"]:
+            rolekey = {"admin": "project-admin", "uc-admin": "project-admin",
+                       "editor": "project-edit", "viewer": "project-viewer"}.get(
+                           inv["project_role"], "project-viewer")
+            rid = await conn.fetchval("SELECT id FROM rbac_roles WHERE key=$1", rolekey)
+            if rid:
+                await rbac.assign_role(conn, email, rid, inv["project_id"], inv["invited_by"] or "invite")
+        if inv["global_role"] == "platform-admin":
+            rid = await conn.fetchval("SELECT id FROM rbac_roles WHERE key='platform-admin'")
+            if rid:
+                await rbac.assign_role(conn, email, rid, None, inv["invited_by"] or "invite")
+        await conn.execute("UPDATE user_invitations SET accepted_at=now() WHERE token=$1", token)
+        await _reconcile_admin(conn)
+    await _reload_approved()
+    resp = JSONResponse({"ok": True, "email": email})
+    _set_session_cookie(resp, email)
+    return resp
+
+
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/api/auth/login")
+async def auth_login(payload: LoginIn):
+    """App-native login for internal users (email + password)."""
+    if not local_auth.sessions_enabled():
+        raise HTTPException(503, "app sessions not configured")
+    email = (payload.email or "").strip().lower()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT password_hash, approved FROM users WHERE lower(reviewer)=$1 OR lower(email)=$1", email)
+    if not row or not row["password_hash"] or not local_auth.verify_password(row["password_hash"], payload.password):
+        raise HTTPException(401, "invalid email or password")
+    if not row["approved"]:
+        raise HTTPException(403, "account not approved")
+    resp = JSONResponse({"ok": True, "email": email})
+    _set_session_cookie(resp, email)
+    return resp
+
+
+@app.post("/api/auth/logout")
+async def auth_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(local_auth.SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/auth/sso")
+async def auth_sso(request: Request):
+    """Mint an app session from the oauth-proxy identity (OCP/FreeIPA). Under a
+    relaxed proxy this is the ONE path that stays proxy-protected, so it carries
+    the X-Forwarded headers; the SPA navigates here to establish a session.
+
+    Cross-pollinates by email (reuses an existing user row with the same email),
+    provisions the user, but does NOT auto-approve — OCP users are enabled
+    explicitly by an admin. Redirects back to the app afterwards.
+    """
+    raw = (request.headers.get("X-Forwarded-User")
+           or request.headers.get("X-Forwarded-Email")
+           or request.headers.get("X-Auth-Request-User")
+           or request.headers.get("X-Auth-Request-Email"))
+    if not raw:
+        raise HTTPException(401, "no upstream identity (is this path proxy-protected?)")
+    email = (request.headers.get("X-Forwarded-Email")
+             or request.headers.get("X-Auth-Request-Email")
+             or (raw if "@" in raw else "")).strip().lower()
+    name = request.headers.get("X-Forwarded-Preferred-Username") or raw
+    canonical = (email or raw).strip().lower()
+    if pool is not None:
+        async with pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT reviewer FROM users WHERE lower(email)=$1 LIMIT 1", email) if email else None
+            reviewer = (existing or canonical).lower()
+            await conn.execute(
+                """INSERT INTO users (reviewer, email, display_name, source)
+                   VALUES ($1,$2,$3,'oauth')
+                   ON CONFLICT (reviewer) DO UPDATE
+                     SET email=COALESCE(NULLIF(EXCLUDED.email,''), users.email),
+                         display_name=COALESCE(NULLIF(EXCLUDED.display_name,''), users.display_name)""",
+                reviewer, email, name)
+    else:
+        reviewer = canonical
+    resp = RedirectResponse(url="/", status_code=303)
+    _set_session_cookie(resp, reviewer)
+    return resp
 
 
 # ========================= RUNS =========================
 
 
 @app.get("/api/runs")
-async def list_runs(limit: int = Query(50, ge=1, le=200), show_archived: bool = Query(False)):
+async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show_archived: bool = Query(False)):
     """List recent PipelineRuns, enriched with run_sessions metadata when available.
 
-    Archived runs (run_sessions.archived) are hidden unless show_archived=true."""
+    Archived runs (run_sessions.archived) are hidden unless show_archived=true.
+    Scoped to the active project: a run belongs to a project via its session's
+    project_id; runs with no session (orphan Tekton runs) appear only under the
+    default project so they're never lost."""
     if not validations.ENABLED:
         return {"runs": [], "enabled": False}
     try:
@@ -765,6 +2263,10 @@ async def list_runs(limit: int = Query(50, ge=1, le=200), show_archived: bool = 
     names = [r.get("name") for r in runs if r.get("name")]
     sessions_by_name: dict[str, dict] = {}
     runid_by_name: dict[str, str] = {}   # PipelineRun name → its ingested analysis run_id
+    active_pid = default_pid = None
+    async with pool.acquire() as _pc:
+        active_pid = await _active_project_id(request, _pc)
+        default_pid = await _default_project_id(_pc)
     if names:
         try:
             async with pool.acquire() as conn:
@@ -772,7 +2274,7 @@ async def list_runs(limit: int = Query(50, ge=1, le=200), show_archived: bool = 
                     "SELECT run_name, name, description, category, tags, "
                     "gpu_energy_joules, total_gen_tokens, total_prompt_tokens, "
                     "set_id, set_name, selection_mode, "
-                    "uc_total, uc_succeeded, uc_failed, archived "
+                    "uc_total, uc_succeeded, uc_failed, archived, project_id "
                     "FROM run_sessions WHERE run_name = ANY($1::text[])",
                     names,
                 )
@@ -803,13 +2305,34 @@ async def list_runs(limit: int = Query(50, ge=1, le=200), show_archived: bool = 
             r["uc_succeeded"]  = s.get("uc_succeeded")
             r["uc_failed"]     = s.get("uc_failed")
             r["archived"]      = bool(s.get("archived"))
+            r["project_id"]    = s.get("project_id")
+        else:
+            r["project_id"] = None
     if not show_archived:
         runs = [r for r in runs if not r.get("archived")]
+    # Scope to the active project. A sessioned run shows under its project; an
+    # orphan (no session) shows only under the default project.
+    if active_pid is not None:
+        runs = [r for r in runs
+                if (r["project_id"] == active_pid)
+                or (r["project_id"] is None and active_pid == default_pid)]
     return {"runs": runs, "enabled": True}
 
 
 class RunArchiveIn(BaseModel):
     archived: bool = True
+
+
+async def _run_project_id(conn, name: str) -> Optional[int]:
+    """The project a run belongs to: its run_sessions.project_id, else its
+    analysis_runs.project_id, else the default project (for orphan runs)."""
+    pid = await conn.fetchval("SELECT project_id FROM run_sessions WHERE run_name=$1", name)
+    if pid is None:
+        pid = await conn.fetchval(
+            "SELECT project_id FROM analysis_runs WHERE run_name=$1 AND project_id IS NOT NULL LIMIT 1", name)
+    if pid is None:
+        pid = await _default_project_id(conn)
+    return pid
 
 
 @app.post("/api/runs/{name}/archive")
@@ -818,14 +2341,16 @@ async def archive_run(name: str, payload: RunArchiveIn, request: Request):
 
     Upserts the archived flag so any run can be hidden — runs that were never
     triggered through the console have no run_sessions row, so we create a minimal
-    one to hold the flag (other columns take their defaults)."""
+    one (carrying the run's resolved project_id) to hold the flag."""
     user = get_user(request)
     async with pool.acquire() as conn:
+        rpid = await _run_project_id(conn, name)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_RUNS_MANAGE, rpid)
         await conn.execute(
-            """INSERT INTO run_sessions (run_name, created_by, archived)
-               VALUES ($1, $3, $2)
+            """INSERT INTO run_sessions (run_name, created_by, archived, project_id)
+               VALUES ($1, $2, $3, $4)
                ON CONFLICT (run_name) DO UPDATE SET archived = EXCLUDED.archived""",
-            name, payload.archived, user)
+            name, user, payload.archived, rpid)
     return {"ok": True, "name": name, "archived": payload.archived}
 
 
@@ -837,6 +2362,8 @@ async def delete_run(name: str, request: Request):
     get_user(request)
     removed = {"analysis_runs": 0, "run_sessions": 0, "workspace_dirs": 0, "pipelinerun": False}
     async with pool.acquire() as conn:
+        rpid = await _run_project_id(conn, name)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_RUNS_MANAGE, rpid)
         run_ids = [r["run_id"] for r in await conn.fetch(
             "SELECT run_id FROM analysis_runs WHERE run_name=$1", name)]
         for rid in run_ids:
@@ -923,6 +2450,9 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
     reviewer = get_user(request)
     if payload.category and payload.category not in RUN_CATEGORIES:
         raise HTTPException(400, f"invalid category; must be one of {RUN_CATEGORIES}")
+    async with pool.acquire() as conn:
+        _trigpid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_RUNS_EXECUTE, _trigpid)
     params = _resolve_run_params(payload)
     # Per-(model, use) override system (DAV migration 014). Resolve
     # capabilities + use_profile from DB by inference_model. use_key
@@ -937,8 +2467,8 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
         async with pool.acquire() as conn:
             mc_row = await conn.fetchrow(
                 "SELECT id, capabilities FROM model_configs "
-                "WHERE model_id=$1 AND enabled ORDER BY id LIMIT 1",
-                params["inference_model"],
+                "WHERE model_id=$1 AND enabled AND project_id=$2 ORDER BY id LIMIT 1",
+                params["inference_model"], _trigpid,
             )
             if mc_row:
                 caps_raw = mc_row["capabilities"]
@@ -1026,22 +2556,23 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             log.warning("uc-state snapshot failed: %s", e)
     try:
         async with pool.acquire() as conn:
+            _run_pid = await _active_project_id(request, conn)
             await conn.execute(
                 """INSERT INTO run_sessions
                    (run_name, name, description, category, tags, mode,
                     created_by, started_at,
                     baseline_gen_tokens, baseline_prompt_tokens,
                     set_id, set_name, selection_mode, uc_state_snapshot,
-                    spec_namespaces, corpus_namespaces)
+                    spec_namespaces, corpus_namespaces, project_id)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9,
-                           $10, $11, $12, $13::jsonb, $14, $15)""",
+                           $10, $11, $12, $13::jsonb, $14, $15, $16)""",
                 result["name"], payload.name, payload.description,
                 payload.category or "ad-hoc", payload.tags or [],
                 payload.mode, reviewer,
                 baseline_gen, baseline_prompt,
                 payload.set_id, payload.set_name, payload.selection_mode,
                 json.dumps(uc_state_snapshot) if uc_state_snapshot else None,
-                payload.spec_namespaces, payload.corpus_namespaces,
+                payload.spec_namespaces, payload.corpus_namespaces, _run_pid,
             )
     except Exception as e:
         log.warning("run_sessions insert failed for %s: %s", result.get("name"), e)
@@ -1357,24 +2888,30 @@ async def metrics_timeseries(
 
 
 @app.get("/api/results")
-async def list_results():
+async def list_results(request: Request):
     """List all run result directories found on the workspace PVC.
 
     Each result is enriched with the human-readable `session_name` /
     `session_description` / `session_category` from `run_sessions` when
     the workspace run_id has been correlated to a Tekton PipelineRun
     (via `analysis_runs.run_name` ↔ `run_sessions.run_name`).
+
+    Scoped to the active project via analysis_runs.project_id; workspace dirs
+    with no ingested analysis appear only under the default project.
     """
     if not _results.is_available():
         return {"results": [], "available": False,
                 "workspace_path": _results.WORKSPACE_PATH}
     try:
         runs = _results.list_runs()
+        active_pid = default_pid = None
         if runs and pool is not None:
             run_ids = [r["run_id"] for r in runs]
             async with pool.acquire() as conn:
+                active_pid = await _active_project_id(request, conn)
+                default_pid = await _default_project_id(conn)
                 meta_rows = await conn.fetch(
-                    """SELECT ar.run_id, ar.run_name,
+                    """SELECT ar.run_id, ar.run_name, ar.project_id,
                               rs.name AS session_name,
                               rs.description AS session_description,
                               rs.category AS session_category
@@ -1384,6 +2921,11 @@ async def list_results():
                     run_ids,
                 )
             meta_by_id = {m["run_id"]: m for m in meta_rows}
+            if active_pid is not None:
+                runs = [r for r in runs
+                        if (meta_by_id.get(r["run_id"]) is not None
+                            and meta_by_id[r["run_id"]]["project_id"] == active_pid)
+                        or (meta_by_id.get(r["run_id"]) is None and active_pid == default_pid)]
             for r in runs:
                 m = meta_by_id.get(r["run_id"])
                 if m:
@@ -1592,19 +3134,21 @@ class PrCreateIn(BaseModel):
 
 
 @app.get("/api/uc-assist/models")
-async def list_uc_assist_models():
-    """List all enabled model configs (api_key masked). Alias for /api/models filtered to enabled."""
+async def list_uc_assist_models(request: Request):
+    """List the active project's enabled model configs (api_key masked)."""
     if pool is None:
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
         rows = await conn.fetch(
             """SELECT id, name, provider, endpoint_url, model_id,
                       CASE WHEN api_key != '' THEN '••••••••' ELSE '' END AS api_key,
                       enabled, is_local, use_arch_review, use_uc_assist,
                       created_by, created_at, updated_at
                FROM model_configs
-               WHERE enabled
-               ORDER BY name"""
+               WHERE enabled AND project_id=$1
+               ORDER BY name""", pid
         )
     return [dict(r) for r in rows]
 
@@ -1622,32 +3166,34 @@ async def uc_assist_chat(payload: UCAssistIn, request: Request):
     """
     get_user(request)
     cfg: Optional[dict] = None
-    if payload.model_config_id is not None:
-        if pool is None:
-            raise HTTPException(503, "pool not initialized")
-        async with pool.acquire() as conn:
+    if pool is None:
+        raise HTTPException(503, "pool not initialized")
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)
+        if payload.model_config_id is not None:
             row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND enabled",
-                payload.model_config_id,
+                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                payload.model_config_id, pid,
             )
-        if not row:
-            raise HTTPException(404, "Model config not found or disabled")
-        cfg = dict(row)
-    elif payload.endpoint_url and payload.model_id:
-        if pool is not None:
-            async with pool.acquire() as conn:
-                base = await conn.fetchrow(
-                    "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND enabled ORDER BY id LIMIT 1",
-                    payload.endpoint_url,
-                )
+            if not row:
+                raise HTTPException(404, "Model config not found or disabled in this project")
+            cfg = dict(row)
+        elif payload.endpoint_url and payload.model_id:
+            base = await conn.fetchrow(
+                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND project_id=$2 AND enabled ORDER BY id LIMIT 1",
+                payload.endpoint_url, pid,
+            )
+            cfg = {
+                "provider":     base["provider"] if base else "openai",
+                "endpoint_url": payload.endpoint_url,
+                "model_id":     payload.model_id,
+                "api_key":      base["api_key"] if base else "",
+            }
         else:
-            base = None
-        cfg = {
-            "provider":     base["provider"] if base else "openai",
-            "endpoint_url": payload.endpoint_url,
-            "model_id":     payload.model_id,
-            "api_key":      base["api_key"] if base else "",
-        }
+            # No explicit model — use the project UC-authoring default if set;
+            # else leave cfg=None so uc_assist.chat falls back to env config.
+            cfg = await _model_default_row(conn, "uc-authoring", project_id=pid)
     result = await uc_assist.chat(
         user_message=payload.message,
         current_yaml=payload.current_yaml,
@@ -1670,32 +3216,33 @@ async def uc_bulk_extract(payload: UCBulkExtractIn, request: Request):
     """
     get_user(request)
     cfg: Optional[dict] = None
-    if payload.model_config_id is not None:
-        if pool is None:
-            raise HTTPException(503, "pool not initialized")
-        async with pool.acquire() as conn:
+    if pool is None:
+        raise HTTPException(503, "pool not initialized")
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)
+        if payload.model_config_id is not None:
             row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND enabled",
-                payload.model_config_id,
+                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                payload.model_config_id, pid,
             )
-        if not row:
-            raise HTTPException(404, "Model config not found or disabled")
-        cfg = dict(row)
-    elif payload.endpoint_url and payload.model_id:
-        if pool is not None:
-            async with pool.acquire() as conn:
-                base = await conn.fetchrow(
-                    "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND enabled ORDER BY id LIMIT 1",
-                    payload.endpoint_url,
-                )
+            if not row:
+                raise HTTPException(404, "Model config not found or disabled in this project")
+            cfg = dict(row)
+        elif payload.endpoint_url and payload.model_id:
+            base = await conn.fetchrow(
+                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND project_id=$2 AND enabled ORDER BY id LIMIT 1",
+                payload.endpoint_url, pid,
+            )
+            cfg = {
+                "provider":     base["provider"] if base else "openai",
+                "endpoint_url": payload.endpoint_url,
+                "model_id":     payload.model_id,
+                "api_key":      base["api_key"] if base else "",
+            }
         else:
-            base = None
-        cfg = {
-            "provider":     base["provider"] if base else "openai",
-            "endpoint_url": payload.endpoint_url,
-            "model_id":     payload.model_id,
-            "api_key":      base["api_key"] if base else "",
-        }
+            # No explicit model — use the project UC-authoring default.
+            cfg = await _model_default_row(conn, "uc-authoring", project_id=pid)
     result = await uc_assist.extract_bulk(
         text=payload.text,
         context=payload.context,
@@ -1830,6 +3377,8 @@ async def draft_uc_from_comment_api(uuid: str, payload: InboxDraftUCIn, request:
     get_user(request)
 
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)
         comment = await _pr_comments.get_comment(conn, uuid)
         if not comment:
             raise HTTPException(404, f"comment {uuid!r} not found")
@@ -1844,32 +3393,32 @@ async def draft_uc_from_comment_api(uuid: str, payload: InboxDraftUCIn, request:
         if (repo_row and repo_row["display_name"]) else repo_ns
     )
 
-    # Model config resolution mirrors POST /api/uc-assist.
+    # Model config resolution mirrors POST /api/uc-assist (scoped to the project).
     cfg: Optional[dict] = None
-    if payload.model_config_id is not None:
-        if pool is None:
-            raise HTTPException(503, "pool not initialized")
-        async with pool.acquire() as conn:
+    async with pool.acquire() as conn:
+        if payload.model_config_id is not None:
             row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND enabled",
-                payload.model_config_id,
+                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                payload.model_config_id, pid,
             )
-        if not row:
-            raise HTTPException(404, "Model config not found or disabled")
-        cfg = dict(row)
-    elif payload.endpoint_url and payload.model_id:
-        async with pool.acquire() as conn:
+            if not row:
+                raise HTTPException(404, "Model config not found or disabled in this project")
+            cfg = dict(row)
+        elif payload.endpoint_url and payload.model_id:
             base = await conn.fetchrow(
                 "SELECT provider, api_key FROM model_configs "
-                "WHERE endpoint_url=$1 AND enabled ORDER BY id LIMIT 1",
-                payload.endpoint_url,
+                "WHERE endpoint_url=$1 AND project_id=$2 AND enabled ORDER BY id LIMIT 1",
+                payload.endpoint_url, pid,
             )
-        cfg = {
-            "provider":     base["provider"] if base else "openai",
-            "endpoint_url": payload.endpoint_url,
-            "model_id":     payload.model_id,
-            "api_key":      base["api_key"] if base else "",
-        }
+            cfg = {
+                "provider":     base["provider"] if base else "openai",
+                "endpoint_url": payload.endpoint_url,
+                "model_id":     payload.model_id,
+                "api_key":      base["api_key"] if base else "",
+            }
+        else:
+            # No explicit model — use the project UC-authoring default.
+            cfg = await _model_default_row(conn, "uc-authoring", project_id=pid)
 
     # M12 "E" pass: when the source repo has a recognizable namespace
     # (i.e., the inbox row joined managed_repos cleanly), pre-scope the
@@ -2074,6 +3623,7 @@ def _derive_uc_title(parsed: dict, fallback_id: str) -> str:
 
 @app.get("/api/use-cases")
 async def list_use_cases(
+    request: Request,
     source: Optional[str] = Query(None, description="'managed', 'corpus', or None for both"),
     sort: Optional[str] = Query(None, description="'priority' to order by roadmap weight; default is most-recently-updated"),
     priority: Optional[str] = Query(None, description="filter to a single priority label (critical/high/medium/low)"),
@@ -2106,14 +3656,20 @@ async def list_use_cases(
     if source in (None, "managed"):
         order = ("priority_score DESC NULLS LAST, updated_at DESC"
                  if by_priority else "updated_at DESC")
-        where = "WHERE priority = $1" if prio_filter else ""
-        sql = (
-            "SELECT uuid, title, tags, lifecycle_state, priority, priority_score, readiness_score, "
-            "created_by, created_at, updated_by, updated_at "
-            f"FROM managed_use_cases {where} ORDER BY {order}"
-        )
         async with pool.acquire() as conn:
-            rows = await (conn.fetch(sql, prio_filter) if prio_filter else conn.fetch(sql))
+            pid = await _active_project_id(request, conn)
+            conds, params = [], []
+            if pid is not None:
+                params.append(pid); conds.append(f"project_id = ${len(params)}")
+            if prio_filter:
+                params.append(prio_filter); conds.append(f"priority = ${len(params)}")
+            where = ("WHERE " + " AND ".join(conds)) if conds else ""
+            sql = (
+                "SELECT uuid, title, tags, lifecycle_state, priority, priority_score, readiness_score, "
+                "created_by, created_at, updated_by, updated_at "
+                f"FROM managed_use_cases {where} ORDER BY {order}"
+            )
+            rows = await conn.fetch(sql, *params)
         managed = [
             {
                 **dict(r),
@@ -2288,13 +3844,15 @@ async def create_use_case(payload: ManagedUCIn, request: Request):
         )
         if existing:
             raise HTTPException(409, f"use case {uc_uuid!r} already exists; use PUT to update")
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)
         await conn.execute(
             """
             INSERT INTO managed_use_cases
-              (uuid, title, yaml_content, created_by, updated_by, tags, priority, priority_score, readiness_score)
-            VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8)
+              (uuid, title, yaml_content, created_by, updated_by, tags, priority, priority_score, readiness_score, project_id)
+            VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9)
             """,
-            uc_uuid, title, payload.yaml_content, user, tags, priority, priority_score, readiness,
+            uc_uuid, title, payload.yaml_content, user, tags, priority, priority_score, readiness, pid,
         )
     return {"ok": True, "uuid": uc_uuid, "title": title, "priority": priority, "readiness_score": readiness}
 
@@ -2326,14 +3884,18 @@ async def update_use_case(uuid: str, payload: ManagedUCIn, request: Request):
     readiness = _uc_readiness.score_use_case(data)["score"]
 
     async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM managed_use_cases WHERE uuid=$1", uuid)
+        if owner is None:
+            raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, owner)
         result = await conn.execute(
             """
             UPDATE managed_use_cases
             SET yaml_content=$2, title=$3, updated_by=$4, updated_at=now(), tags=$5,
                 priority=$6, priority_score=$7, readiness_score=$8
-            WHERE uuid=$1
+            WHERE uuid=$1 AND project_id=$9
             """,
-            uuid, payload.yaml_content, title, user, tags, priority, priority_score, readiness,
+            uuid, payload.yaml_content, title, user, tags, priority, priority_score, readiness, owner,
         )
     if result == "UPDATE 0":
         raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
@@ -2345,8 +3907,12 @@ async def delete_use_case(uuid: str, request: Request):
     """Delete a managed use case."""
     user = get_user(request)
     async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM managed_use_cases WHERE uuid=$1", uuid)
+        if owner is None:
+            raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, owner)
         result = await conn.execute(
-            "DELETE FROM managed_use_cases WHERE uuid = $1", uuid
+            "DELETE FROM managed_use_cases WHERE uuid = $1 AND project_id = $2", uuid, owner
         )
     if result == "DELETE 0":
         raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
@@ -2372,10 +3938,11 @@ async def transition_use_case(uuid: str, payload: LifecycleTransitionIn, request
         raise HTTPException(400, f"invalid state; must be one of {sorted(UC_STATES)}")
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT lifecycle_state FROM managed_use_cases WHERE uuid = $1", uuid
+            "SELECT lifecycle_state, project_id FROM managed_use_cases WHERE uuid = $1", uuid
         )
         if not row:
             raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, row["project_id"])
         from_state = row["lifecycle_state"]
         allowed = VALID_TRANSITIONS.get(from_state, set())
         if payload.to_state not in allowed:
@@ -2648,8 +4215,9 @@ async def push_use_case_to_corpus(uuid: str, payload: PushToCorpusIn, request: R
         row = await conn.fetchrow(
             "SELECT * FROM managed_use_cases WHERE uuid = $1", uuid
         )
-    if not row:
-        raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
+        if not row:
+            raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, row["project_id"])
     uc = dict(row)
 
     # Lifecycle gate: only `approved` UCs may be pushed (soft override available).
@@ -2815,13 +4383,16 @@ def _set_row(r, member_count: int = 0) -> dict:
 
 
 @app.get("/api/sets")
-async def list_sets():
+async def list_sets(request: Request):
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
         rows = await conn.fetch(
             """SELECT s.*, COUNT(m.uc_uuid) AS member_count
                FROM use_case_sets s
                LEFT JOIN use_case_set_members m ON m.set_id = s.id
-               GROUP BY s.id ORDER BY s.name"""
+               WHERE ($1::bigint IS NULL OR s.project_id = $1)
+               GROUP BY s.id ORDER BY s.name""",
+            pid,
         )
     return {"sets": [_set_row(r, r["member_count"]) for r in rows]}
 
@@ -2830,11 +4401,13 @@ async def list_sets():
 async def create_set(payload: SetIn, request: Request):
     user = get_user(request)
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)
         try:
             row = await conn.fetchrow(
-                "INSERT INTO use_case_sets(name, description, created_by) "
-                "VALUES ($1, $2, $3) RETURNING *",
-                payload.name, payload.description, user,
+                "INSERT INTO use_case_sets(name, description, created_by, project_id) "
+                "VALUES ($1, $2, $3, $4) RETURNING *",
+                payload.name, payload.description, user, pid,
             )
         except asyncpg.UniqueViolationError:
             raise HTTPException(409, f"a set named {payload.name!r} already exists")
@@ -2870,10 +4443,12 @@ async def get_set(set_id: int):
 async def update_set(set_id: int, payload: SetIn, request: Request):
     user = get_user(request)  # noqa: F841 — auth check
     async with pool.acquire() as conn:
+        owner = await _gate_resource(conn, request, "use_case_sets", "id", set_id,
+                                     rbac.P_PROJECT_USECASES, f"set {set_id} not found")
         try:
             result = await conn.execute(
-                "UPDATE use_case_sets SET name=$2, description=$3, updated_at=now() WHERE id=$1",
-                set_id, payload.name, payload.description,
+                "UPDATE use_case_sets SET name=$2, description=$3, updated_at=now() WHERE id=$1 AND project_id=$4",
+                set_id, payload.name, payload.description, owner,
             )
         except asyncpg.UniqueViolationError:
             raise HTTPException(409, f"a set named {payload.name!r} already exists")
@@ -2886,7 +4461,9 @@ async def update_set(set_id: int, payload: SetIn, request: Request):
 async def delete_set(set_id: int, request: Request):
     user = get_user(request)  # noqa: F841 — auth check
     async with pool.acquire() as conn:
-        result = await conn.execute("DELETE FROM use_case_sets WHERE id=$1", set_id)
+        owner = await _gate_resource(conn, request, "use_case_sets", "id", set_id,
+                                     rbac.P_PROJECT_USECASES, f"set {set_id} not found")
+        result = await conn.execute("DELETE FROM use_case_sets WHERE id=$1 AND project_id=$2", set_id, owner)
     if result == "DELETE 0":
         raise HTTPException(404, f"set {set_id} not found")
     return {"ok": True, "id": set_id}
@@ -2902,14 +4479,11 @@ async def set_default_set(set_id: int, request: Request):
     get_user(request)  # auth check
     async with pool.acquire() as conn:
         async with conn.transaction():
-            exists = await conn.fetchval(
-                "SELECT 1 FROM use_case_sets WHERE id=$1", set_id
-            )
-            if not exists:
-                raise HTTPException(404, f"set {set_id} not found")
+            owner = await _gate_resource(conn, request, "use_case_sets", "id", set_id,
+                                         rbac.P_PROJECT_USECASES, f"set {set_id} not found")
             await conn.execute(
-                "UPDATE use_case_sets SET is_default=FALSE WHERE is_default AND id<>$1",
-                set_id,
+                "UPDATE use_case_sets SET is_default=FALSE WHERE is_default AND id<>$1 AND project_id=$2",
+                set_id, owner,
             )
             await conn.execute(
                 "UPDATE use_case_sets SET is_default=TRUE, updated_at=now() WHERE id=$1",
@@ -2923,9 +4497,11 @@ async def clear_default_set(set_id: int, request: Request):
     """Unmark this Set as the project default, leaving no default."""
     get_user(request)
     async with pool.acquire() as conn:
+        owner = await _gate_resource(conn, request, "use_case_sets", "id", set_id,
+                                     rbac.P_PROJECT_USECASES, f"set {set_id} not found")
         result = await conn.execute(
-            "UPDATE use_case_sets SET is_default=FALSE, updated_at=now() WHERE id=$1",
-            set_id,
+            "UPDATE use_case_sets SET is_default=FALSE, updated_at=now() WHERE id=$1 AND project_id=$2",
+            set_id, owner,
         )
     if result == "UPDATE 0":
         raise HTTPException(404, f"set {set_id} not found")
@@ -2938,9 +4514,8 @@ async def add_set_member(set_id: int, payload: SetMemberIn, request: Request):
     if payload.uc_source not in ("managed", "corpus"):
         raise HTTPException(400, "uc_source must be 'managed' or 'corpus'")
     async with pool.acquire() as conn:
-        exists = await conn.fetchval("SELECT 1 FROM use_case_sets WHERE id=$1", set_id)
-        if not exists:
-            raise HTTPException(404, f"set {set_id} not found")
+        await _gate_resource(conn, request, "use_case_sets", "id", set_id,
+                             rbac.P_PROJECT_USECASES, f"set {set_id} not found")
         try:
             await conn.execute(
                 "INSERT INTO use_case_set_members"
@@ -2958,6 +4533,8 @@ async def add_set_member(set_id: int, payload: SetMemberIn, request: Request):
 async def remove_set_member(set_id: int, uc_uuid: str, request: Request):
     user = get_user(request)  # noqa: F841
     async with pool.acquire() as conn:
+        await _gate_resource(conn, request, "use_case_sets", "id", set_id,
+                             rbac.P_PROJECT_USECASES, f"set {set_id} not found")
         result = await conn.execute(
             "DELETE FROM use_case_set_members WHERE set_id=$1 AND uc_uuid=$2",
             set_id, uc_uuid,
@@ -3259,6 +4836,8 @@ async def import_use_cases(request: Request, file: UploadFile = File(...)):
     errors: list[str] = []
 
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)
         for path, content in entries:
             if not (path.endswith(".yaml") or path.endswith(".yml")):
                 continue
@@ -3302,9 +4881,9 @@ async def import_use_cases(request: Request, file: UploadFile = File(...)):
                     if existing is None:
                         await conn.execute(
                             """INSERT INTO managed_use_cases
-                               (uuid, title, yaml_content, lifecycle_state, created_by, updated_by, tags, priority, priority_score, readiness_score)
-                               VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9)""",
-                            uc_uuid, title, content, target_state, user, tags, priority, priority_score, readiness,
+                               (uuid, title, yaml_content, lifecycle_state, created_by, updated_by, tags, priority, priority_score, readiness_score, project_id)
+                               VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10)""",
+                            uc_uuid, title, content, target_state, user, tags, priority, priority_score, readiness, pid,
                         )
                         await conn.execute(
                             "INSERT INTO lifecycle_events(uc_uuid, from_state, to_state, actor, notes) "
@@ -3666,7 +5245,7 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
         run_started_ts = _parse_ts(summary.get("started_at"))
         if run_started_ts:
             run_session = await conn.fetchrow(
-                """SELECT run_name, uc_state_snapshot, set_name, selection_mode
+                """SELECT run_name, uc_state_snapshot, set_name, selection_mode, project_id
                    FROM run_sessions
                    WHERE started_at BETWEEN $1::timestamptz - interval '15 minutes'
                                         AND $1::timestamptz + interval '15 minutes'
@@ -3685,11 +5264,18 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             elif isinstance(raw, dict):
                 uc_state_snapshot = raw
 
+        # Inherit the project from the run's session; fall back to default.
+        _ar_pid = None
+        if run_session is not None:
+            try: _ar_pid = run_session["project_id"]
+            except (KeyError, TypeError): _ar_pid = None
+        if _ar_pid is None:
+            _ar_pid = await _default_project_id(conn)
         await conn.execute(
             """INSERT INTO analysis_runs
                (run_id, run_name, mode, started_at, finished_at, total_ucs,
-                successful, failed, total_samples)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)""",
+                successful, failed, total_samples, project_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
             run_id,
             run_name_for_analysis,
             summary.get("mode"),
@@ -3699,6 +5285,7 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             summary.get("successful", 0),
             summary.get("failed", 0),
             summary.get("total_samples", 0),
+            _ar_pid,
         )
 
         ingested_ucs = 0
@@ -4065,17 +5652,20 @@ def _resolve_run_id(id_or_name: str) -> Optional[str]:
     return None
 
 
-async def _resolve_diagnosis_model(conn) -> Optional[dict]:
-    """The model to diagnose with: the arch-review default, else any enabled
-    arch-review-capable model. Returns a model_configs row dict or None."""
+async def _resolve_diagnosis_model(conn, project_id: int) -> Optional[dict]:
+    """The model to diagnose with (within the run's project): the arch-review
+    default, else any enabled arch-review-capable model. Row dict or None."""
     row = await conn.fetchrow(
         """SELECT mc.* FROM model_defaults md
              JOIN model_configs mc ON mc.id = md.model_config_id
-            WHERE md.key = 'arch-review' AND mc.enabled"""
+            WHERE md.key = 'arch-review' AND mc.enabled
+              AND md.project_id = $1 AND mc.project_id = $1""",
+        project_id,
     )
     if not row:
         row = await conn.fetchrow(
-            "SELECT * FROM model_configs WHERE enabled AND use_arch_review ORDER BY id LIMIT 1"
+            "SELECT * FROM model_configs WHERE enabled AND use_arch_review AND project_id=$1 ORDER BY id LIMIT 1",
+            project_id,
         )
     return dict(row) if row else None
 
@@ -4242,12 +5832,16 @@ async def diagnose_run(run_id: str, request: Request, use_llm: bool = Query(True
     taxonomy = _ft.build_taxonomy(summary, failures)
 
     async with pool.acquire() as conn:
-        run_name = await conn.fetchval(
-            "SELECT run_name FROM analysis_runs WHERE run_id=$1 LIMIT 1", run_id
+        meta = await conn.fetchrow(
+            "SELECT run_name, project_id FROM analysis_runs WHERE run_id=$1 LIMIT 1", run_id
         )
+        run_name = meta["run_name"] if meta else None
+        dpid = (meta["project_id"] if meta and meta["project_id"] is not None
+                else await _default_project_id(conn))
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_ARCHREVIEW_EXECUTE, dpid)
         call_fn = None
         if use_llm:
-            cfg = await _resolve_diagnosis_model(conn)
+            cfg = await _resolve_diagnosis_model(conn, dpid)
             if cfg:
                 log.info("diagnose_run: LLM second opinion via model '%s' (%s)",
                          cfg.get("name"), cfg.get("model_id"))
@@ -4390,12 +5984,13 @@ class ExperimentIn(BaseModel):
     auto_promote: bool = False
 
 
-async def _eval_model_config(conn):
-    """The (id, model_id, endpoint, use_key) for the evaluation default model."""
+async def _eval_model_config(conn, project_id: int):
+    """The (id, model_id, endpoint, use_key) for the project's evaluation default."""
     m = await conn.fetchrow(
         """SELECT mc.id, mc.model_id, mc.endpoint_url FROM model_defaults md
              JOIN model_configs mc ON mc.id = md.model_config_id
-            WHERE md.key='evaluation' AND mc.enabled""")
+            WHERE md.key='evaluation' AND mc.enabled
+              AND md.project_id=$1 AND mc.project_id=$1""", project_id)
     if not m:
         return None
     return {"id": m["id"], "model_id": m["model_id"], "endpoint": m["endpoint_url"],
@@ -4615,6 +6210,8 @@ async def create_experiment(payload: ExperimentIn, request: Request):
         raise HTTPException(400, "change_spec.type must be 'max_tokens', 'sampling', or 'grounding_nudge'")
 
     async with pool.acquire() as conn:
+        exp_pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_RUNS_EXECUTE, exp_pid)
         # Resolve eval UCs.
         uuids = payload.managed_uc_uuids
         set_name = None
@@ -4627,7 +6224,7 @@ async def create_experiment(payload: ExperimentIn, request: Request):
         if not uuids:
             raise HTTPException(400, "provide set_id or managed_uc_uuids")
 
-        mc = await _eval_model_config(conn)
+        mc = await _eval_model_config(conn, exp_pid)
         if not mc:
             raise HTTPException(400, "no evaluation default model configured")
 
@@ -4882,24 +6479,28 @@ class ConvertToSharedIn(BaseModel):
 
 @app.get("/api/repos")
 async def list_repos_api(
+    request: Request,
     role: Optional[str] = Query(None, description="filter by role (spec, corpus, issue-source)"),
     tenant_id: Optional[str] = Query(None, description="filter by tenant_id"),
 ):
-    """List managed repos, optionally filtered by role and/or tenant_id."""
+    """List the active project's managed repos, optionally filtered by role/tenant."""
     try:
         async with pool.acquire() as conn:
-            return {"repos": await _repos.list_repos(conn, role=role, tenant_id=tenant_id)}
+            pid = await _active_project_id(request, conn)
+            await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+            return {"repos": await _repos.list_repos(conn, role=role, tenant_id=tenant_id, project_id=pid)}
     except ValueError as e:
         raise HTTPException(400, str(e))
 
 
 @app.get("/api/repos/{uuid_or_namespace}")
-async def get_repo_api(uuid_or_namespace: str):
-    """Fetch one managed repo by UUID or namespace."""
+async def get_repo_api(uuid_or_namespace: str, request: Request):
+    """Fetch one managed repo by UUID or namespace (in the active project)."""
     async with pool.acquire() as conn:
         repo = await _repos.get_repo(conn, uuid_or_namespace)
-    if not repo:
-        raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
+        if not repo:
+            raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, repo["project_id"])
     return repo
 
 
@@ -4911,6 +6512,8 @@ async def create_repo_api(payload: RepoCreateIn, request: Request):
     reviewer = get_user(request)
     try:
         async with pool.acquire() as conn:
+            pid = await _active_project_id(request, conn)
+            await _require_priv_conn(conn, request, rbac.P_PROJECT_REPOS, pid)
             created = await _repos.create_repo(
                 conn,
                 namespace=payload.namespace,
@@ -4920,6 +6523,7 @@ async def create_repo_api(payload: RepoCreateIn, request: Request):
                 root_path=payload.root_path,
                 roles=payload.roles,
                 tenant_id=payload.tenant_id,
+                project_id=pid,
                 ingestion_config=payload.ingestion_config,
                 metadata=payload.metadata,
                 github_pat=payload.github_pat,
@@ -4939,7 +6543,62 @@ async def create_repo_api(payload: RepoCreateIn, request: Request):
                 )
             if projections:
                 created["_projection"] = projections
+            warn = await _check_repo_ref(payload.repo_url, payload.repo_branch, payload.github_pat)
+            if warn:
+                created["_warning"] = warn
             return created
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# UC-repos PVC mount (DAV-hosted 'pvc-local' backend). Bare repos live here as
+# <namespace>.git and are referenced as file:///uc-repos/<namespace>.git.
+DAV_UC_REPOS_PATH = os.environ.get("DAV_UC_REPOS_PATH", "/uc-repos")
+
+
+class PvcLocalRepoIn(BaseModel):
+    namespace: str = Field(..., min_length=2, max_length=63)
+    display_name: Optional[str] = Field(None, max_length=256)
+    default_branch: str = Field("main", max_length=256)
+
+
+@app.post("/api/repos/pvc-local")
+async def create_pvc_local_repo(payload: PvcLocalRepoIn, request: Request):
+    """Provision a DAV-hosted ('localized') bare git repo on the UC-repos PVC and
+    register it as a managed_repos row with the uc-store role — the git home for
+    use cases that don't need an external forge. Requires project.repos."""
+    reviewer = get_user(request)
+    ns = payload.namespace.strip().lower()
+    repo_path = os.path.join(DAV_UC_REPOS_PATH, f"{ns}.git")
+    # Path-traversal guard: the resolved bare-repo path must stay under the mount.
+    base = os.path.realpath(DAV_UC_REPOS_PATH)
+    if not os.path.realpath(repo_path).startswith(base + os.sep):
+        raise HTTPException(400, "invalid namespace")
+    if not os.path.isdir(DAV_UC_REPOS_PATH):
+        raise HTTPException(503, f"UC-repos volume not mounted at {DAV_UC_REPOS_PATH} "
+                                 "(deploy the dav-uc-repos PVC)")
+
+    def _git_init():
+        import subprocess
+        if not os.path.exists(repo_path):
+            subprocess.run(
+                ["git", "init", "--bare", f"--initial-branch={payload.default_branch}", repo_path],
+                check=True, capture_output=True, text=True, timeout=30)
+
+    try:
+        await asyncio.to_thread(_git_init)
+    except Exception as e:
+        raise HTTPException(500, f"git init failed: {e}")
+    try:
+        async with pool.acquire() as conn:
+            pid = await _active_project_id(request, conn)
+            await _require_priv_conn(conn, request, rbac.P_PROJECT_REPOS, pid)
+            return await _repos.create_repo(
+                conn, namespace=ns, repo_url=f"file://{repo_path}",
+                repo_branch=payload.default_branch, display_name=payload.display_name,
+                roles=["uc-store"], project_id=pid,
+                metadata={"provider": "pvc-local", "managed": True},
+                created_by=reviewer)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -4956,6 +6615,9 @@ async def update_repo_api(uuid_or_namespace: str, payload: RepoUpdateIn, request
     try:
         async with pool.acquire() as conn:
             before = await _repos.get_repo(conn, uuid_or_namespace)
+            if not before:
+                raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
+            await _require_priv_conn(conn, request, rbac.P_PROJECT_REPOS, before["project_id"])
             # Translate empty-string credential_ref to the unlink sentinel
             # (None = don't touch; "" = explicit unlink; "<name>" = link)
             pat_ref = payload.github_pat_credential_ref
@@ -4995,6 +6657,9 @@ async def update_repo_api(uuid_or_namespace: str, payload: RepoUpdateIn, request
                 )
             if projections:
                 updated["_projection"] = projections
+            warn = await _check_repo_ref(updated.get("repo_url"), updated.get("repo_branch"), payload.github_pat)
+            if warn:
+                updated["_warning"] = warn
             return updated
     except ValueError as e:
         raise HTTPException(400, str(e))
@@ -5012,6 +6677,9 @@ async def delete_repo_api(uuid_or_namespace: str, request: Request):
     reviewer = get_user(request)
     async with pool.acquire() as conn:
         before = await _repos.get_repo(conn, uuid_or_namespace)
+        if not before:
+            raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_REPOS, before["project_id"])
         ok = await _repos.delete_repo(conn, uuid_or_namespace)
         if not ok:
             raise HTTPException(404, f"repo {uuid_or_namespace!r} not found")
@@ -5046,6 +6714,8 @@ async def project_repos_api(
     if target not in ("spec", "corpus", "all"):
         raise HTTPException(400, f"unknown role {role!r}; valid: spec, corpus, all")
     async with pool.acquire() as conn:
+        _pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_REPOS, _pid)
         results: dict = {}
         if target in ("spec", "all"):
             results["spec"] = await _projector.project_spec_sources(
@@ -5716,12 +7386,14 @@ async def self_test_runs(limit: int = Query(20, ge=1, le=100)):
 
 
 @app.get("/api/mcp-servers")
-async def list_mcp_servers():
+async def list_mcp_servers(request: Request):
     if pool is None:
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
         rows = await conn.fetch(
-            "SELECT * FROM mcp_server_configs ORDER BY name"
+            "SELECT * FROM mcp_server_configs WHERE project_id=$1 ORDER BY name", pid
         )
     return [dict(r) for r in rows]
 
@@ -5732,29 +7404,34 @@ async def create_mcp_server(payload: MCPServerIn, request: Request):
     if pool is None:
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_INTEGRATIONS, pid)
         row = await conn.fetchrow(
             """INSERT INTO mcp_server_configs
-                 (name, sse_url, description, enabled, use_uc_assist, created_by)
-               VALUES ($1, $2, $3, $4, $5, $6) RETURNING *""",
+                 (name, sse_url, description, enabled, use_uc_assist, created_by, project_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *""",
             payload.name, payload.sse_url.rstrip("/"),
-            payload.description, payload.enabled, payload.use_uc_assist, user,
+            payload.description, payload.enabled, payload.use_uc_assist, user, pid,
         )
     return dict(row)
 
 
 @app.put("/api/mcp-servers/{mid}")
 async def update_mcp_server(mid: int, payload: MCPServerIn, request: Request):
-    get_user(request)
     if pool is None:
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM mcp_server_configs WHERE id=$1", mid)
+        if owner is None:
+            raise HTTPException(404, "MCP server not found")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_INTEGRATIONS, owner)
         row = await conn.fetchrow(
             """UPDATE mcp_server_configs
                SET name=$1, sse_url=$2, description=$3, enabled=$4,
                    use_uc_assist=$5, updated_at=now()
-               WHERE id=$6 RETURNING *""",
+               WHERE id=$6 AND project_id=$7 RETURNING *""",
             payload.name, payload.sse_url.rstrip("/"),
-            payload.description, payload.enabled, payload.use_uc_assist, mid,
+            payload.description, payload.enabled, payload.use_uc_assist, mid, owner,
         )
     if not row:
         raise HTTPException(404, "MCP server not found")
@@ -5763,21 +7440,26 @@ async def update_mcp_server(mid: int, payload: MCPServerIn, request: Request):
 
 @app.delete("/api/mcp-servers/{mid}", status_code=204)
 async def delete_mcp_server(mid: int, request: Request):
-    get_user(request)
     if pool is None:
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM mcp_server_configs WHERE id=$1", mid)
+        if owner is None:
+            return
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_INTEGRATIONS, owner)
         await conn.execute("DELETE FROM mcp_server_configs WHERE id=$1", mid)
 
 
 @app.get("/api/mcp-servers/health")
-async def mcp_servers_health():
-    """Poll /health on each registered MCP server; returns per-server status."""
+async def mcp_servers_health(request: Request):
+    """Poll /health on each registered MCP server (active project); per-server status."""
     if pool is None:
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
         rows = await conn.fetch(
-            "SELECT id, name, sse_url, enabled FROM mcp_server_configs ORDER BY name"
+            "SELECT id, name, sse_url, enabled FROM mcp_server_configs WHERE project_id=$1 ORDER BY name", pid
         )
 
     async def check(row):
@@ -5806,16 +7488,18 @@ async def mcp_servers_health():
 
 
 @app.get("/api/models")
-async def list_review_models():
-    """List all configured model endpoints; api_key is masked."""
+async def list_review_models(request: Request):
+    """List the active project's configured model endpoints; api_key is masked."""
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
         rows = await conn.fetch(
             """SELECT id, name, provider, endpoint_url, model_id,
                       CASE WHEN api_key != '' THEN '••••••••' ELSE '' END AS api_key,
                       enabled, is_local, use_arch_review, use_uc_assist,
                       capabilities,
                       created_by, created_at, updated_at
-               FROM model_configs ORDER BY created_at"""
+               FROM model_configs WHERE project_id=$1 ORDER BY created_at""", pid
         )
     out = []
     for r in rows:
@@ -5829,19 +7513,21 @@ async def list_review_models():
 async def create_review_model(payload: ModelConfigIn, request: Request):
     user = get_user(request)
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_MODELS, pid)
         try:
             row = await conn.fetchrow(
                 """INSERT INTO model_configs
                      (name, provider, endpoint_url, model_id, api_key, enabled,
-                      is_local, use_arch_review, use_uc_assist, capabilities, created_by)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                      is_local, use_arch_review, use_uc_assist, capabilities, created_by, project_id)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                    RETURNING id, name, provider, endpoint_url, model_id, enabled,
                              is_local, use_arch_review, use_uc_assist, capabilities,
                              created_at""",
                 payload.name, payload.provider, payload.endpoint_url,
                 payload.model_id, payload.api_key, payload.enabled,
                 payload.is_local, payload.use_arch_review, payload.use_uc_assist,
-                json.dumps(payload.capabilities or {}), user,
+                json.dumps(payload.capabilities or {}), user, pid,
             )
         except Exception as e:
             if "unique" in str(e).lower():
@@ -5854,8 +7540,11 @@ async def create_review_model(payload: ModelConfigIn, request: Request):
 
 @app.put("/api/models/{mid}")
 async def update_review_model(mid: int, payload: ModelConfigIn, request: Request):
-    get_user(request)
     async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM model_configs WHERE id=$1", mid)
+        if owner is None:
+            raise HTTPException(404, "Model config not found")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_MODELS, owner)
         row = await conn.fetchrow(
             """UPDATE model_configs
                SET name=$1, provider=$2, endpoint_url=$3, model_id=$4,
@@ -5863,11 +7552,11 @@ async def update_review_model(mid: int, payload: ModelConfigIn, request: Request
                    enabled=$6, is_local=$7, use_arch_review=$8, use_uc_assist=$9,
                    capabilities=$10::jsonb,
                    updated_at=now()
-               WHERE id=$11 RETURNING id""",
+               WHERE id=$11 AND project_id=$12 RETURNING id""",
             payload.name, payload.provider, payload.endpoint_url,
             payload.model_id, payload.api_key, payload.enabled,
             payload.is_local, payload.use_arch_review, payload.use_uc_assist,
-            json.dumps(payload.capabilities or {}), mid,
+            json.dumps(payload.capabilities or {}), mid, owner,
         )
     if not row:
         raise HTTPException(404, "Model config not found")
@@ -5876,8 +7565,11 @@ async def update_review_model(mid: int, payload: ModelConfigIn, request: Request
 
 @app.delete("/api/models/{mid}")
 async def delete_review_model(mid: int, request: Request):
-    get_user(request)
     async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM model_configs WHERE id=$1", mid)
+        if owner is None:
+            return {"ok": True}
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_MODELS, owner)
         await conn.execute("DELETE FROM model_configs WHERE id=$1", mid)
     return {"ok": True}
 
@@ -5891,8 +7583,12 @@ async def delete_review_model(mid: int, request: Request):
 
 
 @app.get("/api/models/{mid}/profiles")
-async def list_model_use_profiles(mid: int):
+async def list_model_use_profiles(mid: int, request: Request):
     async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM model_configs WHERE id=$1", mid)
+        if owner is None:
+            raise HTTPException(404, "model not found")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, owner)
         rows = await conn.fetch(
             """SELECT id, model_config_id, use_key, params, notes,
                       updated_by, created_at, updated_at
@@ -5910,10 +7606,14 @@ async def list_model_use_profiles(mid: int):
 
 
 @app.get("/api/models/{mid}/profiles/{use_key}")
-async def get_model_use_profile(mid: int, use_key: str):
+async def get_model_use_profile(mid: int, use_key: str, request: Request):
     if use_key not in _VALID_USE_KEYS:
         raise HTTPException(400, f"unknown use_key {use_key!r} — valid: {sorted(_VALID_USE_KEYS)}")
     async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM model_configs WHERE id=$1", mid)
+        if owner is None:
+            raise HTTPException(404, "model not found")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, owner)
         row = await conn.fetchrow(
             """SELECT id, model_config_id, use_key, params, notes,
                       updated_by, created_at, updated_at
@@ -5934,11 +7634,12 @@ async def set_model_use_profile(mid: int, use_key: str, payload: ModelUseProfile
         raise HTTPException(400, f"unknown use_key {use_key!r} — valid: {sorted(_VALID_USE_KEYS)}")
     user = get_user(request)
     async with pool.acquire() as conn:
-        # Verify model exists + enabled. Disabled models can still have
-        # profiles edited so operators can prep the swap before flipping.
-        exists = await conn.fetchval("SELECT 1 FROM model_configs WHERE id=$1", mid)
-        if not exists:
+        # Verify model exists + caller can manage its project. Disabled models can
+        # still have profiles edited so operators can prep the swap before flipping.
+        owner = await conn.fetchval("SELECT project_id FROM model_configs WHERE id=$1", mid)
+        if owner is None:
             raise HTTPException(404, "model not found")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_MODELS, owner)
         await conn.execute(
             """INSERT INTO model_use_profiles
                  (model_config_id, use_key, params, notes, updated_by, updated_at)
@@ -5956,8 +7657,11 @@ async def set_model_use_profile(mid: int, use_key: str, payload: ModelUseProfile
 
 @app.delete("/api/models/{mid}/profiles/{use_key}")
 async def delete_model_use_profile(mid: int, use_key: str, request: Request):
-    get_user(request)
     async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM model_configs WHERE id=$1", mid)
+        if owner is None:
+            return {"ok": True}
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_MODELS, owner)
         await conn.execute(
             "DELETE FROM model_use_profiles WHERE model_config_id=$1 AND use_key=$2",
             mid, use_key,
@@ -5967,43 +7671,228 @@ async def delete_model_use_profile(mid: int, use_key: str, request: Request):
 
 # ========================= MODEL DEFAULTS =========================
 
-_VALID_DEFAULT_KEYS = {"evaluation", "arch-review"}
+# Each entry is a distinct "use of a model" that has a project-scoped default
+# selectable in Config. Per-view override pickers send an explicit model when
+# the operator overrides; otherwise the endpoint resolves the default here.
+#   arch-review  — Architectural Review
+#   enhancement  — Enhancement Spec (falls back to arch-review when unset)
+#   evaluation   — A/B evaluation runs
+#   uc-authoring — UC authoring help: assist panel, wizard generate/refine,
+#                  bulk-from-text extraction (one default, per-view overrides)
+# The new-run engine default is NOT here — it lives in the inference source
+# ConfigMap (Config → Pipeline Sources → Inference), which the pipeline reads.
+_VALID_DEFAULT_KEYS = {"evaluation", "arch-review", "enhancement", "uc-authoring"}
 
 
 class ModelDefaultIn(BaseModel):
     model_config_id: Optional[int] = None
 
 
-@app.get("/api/model-defaults")
-async def get_model_defaults():
-    """Return project-scoped model defaults keyed by pipeline type."""
+async def _model_default_row(conn, *default_keys, project_id: int) -> Optional[dict]:
+    """Return the model_configs row (as dict) for the first set, enabled default
+    among default_keys *within the given project*, or None. Lets an endpoint
+    chain fallbacks, e.g. enhancement → arch-review. Both the default pointer and
+    the model it resolves to are scoped to project_id (strict isolation)."""
+    for key in default_keys:
+        did = await conn.fetchval(
+            "SELECT model_config_id FROM model_defaults WHERE key=$1 AND project_id=$2",
+            key, project_id,
+        )
+        if did is not None:
+            row = await conn.fetchrow(
+                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                did, project_id,
+            )
+            if row:
+                return dict(row)
+    return None
+
+
+# ── Cached Architectural Review / Enhancement Plan output ────────────────────
+# Generations over a run's immutable analysis. Cached per (run_id, kind, scope,
+# uc_uuid); staleness is decided by comparing source_ingested_at to the run's
+# current MAX(analysis_runs.ingested_at) — a re-ingest of the same run_id makes
+# the cache stale and the UI offers a refresh.
+
+async def _store_output_cache(run_id: str, kind: str, scope: str,
+                              uc_uuid: Optional[str], content: str,
+                              model_label: str, user: str) -> None:
+    """Write-through cache after a successful generation. Best-effort: a cache
+    write must never break the stream, so callers wrap this in try/except."""
+    if pool is None or not content.strip():
+        log.info("output cache SKIP store: run=%s kind=%s reason=%s",
+                 run_id, kind, "no-pool" if pool is None else "empty-content")
+        return
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT key, model_config_id FROM model_defaults")
+        ingested = await conn.fetchval(
+            "SELECT MAX(ingested_at) FROM analysis_runs WHERE run_id=$1", run_id
+        )
+        log.info("output cache STORE: run=%s kind=%s scope=%s uc=%r len=%d ingested=%s",
+                 run_id, kind, scope, uc_uuid or "", len(content), ingested)
+        await conn.execute(
+            """INSERT INTO analysis_output_cache
+                 (run_id, kind, scope, uc_uuid, content, model_label,
+                  source_ingested_at, created_by, created_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+               ON CONFLICT (run_id, kind, scope, uc_uuid) DO UPDATE
+                 SET content            = EXCLUDED.content,
+                     model_label        = EXCLUDED.model_label,
+                     source_ingested_at = EXCLUDED.source_ingested_at,
+                     created_by         = EXCLUDED.created_by,
+                     created_at         = now()""",
+            run_id, kind, scope, uc_uuid or "", content, model_label or "",
+            ingested, user,
+        )
+
+
+@app.get("/api/analysis/output")
+async def get_cached_output(
+    run_id: str = Query(..., min_length=1),
+    kind: str = Query(..., pattern="^(review|enhancement)$"),
+    scope: str = Query("run", pattern="^(run|uc)$"),
+    uc_uuid: str = Query(""),
+):
+    """Return the cached generation for a run/scope/UC, or {cached: false}.
+
+    `stale` is true when the run has been re-ingested since the cache was
+    written (source_ingested_at older than the run's current MAX ingest)."""
+    if pool is None:
+        raise HTTPException(503, "pool not initialized")
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """SELECT content, model_label, source_ingested_at, created_at, created_by
+               FROM analysis_output_cache
+               WHERE run_id=$1 AND kind=$2 AND scope=$3 AND uc_uuid=$4""",
+            run_id, kind, scope, uc_uuid or "",
+        )
+        if not row:
+            log.info("output cache MISS: run=%s kind=%s scope=%s uc=%r",
+                     run_id, kind, scope, uc_uuid or "")
+            return {"cached": False}
+        current = await conn.fetchval(
+            "SELECT MAX(ingested_at) FROM analysis_runs WHERE run_id=$1", run_id
+        )
+    stale = bool(current and row["source_ingested_at"] and current > row["source_ingested_at"])
+    _c = row["content"] or ""
+    log.info("output cache HIT: run=%s kind=%s scope=%s uc=%r len=%d stale=%s think_open=%d think_close=%d head=%r tail=%r",
+             run_id, kind, scope, uc_uuid or "", len(_c), stale,
+             _c.count("<think>"), _c.count("</think>"), _c[:160], _c[-160:])
+    return {
+        "cached": True,
+        "content": row["content"],
+        "model_label": row["model_label"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "created_by": row["created_by"],
+        "stale": stale,
+    }
+
+
+# ── Resilient (tab-close-proof) generation ───────────────────────────────────
+# The LLM consumption + cache write run in a background task that is NOT tied to
+# the client's SSE connection. If the browser navigates away or closes the tab,
+# the task keeps running and stores the result; the next view of that run loads
+# it from cache. The SSE response merely observes a shared buffer, so cancelling
+# it (client disconnect) never stops the underlying generation.
+_active_gen: dict = {}   # key -> {buf: list[str], done: bool, error: str|None, task}
+
+
+async def _run_generation_bg(state: dict, key, *, provider, endpoint_url, model_id,
+                             api_key, system_prompt, user_prompt, run_id, kind,
+                             scope, uc_uuid, model_label, user):
+    from . import arch_review as _ar
+    try:
+        async for chunk in _ar.stream_review(
+            provider=provider, endpoint_url=endpoint_url, model_id=model_id,
+            api_key=api_key, system_prompt=system_prompt, user_prompt=user_prompt,
+        ):
+            state["buf"].append(chunk)
+    except Exception as exc:
+        log.exception("background generation error (%s)", kind)
+        state["error"] = str(exc)
+    if state["error"] is None:
+        try:
+            await _store_output_cache(run_id, kind, scope, uc_uuid,
+                                      "".join(state["buf"]), model_label, user)
+        except Exception:
+            log.warning("resilient cache write failed", exc_info=True)
+    state["done"] = True
+    # Linger briefly so a still-connected client can drain the tail, then free
+    # memory — the result lives in the cache from here on.
+    try:
+        await asyncio.sleep(45)
+    finally:
+        _active_gen.pop(key, None)
+
+
+def _ensure_generation(key, **kwargs) -> dict:
+    """Start a background generation for `key` unless one is already in flight
+    (a second click/observer attaches to the running one rather than re-calling
+    the model)."""
+    existing = _active_gen.get(key)
+    if existing is not None and not existing["done"]:
+        return existing
+    state = {"buf": [], "done": False, "error": None, "task": None}
+    _active_gen[key] = state
+    state["task"] = asyncio.create_task(_run_generation_bg(state, key, **kwargs))
+    return state
+
+
+async def _observe_generation(key):
+    """SSE generator mirroring a background generation's buffer. Same wire
+    protocol as before: data: {text}, data: {error}, data: [DONE]."""
+    state = _active_gen.get(key)
+    if state is None:
+        yield "data: [DONE]\n\n"
+        return
+    idx = 0
+    while True:
+        buf = state["buf"]
+        while idx < len(buf):
+            yield f"data: {json.dumps({'text': buf[idx]})}\n\n"
+            idx += 1
+        if state["done"]:
+            if state["error"]:
+                yield f"data: {json.dumps({'error': state['error']})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+        await asyncio.sleep(0.08)
+
+
+@app.get("/api/model-defaults")
+async def get_model_defaults(request: Request):
+    """Return the active project's model defaults keyed by pipeline type."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        rows = await conn.fetch(
+            "SELECT key, model_config_id FROM model_defaults WHERE project_id=$1", pid)
     return {r["key"]: r["model_config_id"] for r in rows}
 
 
 @app.put("/api/model-defaults/{key}")
 async def set_model_default(key: str, payload: ModelDefaultIn, request: Request):
-    """Set or clear a project-scoped model default."""
+    """Set or clear the active project's model default for a pipeline type."""
     if key not in _VALID_DEFAULT_KEYS:
         raise HTTPException(400, f"unknown default key: {key!r} — valid: {sorted(_VALID_DEFAULT_KEYS)}")
     user = get_user(request)
-    if payload.model_config_id is not None:
-        async with pool.acquire() as conn:
-            exists = await conn.fetchval(
-                "SELECT 1 FROM model_configs WHERE id=$1 AND enabled", payload.model_config_id
-            )
-        if not exists:
-            raise HTTPException(404, "model config not found or disabled")
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_MODELS, pid)
+        if payload.model_config_id is not None:
+            exists = await conn.fetchval(
+                "SELECT 1 FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                payload.model_config_id, pid,
+            )
+            if not exists:
+                raise HTTPException(404, "model config not found or disabled in this project")
         await conn.execute(
-            """INSERT INTO model_defaults (key, model_config_id, updated_by, updated_at)
-               VALUES ($1, $2, $3, NOW())
-               ON CONFLICT (key) DO UPDATE
+            """INSERT INTO model_defaults (key, model_config_id, project_id, updated_by, updated_at)
+               VALUES ($1, $2, $3, $4, NOW())
+               ON CONFLICT (project_id, key) DO UPDATE
                SET model_config_id = EXCLUDED.model_config_id,
                    updated_by      = EXCLUDED.updated_by,
                    updated_at      = NOW()""",
-            key, payload.model_config_id, user,
+            key, payload.model_config_id, pid, user,
         )
     return {"ok": True}
 
@@ -6040,14 +7929,57 @@ def _inject_context(user_prompt: str, context: str, stage_label: str) -> str:
     )
 
 
+_PROJECT_MEMBER_COUNT_SQL = (
+    "(SELECT count(DISTINCT lower(ar.reviewer)) FROM rbac_account_roles ar "
+    " JOIN rbac_roles ro ON ro.id=ar.role_id AND ro.scope='project' "
+    " WHERE ar.project_id=p.id) AS member_count")
+
+
 @app.get("/api/projects")
-async def list_projects():
+async def list_projects(request: Request, show_archived: bool = Query(False)):
+    """Projects for the RBAC/admin views. PLATFORM admins see ALL projects (so
+    they can assign anyone anywhere / move data); everyone else sees only the
+    projects they're a member of. Membership/role come from RBAC."""
+    user = get_user(request)
+    platform = (not _multiuser()) or await _has_priv(user, rbac.P_PLATFORM_ADMIN)
     async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT id, slug, name, description, created_by, created_at, archived "
-            "FROM projects ORDER BY (slug='default') DESC, name"
-        )
-    return {"projects": [{**dict(r), "created_at": r["created_at"].isoformat()} for r in rows]}
+        myroles = await _user_project_roles(conn, user)
+        cols = ("p.id, p.slug, p.name, p.description, p.created_by, p.created_at, p.archived, "
+                + _PROJECT_MEMBER_COUNT_SQL)
+        if platform:
+            rows = await conn.fetch(
+                f"SELECT {cols} FROM projects p WHERE ($1 OR NOT p.archived) "
+                "ORDER BY (p.slug='default') DESC, p.name", show_archived)
+        else:
+            rows = await conn.fetch(
+                f"SELECT {cols} FROM projects p WHERE p.id = ANY($1::bigint[]) AND ($2 OR NOT p.archived) "
+                "ORDER BY (p.slug='default') DESC, p.name", list(myroles.keys()), show_archived)
+    return {"projects": [{**dict(r), "created_at": r["created_at"].isoformat(),
+                          "my_role": _legacy_proj_role(myroles.get(r["id"], [])),
+                          "is_member": r["id"] in myroles} for r in rows]}
+
+
+@app.get("/api/projects/mine")
+async def my_projects(request: Request):
+    """The top-bar switcher source: ONLY projects the caller is a member of
+    (platform admins included — they add themselves to projects to access data).
+    Also returns the caller's resolved default project."""
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        if not _multiuser():
+            rows = await conn.fetch(
+                "SELECT id, slug, name FROM projects WHERE NOT archived ORDER BY (slug='default') DESC, name")
+        else:
+            rows = await conn.fetch(
+                "SELECT p.id, p.slug, p.name FROM projects p "
+                "JOIN rbac_account_roles ar ON ar.project_id=p.id "
+                "JOIN rbac_roles ro ON ro.id=ar.role_id AND ro.scope='project' "
+                "WHERE lower(ar.reviewer)=lower($1) AND NOT p.archived "
+                "GROUP BY p.id, p.slug, p.name "
+                "ORDER BY (p.slug='default') DESC, p.name", user)
+        member_ids = [r["id"] for r in rows]
+        default_pid = await _resolve_default_project(conn, user, member_ids) if _multiuser() else None
+    return {"projects": [dict(r) for r in rows], "default_project_id": default_pid}
 
 
 class ProjectIn(BaseModel):
@@ -6058,7 +7990,7 @@ class ProjectIn(BaseModel):
 
 @app.post("/api/projects")
 async def create_project(payload: ProjectIn, request: Request):
-    user = get_user(request)
+    user = await require_priv(request, rbac.P_PROJECT_CREATE)
     slug = (payload.slug or "").strip().lower()
     if not slug or not re.match(r"^[a-z0-9][a-z0-9-]*$", slug):
         raise HTTPException(400, "slug must be lowercase alphanumeric/dashes, starting alphanumeric")
@@ -6070,7 +8002,327 @@ async def create_project(payload: ProjectIn, request: Request):
             "INSERT INTO projects (slug, name, description, created_by) VALUES ($1,$2,$3,$4) RETURNING id",
             slug, (payload.name or slug).strip(), payload.description or "", user,
         )
+        # Creator becomes a project admin (RBAC) so they can manage + see it.
+        rid = await conn.fetchval("SELECT id FROM rbac_roles WHERE key='project-admin'")
+        if rid:
+            await rbac.assign_role(conn, user.lower(), rid, row["id"], user.lower())
     return {"ok": True, "id": row["id"], "slug": slug}
+
+
+class ProjectPatchIn(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    archived: Optional[bool] = None
+
+
+@app.patch("/api/projects/{pid}")
+async def patch_project(pid: int, payload: ProjectPatchIn, request: Request):
+    await require_project_admin(request, pid)
+    sets, args = [], []
+    for col, val in (("name", payload.name), ("description", payload.description), ("archived", payload.archived)):
+        if val is not None:
+            args.append(val)
+            sets.append(f"{col}=${len(args)}")
+    if not sets:
+        return {"ok": True}
+    args.append(pid)
+    async with pool.acquire() as conn:
+        res = await conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id=${len(args)}", *args)
+    if res.endswith("0"):
+        raise HTTPException(404, "project not found")
+    return {"ok": True}
+
+
+@app.delete("/api/projects/{pid}")
+async def delete_project(pid: int, request: Request):
+    """Delete a project. Requires project.delete on it (or platform.admin). The
+    'default' project is protected, and a project that still holds content (use
+    cases / runs / sets) is refused — move or remove its data first."""
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        proj = await conn.fetchrow("SELECT slug FROM projects WHERE id=$1", pid)
+        if not proj:
+            raise HTTPException(404, "project not found")
+        if proj["slug"] == "default":
+            raise HTTPException(400, "the default project cannot be deleted")
+        if _multiuser() and not await _has_priv(user, rbac.P_PLATFORM_ADMIN) \
+                and not await _has_priv(user, rbac.P_PROJECT_DELETE, pid):
+            raise HTTPException(403, "requires the project delete privilege")
+        for tbl, label in (("managed_use_cases", "use cases"), ("analysis_runs", "runs"),
+                           ("use_case_sets", "sets")):
+            cnt = await conn.fetchval(f"SELECT count(*) FROM {tbl} WHERE project_id=$1", pid)
+            if cnt:
+                raise HTTPException(409, f"project still has {cnt} {label} — move or delete its data first")
+        async with conn.transaction():
+            for tbl in ("analysis_output_cache", "capability_catalog", "run_sessions",
+                        "managed_use_cases", "analysis_runs", "use_case_sets",
+                        "project_stage_context", "rbac_account_roles", "project_members"):
+                await conn.execute(f"DELETE FROM {tbl} WHERE project_id=$1", pid)
+            await conn.execute("UPDATE users SET default_project_id=NULL WHERE default_project_id=$1", pid)
+            await conn.execute("DELETE FROM projects WHERE id=$1", pid)
+    return {"ok": True}
+
+
+# ── UC destination assignment (Phase 2: where a project/UC's use cases live) ──
+class UcDestinationIn(BaseModel):
+    repo_uuid: Optional[str] = None   # managed_repos.uuid; null = clear → global default
+    path: str = ""
+    branch: str = ""
+
+
+async def _uc_dest_repo_summary(conn, repo_uuid) -> Optional[dict]:
+    if not repo_uuid:
+        return None
+    repo = await _repos.get_repo(conn, str(repo_uuid))
+    if not repo:
+        return None
+    return {"uuid": str(repo.get("uuid") or repo_uuid),
+            "namespace": repo["namespace"],
+            "display_name": repo.get("display_name") or repo["namespace"],
+            "provider": (repo.get("metadata") or {}).get("provider", "external"),
+            "roles": repo.get("roles") or []}
+
+
+async def _validate_uc_store(conn, repo_uuid: str) -> None:
+    repo = await _repos.get_repo(conn, repo_uuid)
+    if not repo:
+        raise HTTPException(404, "uc-store repo not found")
+    if "uc-store" not in (repo.get("roles") or []):
+        raise HTTPException(400, "selected repo is not a uc-store (tag it with the uc-store role first)")
+
+
+@app.get("/api/projects/{pid}/uc-destination")
+async def get_project_uc_destination(pid: int, request: Request):
+    """The project's default UC git destination (repo + path + branch)."""
+    get_user(request)
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT uc_repo_uuid, uc_path, uc_branch FROM projects WHERE id=$1", pid)
+        if not row:
+            raise HTTPException(404, "project not found")
+        repo = await _uc_dest_repo_summary(conn, row["uc_repo_uuid"])
+    return {"repo_uuid": str(row["uc_repo_uuid"]) if row["uc_repo_uuid"] else None,
+            "path": row["uc_path"], "branch": row["uc_branch"], "repo": repo}
+
+
+@app.put("/api/projects/{pid}/uc-destination")
+async def set_project_uc_destination(pid: int, payload: UcDestinationIn, request: Request):
+    """Set the project's default UC destination. uc-admin (of this project) only."""
+    await require_uc_admin(request, pid)
+    async with pool.acquire() as conn:
+        if payload.repo_uuid:
+            await _validate_uc_store(conn, payload.repo_uuid)
+        res = await conn.execute(
+            "UPDATE projects SET uc_repo_uuid=$2::uuid, uc_path=$3, uc_branch=$4 WHERE id=$1",
+            pid, payload.repo_uuid or None, (payload.path or "").strip().strip("/"),
+            (payload.branch or "").strip())
+    if res.endswith("0"):
+        raise HTTPException(404, "project not found")
+    return {"ok": True}
+
+
+@app.put("/api/use-cases/{uuid}/uc-destination")
+async def set_uc_destination(uuid: str, payload: UcDestinationIn, request: Request):
+    """Per-UC destination override (wins over the project default). uc-admin only."""
+    async with pool.acquire() as conn:
+        uc = await conn.fetchrow(
+            "SELECT project_id FROM managed_use_cases WHERE uuid=$1", uuid)
+        if not uc:
+            raise HTTPException(404, "use case not found")
+    await require_uc_admin(request, uc["project_id"])
+    async with pool.acquire() as conn:
+        if payload.repo_uuid:
+            await _validate_uc_store(conn, payload.repo_uuid)
+        await conn.execute(
+            "UPDATE managed_use_cases SET source_repo_uuid=$2::uuid, source_path=$3, "
+            "source_ref=$4 WHERE uuid=$1",
+            uuid, payload.repo_uuid or None, (payload.path or "").strip().strip("/"),
+            (payload.branch or "").strip())
+    return {"ok": True}
+
+
+class MoveDataIn(BaseModel):
+    target_project_id: int
+
+
+@app.post("/api/projects/{pid}/move-data")
+async def move_project_data(pid: int, payload: MoveDataIn, request: Request):
+    """Reassign ALL project-scoped data from project `pid` into the target
+    project (use cases, runs, sessions, sets, cached outputs, capability catalog).
+    Platform admin only — it's a cross-project operation."""
+    await require_role(request, "admin")
+    tgt = payload.target_project_id
+    if pid == tgt:
+        raise HTTPException(400, "source and target are the same project")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT id, name FROM projects WHERE id = ANY($1::bigint[])", [pid, tgt])
+        ids = {r["id"]: r["name"] for r in rows}
+        if pid not in ids:
+            raise HTTPException(404, "source project not found")
+        if tgt not in ids:
+            raise HTTPException(404, "target project not found")
+        moved = {}
+        async with conn.transaction():
+            # capability_catalog is UNIQUE(project_id, cap_key) — drop source rows
+            # that would collide with the target, then move the remainder.
+            await conn.execute(
+                "DELETE FROM capability_catalog WHERE project_id=$1 AND cap_key IN "
+                "(SELECT cap_key FROM capability_catalog WHERE project_id=$2)", pid, tgt)
+            for tbl in ("managed_use_cases", "analysis_runs", "run_sessions",
+                        "use_case_sets", "analysis_output_cache", "capability_catalog"):
+                res = await conn.execute(
+                    f"UPDATE {tbl} SET project_id=$2 WHERE project_id=$1", pid, tgt)
+                moved[tbl] = int(res.split()[-1])
+    return {"ok": True, "moved": moved, "total": sum(moved.values()),
+            "source": ids[pid], "target": ids[tgt]}
+
+
+@app.get("/api/projects/{pid}/members")
+async def list_project_members(pid: int, request: Request):
+    """Members = accounts with a project-scoped RBAC role on this project. A user
+    may appear once per role they hold here."""
+    get_user(request)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT lower(ar.reviewer) AS reviewer, u.email, u.display_name,
+                      ar.role_id, ro.key AS role_key, ro.name AS role_name,
+                      ar.granted_at AS added_at
+               FROM rbac_account_roles ar
+               JOIN rbac_roles ro ON ro.id=ar.role_id AND ro.scope='project'
+               LEFT JOIN users u ON lower(u.reviewer)=lower(ar.reviewer)
+               WHERE ar.project_id=$1 ORDER BY ro.name, ar.reviewer""", pid)
+    return {"members": [{**dict(r), "added_at": r["added_at"].isoformat()} for r in rows]}
+
+
+# Legacy role names tolerated for back-compat with older clients.
+_LEGACY_TO_RBAC = {"admin": "project-admin", "editor": "project-edit",
+                   "viewer": "project-viewer", "uc-admin": "project-admin"}
+
+
+class MemberIn(BaseModel):
+    reviewer: str
+    role_id: Optional[int] = None
+    role: Optional[str] = None   # RBAC role key (or a legacy name)
+
+
+@app.post("/api/projects/{pid}/members")
+async def add_project_member(pid: int, payload: MemberIn, request: Request):
+    """Grant a project-scoped RBAC role to a user on this project (RBAC — same
+    model as the Accounts panel). Escalation-guarded."""
+    granter = await require_project_admin(request, pid)
+    reviewer = (payload.reviewer or "").strip().lower()
+    if not reviewer:
+        raise HTTPException(400, "reviewer required")
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM projects WHERE id=$1", pid):
+            raise HTTPException(404, "project not found")
+        role_id = payload.role_id
+        if role_id is None and payload.role:
+            key = _LEGACY_TO_RBAC.get(payload.role, payload.role)
+            role_id = await conn.fetchval(
+                "SELECT id FROM rbac_roles WHERE key=$1 AND scope='project'", key)
+        if role_id is None:
+            raise HTTPException(400, "a valid project role is required")
+        if not await conn.fetchval(
+                "SELECT 1 FROM rbac_roles WHERE id=$1 AND scope='project'", role_id):
+            raise HTTPException(400, "not a project-scoped role")
+        # Escalation guard: only grant a role whose privileges you already hold.
+        granter_privs = await rbac.privileges_for(conn, granter, pid)
+        if rbac.P_PLATFORM_ADMIN not in granter_privs:
+            role_privs = {x["privilege_key"] for x in await conn.fetch(
+                "SELECT privilege_key FROM rbac_role_privileges WHERE role_id=$1", role_id)}
+            esc = role_privs - granter_privs
+            if esc:
+                raise HTTPException(403, "you can only grant a role whose privileges you already "
+                                         f"hold (this role adds: {', '.join(sorted(esc))})")
+        await conn.execute(
+            "INSERT INTO users (reviewer,email,role,approved,source,enabled) "
+            "VALUES ($1,$1,'viewer',true,'manual',true) ON CONFLICT (reviewer) DO NOTHING", reviewer)
+        await rbac.assign_role(conn, reviewer, role_id, pid, granter)
+        await _reconcile_admin(conn)
+    await _reload_approved()
+    return {"ok": True}
+
+
+@app.delete("/api/projects/{pid}/members/{reviewer}", status_code=204)
+async def remove_project_member(pid: int, reviewer: str, request: Request,
+                                role_id: Optional[int] = Query(None)):
+    """Revoke a user's project role(s) on this project — a specific role_id, or
+    all their project roles here when role_id is omitted."""
+    await require_project_admin(request, pid)
+    r = reviewer.strip().lower()
+    async with pool.acquire() as conn:
+        if role_id is not None:
+            await conn.execute(
+                "DELETE FROM rbac_account_roles WHERE project_id=$1 AND lower(reviewer)=lower($2) "
+                "AND role_id=$3", pid, r, role_id)
+        else:
+            await conn.execute(
+                "DELETE FROM rbac_account_roles ar USING rbac_roles ro "
+                "WHERE ar.role_id=ro.id AND ro.scope='project' AND ar.project_id=$1 "
+                "AND lower(ar.reviewer)=lower($2)", pid, r)
+        await _reconcile_admin(conn)
+    await _reload_approved()
+
+
+async def _user_project_roles(conn, user: str) -> dict:
+    """{project_id: [project-role-keys]} the user holds (RBAC)."""
+    rows = await conn.fetch(
+        "SELECT ar.project_id, ro.key FROM rbac_account_roles ar "
+        "JOIN rbac_roles ro ON ro.id=ar.role_id AND ro.scope='project' "
+        "WHERE lower(ar.reviewer)=lower($1) AND ar.project_id IS NOT NULL", user)
+    out: dict = {}
+    for r in rows:
+        out.setdefault(r["project_id"], []).append(r["key"])
+    return out
+
+
+_PROJ_ROLE_RANK = {"project-admin": 3, "project-edit": 2, "project-viewer": 1}
+_PROJ_ROLE_LEGACY = {"project-admin": "admin", "project-edit": "editor", "project-viewer": "viewer"}
+
+
+def _legacy_proj_role(keys: list) -> Optional[str]:
+    if not keys:
+        return None
+    return _PROJ_ROLE_LEGACY.get(max(keys, key=lambda k: _PROJ_ROLE_RANK.get(k, 0)))
+
+
+async def _is_project_member(conn, user: str, pid: int) -> bool:
+    return bool(await conn.fetchval(
+        "SELECT 1 FROM rbac_account_roles ar JOIN rbac_roles ro ON ro.id=ar.role_id "
+        "AND ro.scope='project' WHERE lower(ar.reviewer)=lower($1) AND ar.project_id=$2 LIMIT 1",
+        user, pid))
+
+
+async def _resolve_default_project(conn, user: str, member_ids: list) -> Optional[int]:
+    """The user's saved default project if it's still one they belong to; else
+    auto-pick (and persist) the first project they're a member of; else None."""
+    cur = await conn.fetchval(
+        "SELECT default_project_id FROM users WHERE lower(reviewer)=lower($1) OR lower(email)=lower($1)",
+        user)
+    if cur and cur in member_ids:
+        return cur
+    if member_ids:
+        await conn.execute(
+            "UPDATE users SET default_project_id=$2 WHERE lower(reviewer)=lower($1)", user, member_ids[0])
+        return member_ids[0]
+    return None
+
+
+async def _active_project_id(request: Request, conn) -> Optional[int]:
+    """Resolve the caller's active project for DATA scoping: the X-DAV-Project
+    header when set to a project the caller is a MEMBER of, else their default
+    project. In single-user mode any non-archived project is honored."""
+    hdr = request.headers.get("X-DAV-Project")
+    if hdr and hdr.isdigit():
+        pid = int(hdr)
+        ok = await conn.fetchval("SELECT 1 FROM projects WHERE id=$1 AND NOT archived", pid)
+        if ok and (not _multiuser() or await _is_project_member(conn, get_user(request), pid)):
+            return pid
+    if not _multiuser():
+        return await _default_project_id(conn)
+    member_ids = list((await _user_project_roles(conn, get_user(request))).keys())
+    return await _resolve_default_project(conn, get_user(request), member_ids)
 
 
 class StageContextIn(BaseModel):
@@ -6093,6 +8345,7 @@ async def put_stage_context(stage: str, payload: StageContextIn, request: Reques
         pid = payload.project_id if payload.project_id is not None else await _default_project_id(conn)
         if pid is None:
             raise HTTPException(404, "no project to attach stage context to")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_ARCHREVIEW_CONTEXT, pid)
         await conn.execute(
             """INSERT INTO project_stage_context (project_id, stage, content, updated_by, updated_at)
                VALUES ($1,$2,$3,$4, now())
@@ -6187,6 +8440,7 @@ async def add_catalog(payload: CatalogIn, request: Request):
         raise HTTPException(400, "cap_key required")
     async with pool.acquire() as conn:
         pid = payload.project_id if payload.project_id is not None else await _default_project_id(conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_CATALOG, pid)
         if await conn.fetchval("SELECT 1 FROM capability_catalog WHERE project_id=$1 AND cap_key=$2", pid, key):
             raise HTTPException(409, f"capability {key!r} already in catalog")
         row = await conn.fetchrow(
@@ -6202,12 +8456,14 @@ async def add_catalog(payload: CatalogIn, request: Request):
 async def update_catalog(cap_id: int, payload: CatalogIn, request: Request):
     user = get_user(request)
     async with pool.acquire() as conn:
+        owner = await _gate_resource(conn, request, "capability_catalog", "id", cap_id,
+                                     rbac.P_PROJECT_CATALOG, "capability not found")
         result = await conn.execute(
             """UPDATE capability_catalog
                SET name=$2, definition=$3, domain=$4, spec_refs=$5, depends_on=$6, status=$7, updated_by=$8, updated_at=now()
-               WHERE id=$1""",
+               WHERE id=$1 AND project_id=$9""",
             cap_id, payload.name, payload.definition, payload.domain, payload.spec_refs,
-            payload.depends_on, payload.status, user)
+            payload.depends_on, payload.status, user, owner)
     if result == "UPDATE 0":
         raise HTTPException(404, "capability not found")
     return {"ok": True, "id": cap_id}
@@ -6217,7 +8473,9 @@ async def update_catalog(cap_id: int, payload: CatalogIn, request: Request):
 async def delete_catalog(cap_id: int, request: Request):
     get_user(request)
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM capability_catalog WHERE id=$1", cap_id)
+        owner = await _gate_resource(conn, request, "capability_catalog", "id", cap_id,
+                                     rbac.P_PROJECT_CATALOG, "capability not found")
+        await conn.execute("DELETE FROM capability_catalog WHERE id=$1 AND project_id=$2", cap_id, owner)
     return {"ok": True, "id": cap_id}
 
 
@@ -6236,14 +8494,15 @@ async def catalog_suggest_meta(payload: SuggestMetaIn, request: Request):
     if not cid:
         raise HTTPException(400, "capability_id required")
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_CATALOG, pid)
         if payload.model_config_id is not None:
             model_row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND enabled", payload.model_config_id)
+                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                payload.model_config_id, pid)
         else:
-            default_id = await conn.fetchval(
-                "SELECT model_config_id FROM model_defaults WHERE key='arch-review'")
-            model_row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND enabled", default_id) if default_id else None
+            model_row = await _model_default_row(conn, "arch-review", project_id=pid)
+            model_row = model_row if model_row else None
         if not model_row:
             raise HTTPException(400, "No model available; set a Default Arch Review model in Config")
         model = dict(model_row)
@@ -6297,24 +8556,31 @@ async def arch_review(payload: ArchReviewIn, request: Request):
     Returns text/event-stream with data: {"text": "..."} chunks,
     a final data: [DONE], or data: {"error": "..."} on failure.
     """
-    get_user(request)
+    reviewer = get_user(request)
     from . import arch_review as _ar
 
     async with pool.acquire() as conn:
+        # Arch review is run-driven: authorize + scope models by the run's project.
+        arpid = await conn.fetchval(
+            "SELECT project_id FROM analysis_runs WHERE run_id=$1 AND project_id IS NOT NULL LIMIT 1",
+            payload.run_id) if payload.run_id else None
+        if arpid is None:
+            arpid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_ARCHREVIEW_EXECUTE, arpid)
         if payload.model_config_id is not None:
             model_row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND enabled",
-                payload.model_config_id,
+                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                payload.model_config_id, arpid,
             )
             if not model_row:
-                raise HTTPException(404, "Model config not found or disabled")
+                raise HTTPException(404, "Model config not found or disabled in this project")
             model_row = dict(model_row)
         elif payload.endpoint_url and payload.model_id:
             # Custom endpoint+model: inherit provider/api_key from a registered
-            # row at the same endpoint, falling back to openai/no-key.
+            # row (in this project) at the same endpoint, falling back to openai/no-key.
             base = await conn.fetchrow(
-                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND enabled ORDER BY id LIMIT 1",
-                payload.endpoint_url,
+                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND project_id=$2 AND enabled ORDER BY id LIMIT 1",
+                payload.endpoint_url, arpid,
             )
             model_row = {
                 "provider":     base["provider"] if base else "openai",
@@ -6323,25 +8589,12 @@ async def arch_review(payload: ArchReviewIn, request: Request):
                 "api_key":      base["api_key"]  if base else "",
             }
         else:
-            # Fall back to the project-scoped Arch Review default
-            # (model_defaults key='arch-review'). Mirrors the evaluation
-            # default flow for run-trigger params.
-            default_id = await conn.fetchval(
-                "SELECT model_config_id FROM model_defaults WHERE key='arch-review'"
-            )
-            if default_id is None:
+            # Fall back to the project-scoped Arch Review default.
+            model_row = await _model_default_row(conn, "arch-review", project_id=arpid)
+            if model_row is None:
                 raise HTTPException(
                     400,
-                    "Provide model_config_id or endpoint_url+model_id, "
-                    "or set a project default in Config → Default Arch Review model",
-                )
-            model_row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND enabled", default_id
-            )
-            if not model_row:
-                raise HTTPException(
-                    404,
-                    "Project Arch Review default points to a model that no longer exists or is disabled",
+                    "Provide a model, or set a Default Arch Review model in Config",
                 )
             model_row = dict(model_row)
 
@@ -6391,23 +8644,18 @@ async def arch_review(payload: ArchReviewIn, request: Request):
         _ctx = await _stage_context(_c, "arch_review")
     user_prompt = _inject_context(user_prompt, _ctx, "architectural review")
 
-    async def _gen():
-        try:
-            async for chunk in _ar.stream_review(
-                provider=model["provider"],
-                endpoint_url=model["endpoint_url"],
-                model_id=model["model_id"],
-                api_key=model["api_key"],
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            ):
-                yield f"data: {json.dumps({'text': chunk})}\n\n"
-        except Exception as exc:
-            log.exception("Arch review stream error")
-            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(_gen(), media_type="text/event-stream")
+    key = ("review", payload.scope, payload.run_id, payload.uc_uuid or "")
+    _ensure_generation(
+        key,
+        provider=model["provider"], endpoint_url=model["endpoint_url"],
+        model_id=model["model_id"], api_key=model["api_key"],
+        system_prompt=system_prompt, user_prompt=user_prompt,
+        run_id=payload.run_id, kind="review", scope=payload.scope,
+        uc_uuid=payload.uc_uuid,
+        model_label=model.get("name") or model.get("model_id") or "",
+        user=reviewer,
+    )
+    return StreamingResponse(_observe_generation(key), media_type="text/event-stream")
 
 
 @app.get("/api/arch-review/prompt")
@@ -6505,20 +8753,28 @@ async def enhancements(payload: EnhancementIn, request: Request):
     data: [DONE] on completion, data: {"error": "..."} on failure.
     """
     from . import arch_review as _ar
+    reviewer = get_user(request)
 
     async with pool.acquire() as conn:
+        # Run-driven: authorize + scope models by the run's project.
+        enpid = await conn.fetchval(
+            "SELECT project_id FROM analysis_runs WHERE run_id=$1 AND project_id IS NOT NULL LIMIT 1",
+            payload.run_id) if payload.run_id else None
+        if enpid is None:
+            enpid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_ENH_EXECUTE, enpid)
         if payload.model_config_id is not None:
             model_row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND enabled",
-                payload.model_config_id,
+                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                payload.model_config_id, enpid,
             )
             if not model_row:
-                raise HTTPException(404, "Model config not found or disabled")
+                raise HTTPException(404, "Model config not found or disabled in this project")
             model_row = dict(model_row)
         elif payload.endpoint_url and payload.model_id:
             base = await conn.fetchrow(
-                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND enabled ORDER BY id LIMIT 1",
-                payload.endpoint_url,
+                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND project_id=$2 AND enabled ORDER BY id LIMIT 1",
+                payload.endpoint_url, enpid,
             )
             model_row = {
                 "provider":     base["provider"] if base else "openai",
@@ -6527,35 +8783,38 @@ async def enhancements(payload: EnhancementIn, request: Request):
                 "api_key":      base["api_key"]  if base else "",
             }
         else:
-            raise HTTPException(400, "Provide model_config_id or endpoint_url+model_id")
+            # Fall back to the Enhancement default, then the Arch Review default
+            # (enhancement is part of the same review track).
+            model_row = await _model_default_row(conn, "enhancement", "arch-review", project_id=enpid)
+            if model_row is None:
+                raise HTTPException(
+                    400,
+                    "Provide a model, or set a Default Enhancement / Arch Review "
+                    "model in Config",
+                )
         if not payload.run_id:
             raise HTTPException(400, "run_id required")
         user_prompt, system_prompt = await _enhancement_prompts(
             payload.scope, payload.run_id, payload.uc_uuid, conn
         )
         # Inject the architect's project/stage context (shared Track-1 stage).
-        _ctx = await _stage_context(conn, "arch_review")
+        _ctx = await _stage_context(conn, "arch_review", enpid)
         user_prompt = _inject_context(user_prompt, _ctx, "enhancement planning")
 
     model = model_row
 
-    async def _gen():
-        try:
-            async for chunk in _ar.stream_review(
-                provider=model["provider"],
-                endpoint_url=model["endpoint_url"],
-                model_id=model["model_id"],
-                api_key=model["api_key"],
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            ):
-                yield f"data: {json.dumps({'text': chunk})}\n\n"
-        except Exception as exc:
-            log.exception("enhancement stream error")
-            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(_gen(), media_type="text/event-stream")
+    key = ("enhancement", payload.scope, payload.run_id, payload.uc_uuid or "")
+    _ensure_generation(
+        key,
+        provider=model["provider"], endpoint_url=model["endpoint_url"],
+        model_id=model["model_id"], api_key=model["api_key"],
+        system_prompt=system_prompt, user_prompt=user_prompt,
+        run_id=payload.run_id, kind="enhancement", scope=payload.scope,
+        uc_uuid=payload.uc_uuid,
+        model_label=model.get("name") or model.get("model_id") or "",
+        user=reviewer,
+    )
+    return StreamingResponse(_observe_generation(key), media_type="text/event-stream")
 
 
 class EnhancementApplyIn(BaseModel):
@@ -6594,6 +8853,10 @@ async def apply_enhancements(payload: EnhancementApplyIn, request: Request):
     Per-file fetch / push failures DO raise 502.
     """
     user = get_user(request)
+    async with pool.acquire() as conn:
+        applypid = (await _run_project_id(conn, payload.run_id)) if payload.run_id \
+            else await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_ENH_PR, applypid)
     enhancements = _enh_apply.parse_enhancement_blocks(payload.enhancement_text)
     if not enhancements:
         raise HTTPException(400, "no ENHANCEMENT blocks found in input text")
@@ -6642,7 +8905,10 @@ async def apply_enhancements(payload: EnhancementApplyIn, request: Request):
                 )
             override = payload.repo_overrides.get(ns)
             repo = await _repos.get_repo(conn, override or ns)
-            if not repo or "enhancement-target" not in (repo.get("roles") or []):
+            # Repo must belong to the run's project (no cross-project push) and
+            # carry the enhancement-target role.
+            if (not repo or repo.get("project_id") != applypid
+                    or "enhancement-target" not in (repo.get("roles") or [])):
                 unmatched_namespaces.append({
                     "namespace": ns,
                     "enhancements": [e.id for e in ns_enhs],

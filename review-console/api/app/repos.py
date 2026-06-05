@@ -42,7 +42,10 @@ SECRET_FIELDS = ("github_pat", "github_webhook_secret")
 
 # v1 closed vocabulary. Open for extension — adding a role here is the only
 # change needed to make the registry accept it.
-VALID_ROLES = {"spec", "corpus", "issue-source", "enhancement-target"}
+#   uc-store: writable use-case destination (the universal UC git location;
+#   see the "Use-case git model" in review-console-design.md). corpus stays as
+#   the transitional "must-have" set and is expected to be subsumed by uc-store.
+VALID_ROLES = {"spec", "corpus", "issue-source", "enhancement-target", "uc-store"}
 
 # Match the migration's CHECK constraint exactly.
 _NAMESPACE_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$")
@@ -57,7 +60,13 @@ def _validate_namespace(namespace: str) -> None:
 
 
 def _validate_repo_url(repo_url: str) -> None:
-    if not repo_url or not repo_url.startswith(("http://", "https://", "git@")):
+    # `file:///uc-repos/` is the DAV-hosted pvc-local backend: bare repos under
+    # the mounted UC-repos PVC only. Constrained to that prefix (no traversal)
+    # so the public create endpoint can't point a row at an arbitrary local path.
+    if repo_url and repo_url.startswith("file:///uc-repos/"):
+        if ".." in repo_url:
+            raise ValueError(f"invalid pvc-local repo_url: {repo_url!r}")
+    elif not repo_url or not repo_url.startswith(("http://", "https://", "git@")):
         raise ValueError(f"invalid repo_url: {repo_url!r}")
     if len(repo_url) > 512:
         raise ValueError("repo_url too long (max 512)")
@@ -162,6 +171,7 @@ def _row_to_dict(row: asyncpg.Record) -> dict:
         "root_path": row["root_path"],
         "roles": list(row["roles"] or []),
         "tenant_id": row["tenant_id"],
+        "project_id": row["project_id"],
         "ingestion_config": _parse_jsonb(row["ingestion_config"]),
         "metadata": _parse_jsonb(row["metadata"]),
         "has_github_pat": has_pat_inline or has_pat_shared,
@@ -199,6 +209,7 @@ async def list_repos(
     conn: asyncpg.Connection,
     role: Optional[str] = None,
     tenant_id: Optional[str] = None,
+    project_id: Optional[int] = None,
 ) -> list[dict]:
     """List managed repos.
 
@@ -207,6 +218,7 @@ async def list_repos(
     - `tenant_id`: only repos in this tenant. If omitted, ALL tenants
       are returned (intended for operator/admin use; per-tenant UI views
       pass tenant_id explicitly).
+    - `project_id`: only repos owned by this project (the project-scoping key).
     """
     if role is not None and role not in VALID_ROLES:
         raise ValueError(f"unknown role: {role!r}")
@@ -219,6 +231,9 @@ async def list_repos(
     if tenant_id is not None:
         args.append(tenant_id)
         where.append(f"tenant_id = ${len(args)}")
+    if project_id is not None:
+        args.append(project_id)
+        where.append(f"project_id = ${len(args)}")
     where_clause = (" WHERE " + " AND ".join(where)) if where else ""
 
     rows = await conn.fetch(
@@ -248,6 +263,7 @@ async def create_repo(
     root_path: str = "",
     roles: Optional[list[str]] = None,
     tenant_id: str = DEFAULT_TENANT,
+    project_id: Optional[int] = None,
     ingestion_config: Optional[dict] = None,
     metadata: Optional[dict] = None,
     github_pat: Optional[str] = None,
@@ -271,6 +287,10 @@ async def create_repo(
     root_path = (root_path or "").strip("/")
     if not tenant_id:
         tenant_id = DEFAULT_TENANT
+    # project_id is the scoping key (NOT NULL). Fall back to the 'default' project
+    # for any caller that doesn't supply one.
+    if project_id is None:
+        project_id = await conn.fetchval("SELECT id FROM projects WHERE slug='default'")
 
     # Encrypt inline now so a Fernet misconfiguration is caught before INSERT
     pat_enc = _crypto.encrypt(github_pat) if github_pat else None
@@ -300,15 +320,15 @@ async def create_repo(
         row = await conn.fetchrow(
             "INSERT INTO managed_repos "
             "(namespace, display_name, repo_url, repo_branch, root_path, "
-            " roles, tenant_id, ingestion_config, metadata, "
+            " roles, tenant_id, project_id, ingestion_config, metadata, "
             " github_pat_encrypted, github_webhook_secret_encrypted, "
             " github_pat_credential_id, github_webhook_secret_credential_id, "
             " created_by, updated_by) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, "
-            " $10, $11, $12, $13, $14, $14) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, "
+            " $11, $12, $13, $14, $15, $15) "
             "RETURNING uuid",
             namespace, display_name, repo_url, repo_branch, root_path,
-            roles, tenant_id, _to_jsonb(ingestion_config), _to_jsonb(metadata),
+            roles, tenant_id, project_id, _to_jsonb(ingestion_config), _to_jsonb(metadata),
             pat_enc, secret_enc,
             pat_cred_id, ws_cred_id,
             created_by,

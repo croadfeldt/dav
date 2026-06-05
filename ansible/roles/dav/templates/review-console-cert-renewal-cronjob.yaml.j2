@@ -1,0 +1,62 @@
+---
+# nginx reads the TLS cert from a mounted Secret at startup, so it won't pick up
+# a cert-manager renewal until the pod restarts. This weekly CronJob does a
+# rolling restart (a no-op if the cert is unchanged). Replace with a
+# stakater/Reloader annotation if you run Reloader.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dav-review-cert-renewal
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-ui
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dav-review-cert-renewal
+  namespace: {{ dav_namespace }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dav-review-cert-renewal
+  namespace: {{ dav_namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dav-review-cert-renewal
+subjects:
+  - kind: ServiceAccount
+    name: dav-review-cert-renewal
+    namespace: {{ dav_namespace }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dav-review-cert-renewal
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-ui
+spec:
+  schedule: "{{ review_console_loadbalancer_cert_renewal_schedule | default('0 3 * * 0') }}"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: dav-review-cert-renewal
+          restartPolicy: OnFailure
+          containers:
+            - name: restarter
+              image: registry.redhat.io/openshift4/ose-cli:latest
+              command:
+                - /bin/sh
+                - -c
+                - oc rollout restart deployment/dav-review-ui -n {{ dav_namespace }}

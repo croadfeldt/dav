@@ -20,6 +20,37 @@
         name: "{{ dav_service_account }}"
         namespace: "{{ dav_namespace }}"
 
+# Egress firewall — restrict the namespace's external egress to allowlisted
+# internal infra + the public internet, denying lateral access to the rest of
+# the homelab. Cluster pod/service networks are allowed first so in-cluster
+# (DB, pod-to-pod) traffic is never affected. Ordered: first match wins; no
+# match = allow (so public internet stays reachable).
+- name: Create namespace EgressFirewall
+  kubernetes.core.k8s:
+    state: present
+    # Multiline string so the rule list renders via Jinja before YAML parsing.
+    # Order matters (first match wins): cluster nets → allowlisted infra → deny
+    # private space. Anything unmatched (public internet) is allowed by default.
+    definition: |
+      apiVersion: k8s.ovn.org/v1
+      kind: EgressFirewall
+      metadata:
+        name: default
+        namespace: "{{ dav_namespace }}"
+      spec:
+        egress:
+      {% for cidr in dav_egress_cluster_cidrs + dav_egress_allow_cidrs %}
+          - type: Allow
+            to:
+              cidrSelector: "{{ cidr }}"
+      {% endfor %}
+      {% for cidr in dav_egress_deny_cidrs %}
+          - type: Deny
+            to:
+              cidrSelector: "{{ cidr }}"
+      {% endfor %}
+  when: dav_egress_firewall_enabled | bool
+
 - name: Create pipeline role
   kubernetes.core.k8s:
     state: present

@@ -314,6 +314,30 @@ Managed UCs are currently stored only in Postgres. They should optionally be com
 
 Complexity is mostly in the auth bridging. The actual git operations are straightforward.
 
+### Console v2 — auth + RBAC + multi-project — **SHIPPED core (v0.13.0, 2026-06-04)**
+
+Multi-user is live: source-agnostic accounts, an OpenShift-style **RBAC matrix**
+(roles = groups of privileges; scopes **Platform / Cross-project / Project**; per-project
+bindings), membership-scoped project visibility, per-user default project,
+project create/delete/move-data, invites, a dedicated break-glass admin, and
+external hosting on a MetalLB IP + custom port with a DNS-01 Let's Encrypt cert.
+Full detail + the remaining UI slices (proper Roles / Role-bindings tabs) live in
+[review-console-design.md](review-console-design.md) §RBAC / §Projects / §Deployment.
+
+**v0.14.0 (2026-06-05) — granular workflow privileges + config tenancy + egress:**
+the RBAC matrix gained the full **workflow/execution** privilege catalog
+(use-cases, run manage/execute, arch-review execute/context, enhancement
+execute/PR, catalog) plus **config-registry** privileges (models, integrations,
+repos). Config registries (`model_configs`/`mcp_server_configs`/`managed_repos`/
+`model_defaults`) are now **project-owned** (strict isolation, existing → DCM);
+every workflow + config endpoint is authorized (reads on `data.read`, mutations
+on the specific privilege, with **resource-ownership** checks closing the prior
+cross-project edit gap). A namespace **EgressFirewall** restricts the dav pods to
+allowlisted internal infra + the internet (lateral homelab denied). Known
+follow-up: spec/corpus projection still writes a cluster-wide ConfigMap
+(aggregate across projects); read-by-id endpoints aren't yet `data.read`-gated
+(active-project membership already prevents cross-project listing).
+
 ### Console v2 — multi-project / multi-repo support — **IN PROGRESS (M1-M8, 2026-05-27+)**
 
 Originally scoped as a `dav-console-projects` ConfigMap. Superseded by the

@@ -1,0 +1,23 @@
+---
+# DAV-hosted ('pvc-local') UC git stores. Bare repos live here as
+# <namespace>.git and are referenced as file:///uc-repos/<namespace>.git.
+# RWX so the API can write and (later, Phase 3) pipeline pods can clone over
+# the shared filesystem — defaults to the same RWX class as the workspace PVC.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dav-uc-repos
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-api
+spec:
+  accessModes:
+    - "{{ review_console_uc_repos_pvc_access_mode | default('ReadWriteMany') }}"
+  resources:
+    requests:
+      storage: "{{ review_console_uc_repos_pvc_size | default('2Gi') }}"
+{% set _ucsc = review_console_uc_repos_pvc_storage_class | default(dav_workspace_pvc_storage_class) | default('') %}
+{% if _ucsc | length > 0 %}
+  storageClassName: "{{ _ucsc }}"
+{% endif %}

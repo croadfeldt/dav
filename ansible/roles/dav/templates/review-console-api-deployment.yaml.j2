@@ -134,6 +134,29 @@ spec:
                   name: dav-fernet-key
                   key: key
                   optional: true
+            # Multi-user auth enforcement. When true the API enforces app
+            # sessions, the approval gate, and role scoping (single-user
+            # passthrough otherwise). Pair with review_console_relaxed_proxy
+            # so the oauth-proxy lets the app's own login + /api/auth/* through.
+            - name: DAV_REQUIRE_AUTH
+              value: "{{ 'true' if (review_console_require_auth | default(false)) else 'false' }}"
+            # Break-glass internal platform-admin seeded on first boot (forced
+            # password change on first login). Password from the vault var when
+            # set, else the API default ("changeme").
+            - name: DAV_DEFAULT_ADMIN_EMAIL
+              value: "{{ review_console_default_admin_email | default('admin@dav.local') }}"
+            # Public base URL for outbound links (invites). Explicit override, else
+            # derived from the hostname + a custom port. The port is appended ONLY
+            # when the LoadBalancer is enabled AND the port is non-standard (not
+            # 80/443) — otherwise no port is added.
+{% set _bport = review_console_loadbalancer_port | default('') | string %}
+{% set _buseport = (review_console_loadbalancer_enabled | default(false)) and _bport and _bport not in ['80', '443'] %}
+            - name: DAV_PUBLIC_BASE_URL
+              value: "{{ review_console_public_base_url if (review_console_public_base_url | default('')) else ('https://' + review_console_hostname + (':' ~ _bport if _buseport else '')) }}"
+{% if vault_review_console_default_admin_password is defined and vault_review_console_default_admin_password | length > 0 %}
+            - name: DAV_DEFAULT_ADMIN_PASSWORD
+              value: "{{ vault_review_console_default_admin_password }}"
+{% endif %}
           # Optional Secret for tokens the API needs at runtime — currently:
           #   DAV_CORPUS_PUSH_TOKEN   GitHub PAT (repo scope) used by Push-to-corpus
           #   DAV_UC_ASSIST_API_KEY   fallback for UC Assist when no DB-backed
@@ -154,6 +177,16 @@ spec:
             - secretRef:
                 name: dav-review-api-tokens
                 optional: true
+            # Optional LDAP config for multi-user approval + roles. When absent,
+            # the access gate is disabled (single-user behavior). Keys:
+            #   DAV_LDAP_URL DAV_LDAP_BIND_DN DAV_LDAP_BIND_PASSWORD
+            #   DAV_LDAP_USER_BASE DAV_LDAP_GROUP_DN DAV_LDAP_USER_ATTR
+            #   DAV_LDAP_MAIL_ATTR DAV_LDAP_NAME_ATTR DAV_LDAP_MEMBER_ATTR
+            #   DAV_LDAP_START_TLS DAV_LDAP_ENFORCE DAV_LDAP_BOOTSTRAP_ADMINS
+            # See review-console/deploy/dav-ldap-secret.example.yaml.
+            - secretRef:
+                name: dav-ldap
+                optional: true
           volumeMounts:
             - name: corpus
               mountPath: /data
@@ -164,6 +197,12 @@ spec:
             - name: service-ca
               mountPath: /var/run/configmaps/service-ca
               readOnly: true
+{% if review_console_uc_repos_enabled | default(true) %}
+            # DAV-hosted ('pvc-local') UC git stores — bare repos written here.
+            # RW, unlike the read-only corpus/workspace mounts above.
+            - name: uc-repos
+              mountPath: /uc-repos
+{% endif %}
           readinessProbe:
             httpGet:
               path: /readyz
@@ -194,3 +233,8 @@ spec:
           configMap:
             name: dav-review-service-ca
             optional: true   # tolerate first deploy where service-ca CM hasn't reconciled yet
+{% if review_console_uc_repos_enabled | default(true) %}
+        - name: uc-repos
+          persistentVolumeClaim:
+            claimName: dav-uc-repos
+{% endif %}

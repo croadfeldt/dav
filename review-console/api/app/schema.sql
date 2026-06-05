@@ -285,7 +285,8 @@ CREATE TABLE IF NOT EXISTS model_configs (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_model_configs_name ON model_configs(lower(name));
+-- Name uniqueness is per-project; the composite index is created in the
+-- project-scope block below (after project_id is added).
 
 -- ── MCP server registry ─────────────────────────────────────────────────────
 -- User-registered MCP servers (SSE transport) shown in the Integrations panel.
@@ -303,7 +304,8 @@ CREATE TABLE IF NOT EXISTS mcp_server_configs (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_name ON mcp_server_configs(lower(name));
+-- Name uniqueness is per-project; composite index created in the project-scope
+-- block below (after project_id is added).
 
 -- ── Code repository configs ─────────────────────────────────────────────────
 -- User-registered git repos for branch + PR/MR creation from enhancement findings.
@@ -323,22 +325,8 @@ CREATE TABLE IF NOT EXISTS code_repo_configs (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_code_repos_name ON code_repo_configs(lower(name));
 
--- ── Seed MCP servers ───────────────────────────────────────────────────────
--- Idempotent: ON CONFLICT DO NOTHING skips rows that already exist by name.
-INSERT INTO mcp_server_configs (name, description, sse_url, enabled, created_by) VALUES
-  ('openshift-mcp',
-   'OpenShift cluster tools — list pods, logs, events, nodes, inference services',
-   'https://openshift-mcp-mcp-servers.apps.ocp.roadfeldt.com/sse',
-   true, 'seed'),
-  ('frc-scheduler-mcp',
-   'FRC scheduler — events, teams, schedules, TBA lookup',
-   'https://frc-scheduler-mcp-mcp-servers.apps.ocp.roadfeldt.com/sse',
-   true, 'seed'),
-  ('dav-docs-mcp',
-   'DCM architecture spec — served via MCP for use with Claude Code and agents',
-   'https://dav-docs-mcp-dav.apps.ocp.roadfeldt.com/sse',
-   true, 'seed')
-ON CONFLICT DO NOTHING;
+-- Seed MCP servers is relocated below — it now targets a project_id, which
+-- requires the `projects` table + the project_id column (added further down).
 
 -- ── Projects (tenancy foundation — uc-driven-roadmaps-design.md §9) ──────────
 -- A project is a user-defined analysis scope. Tenancy-ready from birth: new
@@ -356,6 +344,73 @@ CREATE TABLE IF NOT EXISTS projects (
 INSERT INTO projects (slug, name, description, created_by)
   VALUES ('default', 'Default', 'Default project (auto-created)', 'system')
   ON CONFLICT (slug) DO NOTHING;
+
+-- ── Project-scope the config registries ─────────────────────────────────────
+-- model_configs / mcp_server_configs / managed_repos / model_defaults become
+-- project-owned (strict isolation). Runs here (after `projects` exists) so it is
+-- safe on both fresh and existing DBs, and idempotent (re-applied every boot).
+-- Existing rows backfill to the DCM project (id 20) with a fallback to 'default'
+-- so DBs lacking id 20 still satisfy NOT NULL.
+DO $$
+DECLARE _pid BIGINT;
+BEGIN
+  SELECT COALESCE((SELECT id FROM projects WHERE id=20),
+                  (SELECT id FROM projects WHERE slug='default')) INTO _pid;
+
+  -- model_configs
+  ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
+  EXECUTE format('UPDATE model_configs SET project_id=%s WHERE project_id IS NULL', _pid);
+  ALTER TABLE model_configs ALTER COLUMN project_id SET NOT NULL;
+
+  -- mcp_server_configs
+  ALTER TABLE mcp_server_configs ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
+  EXECUTE format('UPDATE mcp_server_configs SET project_id=%s WHERE project_id IS NULL', _pid);
+  ALTER TABLE mcp_server_configs ALTER COLUMN project_id SET NOT NULL;
+
+  -- managed_repos (keep tenant_id; project_id is the scoping key)
+  ALTER TABLE managed_repos ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
+  EXECUTE format('UPDATE managed_repos SET project_id=%s WHERE project_id IS NULL', _pid);
+  ALTER TABLE managed_repos ALTER COLUMN project_id SET NOT NULL;
+
+  -- model_defaults: per-use default-model pointers become per-project
+  ALTER TABLE model_defaults ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
+  EXECUTE format('UPDATE model_defaults SET project_id=%s WHERE project_id IS NULL', _pid);
+  ALTER TABLE model_defaults ALTER COLUMN project_id SET NOT NULL;
+  IF EXISTS (SELECT 1 FROM pg_constraint
+             WHERE conname='model_defaults_pkey'
+               AND conrelid='model_defaults'::regclass
+               AND array_length(conkey,1)=1) THEN
+    ALTER TABLE model_defaults DROP CONSTRAINT model_defaults_pkey;
+    ALTER TABLE model_defaults ADD PRIMARY KEY (project_id, key);
+  END IF;
+END $$;
+-- Per-project name uniqueness (retire any old GLOBAL unique on lower(name)).
+DROP INDEX IF EXISTS idx_model_configs_name;
+DROP INDEX IF EXISTS idx_mcp_servers_name;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_model_configs_proj_name ON model_configs(project_id, lower(name));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_proj_name   ON mcp_server_configs(project_id, lower(name));
+CREATE INDEX IF NOT EXISTS idx_model_configs_project ON model_configs(project_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_servers_project   ON mcp_server_configs(project_id);
+CREATE INDEX IF NOT EXISTS idx_managed_repos_project ON managed_repos(project_id);
+
+-- ── Seed MCP servers (relocated; now project-scoped) ─────────────────────────
+-- Targets the DCM project (id 20) with a 'default' fallback. Idempotent via the
+-- per-project name unique index.
+INSERT INTO mcp_server_configs (name, description, sse_url, enabled, created_by, project_id)
+  SELECT v.name, v.description, v.sse_url, true, 'seed',
+         COALESCE((SELECT id FROM projects WHERE id=20), (SELECT id FROM projects WHERE slug='default'))
+  FROM (VALUES
+    ('openshift-mcp',
+     'OpenShift cluster tools — list pods, logs, events, nodes, inference services',
+     'https://openshift-mcp-mcp-servers.apps.ocp.roadfeldt.com/sse'),
+    ('frc-scheduler-mcp',
+     'FRC scheduler — events, teams, schedules, TBA lookup',
+     'https://frc-scheduler-mcp-mcp-servers.apps.ocp.roadfeldt.com/sse'),
+    ('dav-docs-mcp',
+     'DCM architecture spec — served via MCP for use with Claude Code and agents',
+     'https://dav-docs-mcp-dav.apps.ocp.roadfeldt.com/sse')
+  ) AS v(name, description, sse_url)
+ON CONFLICT (project_id, lower(name)) DO NOTHING;
 
 -- Many-to-many users↔projects with a per-project role.
 CREATE TABLE IF NOT EXISTS project_members (
@@ -404,5 +459,275 @@ CREATE INDEX IF NOT EXISTS idx_capability_catalog_project ON capability_catalog(
 -- Run management: soft-archive (hide from default lists; reversible). Delete is
 -- a hard purge handled in the API (DB + workspace + Tekton), not a flag.
 ALTER TABLE run_sessions ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false;
+
+-- Cached Architectural Review / Enhancement Plan output per (run, scope, UC).
+-- These are LLM generations over a run's immutable analysis; caching avoids
+-- regenerating on every view. source_ingested_at records the analysis_runs
+-- ingest timestamp at generation time — if the run is re-ingested (newer
+-- ingested_at), the cache is stale and the UI offers a refresh. uc_uuid is ''
+-- (not NULL) for run-scope so the UNIQUE key is deterministic for upserts.
+CREATE TABLE IF NOT EXISTS analysis_output_cache (
+  id                 BIGSERIAL PRIMARY KEY,
+  run_id             TEXT NOT NULL,
+  kind               TEXT NOT NULL,            -- 'review' | 'enhancement'
+  scope              TEXT NOT NULL,            -- 'run' | 'uc'
+  uc_uuid            TEXT NOT NULL DEFAULT '',  -- '' for run scope
+  content            TEXT NOT NULL,
+  model_label        TEXT NOT NULL DEFAULT '',
+  source_ingested_at TIMESTAMPTZ,
+  created_by         TEXT NOT NULL DEFAULT '',
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (run_id, kind, scope, uc_uuid)
+);
+CREATE INDEX IF NOT EXISTS idx_analysis_output_cache_run ON analysis_output_cache(run_id);
+
+-- Multi-user: approved users + roles. Identity comes from the oauth-proxy;
+-- `approved` is synced from the LDAP approval group; role (admin/editor/viewer)
+-- is managed in-app. `reviewer` is the canonical identity (oauth username or
+-- email); `email` is also stored so the gate can match either header.
+CREATE TABLE IF NOT EXISTS users (
+  reviewer     TEXT PRIMARY KEY,
+  email        TEXT NOT NULL DEFAULT '',
+  display_name TEXT NOT NULL DEFAULT '',
+  role         TEXT NOT NULL DEFAULT 'editor',   -- admin | editor | viewer
+  approved     BOOLEAN NOT NULL DEFAULT false,
+  source       TEXT NOT NULL DEFAULT 'ldap',     -- ldap | bootstrap | manual
+  last_seen    TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(lower(email));
+-- Internal (local) users authenticate app-natively; argon2 hash, never plaintext.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT false;
+
+-- Platform settings (LDAP, SMTP, …) configured in-app by platform admins instead
+-- of env. Secret fields inside `value` are Fernet-encrypted by the API before
+-- storage. Env vars remain a fallback when a key is absent.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key        TEXT PRIMARY KEY,            -- 'ldap' | 'smtp'
+  value      JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_by TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Email invitations: a platform admin invites a user (by email) into a project;
+-- the tokened link lets them set a password and join. Single-use.
+CREATE TABLE IF NOT EXISTS user_invitations (
+  token        TEXT PRIMARY KEY,
+  email        TEXT NOT NULL,
+  display_name TEXT NOT NULL DEFAULT '',
+  project_id   BIGINT REFERENCES projects(id) ON DELETE CASCADE,
+  project_role TEXT NOT NULL DEFAULT 'editor',
+  global_role  TEXT NOT NULL DEFAULT 'editor',
+  invited_by   TEXT NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at   TIMESTAMPTZ NOT NULL,
+  accepted_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_user_invitations_email ON user_invitations(lower(email));
+
+-- Ensure a default project exists so single-user installs and the project
+-- switcher always have a home.
+INSERT INTO projects (slug, name, description, created_by)
+VALUES ('default', 'Default', 'Default project', 'system')
+ON CONFLICT (slug) DO NOTHING;
+
+-- Phase 3: data tenancy. Scope the ROOT entities to a project; child rows
+-- (uc_analyses, uc_gaps, uc_capabilities, set members, …) inherit via their FK
+-- to a scoped parent. Columns are nullable + backfilled into 'default' so this
+-- is a safe in-place migration with no data loss.
+ALTER TABLE managed_use_cases     ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
+ALTER TABLE analysis_runs         ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
+ALTER TABLE run_sessions          ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
+ALTER TABLE use_case_sets         ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
+ALTER TABLE analysis_output_cache ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
+UPDATE managed_use_cases     SET project_id=(SELECT id FROM projects WHERE slug='default') WHERE project_id IS NULL;
+UPDATE analysis_runs         SET project_id=(SELECT id FROM projects WHERE slug='default') WHERE project_id IS NULL;
+UPDATE run_sessions          SET project_id=(SELECT id FROM projects WHERE slug='default') WHERE project_id IS NULL;
+UPDATE use_case_sets         SET project_id=(SELECT id FROM projects WHERE slug='default') WHERE project_id IS NULL;
+UPDATE analysis_output_cache SET project_id=(SELECT id FROM projects WHERE slug='default') WHERE project_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_muc_project    ON managed_use_cases(project_id);
+CREATE INDEX IF NOT EXISTS idx_aruns_project  ON analysis_runs(project_id);
+CREATE INDEX IF NOT EXISTS idx_rsess_project  ON run_sessions(project_id);
+CREATE INDEX IF NOT EXISTS idx_ucsets_project ON use_case_sets(project_id);
+
+-- ── Phase 2: UC-location repos + destination assignment ──────────────────────
+-- UCs are git-backed (see uc-driven-roadmaps-design.md / review-console-design.md
+-- "Use-case git model"). A repo is marked a writable UC destination by carrying
+-- the 'uc-store' role in managed_repos.roles — no schema change needed there,
+-- roles is an open TEXT[]. A pvc-local repo (DAV-hosted bare repo on the RWX
+-- workspace PVC) is just a managed_repos row with metadata.provider='pvc-local'.
+--
+-- Per-PROJECT default UC destination (where this project writes its UCs).
+-- uc_repo_uuid NULL = fall back to the global default uc-store/corpus repo.
+-- Soft reference (no FK): removing a repo must not cascade-delete project data.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS uc_repo_uuid UUID;
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS uc_path      TEXT NOT NULL DEFAULT '';
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS uc_branch    TEXT NOT NULL DEFAULT '';
+-- Per-UC destination/provenance (overrides the project default when set). The
+-- git round-trip itself (commit-on-save, origin/fork tracking) is Phase 3; here
+-- we only record where each UC's git home is.
+ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS source_repo_uuid UUID;
+ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS source_path      TEXT NOT NULL DEFAULT '';
+ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS source_ref       TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_muc_source_repo ON managed_use_cases(source_repo_uuid);
+
+-- ── RBAC: accounts × roles × privileges (review-console-design.md) ───────────
+-- Identity-source-agnostic. An account (a `users` row, whatever the auth source)
+-- is matrixed to roles; roles are matrixed to privileges. Authorization is the
+-- union of privileges across the account's roles — platform-scoped roles apply
+-- everywhere, project-scoped roles apply to their project_id. Adding a privilege
+-- or a custom role is data, not a migration.
+
+-- The gate flag (source stays informational only). Approval == enabled account.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true;
+-- Per-user default project (the one selected on login when none is set client-side).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS default_project_id BIGINT;
+
+CREATE TABLE IF NOT EXISTS rbac_privileges (
+  key         TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  scope       TEXT NOT NULL DEFAULT 'project'   -- 'platform' | 'project'
+);
+
+CREATE TABLE IF NOT EXISTS rbac_roles (
+  id          BIGSERIAL PRIMARY KEY,
+  key         TEXT UNIQUE NOT NULL,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  scope       TEXT NOT NULL DEFAULT 'project',  -- 'platform' | 'cross-project' | 'project'
+  is_system   BOOLEAN NOT NULL DEFAULT false,   -- built-in; cannot be deleted
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS rbac_role_privileges (
+  role_id       BIGINT NOT NULL REFERENCES rbac_roles(id) ON DELETE CASCADE,
+  privilege_key TEXT   NOT NULL REFERENCES rbac_privileges(key) ON DELETE CASCADE,
+  PRIMARY KEY (role_id, privilege_key)
+);
+
+-- account × role × project. project_id NULL for platform-scoped roles. A
+-- surrogate id PK + a COALESCE unique index (PKs can't span a nullable column).
+CREATE TABLE IF NOT EXISTS rbac_account_roles (
+  id          BIGSERIAL PRIMARY KEY,
+  reviewer    TEXT   NOT NULL,
+  role_id     BIGINT NOT NULL REFERENCES rbac_roles(id) ON DELETE CASCADE,
+  project_id  BIGINT REFERENCES projects(id) ON DELETE CASCADE,
+  granted_by  TEXT   NOT NULL DEFAULT 'system',
+  granted_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rbac_acct_role_uniq
+  ON rbac_account_roles (lower(reviewer), role_id, COALESCE(project_id, 0));
+CREATE INDEX IF NOT EXISTS idx_rbac_acct_role_acct ON rbac_account_roles (lower(reviewer));
+
+-- External group → role mappings (managed by platform admins). When a user
+-- authenticates from a source carrying group memberships (LDAP today; OCP/others
+-- later), matching groups grant the mapped roles. Source-agnostic via `source`.
+-- The sync that *applies* these (writes derived account_roles) is a later slice;
+-- this is the structure + the platform-admin-managed config.
+CREATE TABLE IF NOT EXISTS rbac_group_role_mappings (
+  id          BIGSERIAL PRIMARY KEY,
+  source      TEXT   NOT NULL DEFAULT 'ldap',   -- 'ldap' | 'ocp' | ...
+  group_key   TEXT   NOT NULL,                  -- group DN / name / id
+  role_id     BIGINT NOT NULL REFERENCES rbac_roles(id) ON DELETE CASCADE,
+  project_id  BIGINT REFERENCES projects(id) ON DELETE CASCADE,  -- for project-scoped roles
+  created_by  TEXT   NOT NULL DEFAULT 'system',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rbac_grp_role_uniq
+  ON rbac_group_role_mappings (source, lower(group_key), role_id, COALESCE(project_id, 0));
+
+-- Seed the v1 privilege vocabulary.
+INSERT INTO rbac_privileges (key, name, description, scope) VALUES
+  ('platform.admin',     'Platform settings', 'All platform settings (LDAP, SMTP, accounts, roles, repos); see all projects; grant self project roles', 'platform'),
+  ('project.create',     'Create projects',   'Create new projects', 'cross-project'),
+  ('project.delete',     'Delete projects',   'Delete a project (after its data is moved/removed)', 'project'),
+  ('project.settings',   'Project settings',  'Manage a project''s settings (name, UC destination, archive)', 'project'),
+  ('project.members',    'Project members',   'Manage a project''s membership and role assignments', 'project'),
+  ('project.data.read',  'Read project data', 'Read all project data (use cases, runs, results, sets)', 'project'),
+  -- Workflow / execution privileges (atomic; compose into roles).
+  ('project.usecases',           'Manage use cases',       'Create, edit, delete, import use cases and use-case sets', 'project'),
+  ('project.runs.manage',        'Manage runs',            'Archive, delete and rename run records', 'project'),
+  ('project.runs.execute',       'Execute runs',           'Trigger an analysis run', 'project'),
+  ('project.archreview.execute', 'Run arch review',        'Execute the architecture-review stage', 'project'),
+  ('project.archreview.context', 'Edit arch-review context','Edit the architecture-review stage context', 'project'),
+  ('project.enhancement.execute','Run enhancements',       'Execute enhancement generation', 'project'),
+  ('project.enhancement.pr',     'Submit enhancement PRs', 'Create branches / pull requests from enhancements (external push)', 'project'),
+  ('project.catalog',            'Manage catalog',         'Manage the capability catalog', 'project'),
+  -- Config-registry privileges (project-owned, strict isolation).
+  ('project.models',             'Manage models',          'Manage a project''s AI model registrations', 'project'),
+  ('project.integrations',       'Manage integrations',    'Manage a project''s MCP server registrations', 'project'),
+  ('project.repos',              'Manage repos',           'Manage a project''s managed repositories', 'project')
+ON CONFLICT (key) DO NOTHING;
+-- Reclassify project.create from its original 'platform' scope to 'cross-project'
+-- (project-related but not tied to a specific project). Idempotent.
+UPDATE rbac_privileges SET scope='cross-project' WHERE key='project.create' AND scope<>'cross-project';
+
+-- Seed the 4 built-in roles.
+INSERT INTO rbac_roles (key, name, description, scope, is_system) VALUES
+  ('platform-admin', 'Platform Admin', 'Full platform administration', 'platform', true),
+  ('project-admin',  'Project Admin',  'Full administration of a project', 'project', true),
+  ('project-edit',   'Project Edit',   'Edit access to a project''s data', 'project', true),
+  ('project-viewer', 'Project Viewer', 'Read-only access to a project''s data', 'project', true)
+ON CONFLICT (key) DO NOTHING;
+
+-- Seed the role × privilege matrix for the built-in roles. Re-runs every boot
+-- with ON CONFLICT DO NOTHING, so adding keys here backfills existing roles.
+INSERT INTO rbac_role_privileges (role_id, privilege_key)
+  SELECT r.id, p.key FROM rbac_roles r CROSS JOIN rbac_privileges p
+  WHERE (r.key='platform-admin' AND p.key IN ('platform.admin','project.create'))
+     OR (r.key='project-admin'  AND p.key IN (
+            'project.settings','project.members','project.delete','project.data.read',
+            'project.usecases','project.runs.manage','project.runs.execute',
+            'project.archreview.execute','project.archreview.context',
+            'project.enhancement.execute','project.enhancement.pr','project.catalog',
+            'project.models','project.integrations','project.repos'))
+     OR (r.key='project-edit'   AND p.key IN (
+            'project.data.read','project.usecases','project.runs.manage','project.runs.execute',
+            'project.archreview.execute','project.archreview.context',
+            'project.enhancement.execute','project.catalog'))
+     OR (r.key='project-viewer' AND p.key = 'project.data.read')
+ON CONFLICT DO NOTHING;
+
+-- Retire the legacy umbrella `project.data.write` from the BUILT-IN roles (custom
+-- roles untouched). The granular workflow privileges above replace it.
+DELETE FROM rbac_role_privileges rp
+  USING rbac_roles r
+  WHERE rp.role_id = r.id
+    AND rp.privilege_key = 'project.data.write'
+    AND r.key IN ('project-admin','project-edit','project-viewer');
+
+-- Backfill: any role (incl. operator-created) holding project.settings is an
+-- admin-like role and gets the full project-admin privilege set. Idempotent.
+INSERT INTO rbac_role_privileges (role_id, privilege_key)
+  SELECT DISTINCT rp.role_id, np.key
+  FROM rbac_role_privileges rp
+  CROSS JOIN (VALUES
+    ('project.members'),('project.delete'),('project.data.read'),
+    ('project.usecases'),('project.runs.manage'),('project.runs.execute'),
+    ('project.archreview.execute'),('project.archreview.context'),
+    ('project.enhancement.execute'),('project.enhancement.pr'),('project.catalog'),
+    ('project.models'),('project.integrations'),('project.repos')
+  ) AS np(key)
+  WHERE rp.privilege_key = 'project.settings'
+ON CONFLICT DO NOTHING;
+
+-- One-time migration of legacy roles → account_roles (idempotent).
+INSERT INTO rbac_account_roles (reviewer, role_id, project_id, granted_by)
+  SELECT lower(u.reviewer), r.id, NULL, 'migration'
+  FROM users u CROSS JOIN rbac_roles r
+  WHERE r.key='platform-admin' AND u.role='platform-admin'
+ON CONFLICT DO NOTHING;
+INSERT INTO rbac_account_roles (reviewer, role_id, project_id, granted_by)
+  SELECT lower(pm.reviewer), r.id, pm.project_id, 'migration'
+  FROM project_members pm
+  JOIN rbac_roles r ON r.key = CASE pm.role
+        WHEN 'admin'    THEN 'project-admin'
+        WHEN 'uc-admin' THEN 'project-admin'
+        WHEN 'editor'   THEN 'project-edit'
+        WHEN 'viewer'   THEN 'project-viewer'
+        ELSE 'project-viewer' END
+ON CONFLICT DO NOTHING;
 
 COMMIT;

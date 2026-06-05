@@ -2,11 +2,15 @@
 
 Full operations frontend for DAV. Trigger pipeline runs, browse analysis results, manage use cases through their full lifecycle, organize them into named sets, and switch consumer configuration — all from a single web UI deployed in OpenShift.
 
+The masthead carries two always-visible switchers (v0.10.0): a **project switcher** (sets the active project; sent on every request as the `X-DAV-Project` header) and a **system-wide run selector** that drives all analysis stages and mirrors the Runs list one-for-one. Multi-user access (LDAP approval + roles) and multi-project data tenancy are both opt-in — the console runs single-user with no role gating until LDAP is configured and enforced.
+
 ## Components
 
-- `api/` — FastAPI backend (v0.4.0), asyncpg + Postgres for state, OAuth-proxy gated for SSO.
+- `api/` — FastAPI backend (v0.10.0), asyncpg + Postgres for state, OAuth-proxy gated for SSO. Optional LDAP-backed multi-user approval + roles and multi-project data tenancy.
 - `ui/` — Static single-page HTML/JS frontend (`ui/index.html`). Served via NGINX with the OAuth proxy injecting `X-Forwarded-User`.
-- `api/app/schema.sql` — Postgres schema (corpus content cache + managed use cases + lifecycle events + UC sets).
+- `api/app/schema.sql` — Postgres schema (corpus content cache + managed use cases + lifecycle events + UC sets + cached Review/Enhancement output + users + projects). Applied idempotently on boot, so it doubles as the migration script for v0.10.0 additions.
+- `api/app/ldap_auth.py` — LDAP group → `users` table + in-memory approved-set sync; the access gate that backs multi-user mode (opt-in via `DAV_LDAP_ENFORCE`).
+- `deploy/dav-ldap-secret.example.yaml` — example Kubernetes Secret for the optional LDAP config (mounted `envFrom` optional on the API deployment).
 
 ## Tabs
 
@@ -108,7 +112,12 @@ Set list (left panel) shows name, description, and member count. Selecting a set
 
 ### Config
 
-Source switching: change the spec and/or corpus repo URL + branch. Updating triggers a ConfigMap write + Deployment rollout so the new content takes effect on the next pod start.
+Operational configuration across several categories (left-nav + right-content panes).
+
+- **Pipeline Sources** — spec / corpus / inference sourcing. Source switching changes the spec and/or corpus repo URL + branch; updating triggers a ConfigMap write + Deployment rollout so the new content takes effect on the next pod start. The **Inference** source ConfigMap also holds the new-run **engine** default model (read by the Tekton pipeline) — this is deliberately *not* a `model_defaults` key.
+- **AI Models** — one consistent "default model" selector per `model_defaults` key: **Arch Review**, **Enhancement**, **Evaluation**, and **UC Authoring** (all project-scoped, server-backed). `enhancement` falls back to `arch-review` when unset; `uc-authoring` is shared by the UC Assist panel, the UC Wizard, Bulk import, and inbox draft-uc. Each model-driven view also has a per-view **override** selector ("Use default — &lt;name&gt;"); blank sends no model so the endpoint resolves the Config default. See `docs/review-console-design.md` §Two-tier model selection.
+- **Users & Access** (admin-only, v0.10.0) — LDAP status + Sync-now, per-user role editing (admin / editor / viewer), and **Projects** management (create / archive, member management from the LDAP-approved list with per-project roles). Hidden for non-admins.
+- Plus the existing Repos, Shared credentials, MCP Integrations, and MCP refresh panels (see `docs/review-console-design.md` §Config tab).
 
 ## How DAV deploys it
 
@@ -140,6 +149,16 @@ The OAuth integration uses OpenShift's `origin-oauth-proxy` sidecar in the UI po
 - **Auto-ingest loop** in `lifespan()` re-runs `_ingest_run_analyses` for every workspace `run-summary.yaml` not yet in `analysis_runs` — startup + every 5 min. Removes the manual `POST /api/analysis/ingest/{run_id}` step that historically left per-UC history (and run comparisons) blank.
 - **Namespace as first-class field** on `run_sessions.{spec,corpus}_namespaces` and `uc_gaps.namespace` (migration 012). Cross-namespace drift warning on enhancement-apply when patches target a namespace outside the run's recorded scope.
 
+**v0.10.0 highlights** (full detail in `docs/review-console-design.md`):
+- **Two-tier model selection** — Config defaults per `model_defaults` key (`arch-review`, `enhancement`, `evaluation`, `uc-authoring`) + per-view overrides; resolution centralized in `_model_default_row`. `GET/PUT /api/model-defaults[/{key}]`.
+- **Cached Review / Enhancement output** — `analysis_output_cache` table, write-through on success, `GET /api/analysis/output`, staleness flag when the run was re-ingested since.
+- **Tab-close-resilient generation** — `/api/arch-review` + `/api/enhancements` run the LLM in a background task observed by the SSE response, so closing the tab no longer cancels it; a completion toast fires even after navigating away.
+- **Enhancement rendering** — output rendered as markdown (same `mdToHtml` as Arch Review) while the raw structured `ENHANCEMENT` blocks remain intact for `enhancement_apply`'s PR parser.
+- **Run management** — Runs tab gains Archive (`run_sessions.archived`) + Delete (DB + workspace dir + Tekton PipelineRun; RBAC grants `pipelineruns` `delete`), bulk multi-select, and text + phase filters.
+- **Multi-user / LDAP** — optional approval + roles via the `dav-ldap` Secret; opt-in access gate (`DAV_LDAP_ENFORCE`); `users` table + 10-min LDAP sync; `/api/me`, `/api/ldap/*`, `/api/users/*`.
+- **Projects + data tenancy** — `projects` / `project_members`; `project_id` scoping on UCs, runs, sets, results, and the output cache via the `X-DAV-Project` header.
+- **`api()` 204 fix** — empty / `204 No Content` bodies now resolve to `null` instead of throwing spurious "failed" toasts.
+
 ## Run locally (development)
 
 You'll need:
@@ -167,8 +186,9 @@ python -m http.server 8001
 
 | Path | Purpose |
 |------|---------|
-| `api/app/main.py` | FastAPI app, lifespan, all route definitions (v0.8.x) |
-| `api/app/schema.sql` | Postgres schema: corpus file cache, `managed_use_cases`, `lifecycle_events`, `use_case_sets`, `use_case_set_members`, `run_sessions` (with token-counter baselines + finalized energy/token stats) |
+| `api/app/main.py` | FastAPI app, lifespan, all route definitions (v0.10.0). Model-default resolution (`_model_default_row`), background-task generation registry (`_active_gen` / `_run_generation_bg` / `_ensure_generation` / `_observe_generation`), and project scoping (`_active_project_id`) all live here |
+| `api/app/schema.sql` | Postgres schema: corpus file cache, `managed_use_cases`, `lifecycle_events`, `use_case_sets`, `use_case_set_members`, `run_sessions` (with token-counter baselines + finalized energy/token stats), `analysis_output_cache`, `users`, `projects`, `project_members`. Idempotent on boot (`CREATE … IF NOT EXISTS` + `ADD COLUMN IF NOT EXISTS` + backfills), so it doubles as the v0.10.0 migration |
+| `api/app/ldap_auth.py` | LDAP group resolution → `users` + in-memory approved set; the access-gate logic and 10-min background sync |
 | `api/app/results.py` | Scans workspace PVC for run summaries, analysis YAMLs, **per-UC progress** (`run-progress.yaml`), and **per-turn JSONL** (`turns/<uuid>.seed-<N>.jsonl`) with byte-offset cursor for tail polling |
 | `api/app/validations.py` | Tekton PipelineRun listing, triggering, status translation, run-detail (TaskRun walk), and failed-task log tail |
 | `api/app/sources.py` | Spec / corpus / inference sourcing — ConfigMap writes, branch enumeration, inference endpoint validation (`/models` probe + model-presence check) |
@@ -184,3 +204,5 @@ python -m http.server 8001
 - The `lifecycle_events` table is append-only — the current lifecycle state is the `to_state` of the most recent event per UC. Don't update rows; insert events.
 - `python-multipart` is required for the import file-upload endpoint (`POST /api/import`).
 - The Results tab and the Runs tab are not hard-linked. PipelineRun names (e.g. `dav-console-123456`) do not embed the run-directory ID (`2026-05-21T10-30-00Z-abc1234`). Correlate by timestamp when needed.
+- **Multi-user / LDAP env vars** (all optional; supplied via the `dav-ldap` Secret, mounted `envFrom: optional` on the API deployment): `DAV_LDAP_URL`, `DAV_LDAP_BIND_DN`, `DAV_LDAP_BIND_PASSWORD`, `DAV_LDAP_USER_BASE`, `DAV_LDAP_GROUP_DN`, `DAV_LDAP_USER_ATTR`, `DAV_LDAP_MAIL_ATTR`, `DAV_LDAP_NAME_ATTR`, `DAV_LDAP_MEMBER_ATTR`, `DAV_LDAP_START_TLS`, `DAV_LDAP_ENFORCE`, `DAV_LDAP_BOOTSTRAP_ADMINS`. The access gate is a **no-op** until `DAV_LDAP_ENFORCE=true` AND LDAP is configured AND a sync has succeeded — so configuring LDAP can't accidentally lock anyone out. Bootstrap admins are always admin. With LDAP off, the console is single-user with no role gating. Requires `ldap3==2.9.1` (in `requirements.txt`). See `deploy/dav-ldap-secret.example.yaml` and `docs/operator-runbook.md`.
+- **Multi-project** (v0.10.0): the active project rides on the `X-DAV-Project` request header (set by the masthead switcher); the server resolves it via `_active_project_id()` (header → membership-validated → `default`). UCs, runs, sets, results, and the output cache are scoped by `project_id`; capability `catalog` and `model_defaults` remain global for now.

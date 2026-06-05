@@ -187,6 +187,20 @@ oc get ns dav 2>&1 | grep "NotFound" && echo "good — namespace will be created
 
 If `dav` already exists from a prior run, decide whether to delete it (`oc delete ns dav`) or keep it. The playbook is idempotent and will work either way, but a fresh namespace eliminates state-drift questions.
 
+### 0.3 — Multi-user auth, RBAC & external access (optional, v0.13.0)
+
+All OFF by default (single-user passthrough behind the OCP oauth-proxy). To turn on app-native multi-user + RBAC, set in `vars.local.yaml` and re-run `--tags review-console`:
+
+| Var | Purpose |
+|---|---|
+| `review_console_require_auth: true` | API enforces sessions / approval gate / RBAC. **Flip last**, after confirming the default admin works. |
+| `review_console_relaxed_proxy: true` | oauth-proxy lets the app login + `/api/auth/*` through (needed for non-OCP users). |
+| `review_console_default_admin_email` | **Dedicated** break-glass admin (keep distinct from a real person; e.g. `admin@dav.local`). Password from `vault_review_console_default_admin_password` (else `changeme`). |
+| `review_console_loadbalancer_enabled: true` + `_ip` | Host externally on a MetalLB IP + `_loadbalancer_port` (e.g. 8843). Requires `require_auth: true`. nginx terminates TLS with a **DNS-01** cert from `review_console_loadbalancer_cert_issuer` (an existing DNS-01 ClusterIssuer; `create_cert: true`). Internal DNS + firewall point the hostname at the MetalLB IP:port. |
+| `dav_egress_firewall_enabled: true` | Namespace OVN EgressFirewall: the dav pods may reach only the allowlisted internal infra + the public internet; the rest of RFC1918 (lateral homelab) is denied. **Edit `dav_egress_allow_cidrs`** to add a `/32` whenever you configure a new internal API/MCP endpoint. **Do NOT remove** the node subnet (`10.0.0.0/24`) from `dav_egress_cluster_cidrs` — kubelet health-probe replies ride it; dropping it crash-loops the pod (exit 137). Verify after deploy: `oc get egressfirewall default -n dav -o jsonpath='{.status.status}'` → `EgressFirewall Rules applied`, and the API pod stays `1/1` with 0 restarts. |
+
+**First login:** sign in as the default admin → change password → **Users & roles**: create accounts (no password ⇒ emailed activation invite), assign roles, and add yourself a **project** role on each project whose data you need (platform admins see all projects but must be *members* to access data). Roles compose the granular privilege catalog (use-cases / runs / arch-review / enhancement / catalog / models / integrations / repos) — e.g. give a teammate **Project Edit** for full analysis workflow without external-PR or config rights, or build a custom "Run Operator" from `data.read` + `runs.execute`. See [review-console-design.md](review-console-design.md) §RBAC / §Projects for the full model.
+
 ---
 
 ## Phase 1: Deploy
@@ -261,6 +275,74 @@ Verify:
 oc get secret github-webhook-secret -n dav
 oc get secrets -n dav | grep -E "review-console|oauth"
 ```
+
+### 1d — Optional: enable multi-user (LDAP approval + roles)
+
+By default the console is **single-user** with no role gating — every
+identity the oauth-proxy passes through is treated as an admin. To gate
+access by LDAP group membership and assign roles, supply the optional
+`dav-ldap` Secret. The API deployment already mounts it via
+`envFrom` (`optional: true`), so you only create/fill the Secret and
+restart the API.
+
+**Safety property:** the access gate is a **no-op** until ALL of:
+`DAV_LDAP_ENFORCE=true` AND LDAP is configured AND a sync has succeeded.
+Configuring LDAP therefore cannot lock you out before you've verified the
+approved-user list. Configure first, verify, then flip enforcement on.
+
+```bash
+cd ${DAV_REPO_DIR}/review-console/deploy
+
+# 1. Copy the example and fill in real values (LDAP URL, group DN, bind DN/pw,
+#    bootstrap admins, etc.). Leave DAV_LDAP_ENFORCE=false for now.
+cp dav-ldap-secret.example.yaml dav-ldap-secret.yaml
+$EDITOR dav-ldap-secret.yaml
+
+# 2. Apply and restart the API so it picks up the env vars:
+oc apply -f dav-ldap-secret.yaml -n dav
+oc rollout restart deploy/dav-review-api -n dav
+```
+
+`dav-ldap-secret.yaml` is operator-local (don't commit it). Env vars it
+carries: `DAV_LDAP_URL`, `DAV_LDAP_BIND_DN`, `DAV_LDAP_BIND_PASSWORD`,
+`DAV_LDAP_USER_BASE`, `DAV_LDAP_GROUP_DN`, `DAV_LDAP_USER_ATTR`,
+`DAV_LDAP_MAIL_ATTR`, `DAV_LDAP_NAME_ATTR`, `DAV_LDAP_MEMBER_ATTR`,
+`DAV_LDAP_START_TLS`, `DAV_LDAP_ENFORCE`, `DAV_LDAP_BOOTSTRAP_ADMINS`.
+Set `DAV_LDAP_BOOTSTRAP_ADMINS` to your own oauth username/email so you
+remain admin even before the LDAP role mapping resolves.
+
+**Verify before enforcing:**
+
+```bash
+# LDAP reachable + a sync has run?
+oc exec deploy/dav-review-api -n dav -c api -- curl -sf http://localhost:8000/api/ldap/status
+
+# (optional) force an immediate sync rather than waiting for the 10-min loop:
+oc exec deploy/dav-review-api -n dav -c api -- curl -sf -X POST http://localhost:8000/api/ldap/sync
+```
+
+In the UI, open **Config → Users & Access** (admin-only): confirm the
+expected approved users appear and assign per-user roles
+(admin / editor / viewer). Once the list looks right, flip enforcement:
+
+```bash
+# Set DAV_LDAP_ENFORCE=true in dav-ldap-secret.yaml, then:
+oc apply -f dav-ldap-secret.yaml -n dav
+oc rollout restart deploy/dav-review-api -n dav
+```
+
+**Verification gate:** `GET /api/me` reports `ldap_enabled: true` and the
+correct `role`/`is_admin`/`approved` for your identity; non-approved
+accounts are rejected; bootstrap admins still have access.
+
+**Projects (multi-project).** With multi-user enabled, an admin can carve
+data into projects from **Config → Users & Access → Projects** (create /
+archive, assign members from the LDAP-approved list with per-project
+roles). A `default` project is always seeded and all existing data is
+backfilled into it, so this is purely additive — no action required if a
+single project is enough. The masthead **project switcher** sets the
+active project (sent as the `X-DAV-Project` header) and scopes UCs, runs,
+sets, results, and cached Review/Enhancement output.
 
 ### 1c — Optional: deploy in-cluster vLLM fallback
 

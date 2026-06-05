@@ -79,6 +79,7 @@ spec:
                   print('ERROR: /config/sources is empty', file=sys.stderr)
                   sys.exit(1)
               flag_lines = []
+              skipped = []
               for src in sources:
                   ns = src['namespace']
                   url = src['repo_url']
@@ -86,15 +87,24 @@ spec:
                   root = (src.get('root_path') or '').strip('/')
                   dst = f'/data/{ns}'
                   print(f'[init] cloning {url}#{branch} -> {dst}', flush=True)
-                  subprocess.run(
-                      ['git', 'clone', '--depth', '1', '--branch', branch, url, dst],
-                      check=True,
-                  )
+                  r = subprocess.run(['git', 'clone', '--depth', '1', '--branch', branch, url, dst])
+                  if r.returncode != 0:
+                      # Resilience: one misconfigured source (e.g. a wrong branch)
+                      # must NOT crash-loop the whole docs MCP and take down every
+                      # other source. Skip it — it just won't be served — and keep
+                      # going. Operators fix the source in Config -> Repos.
+                      print(f'[init] WARNING: skipping {ns} ({url}#{branch}) — clone failed (exit {r.returncode})',
+                            file=sys.stderr, flush=True)
+                      skipped.append(ns)
+                      continue
                   served = f'{dst}/{root}' if root else dst
                   flag_lines.append(f'{ns}:{served}')
+              if not flag_lines:
+                  print('ERROR: no sources cloned successfully — nothing to serve', file=sys.stderr)
+                  sys.exit(1)
               with open('/data/.source-flags', 'w') as f:
                   f.write('\n'.join(flag_lines) + '\n')
-              print(f'[init] wrote {len(flag_lines)} source flag(s) to /data/.source-flags', flush=True)
+              print(f'[init] wrote {len(flag_lines)} source flag(s); skipped {len(skipped)}: {skipped}', flush=True)
               PYEOF
               elif [ -n "${REPO_URL:-}" ] && [ -n "${REPO_BRANCH:-}" ]; then
                 echo "[init] no /config/sources — legacy single-source mode"

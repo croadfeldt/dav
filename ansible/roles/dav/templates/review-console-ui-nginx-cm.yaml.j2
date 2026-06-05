@@ -24,6 +24,21 @@ data:
         add_header Content-Type text/plain;
     }
 
+{% if review_console_relaxed_proxy | default(false) %}
+    # Relaxed-proxy mode: /sso stays OCP-protected (oauth-proxy does NOT skip it)
+    # and routes to the API's session-minting endpoint, which reads the
+    # X-Forwarded headers and 303s back to /. OCP users hit this once to get an
+    # app session; thereafter the (skip-auth) /api/* calls use the cookie.
+    location = /sso {
+        proxy_pass http://dav-review-api:8000/api/auth/sso;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-User $http_x_forwarded_user;
+        proxy_set_header X-Forwarded-Email $http_x_forwarded_email;
+        proxy_set_header X-Auth-Request-User $http_x_auth_request_user;
+        proxy_set_header X-Auth-Request-Email $http_x_auth_request_email;
+    }
+{% endif %}
     location /api/ {
         proxy_pass http://dav-review-api:8000;
         proxy_http_version 1.1;

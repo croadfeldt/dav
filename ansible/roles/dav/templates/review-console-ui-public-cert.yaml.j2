@@ -1,0 +1,24 @@
+---
+# Public TLS cert for the MetalLB hostname, issued by cert-manager.
+# DNS-01 is the right challenge here: because {{ review_console_hostname }}
+# resolves to the MetalLB IP (not the OCP router), an HTTP-01 challenge would
+# land on this LoadBalancer instead of a solver. DNS-01 validates via a TXT
+# record and doesn't care where the name resolves — so the referenced
+# {{ review_console_loadbalancer_cert_issuer }} ClusterIssuer/Issuer MUST be
+# configured for DNS-01. nginx mounts the resulting Secret and terminates TLS.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: dav-review-ui-public-tls
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-ui
+spec:
+  secretName: {{ review_console_loadbalancer_tls_secret }}
+  issuerRef:
+    name: {{ review_console_loadbalancer_cert_issuer }}
+    kind: {{ review_console_loadbalancer_cert_issuer_kind }}
+    group: cert-manager.io
+  dnsNames:
+    - {{ review_console_hostname }}

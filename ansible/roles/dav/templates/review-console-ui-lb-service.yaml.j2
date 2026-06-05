@@ -1,0 +1,35 @@
+---
+# MetalLB LoadBalancer for hosting the console on a dedicated IP + custom port,
+# bypassing the OCP router. Internal DNS for {{ review_console_hostname }} points
+# here, and the firewall forwards the WAN port to the same IP:port — so both
+# paths share port {{ review_console_loadbalancer_port }}. Targets nginx's TLS
+# listener ({{ review_console_loadbalancer_tls_port }}); oauth-proxy is NOT in
+# this path.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dav-review-ui-lb
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-ui
+  annotations:
+{% if review_console_loadbalancer_ip | default('') | length > 0 %}
+    metallb.universe.tf/loadBalancerIPs: "{{ review_console_loadbalancer_ip }}"
+{% endif %}
+{% if review_console_loadbalancer_pool | default('') | length > 0 %}
+    metallb.universe.tf/address-pool: "{{ review_console_loadbalancer_pool }}"
+{% endif %}
+spec:
+  type: LoadBalancer
+  # Preserve the client source IP (and keep MetalLB L2 routing the IP to the
+  # node hosting the pod).
+  externalTrafficPolicy: Local
+  selector:
+    app: dav-review
+    component: review-console-ui
+  ports:
+    - name: https
+      port: {{ review_console_loadbalancer_port }}
+      targetPort: {{ review_console_loadbalancer_tls_port }}
+      protocol: TCP

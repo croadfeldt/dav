@@ -1,0 +1,30 @@
+---
+# Let's Encrypt ACME issuer for the review-console Route, created only when
+# review_console_cert_manager_create_issuer is true. Kind follows
+# review_console_cert_manager_issuer_kind:
+#   - ClusterIssuer: cluster-scoped, usable by Routes in any namespace.
+#   - Issuer:        namespaced to {{ dav_namespace }}.
+# HTTP-01 solver: cert-manager creates a challenge Ingress that OpenShift
+# converts to a temporary Route on the same host, so port 80 must reach the
+# router. The cert-manager openshift-routes controller then writes the issued
+# cert onto the dav-review-ui Route (see its cert-manager.io/issuer-* annotations).
+apiVersion: cert-manager.io/v1
+kind: {{ review_console_cert_manager_issuer_kind }}
+metadata:
+  name: {{ review_console_cert_manager_issuer_name }}
+{% if review_console_cert_manager_issuer_kind == 'Issuer' %}
+  namespace: {{ dav_namespace }}
+{% endif %}
+  labels:
+    app: dav-review
+    component: review-console-tls
+spec:
+  acme:
+    server: {{ review_console_letsencrypt_server }}
+    email: {{ review_console_letsencrypt_email }}
+    privateKeySecretRef:
+      name: {{ review_console_cert_manager_issuer_name }}-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: {{ review_console_letsencrypt_solver_ingress_class }}

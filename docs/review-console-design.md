@@ -1,8 +1,8 @@
 # DAV Review Console — Design & Feature Inventory
 
 **Status:** Living document  
-**Last updated:** 2026-05-25  
-**Current version:** v0.9.45  
+**Last updated:** 2026-06-05  
+**Current version:** v0.14.0  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -31,7 +31,7 @@ Update this doc whenever a feature is added, changed, or removed.
 
 Non-goals:
 - Git push-back for managed UCs (deferred, see roadmap)
-- Multi-consumer / multi-project switching (deferred, see roadmap)
+- Multi-consumer switching (deferred, see roadmap) — note: multi-**project** data tenancy shipped in v0.10.0 (see §Projects (multi-project) and §Data tenancy), but a single console instance still binds to one consumer's spec/corpus.
 
 ---
 
@@ -88,6 +88,15 @@ For both, all-checked ≡ null sent (no filter applied; full set used) — the d
 - **Review & Plan tab** — arch review (streaming) + enhancement planning (streaming); see §Review & Plan tab below
 
 **Runs tab note:** Only runs triggered through the console appear here (they have `run_sessions` rows). CLI-triggered runs (`tkn pipeline start`) do not appear; their turns files are written but unreachable from the UI.
+
+**Run management (v0.10.0):** the Runs list supports lifecycle management of runs.
+- **Archive** — soft-hide via `run_sessions.archived`. Archived runs drop out of the default list but are retained.
+- **Delete** — hard purge: DB rows + the workspace result directory + the Tekton PipelineRun. The role's RBAC grants `pipelineruns` `delete` for this.
+- **Bulk operations** — multi-select with select-all / deselect-all; text + phase filters (the phase set includes Cancelled and TimedOut).
+
+**System-wide run selector (masthead, v0.10.0):** a single run selector in the masthead drives every analysis stage. It mirrors the Runs list one-for-one; runs that have no ingested analysis appear disabled with their phase shown, so the operator always picks from the same canonical list regardless of which stage they're working in.
+
+**`api()` 204 handling (v0.10.0):** the UI `api()` helper now treats `204 No Content` / empty response bodies as a successful `null` (previously it threw, producing spurious "failed" toasts on DELETE and other empty-body responses).
 
 ---
 
@@ -146,6 +155,8 @@ Two-pane layout: left nav (category list), right content (selected category).
 - **Evaluation model** — project-scoped default for new analysis runs. Stored in `model_defaults` table (`key='evaluation'`). Set in Config → AI Models → Evaluation; applies to all users. New Run modal reads from `GET /api/model-defaults` on open and pre-selects this model when no user override is stored in localStorage. Only registered model_config rows can be set as project defaults (custom endpoint+model pairs are user-scoped only).
 - **UC Assist model** — user-scoped personal default for UC Assist authoring. Stored in localStorage under `ucAssistModelId`. Configurable both in Config → AI Models → UC Assist and inline in the UC Assist panel (both selectors share the same storage key and mirror each other). The Config selector has an explicit Save button (UX consistency with the Evaluation and Arch Review pickers); both the Save button and the change handler write to the same localStorage key. Falls back to env-var config (`DAV_UC_ASSIST_*`) if no DB rows exist.
 - **Arch Review model** — project-scoped default for `/api/arch-review` (Review & Plan tab). Stored in `model_defaults` table (`key='arch-review'`). Set in Config → AI Models → Arch Review. Filtered to model_configs rows with `use_arch_review=true`. `/api/arch-review` falls back to this default when the caller omits both `model_config_id` and `endpoint_url+model_id` — explicit overrides still win. The run drawer's Review & Plan tab still requires per-call selection today; the server-side fallback covers external callers and direct API usage.
+- **Default model selectors (AI Models, v0.10.0)** — Config → AI Models now hosts a consistent "default model" selector for each model_defaults key: `arch-review`, `enhancement`, `evaluation`, and `uc-authoring`. These are all the **same** component (one shared selector + Browse button) and are all project-scoped + server-backed via the `model_defaults` table (see §Two-tier model selection). `enhancement` falls back to `arch-review` when unset; `uc-authoring` is shared by the UC Assist panel, the UC Wizard, Bulk import, and inbox draft-uc. The new-run **engine** default is deliberately NOT a model_defaults key — it lives in the Inference source ConfigMap (Config → Pipeline Sources → Inference) so the pipeline reads it directly.
+- **Users & Access (v0.10.0, admin-only)** — multi-user / LDAP and Projects administration. See §Multi-user / LDAP and §Projects (multi-project). Surfaces LDAP status + Sync-now, per-user role editing, and project create/archive + per-project membership. Only rendered for admins.
 - **MCP Integrations** — registered MCP servers (`mcp_server_configs` table) with `use_uc_assist` flag. Health polled on demand. Servers flagged `use_uc_assist` displayed with amber badge.
 - **MCP refresh** *(post-M12, shipped)* — operational controls for keeping the bundled `dav-docs-mcp` server's served content fresh. The MCP holds spec/corpus content in memory at pod start (via its git-clone init container); without a refresh path, edits to spec or corpus repos are invisible until the next pod restart. Two surfaces:
   - **Scheduled refresh** — Ansible-templated CronJob `dav-docs-mcp-refresh` (default `17 * * * *`, hourly) restarts the MCP deployment by patching its pod-template `dav.io/restartedAt` annotation. Schedule, enabled flag, deployment name, and SA name come from inventory vars `dav_docs_mcp_refresh_*` so they're per-environment configurable. RBAC is intentionally narrow: ServiceAccount + Role granting only `apps/deployments` `get`+`patch` on the single deployment by `resourceName` (no rollouts subresource, no wildcard verbs). Schedule editing in the UI is a tracked follow-up — would need a reconciler updating the K8s CronJob `spec.schedule` from a DB row.
@@ -155,6 +166,64 @@ Two-pane layout: left nav (category list), right content (selected category).
     - `GET /api/mcp/refresh-status` — reads the MCP deployment and returns rollout state (`replicas`, `ready_replicas`, `updated_replicas`, `available`, `rollout_in_progress`) plus the metadata annotations from the most recent refresh.
   - **Why this shipped now:** the OSAC investigation surfaced a 25h-stale MCP pod whose served content was older than several rounds of corpus edits. The user's "this data should not be stale ever" framing pushed us from one-off manual restarts to a scheduled + on-demand pattern, with the manual button being the ops-day-saver when an operator needs the MCP fresh *right now*.
 - ~~**Code Repositories**~~ — removed per [ADR-006](../adr/006-consolidate-code-repos-into-managed-repos.md). Enhancement PR target repos are now part of the **Managed repos** panel with `role=enhancement-target`. Provider (github/gitlab) lives in `metadata.provider` or is inferred from the URL. PAT is the same `github_pat` field used by other roles (per-repo inline or shared credential).
+
+---
+
+## Two-tier model selection (v0.10.0)
+
+Every model-driven view resolves its model through a consistent two-tier pattern: a **project-scoped Config default** plus an optional **per-view override**.
+
+**Tier 1 — Config defaults (server-backed).** Config → AI Models hosts one consistent "default model" selector component per `model_defaults` key:
+
+| Key | Drives |
+|---|---|
+| `arch-review` | `/api/arch-review` (Review & Plan) |
+| `enhancement` | `/api/enhancements`; **falls back to `arch-review`** when unset |
+| `evaluation` | New Run modal's evaluation-model pre-fill |
+| `uc-authoring` | UC Assist panel, UC Wizard (generate/refine), Bulk import, inbox draft-uc |
+
+All four use the same selector + Browse component (UI consistency principle). The new-run **engine** default is intentionally **not** a `model_defaults` key — it lives in the Inference source ConfigMap (Config → Pipeline Sources → Inference), which the Tekton pipeline reads directly.
+
+**Tier 2 — per-view overrides.** Each model-driven view carries an "override" selector whose first option is `Use default — <name>`. Leaving it blank sends **no** model in the request, so the endpoint resolves the Config default server-side. Picking a specific model sends an explicit `model_config_id` (or `endpoint_url`+`model_id` for a custom pair).
+
+**Resolution order** (centralized in `_model_default_row(conn, *keys)`, applied by every model endpoint):
+
+1. explicit `model_config_id` (per-call override)
+2. explicit `endpoint_url` + `model_id` (custom pair)
+3. project default(s) for the relevant `model_defaults` key(s)
+4. (uc-authoring only) env-var fallback (`DAV_UC_ASSIST_*`)
+
+**API:** `GET/PUT /api/model-defaults` (all keys) and `GET/PUT /api/model-defaults/{key}` (single key).
+
+---
+
+## Cached Review / Enhancement output (v0.10.0)
+
+Successful Architectural Review and Enhancement Plan generations are cached and re-served, so reopening a run/UC doesn't re-spend inference. (This is the feature formerly sketched as "Phase B".)
+
+**Table `analysis_output_cache`:** `(run_id, kind['review'|'enhancement'], scope['run'|'uc'], uc_uuid, content, model_label, source_ingested_at, project_id, created_by, created_at)`, with `UNIQUE(run_id, kind, scope, uc_uuid)`.
+
+- **Write-through** on every successful generation (both `/api/arch-review` and `/api/enhancements`).
+- `GET /api/analysis/output?run_id=&kind=&scope=&uc_uuid=` returns `{cached, content, model_label, created_at, stale}`.
+- **Staleness** = the run was re-ingested since the cache row was written, i.e. `source_ingested_at` is older than the current `MAX(analysis_runs.ingested_at)` for that run. A stale entry is still returned, flagged `stale: true`.
+
+**UI:** the Review & Plan tab auto-loads cached output on every run / scope / UC change. A cache chip shows `↻ cached <when> · <model>` (or `⚠ stale`). The Run buttons prompt the user to confirm replacing a cached result before regenerating.
+
+---
+
+## Tab-close-resilient generation + completion notify (v0.10.0)
+
+`/api/arch-review` and `/api/enhancements` run the LLM in a **background asyncio task** rather than inline in the SSE handler. The SSE response only *observes* a shared output buffer, so closing the tab or navigating away no longer cancels the generation — it runs to completion and writes the cache regardless.
+
+Machinery (all in the API): an `_active_gen` registry keyed by `(kind, scope, run_id, uc_uuid)`; `_run_generation_bg` runs the model; `_ensure_generation` starts-or-attaches; `_observe_generation` streams the shared buffer to a client. A **second** observer for the same key attaches to the already-running task instead of re-calling the model. Each entry self-cleans 45s after completion.
+
+**UI:** a completion toast (`✓ Architectural Review ready` / `✓ Enhancement Plan ready`) fires even when the user has navigated to another view.
+
+---
+
+## Enhancement rendering as markdown (v0.10.0)
+
+Enhancement output is rendered as **markdown** using the same `mdToHtml` typography as the Architectural Review. The renderer converts the structured `ENHANCEMENT` blocks into markdown for display **only** — the raw structured format is left intact so `enhancement_apply`'s PR parser still consumes the mechanical blocks (`target:`, `action:`, etc., see §Enhancement apply). The `/api/enhancements` system prompt requires each block flush-left (no indentation, plain-text labels) so both the human-readable render and the machine parse stay reliable.
 
 ---
 
@@ -517,6 +586,12 @@ Migrations run automatically at API startup before `schema.sql`. Each migration 
 | `migrate_015_improvement_proposals.sql` | Self-improvement loop (Phase 1): `run_diagnoses` (per-diagnosis taxonomy snapshot) + `improvement_proposals` (typed change proposals + review lifecycle) |
 | `migrate_016_experiments.sql` | Self-improvement loop (Phase 2): `experiments` (A/B baseline-vs-candidate runs + scores + verdict) + `change_spec` column on `improvement_proposals` |
 
+**v0.10.0 schema changes** are applied **idempotently on API boot via `schema.sql`** (the file doubles as a migration script: `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE … ADD COLUMN IF NOT EXISTS` + backfills), not as numbered migration files:
+
+- **New tables:** `analysis_output_cache`, `users`. (`projects`, `project_members`, `capability_catalog`, `project_stage_context` are also created here if not already present.)
+- **New columns:** `project_id` on `managed_use_cases`, `analysis_runs`, `run_sessions`, `use_case_sets`, and `analysis_output_cache`; `run_sessions.archived`. Existing rows are backfilled into the `default` project; `project_id` columns are indexed.
+- **`model_defaults`** gains the `enhancement` and `uc-authoring` keys (data, not schema).
+
 ---
 
 ## Self-improvement loop — diagnose & propose (Phase 1, 2026-05-30)
@@ -540,21 +615,201 @@ Turns the manual "observe failure → root-cause → propose fix" loop into a fe
 
 ---
 
+## Multi-user / LDAP — auth + roles (v0.10.0)
+
+Identity still comes from the oauth-proxy (`X-Forwarded-User` / `X-Forwarded-Email`); LDAP decides **approval** and seeds roles. The console is no longer implicitly single-user, but multi-user gating is **opt-in** and cannot accidentally lock anyone out.
+
+**Module:** `app/ldap_auth.py` (uses `ldap3`; added to `requirements.txt` as `ldap3==2.9.1`).
+
+**`users` table:** `reviewer` (PK) · `email` · `display_name` · `role` (`admin` | `editor` | `viewer`) · `approved` · `source` (`ldap` | `bootstrap` | `manual`) · `last_seen`. A 10-minute background sync pulls the configured LDAP group → `users` + an in-memory approved set that **survives LDAP downtime** (the cached set keeps working if the directory is unreachable).
+
+**Access gate (middleware):** rejects non-approved users, but **only** when all three hold: `DAV_LDAP_ENFORCE=true` AND LDAP is configured AND at least one sync has succeeded. Until then it's a no-op — so configuring LDAP can't lock out the operator before they've verified the user list. Bootstrap admins (via `DAV_LDAP_BOOTSTRAP_ADMINS`) are always admin. `require_role()` gates write endpoints; in single-user mode (LDAP off) there is **no** role gating.
+
+**Endpoints:**
+- `GET /api/me` now returns `role` / `is_admin` / `approved` / `ldap_enabled`.
+- `GET /api/ldap/status`, `POST /api/ldap/sync` (manual sync).
+- `GET /api/users`, `PUT /api/users/{reviewer}/role`.
+- `GET /api/ldap/approved` (the approved set, used by the Projects member picker).
+
+**UI:** Config → **Users & Access** (admin-only) shows LDAP status + Sync-now, and per-user role editing.
+
+**Config (optional Kubernetes Secret `dav-ldap`):** mounted via `envFrom` (optional) on the API deployment. Example manifest: [`review-console/deploy/dav-ldap-secret.example.yaml`](../review-console/deploy/dav-ldap-secret.example.yaml). Env vars: `DAV_LDAP_URL`, `DAV_LDAP_BIND_DN`, `DAV_LDAP_BIND_PASSWORD`, `DAV_LDAP_USER_BASE`, `DAV_LDAP_GROUP_DN`, `DAV_LDAP_USER_ATTR`, `DAV_LDAP_MAIL_ATTR`, `DAV_LDAP_NAME_ATTR`, `DAV_LDAP_MEMBER_ATTR`, `DAV_LDAP_START_TLS`, `DAV_LDAP_ENFORCE`, `DAV_LDAP_BOOTSTRAP_ADMINS`.
+
+**Rollout:** fill the Secret → `oc apply` → `oc rollout restart deploy/dav-review-api` → verify the user list in Config → Users & Access → only then set `DAV_LDAP_ENFORCE=true`. See the operator runbook for the step-by-step.
+
+---
+
+## Use-case git model — sharing, fork, reference (IN DESIGN, target v0.11)
+
+**Problem:** UCs need to be shared across projects, both as live **references** and as divergent **forks**, with a **use-case-admin** capability that's assignable globally *and* per-project. Rather than build a bespoke Postgres share-matrix, we model this on git — which already solves reference (track an upstream ref), fork (branch/copy + PR back), permissions (forge ACLs), and history.
+
+**Decided direction:**
+- **Git is the source of truth; the DB is a projection/index** (the corpus is already synced-from-git this way). UC edits become commits — via commit-on-save or an explicit Publish step. `managed_use_cases` keeps a synced copy + git provenance.
+- **DAV can host UC repos locally** ("localized git repos"), in addition to pointing at external forge repos (e.g. gitlab.roadfeldt.com). Backend is pluggable.
+- **Layout is operator-chosen:** a project selects a **path/branch**, defaulting to **its own repo**. Repo-per-project is the default; path/branch-within-a-repo is allowed.
+
+**Model:**
+- UC row gains git provenance: `origin` (`local` | `reference` | `fork`), `source_repo_id` → `managed_repos`, `source_path`, `source_ref`, and for forks `upstream_repo_id`/`upstream_path`/`upstream_ref` (to compute drift + offer "open PR back").
+- **Reference** = a read-only tracked source binding (re-syncs, like `consumer_spec_sources`). **Fork** = snapshot copy that diverges and can PR upstream. **Share INTO a project** = grant a reference, or open a PR — the **forge enforces the tenancy boundary**, not us.
+- **The "matrix" UI** = *projects × UC-source bindings* (which repos/paths/refs each project subscribes to, reference vs fork), not a hand-rolled share table.
+- **`GitProvider` abstraction** isolates the hosting choice: `ensure_repo(project)`, `read/commit/branch`, `fork`, `open_pr`, `register_reference`. Backends: external-URL, forge-API (gitlab/gitea), in-cluster host. The infra choice becomes config, not a fork in the code.
+- **uc-admin** capability checked via one helper `_can_manage_uc_sources(user, project)` satisfied by **either** a global `uc-admin` role **or** a per-project `uc-admin` grant in `project_members`.
+
+**Reuses (don't rebuild):** Push-to-corpus, Tekton git-sync, `managed_repos` + per-repo Fernet-encrypted PATs (ADR-004), namespaced multi-source sync, the projects/tenancy model.
+
+**Resolved — hosting is an operator choice (reuse the corpus mechanism):** there is no single mandated backend. We keep today's corpus repo (`code_repo_configs` + git-sync + Push-to-corpus) as the default UC location and **generalize "the corpus repo" → "UC-location repos"**: operators may register additional repos (reusing `code_repo_configs` + ADR-004 per-repo encrypted PATs) and **assign where a project's/UC's use cases live** — the corpus, another registered repo, or a **DAV-localized PVC** (bare repo on a PVC) when they want DAV to store them. The PVC backend is fully self-contained but has **no native merge-request review UI**, so *reference* (re-syncing source binding) is the primary cross-project share path and *fork* is copy-with-provenance; **PR-back is offered only when the backend is a real forge** (e.g. gitlab). `GitProvider` backends: registered-repo (corpus model, exists) and localized-PVC.
+
+**Phased delivery:**
+1. **uc-admin capability** — ✅ **SHIPPED (v0.10.1).** `uc-admin` is accepted as a global role (`users.role`) and a per-project grant (`project_members.role`), validated via `_ASSIGNABLE_GLOBAL_ROLES` / `_ASSIGNABLE_PROJECT_ROLES` (role columns are free-text — no migration). `_can_manage_uc_sources(user, project_id?)` + the `require_uc_admin` dependency gate the forthcoming sharing endpoints; granting global `uc-admin` itself requires already holding it. `/api/me` returns `can_manage_uc_sources`; the role appears in the global Users and per-project member/invite dropdowns. Inert in single-user mode.
+2. **UC-location repos** — ✅ **SHIPPED (v0.11).** Built on **`managed_repos`** (the live registry; `code_repo_configs` is migrated *into* it per ADR-006), not a new table. **`uc-store`** added to `repos.py` `VALID_ROLES` (open `roles TEXT[]`, no migration) marking a writable UC destination, co-assignable with other roles. **localized-PVC backend:** `POST /api/repos/pvc-local` (uc-admin) runs `git init --bare /uc-repos/<ns>.git` on a dedicated **RWX `dav-uc-repos` PVC** (mounted RW at `/uc-repos` on the API) and registers a `managed_repos` row (`metadata.provider='pvc-local'`, role `uc-store`, `repo_url=file:///uc-repos/<ns>.git`) — DAV-hosted storage, no git server. `_validate_repo_url` allows the constrained `file:///uc-repos/` prefix only (traversal-guarded). **Assignment:** `projects.uc_repo_uuid/uc_path/uc_branch` (per-project default) + `managed_use_cases.source_repo_uuid/source_path/source_ref` (per-UC override) via `GET/PUT /api/projects/{id}/uc-destination` and `PUT /api/use-cases/{uuid}/uc-destination` (uc-admin-gated; soft repo references, no FK). **UI:** per-project "UC store" picker in Config → Projects/Access + inline "let DAV host a new store" (pvc-local), gated on `can_manage_uc_sources`. *(Actual git read/write of UC content is Phase 3.)*
+   - **Direction (per operator):** `uc-store` is intended to become the *universal* UC location; the existing `corpus` role stays as the transitional "must-have" set but is expected to be subsumed. **Purpose is expressed by tagging sets / individual UCs** (reusing the existing `tags` columns on `managed_use_cases` and `use_case_sets`), NOT by repo role — so a single `uc-store` repo holds everything and tags carry intent.
+3. **Git round-trip** — commit-on-save / Publish; `origin` + provenance columns; DB-as-projection sync.
+4. **Matrix UI + reference/fork actions** — projects × source-bindings, share(reference)/fork/PR-back, gated on the uc-admin capability.
+
+---
+
+## RBAC — accounts × roles × privileges (v0.13.0)
+
+Replaced the single-`role`-per-user model with a matrix, modelled on OpenShift RBAC (roles = sets of privileges; accounts are *bound* to roles, optionally per-project). **Identity-source-agnostic:** a `users` row is one account whatever the auth source (internal password, LDAP, OCP); `source` is informational only, never an authorization input. A user may hold **many** roles.
+
+**Scope model (3 classes — the only thing that differs between role classes):**
+- **Platform** (≈ OpenShift cluster) — the platform itself: LDAP/SMTP/accounts/roles/repos. Bound globally.
+- **Cross-project** — project-*related* but **not tied to a specific project** (e.g. **project creation**). Bound globally.
+- **Project** (≈ OpenShift namespace) — one specific project's data/settings/members/deletion. Bound per-project.
+
+Platform & Cross-project bindings are project-independent; Project bindings carry a `project_id`. Matrix compatibility is hierarchical: a role of a given scope may hold privileges of its scope or **narrower** (Platform ⊇ Cross-project ⊇ Project), so a Platform Admin can also carry Cross-project/Project privileges, a Cross-project role can carry Project privileges, a Project role only Project privileges.
+
+**Schema:** `rbac_privileges`, `rbac_roles` (scope `platform`|`cross-project`|`project`, `is_system`), `rbac_role_privileges` (the matrix), `rbac_account_roles` (account × role × `project_id`; NULL project_id for platform/cross-project bindings), `rbac_group_role_mappings` (LDAP/OCP group→role, *structure only* — sync is a later slice, platform-admin managed). `users.enabled` is the gate flag; `users.default_project_id` the per-user default. An idempotent migration (re-run every boot, `ON CONFLICT DO NOTHING`) maps legacy `users.role=platform-admin` → Platform Admin and `project_members{admin,editor,viewer,uc-admin}` → Project {Admin,Edit,Viewer}; `project.create` is reclassified from platform → cross-project.
+
+**Privileges (v0.14.0 — granular workflow + config):** `platform.admin` (**platform**); `project.create` (**cross-project**); all others **project**-scoped:
+- *Baseline:* `project.data.read` (read/view all project data — gates every GET).
+- *Project admin ops:* `project.settings`, `project.members`, `project.delete`.
+- *Workflow / execution:* `project.usecases` (use-case + set CRUD/import/transition), `project.runs.manage` (archive/delete/rename runs), `project.runs.execute` (trigger a run), `project.archreview.execute`, `project.archreview.context` (edit stage context), `project.enhancement.execute`, `project.enhancement.pr` (open branches/PRs — external push), `project.catalog`.
+- *Config registries (project-owned, strict isolation):* `project.models`, `project.integrations` (MCP), `project.repos`.
+
+The legacy umbrella `project.data.write` is **retired** (removed from built-in roles; replaced by the granular keys). **Built-in roles:** Platform Admin (`platform.admin`+`project.create`); Project Admin (*all* project privileges); Project Edit (data.read + usecases + runs.manage + runs.execute + archreview.execute + archreview.context + enhancement.execute + catalog — **excludes** enhancement.pr, models/integrations/repos, settings/members/delete); Project Viewer (data.read). Built-ins are *retunable* but not deletable; custom roles compose any project privileges (e.g. a "Run Operator" = data.read + runs.execute). An idempotent boot backfill grants the full project-admin set to any role holding `project.settings`.
+
+**Config tenancy + workflow authz (v0.14.0):** `model_configs`, `mcp_server_configs`, `managed_repos`, and `model_defaults` are now **project-owned** (NOT NULL `project_id`; name-uniqueness is per-project; existing rows backfilled to the DCM project). Every config + workflow endpoint is gated: *reads* on `project.data.read` (so editors/run-operators can still see model/MCP/repo lists for pickers), *mutations/execution* on the matching privilege, and write/execute paths additionally resolve the **target row's** `project_id` and require the privilege *in that project* (cross-project edit → 404 — closes a pre-v0.14 gap where any authenticated user could edit any project's data). Consumption paths (model selection for arch-review/enhancement/uc-assist/diagnose, MCP health) are scoped to the run's project (run-driven) or the active project (request-time), so a run only ever uses its own project's models/MCP. `platform.admin` is a superuser and bypasses project checks. All guards no-op in single-operator mode.
+
+**Resolver (`rbac.py`):** `privileges_for(account, project_id)` = union of **platform + cross-project**-role privileges (everywhere) + **project**-role privileges scoped to that project. All legacy guards (`require_role`, `require_project_admin`, `require_uc_admin`, `_is_project_admin`, `_can_manage_uc_sources`) are reimplemented over it; new `require_priv(priv, project_id)`. **Platform admins** see all projects in the RBAC views and can grant themselves a project role, but project *data* still requires a project role. `project.create` (cross-project) / `project.delete` (project) gate project lifecycle.
+
+**Escalation guard:** assigning a role (Accounts panel *and* project Members panel) is subset-checked — you may only grant a role whose privileges you already hold in that scope. Platform admins hold everything and bypass. So a Project Editor who also holds `project.members` can grant Edit/Viewer, not Admin.
+
+**Gate / approval / session invalidation:** source-agnostic — "approved" == an *enabled* account. The gate re-validates the account on **every** request (in-memory enabled set, reloaded on every account/role change), so disabling or deleting a user cuts their existing sessions off on their **next** request (UI shows the login screen on a 401). JIT auto-provisioning (creating a role-less enabled account for a first-seen identity) applies **only to proxy-authenticated** (OCP/LDAP) identities — an internal session whose account was deleted/disabled is rejected, never re-created.
+
+**Security (LB path):** the external MetalLB/nginx path has no oauth-proxy, so its `/api` location **clears** client `X-Forwarded-User`/`X-Auth-Request-*` headers — identity there comes only from the signed session cookie. (Closed a header-spoof auth bypass.)
+
+**Default admin (dedicated break-glass):** `review_console_default_admin_email` is a **dedicated** account (e.g. `admin@dav.local`), kept distinct from any real person. The seed *ensures it exists* on every boot — created **deactivated** when a real platform admin already exists, password from `vault_review_console_default_admin_password` (else `changeme`). It is **never auto-disabled**; deleting it via the UI **deactivates** it instead. `reconcile_default_admin()` guarantees ≥1 enabled platform admin: if the count hits zero it **re-activates** the default and **notifies** (email + log + a `warning` the triggering API response carries to a UI toast). Run on boot and after every account/role change.
+
+**Invites:** adding an account with **no password** (`POST /api/accounts`) auto-creates an activation invitation and emails the set-password link (copy-link fallback when SMTP is off); `POST /api/accounts/{x}/invite` re-sends for a password-less account; the per-project Members panel also invites with a project role. Link base = `DAV_PUBLIC_BASE_URL` (config-derived from hostname + custom port; see Deployment) → SMTP `base_url` → request Host. Accept (`/api/invites/{token}/accept`) sets the password, enables the account, and maps invite roles into `rbac_account_roles`.
+
+**Endpoints:** `/api/accounts` (GET list-with-roles, POST create+invite, PATCH enable/disable+password, DELETE — self-delete blocked, default→deactivate), `POST /api/accounts/{x}/invite`; `/api/rbac/roles` + `/api/rbac/privileges` (GET), `POST/PUT/DELETE /api/rbac/roles`; `POST/DELETE /api/accounts/{x}/roles` (assign/revoke, escalation-guarded); `GET/POST/DELETE /api/projects/{id}/members` (RBAC project bindings — replaces the legacy `project_members` writes); `PUT /api/me/default-project`.
+
+**UI:** Config → **Users & roles** (platform-admin) — add-account form, account list with enabled toggle + role chips (removable) + assign-role dropdown (platform & per-project), and a **Roles × Privileges matrix** (per-role privilege chips, scope-aware; create/delete custom roles). **Left-nav shortcuts** (privilege-gated): **Users & roles** (platform admin) and **Projects** (project admin / `project.create`). Account menu (top-right): self-service logout / change-password / appearance.
+
+> **Next slice (in progress): a proper OpenShift-style RBAC management UI/UX** — no model change, just the interface: a **Roles** tab (catalog grouped by scope, per-role privilege matrix, create/clone/edit/delete) and a **Role bindings** tab (subject × role × scope/project, incl. the LDAP group mapper). The Projects section is the per-project lens on the same bindings.
+
+---
+
+## Deployment toggles — TLS + auth activation (v0.10.1)
+
+All site-specific values live in `ansible/inventory/group_vars/all/vars.local.yaml`; framework defaults (all **off**) are in the `dav` role's `defaults/main.yaml`. Nothing here changes behavior until the operator opts in.
+
+**TLS via cert-manager (Let's Encrypt).** When `review_console_cert_manager_enabled: true`, the `dav-review-ui` Route is annotated for the cert-manager **openshift-routes** controller (`cert-manager.io/issuer-name|kind|group`, plus optional `duration`/`renew-before`). The controller provisions a cert onto `spec.tls.{certificate,key}`. Because the Route is applied with **server-side apply** under `field_manager: ansible` and the template never sets the cert fields, the controller co-owns them — re-running the playbook does **not** clobber the issued cert. Optionally (`review_console_cert_manager_create_issuer: true`) the playbook creates the `Issuer`/`ClusterIssuer` itself from `review_console_letsencrypt_email` / `review_console_letsencrypt_server` with an HTTP-01 solver on ingress class `openshift-default` (template: `review-console-cert-issuer.yaml.j2`). Requires cert-manager core + the openshift-routes controller on the cluster.
+
+**Multi-user auth activation.** Two flags, meant to be flipped together:
+- `review_console_require_auth: true` → sets `DAV_REQUIRE_AUTH=true` on the API → enforces app sessions, the approval gate, and role scoping (otherwise single-user passthrough).
+- `review_console_relaxed_proxy: true` → the oauth-proxy adds `--skip-auth-regex` for `/`, `/api/`, assets, so app-native (internal/invited/LDAP) users reach the DAV login + `/api/auth/*` instead of bouncing off OCP login. `/sso` stays OCP-protected for OCP-oauth bootstrap.
+
+The **dedicated** break-glass platform-admin (`review_console_default_admin_email`, keep it distinct from a real person) is *ensured to exist* on every boot — created **deactivated** when a real platform admin already exists, password from `vault_review_console_default_admin_password` (else `changeme`), forced to change on first login. See the RBAC section for the never-auto-disable / re-activate-on-zero-admins invariant.
+
+**Outbound link base URL:** `DAV_PUBLIC_BASE_URL` (env on the API) is used to build invite links. It's config-derived: explicit `review_console_public_base_url`, else `https://{review_console_hostname}` + the LoadBalancer port **when the LB is enabled and the port is non-standard** (no `:443`/`:80` ever appended). The LB's nginx also forwards `Host $http_host` (not `$host`) so the custom port survives as a runtime fallback.
+
+**Rollout:** set the flags in `vars.local.yaml` → `ansible-playbook playbook.yaml --tags review-console` → log in as the default admin → change password → create projects + assign users roles. Flip `require_auth` only after confirming the admin works (it strictly enforces approval).
+
+### External hosting on a custom port — MetalLB LoadBalancer (v0.10.2)
+
+For hosting the console off-cluster on a dedicated IP + custom port (e.g. `dav.roadfeldt.com:8843`), a MetalLB `LoadBalancer` Service bypasses the OCP router. Internal DNS for the hostname points at the MetalLB IP, and the firewall forwards the WAN port to the same IP:port — so both paths share `review_console_loadbalancer_port`. Mirrors the proven frc-scheduler-server pattern.
+
+- **Path:** `MetalLB IP:8843 → Service dav-review-ui-lb → nginx :9443 (TLS) → /api → dav-review-api`. **oauth-proxy is NOT in this path** — external users authenticate app-natively, so the playbook **asserts `review_console_require_auth: true`** (otherwise `/api` would be exposed). The OCP Route stays alongside on 443.
+- **nginx TLS:** a second `server{}` block on the in-pod TLS port (`review_console_loadbalancer_tls_port`, default 9443) is contributed at the **http** level (`/opt/app-root/etc/nginx.d/`, via `dav-review-ui-nginx-tls` CM) and `include`s the same `nginx.default.d` locations as the `:8080` server — identical behavior over TLS. Cert mounted from the Secret at `/etc/nginx/tls`.
+- **Cert (DNS-01):** because the hostname now resolves to the MetalLB IP (not the router), HTTP-01 can't validate — so a cert-manager `Certificate` (`review-console-ui-public-cert.yaml.j2`) uses **DNS-01**, **referencing** the existing DNS-01 ClusterIssuer (`review_console_loadbalancer_cert_issuer = letsencrypt-prod`, shared with frc-scheduler-server). The playbook waits for the Secret before rolling the deployment. **Never recreate that shared issuer:** keep `review_console_cert_manager_create_issuer: false`, and the create-issuer task is additionally guarded to create-only-if-absent (its template is HTTP-01, which would otherwise clobber the DNS-01 ClusterIssuer of the same name and break every app that uses it). Since the issuer is DNS-01, the route-based cert path validates too, but it's redundant when the LB is the live path.
+- **Renewal:** nginx reads the cert at startup, so a weekly `dav-review-cert-renewal` CronJob (own SA + minimal deployments-patch Role) does a rolling restart to pick up renewed certs (toggle `review_console_loadbalancer_cert_renewal_restart`).
+- **IP:** explicit `review_console_loadbalancer_ip` (→ `metallb.universe.tf/loadBalancerIPs`) or a `review_console_loadbalancer_pool` (→ `metallb.universe.tf/address-pool`). All resources are removed when `review_console_loadbalancer_enabled` is false.
+
+### Namespace egress firewall (v0.14.0)
+
+As DAV opens to other users, an OVN `EgressFirewall/default` in the `dav` namespace (`dav_egress_firewall_enabled`, in `tasks/namespace.yaml`) restricts what the (shared) dav pods may reach **outside the cluster**: the allowlisted internal infra plus the public internet, **denying the rest of RFC1918** (lateral homelab access). Ordered (first match wins; no match = allow, so the internet stays reachable):
+1. **Allow** the cluster pod (`10.128.0.0/14`) + service (`172.30.0.0/16`) networks **and the node subnet `10.0.0.0/24`** — the node subnet is mandatory: kubelet liveness/readiness probe replies and pod↔node traffic ride it; denying it kills the pod (exit 137, liveness timeout). The `10.0.0.0/24` allow also covers the **default ingress `10.0.0.70`** (which serves `*.apps.ocp.roadfeldt.com` — the MCP servers + most local models).
+2. **Allow** `10.0.90.20/32` (the `*.llm` ingress router → local models) and `10.10.90.4/32` (`buddy` SMTP).
+3. **Deny** `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`.
+
+Driven by `dav_egress_cluster_cidrs` / `dav_egress_allow_cidrs` / `dav_egress_deny_cidrs` defaults — add a CIDR to `dav_egress_allow_cidrs` whenever a new internal API/MCP endpoint is configured.
+
+**Architectural limit (single shared pod):** per-project *network* egress is **not** enforceable here — all projects share the pod's network identity. Per-project MCP/model isolation is enforced at the **app layer** (the pod only ever dials the *active project's* configured endpoints — see Config tenancy in the RBAC section). This firewall is a coarse namespace-wide backstop. Verified: the pod reaches the allowlisted ingress/models/SMTP + internet + DB, and an un-allowlisted homelab IP (e.g. `10.0.90.18`, `10.10.90.9`) times out.
+
+---
+
+## Projects (multi-project) (v0.10.0, RBAC-membership in v0.13.0)
+
+The console carves data into **projects**. **Membership is now RBAC** — a user is a member of a project iff they hold a project-scoped role on it (`rbac_account_roles`), *not* the legacy `project_members` table (which is migrated from + no longer authoritative). A `default` project is seeded; existing data was backfilled into it.
+
+**Visibility (v0.13.0):**
+- **Top-bar switcher** (`GET /api/projects/mine`) — **only** projects you're a member of, for **everyone including platform admins** (they add themselves to projects to access data). Returns your resolved default project.
+- **RBAC views** (`GET /api/projects`) — **all** projects for platform admins (to assign/move/delete anywhere); **member-only** for everyone else. `my_role`/`member_count` come from RBAC.
+- **Data scoping** (`_active_project_id`) — the `X-DAV-Project` header is honored only when you're a member of it; else your default project.
+
+**Per-user default project:** `users.default_project_id`. On login the switcher lands on it; auto-set to a member project when unset. A ☆/★ next to the switcher sets it (`PUT /api/me/default-project`).
+
+**Lifecycle:** `POST /api/projects` (gated on `project.create`; creator is granted Project Admin via RBAC); `PATCH /api/projects/{id}` (rename/archive); `POST /api/projects/{id}/move-data` (platform admin — reassigns all project-scoped rows incl. capability-catalog, collision-safe, to another project); `DELETE /api/projects/{id}` (gated on `project.delete`/platform.admin; refuses `default` and any project that still holds content — move/remove its data first).
+
+**Members panel (RBAC, v0.13.0):** Config → Projects → a project's **Members** = its project-role bindings (a user may appear once per role), add/remove via `rbac_account_roles`, escalation-guarded, with email-invite. Same model as the Accounts panel.
+
+---
+
+## Data tenancy — scope data to project (v0.10.0)
+
+`project_id` was added to `managed_use_cases`, `analysis_runs`, `run_sessions`, `use_case_sets`, and `analysis_output_cache` (the capability `catalog` already had it). Existing rows are backfilled into `default` and the column is indexed. Children (`uc_analyses` / `uc_gaps` / `uc_capabilities` / set members) inherit project via their FK to the parent.
+
+Scoping is applied via `_active_project_id()`:
+
+- **UCs** — list + create scoped to the active project.
+- **Runs** — list scoped (a run shows under its session's project; orphan Tekton runs fall under `default`); trigger sets `run_sessions.project_id`; ingest inherits that onto `analysis_runs`.
+- **Results** — the workspace list is filtered by the run's project.
+- **Sets** — list + create scoped.
+
+**Remaining hardening (noted, not yet done):** per-project capability `catalog` and `model_defaults` (still global today); and strict project checks on individual *detail* endpoints — these are reachable by id today regardless of project, which is acceptable under the approved-user trust model but should be tightened.
+
+---
+
 ## DB schema summary
 
 | Table | Purpose |
 |---|---|
-| `managed_use_cases` | UC CRUD with lifecycle state |
+| `managed_use_cases` | UC CRUD with lifecycle state (carries `project_id`) |
 | `lifecycle_events` | Audit trail for UC state transitions |
-| `use_case_sets` | Named UC collections |
+| `use_case_sets` | Named UC collections (carries `project_id`) |
 | `use_case_set_members` | UC set membership |
-| `run_sessions` | Per-run metadata + resource stats (console-triggered runs only) |
-| `analysis_runs` | Ingested run index |
+| `run_sessions` | Per-run metadata + resource stats (console-triggered runs only); carries `project_id` + `archived` |
+| `analysis_runs` | Ingested run index (carries `project_id`) |
 | `uc_analyses` | Per-UC analysis results |
 | `uc_gaps` | Per-gap records |
+| `analysis_output_cache` | Write-through cache of generated Review / Enhancement output; `UNIQUE(run_id, kind, scope, uc_uuid)`; carries `project_id` + staleness via `source_ingested_at` (v0.10.0) |
 | `model_configs` | Centralized LLM endpoint registry; use-flags `use_arch_review`, `use_uc_assist` per row |
-| `model_defaults` | Project-scoped model defaults keyed by pipeline type (`evaluation`, `arch-review`); references `model_configs` |
+| `model_defaults` | Project-scoped model defaults keyed by pipeline type (`arch-review`, `enhancement`, `evaluation`, `uc-authoring`); references `model_configs` (v0.10.0 adds `enhancement` + `uc-authoring`) |
 | `mcp_server_configs` | MCP server registry; `use_uc_assist` flag per server |
+| `users` | Source-agnostic **accounts**: email/identity, `password_hash` (argon2), `enabled` (gate flag), `default_project_id`, `source` (informational); legacy `role` kept for back-compat only (v0.13.0) |
+| `user_invitations` | Tokened account-activation / project invites (set-password link) |
+| `rbac_privileges` | Privilege vocabulary (matrix columns), each `scope` platform/project (v0.12.0) |
+| `rbac_roles` | Roles (groups of privileges), `scope` platform/project, `is_system` (v0.12.0) |
+| `rbac_role_privileges` | Role × privilege matrix (v0.12.0) |
+| `rbac_account_roles` | Account × role × `project_id` bindings (NULL project = platform) (v0.12.0) |
+| `rbac_group_role_mappings` | LDAP/OCP group → role mappings (structure; sync is a later slice) (v0.12.0) |
+| `app_settings` | In-app platform settings (LDAP/SMTP), secret fields Fernet-encrypted |
+| `projects` | Multi-project tenancy roots; `default` always seeded (v0.10.0) |
+| ~~`project_members`~~ | **Deprecated** — migrated into `rbac_account_roles`; membership is now RBAC (v0.13.0) |
+| `capability_catalog` | Capability taxonomy (carries `project_id`) |
+| `project_stage_context` | Per-project, per-stage context overrides |
 | ~~`code_repo_configs`~~ | Folded into `managed_repos` with `role=enhancement-target` per [ADR-006](../adr/006-consolidate-code-repos-into-managed-repos.md) (M10). Table left in place for one release cycle; `/api/code-repos/*` endpoints return 410 Gone with the new path. |
 
 ---

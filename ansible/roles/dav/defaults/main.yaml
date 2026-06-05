@@ -34,6 +34,122 @@ review_console_image_ui: "{{ dav_registry }}/dav-review-ui:latest"
 review_console_corpus_include: "*.md,*.yml,*.yaml,*.json,*.sql,*.py,*.go,*.rst,*.txt,*.toml,*.ini"
 review_console_corpus_exclude: ".git,node_modules,.venv,__pycache__,dist,build,*.pyc,*.lock"
 
+# --- Review Console TLS (cert-manager / Let's Encrypt) ---
+# OFF by default: the Route keeps the cluster's default wildcard serving cert.
+# When enabled, the dav-review-ui Route is annotated for the cert-manager
+# openshift-routes controller, which provisions a Let's Encrypt cert onto
+# spec.tls.{certificate,key}. Ansible applies the Route via server-side apply
+# (field_manager: ansible) and never sets those cert fields, so the controller
+# co-owns them safely — re-running the playbook does NOT clobber the cert.
+# Requires: cert-manager core + the cert-manager openshift-routes controller
+# installed on the cluster. Site values go in vars.local.yaml.
+review_console_cert_manager_enabled: false
+# Issuer the Route points at. Reference an existing one, or have the playbook
+# create it (review_console_cert_manager_create_issuer: true) from the ACME
+# settings below.
+review_console_cert_manager_issuer_name: "letsencrypt-production"
+review_console_cert_manager_issuer_kind: "ClusterIssuer"   # or "Issuer" (namespaced to dav)
+review_console_cert_manager_issuer_group: "cert-manager.io"
+# Optional cert tuning passed through as Route annotations (blank = controller default).
+review_console_cert_manager_duration: ""        # e.g. "2160h" (90d)
+review_console_cert_manager_renew_before: ""    # e.g. "360h"  (15d)
+# Let the playbook create the issuer above (kind decides Issuer vs ClusterIssuer).
+review_console_cert_manager_create_issuer: false
+review_console_letsencrypt_email: ""
+# Production directory by default. Use the staging URL while testing to avoid
+# Let's Encrypt rate limits:
+#   https://acme-staging-v02.api.letsencrypt.org/directory
+review_console_letsencrypt_server: "https://acme-v02.api.letsencrypt.org/directory"
+# HTTP-01 solver ingress class. On OpenShift the default router ingress class
+# is "openshift-default"; cert-manager creates a challenge Ingress that OCP
+# converts to a temporary Route on the same host.
+review_console_letsencrypt_solver_ingress_class: "openshift-default"
+
+# --- Review Console multi-user auth activation ---
+# Both OFF by default → single-user passthrough behind the OCP oauth-proxy.
+# To run app-native (internal + LDAP) multi-user auth, set BOTH in
+# vars.local.yaml. require_auth makes the API enforce sessions/approval/roles;
+# relaxed_proxy makes the oauth-proxy let the app's own /api/auth/* + login page
+# through (otherwise non-OCP users bounce off OCP login). They are meant to be
+# flipped together.
+review_console_require_auth: false
+review_console_relaxed_proxy: false
+# Break-glass internal platform-admin seeded on first boot (must change password
+# on first login). Password comes from vault_review_console_default_admin_password
+# when set, else the API's built-in "changeme".
+review_console_default_admin_email: "admin@dav.local"
+# Public base URL used to build outbound links (e.g. invite links). Empty =
+# derive from review_console_hostname + the LoadBalancer port when enabled
+# (so the custom port is always included). Set explicitly to override.
+review_console_public_base_url: ""
+
+# --- Review Console external LoadBalancer (MetalLB, custom port) ---
+# OFF by default. When enabled, expose the console on a dedicated MetalLB IP and
+# a custom port, BYPASSING the OCP router: internal DNS for the hostname points
+# at the MetalLB IP and the firewall forwards the WAN port to the same IP:port,
+# so both share `review_console_loadbalancer_port`. nginx terminates TLS with a
+# cert-manager (DNS-01) cert and the OCP oauth-proxy is NOT in this path — so
+# external users authenticate app-natively and `review_console_require_auth`
+# MUST be true (otherwise /api is open). The OCP Route stays as-is alongside.
+review_console_loadbalancer_enabled: false
+review_console_loadbalancer_port: 8843           # external/shared port
+review_console_loadbalancer_tls_port: 9443       # in-pod nginx TLS listener
+review_console_loadbalancer_ip: ""               # explicit MetalLB IP (e.g. 10.0.90.22)
+review_console_loadbalancer_pool: ""             # OR a MetalLB address-pool name (leave IP blank)
+review_console_loadbalancer_tls_secret: "dav-review-ui-public-tls"
+# Public cert. DNS-01 sidesteps the router/port-80 conflict that arises because
+# the hostname resolves to the MetalLB IP. Set create_cert: true to have the
+# playbook create a Certificate against an existing DNS-01 issuer; otherwise
+# provide the Secret named above yourself.
+review_console_loadbalancer_create_cert: false
+review_console_loadbalancer_cert_issuer: "letsencrypt-production"
+review_console_loadbalancer_cert_issuer_kind: "ClusterIssuer"   # or "Issuer"
+# Weekly rolling restart so nginx picks up renewed certs (no Reloader needed).
+review_console_loadbalancer_cert_renewal_restart: true
+review_console_loadbalancer_cert_renewal_schedule: "0 3 * * 0"
+
+# --- Namespace egress firewall (OVN-Kubernetes) ---
+# OFF by default. When enabled, an EgressFirewall/default in the dav namespace
+# restricts what the (shared) dav pods may reach OUTSIDE the cluster: the
+# allowlisted internal infra (configured API/MCP ingress + SMTP) plus the public
+# internet, while DENYING the rest of the private RFC1918 space (lateral homelab
+# access). The cluster pod/service networks are explicitly allowed first so
+# in-cluster traffic (DB, pod-to-pod) is never affected.
+#
+# NOTE (single shared pod): per-project NETWORK egress is not enforceable here —
+# all projects share the pod's identity. Per-project isolation is enforced at the
+# APP layer (the pod only dials the active project's configured endpoints). This
+# firewall is a coarse namespace-wide backstop.
+dav_egress_firewall_enabled: false
+# Cluster networks — MUST be allowed (they fall inside the denied RFC1918 ranges).
+# The node subnet is included because kubelet liveness/readiness probes and other
+# pod↔node traffic ride it; dropping it kills the pod's health probes.
+dav_egress_cluster_cidrs:
+  - "10.128.0.0/14"   # pod network
+  - "172.30.0.0/16"   # service network
+  - "10.0.0.0/24"     # node subnet (control+workers 10.0.0.81-89) + default ingress 10.0.0.70
+# Allowlisted internal destinations. *.apps.ocp.roadfeldt.com → default ingress
+# 10.0.0.70 (covered by the node /24 above); *.llm.ocp → llm-public router
+# 10.0.90.20. The MCP servers + most local models live behind *.apps.
+dav_egress_allow_cidrs:
+  - "10.0.90.20/32"   # OCP llm-public ingress — *.llm routes (local models)
+  - "10.10.90.4/32"   # buddy.roadfeldt.com (SMTP)
+# Private ranges to deny (everything not allowlisted above). Public internet is
+# allowed by default (no matching rule).
+dav_egress_deny_cidrs:
+  - "10.0.0.0/8"
+  - "172.16.0.0/12"
+  - "192.168.0.0/16"
+
+# --- DAV-hosted UC git stores (pvc-local backend) ---
+# A small RWX PVC where the API provisions bare git repos for use cases that
+# don't need an external forge (POST /api/repos/pvc-local). Mounted RW at
+# /uc-repos on the API. Defaults to the same RWX storage class as the workspace.
+review_console_uc_repos_enabled: true
+review_console_uc_repos_pvc_size: "2Gi"
+review_console_uc_repos_pvc_access_mode: "ReadWriteMany"
+review_console_uc_repos_pvc_storage_class: "{{ dav_workspace_pvc_storage_class | default('') }}"
+
 # --- MCP servers ---
 # dav-docs-mcp serves spec content via SSE from a git-cloned working
 # copy populated by an init container at pod start. To pick up spec

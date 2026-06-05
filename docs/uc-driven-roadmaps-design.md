@@ -217,6 +217,53 @@ is a **foundational, cross-cutting** concern — it scopes the data model and ev
 so the cheap-but-critical move is to make new entities **tenancy-ready from birth** rather
 than retrofit `project_id` later. Retrofitting tenancy is its own drift/debt.
 
+### 9a. Identity, approval & roles (Phase 1 — implemented)
+
+- **Identity** is established upstream by the oauth-proxy (`X-Forwarded-User/-Email`) —
+  unchanged. DAV does not do its own login.
+- **Approval** is sourced from an **LDAP group** (`DAV_LDAP_GROUP_DN`). Members are synced
+  into the `users` table + an in-memory set every 10 min; the per-request gate is a fast
+  local lookup that survives LDAP downtime (keeps last-known-good). Config via the `dav-ldap`
+  Secret (env), mounted optional — **absent ⇒ single-user behavior, gate disabled**.
+- **Roles**: `admin` / `editor` / `viewer`, stored per user, managed in-app (Config →
+  Users & Access). Bootstrap admins via `DAV_LDAP_BOOTSTRAP_ADMINS` so there is always an
+  administrator. `require_role()` gates writes.
+- **Safety**: the gate only rejects when configured **and** `DAV_LDAP_ENFORCE=true` **and**
+  a sync has succeeded — verify the user list before enforcing, no accidental lockout.
+
+### 9b. Projects, membership & switcher (Phase 2 — implemented)
+
+- **Projects**: `projects` + `project_members` (per-project role). A `default` project is
+  always seeded. Admin-only create/archive/rename; the creator becomes a project admin.
+- **Switcher**: masthead `Project` selector (hidden when only `default` exists) sets the
+  active project, persisted client-side and sent on every request as `X-DAV-Project`.
+  `_active_project_id()` resolves it server-side (header → validated → default).
+- **Membership UI**: Config → Users & Access → Projects — add/remove members from the
+  LDAP-approved list, set per-project roles.
+- **Per-project admin authz** (`require_project_admin`): a `project_members.role='admin'`
+  user may manage *their* project — members, per-project invites, rename/archive — without
+  being a global admin. Project admins see only the projects they administer; project
+  creation + global users/roles + LDAP/SMTP settings stay global/platform-admin. An inviter
+  can't grant a global role above their own. **Platform-admin** is the top global tier
+  (manages all projects, users, auth sources, settings); the seeded `admin@dav.local` is
+  the break-glass platform admin.
+### 9c. Data tenancy (Phase 3 — implemented for the primary paths)
+
+- **Schema**: `project_id` added to `managed_use_cases`, `analysis_runs`, `run_sessions`,
+  `use_case_sets`, `analysis_output_cache` (catalog already had it); existing rows backfilled
+  into `default`; indexed. Children (uc_analyses/uc_gaps/uc_capabilities/set members) inherit
+  via FK to a scoped parent.
+- **Scoped via `_active_project_id()`** (header → validated → default):
+  - **UCs** — list + create
+  - **Runs** — list (sessioned run → its project; orphan Tekton run → default) + trigger sets
+    `run_sessions.project_id`; ingest sets `analysis_runs.project_id` (inherited from the session)
+  - **Results** — list (workspace dirs filtered by `analysis_runs.project_id`)
+  - **Sets** — list + create
+- **Remaining hardening (follow-up)**: per-project capability *catalog* (currently default),
+  `model_defaults` per project, and strict project checks on individual *detail* endpoints
+  (`/api/results/{run_id}`, `/api/use-cases/{uuid}`, …). Today these are reachable by id if
+  guessed — acceptable under the approved-user trust model; tighten when sharing widens.
+
 **Project = a user-defined analysis scope.** A project is whatever set of information a user
 groups to be **analyzed together** — one repo or many, one spec source or several — with its
 UC corpus and consumer profile(s). The unifying criterion is **relatedness: everything in a
@@ -263,6 +310,30 @@ work (managed_repos + sources), the multi-project scaffolding.
 8. **Tenancy-ready:** every finding, capability, set, work item, and roadmap is scoped to a
    project and attributed to a user; curate/approve seams enforce roles. Bake it in from
    birth — retrofitting tenancy is drift.
+9. **One default per model-use, one override component:** model selection is two-tier (§10a).
+   Config owns the default for each use; views only override. No per-view "remembered model."
+
+### 10a. Model selection — two-tier (default + override)
+
+Every distinct *use of a model* has exactly one project default and a consistent override.
+
+- **Tier 1 — Config defaults** (`model_defaults` table, server-side; one consistent
+  "default selector" component): `arch-review`, `enhancement` (chains to `arch-review`
+  when unset), `evaluation`, `uc-authoring` (shared by the Assist panel, UC Wizard
+  generate/refine, Bulk import, and inbox draft-uc). The **new-run engine** default is
+  **not** a `model_defaults` key — it lives in the Inference source ConfigMap (the path
+  the pipeline reads); duplicating it would be drift.
+- **Tier 2 — view overrides** (one consistent "override selector": first option
+  `Use default — <name>`, blank value). A blank override sends **no model**; the endpoint
+  resolves the Config default via `_model_default_row(conn, *keys)`. A non-blank override
+  sends an explicit `model_config_id` for that one call.
+- **Resolution order (every model endpoint):** explicit `model_config_id` →
+  `endpoint_url`+`model_id` → project default(s) for the use → (uc-authoring only) env
+  fallback. Centralized in `_model_default_row`; no per-endpoint copy of the chain.
+
+This is the whole-system-reuse rule applied to models: the same default feeds wherever a
+use appears (e.g. arch-review in both the Architecture view and the run-drawer Review tab),
+and there is one place — Config — to change it.
 
 ## 11. What this means for what exists today
 

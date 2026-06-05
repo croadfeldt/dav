@@ -35,10 +35,22 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+{% if review_console_loadbalancer_enabled | default(false) %}
+            - containerPort: {{ review_console_loadbalancer_tls_port }}
+              name: https-lb
+{% endif %}
           volumeMounts:
             - name: nginx-config
               mountPath: /opt/app-root/etc/nginx.default.d
               readOnly: true
+{% if review_console_loadbalancer_enabled | default(false) %}
+            - name: nginx-tls-config
+              mountPath: /opt/app-root/etc/nginx.d
+              readOnly: true
+            - name: public-tls
+              mountPath: /etc/nginx/tls
+              readOnly: true
+{% endif %}
           readinessProbe:
             httpGet:
               path: /healthz
@@ -85,6 +97,20 @@ spec:
             # GitHub. /api/webhooks/* is the namespace for all webhook
             # receivers (currently: github/pr-comments; future: more).
             - --skip-auth-regex=^/api/webhooks/
+{% if review_console_relaxed_proxy | default(false) %}
+            # Relaxed-proxy mode (internal / invited users). The SPA + the whole
+            # API are reachable WITHOUT an OCP login so internal users can sign
+            # in (app-native session) and accept invites; the API then authorizes
+            # EVERYONE itself — you MUST set DAV_REQUIRE_AUTH=true on the API or
+            # /api/* is open. The dedicated `/sso` path is deliberately NOT
+            # skipped: it stays OCP-protected so it receives X-Forwarded headers
+            # and mints an app session (nginx routes /sso -> /api/auth/sso).
+            - --skip-auth-regex=^/$
+            - --skip-auth-regex=^/index\.html$
+            - --skip-auth-regex=^/assets/
+            - --skip-auth-regex=^/favicon
+            - --skip-auth-regex=^/api/
+{% endif %}
           ports:
             - containerPort: 8443
               name: https
@@ -110,6 +136,14 @@ spec:
         - name: nginx-config
           configMap:
             name: dav-review-ui-nginx
+{% if review_console_loadbalancer_enabled | default(false) %}
+        - name: nginx-tls-config
+          configMap:
+            name: dav-review-ui-nginx-tls
+        - name: public-tls
+          secret:
+            secretName: {{ review_console_loadbalancer_tls_secret }}
+{% endif %}
 {% if review_console_enable_oauth %}
         - name: proxy-tls
           secret:

@@ -698,11 +698,60 @@
 
 <div class="pf-shell">
 
+<!-- Invite-accept overlay (shown when the URL has ?invite=<token>) -->
+<div id="inviteAcceptOverlay" style="display:none;position:fixed;inset:0;z-index:9999;background:var(--bg);align-items:center;justify-content:center;">
+  <div style="max-width:420px;width:90%;padding:24px;border:1px solid var(--border);border-radius:6px;background:var(--bg-panel);">
+    <div style="font-size:16px;font-weight:600;margin-bottom:4px;">Join DAV</div>
+    <div id="inviteAcceptInfo" style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Loading invite…</div>
+    <div id="inviteAcceptForm" style="display:none;">
+      <label style="font-size:11px;color:var(--text-faint);">Display name</label>
+      <input id="inviteName" style="width:100%;margin:2px 0 10px;" />
+      <label style="font-size:11px;color:var(--text-faint);">Set a password (min 8 characters)</label>
+      <input id="invitePw" type="password" style="width:100%;margin:2px 0 14px;" />
+      <button class="btn primary" id="inviteAcceptBtn" style="width:100%;">Set password &amp; join</button>
+      <div id="inviteAcceptMsg" style="font-size:11px;margin-top:8px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Sign-in screen (shown when unauthenticated under a relaxed proxy) -->
+<div id="loginOverlay" style="display:none;position:fixed;inset:0;z-index:9997;background:var(--bg);align-items:center;justify-content:center;">
+  <div style="max-width:360px;width:90%;padding:24px;border:1px solid var(--border);border-radius:6px;background:var(--bg-panel);">
+    <div id="loginTitle" style="font-size:16px;font-weight:600;margin-bottom:14px;">Sign in to DAV</div>
+    <div id="loginBody">
+      <input id="loginEmail" placeholder="email" style="width:100%;margin-bottom:8px;" />
+      <input id="loginPw" type="password" placeholder="password" style="width:100%;margin-bottom:12px;" />
+      <button class="btn primary" id="loginBtn" style="width:100%;">Sign in</button>
+      <div id="loginMsg" style="font-size:11px;margin-top:8px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Forced password change (default admin first login) -->
+<div id="pwChangeOverlay" style="display:none;position:fixed;inset:0;z-index:9998;background:var(--bg);align-items:center;justify-content:center;">
+  <div style="max-width:380px;width:90%;padding:24px;border:1px solid var(--border);border-radius:6px;background:var(--bg-panel);">
+    <div style="font-size:15px;font-weight:600;margin-bottom:4px;">Change password</div>
+    <div id="pwChangeSub" style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Enter your current password and a new one.</div>
+    <input id="pwChangeCur" type="password" placeholder="Current password" style="width:100%;margin-bottom:8px;" />
+    <input id="pwChangeNew" type="password" placeholder="New password (min 8)" style="width:100%;margin-bottom:12px;" />
+    <button class="btn primary" id="pwChangeBtn" style="width:100%;">Set password</button>
+    <button class="btn ghost" id="pwChangeCancel" style="width:100%;margin-top:8px;display:none;">Cancel</button>
+    <div id="pwChangeMsg" style="font-size:11px;margin-top:8px;"></div>
+  </div>
+</div>
+
 <!-- ══ Masthead ══ -->
 <header class="pf-masthead">
   <button class="pf-masthead-toggle" id="navToggleBtn" title="Toggle sidebar">☰</button>
   <div class="pf-masthead-brand">
     <div class="brand-mark">DAV <em>Console</em></div>
+  </div>
+  <div class="run-context-chip" id="projectChip" title="Active project — scopes all data" style="cursor:default;">
+    <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Project</span>
+    <select id="globalProjectSel" title="Active project" style="font-size:11px;max-width:200px;background:transparent;border:none;color:inherit;cursor:pointer;">
+      <option value="">Default</option>
+    </select>
+    <a href="javascript:void(0)" id="projSetDefaultBtn" title="Make this my default project" style="display:none;font-size:12px;color:var(--text-faint);text-decoration:none;">☆</a>
   </div>
   <!-- Active run: the single, system-wide run selector. Drives every analysis
        stage (Results / Architecture / Engineering). -->
@@ -715,20 +764,23 @@
   <div class="pf-masthead-right">
     <span id="triggerStatus" style="color:var(--text-faint);font-size:10px;"></span>
     <div class="theme-chip">
-      <button class="theme-chip-btn" id="themeChipBtn"><span id="themeChipLabel">Auto · Amber</span></button>
-      <div class="theme-menu" id="themeMenu">
-        <div class="theme-menu-section">Mode</div>
+      <button class="theme-chip-btn" id="acctChipBtn"><span id="acctChipLabel">—</span> <span style="opacity:.55;">▾</span></button>
+      <div class="theme-menu" id="acctMenu">
+        <div class="theme-menu-section" id="acctMenuWho" style="white-space:nowrap;color:var(--text-dim);"></div>
+        <button class="dropdown-item" id="acctChangePw">Change password…</button>
+        <hr>
+        <div class="theme-menu-section">Appearance · Mode</div>
         <button class="dropdown-item" data-mode="auto">Auto (system)</button>
         <button class="dropdown-item" data-mode="light">Light</button>
         <button class="dropdown-item" data-mode="dark">Dark</button>
-        <hr>
         <div class="theme-menu-section">Theme</div>
         <button class="dropdown-item" data-theme="amber">Amber (warm)</button>
         <button class="dropdown-item" data-theme="slate">Slate (cool)</button>
         <button class="dropdown-item" data-theme="solarized">Solarized</button>
+        <hr>
+        <button class="dropdown-item" id="acctLogout">Sign out</button>
       </div>
     </div>
-    <div class="reviewer-chip anon" id="reviewerChip">—</div>
   </div>
 </header>
 
@@ -761,6 +813,12 @@
       </a>
       <a class="pf-nav-item" data-view="improve" href="javascript:void(0)" title="Self-improvement — diagnose run failures and review proposed fixes">
         <span class="nav-icon">🩺</span><span class="nav-label">Improve <span class="badge" id="badgeImprove" style="font-size:9px;"></span></span>
+      </a>
+      <a class="pf-nav-item" id="navProjects" data-view="projects" href="javascript:void(0)" style="display:none;">
+        <span class="nav-icon">▦</span><span class="nav-label">Projects</span>
+      </a>
+      <a class="pf-nav-item" id="navUsers" data-view="users" href="javascript:void(0)" style="display:none;">
+        <span class="nav-icon">👤</span><span class="nav-label">Users &amp; roles</span>
       </a>
       <a class="pf-nav-item" data-view="config" href="javascript:void(0)">
         <span class="nav-icon">⚙</span><span class="nav-label">Config</span>
@@ -840,8 +898,7 @@
               <div class="rd-review-section-title">Architectural Review</div>
               <div class="rd-review-section-sub" id="rdRevSubtitle">—</div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                <select id="rdRevModelSel" style="flex:1;min-width:160px;"></select>
-                <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('rdRevModelSel','reviewLastModel')">Browse…</button>
+                <select id="rdRevModelSel" style="flex:1;min-width:160px;font-size:11px;"></select>
                 <select id="rdRevScopeSel" style="width:140px;">
                   <option value="uc">This use case</option>
                   <option value="run">Whole run</option>
@@ -874,8 +931,7 @@
               <div class="rd-review-section-title">Enhancement Spec</div>
               <div class="rd-review-section-sub" id="rdEnhSubtitle">—</div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                <select id="rdEnhModelSel" style="flex:1;min-width:160px;"></select>
-                <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('rdEnhModelSel','enhanceLastModel')">Browse…</button>
+                <select id="rdEnhModelSel" style="flex:1;min-width:160px;font-size:11px;"></select>
                 <select id="rdEnhScopeSel" style="width:140px;">
                   <option value="uc">This use case</option>
                   <option value="run">Whole run</option>
@@ -1103,6 +1159,7 @@
               <button class="btn ghost btn-sm inbox-status-chip" data-status="drafted_to_uc">Drafted</button>
               <button class="btn ghost btn-sm inbox-status-chip" data-status="dismissed">Dismissed</button>
               <button class="btn ghost btn-sm inbox-status-chip" data-status="all">All</button>
+              <label style="margin-left:8px;font-size:10px;color:var(--text-faint);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="inboxThreadToggle" style="width:auto;accent-color:var(--accent);"> Thread by PR</label>
               <span style="margin-left:8px;font-size:10px;color:var(--text-faint);">Repo:</span>
               <select id="inboxRepoFilter" style="font-size:11px;padding:2px 6px;background:var(--bg-input,var(--bg-raised));border:1px solid var(--border);">
                 <option value="">all</option>
@@ -1150,16 +1207,15 @@
             </div>
           </div>
           <div>
-            <label>Model</label>
-            <div style="display:flex;gap:6px;align-items:center;">
-              <select id="rpModelSel" style="flex:1;font-size:11px;">
-                <option value="">— no models —</option>
-              </select>
-              <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('rpModelSel','reviewLastModel')">Browse…</button>
-            </div>
+            <label>Review model</label>
+            <select id="rpRevModelSel" style="width:100%;font-size:11px;"></select>
+          </div>
+          <div>
+            <label>Enhancement model</label>
+            <select id="rpEnhModelSel" style="width:100%;font-size:11px;"></select>
           </div>
           <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
-          <button class="btn primary" id="rpRevRunBtn" style="width:100%;">▶ Run Review</button>
+          <button class="btn ghost" id="rpRevRunBtn" style="width:100%;">▶ Run Review</button>
           <button class="btn ghost" id="rpEnhRunBtn" style="width:100%;margin-top:4px;">▶ Run Enhancement Plan</button>
           <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
           <details id="rpCtxDetails" style="font-size:11px;">
@@ -1184,11 +1240,17 @@
           </div>
           <div>
             <div class="rp-section-title">Architectural Review</div>
+            <div style="font-size:11px;color:var(--text-dim);margin:-2px 0 8px;">
+              <strong>What:</strong> a prose assessment of how the architecture handles the use case(s) and where it falls short.
+              <strong>Use:</strong> understand the problem before fixing it.
+              <strong>From:</strong> reads the ingested analysis verdict + gaps directly.
+            </div>
             <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
               <button class="btn ghost btn-sm" id="rpRevCopyBtn" style="display:none;">⧉ Copy</button>
               <button class="btn ghost btn-sm" id="rpRevUseClaudeBtn">⧉ Use in Claude</button>
               <button class="btn ghost btn-sm" id="rpRevReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
               <span id="rpRevStatus" style="font-size:11px;color:var(--text-faint);display:none;"></span>
+              <span id="rpRevCacheChip" style="font-size:10px;color:var(--text-faint);margin-left:auto;"></span>
             </div>
             <div id="rpRevStream" class="arch-review-stream" style="display:none;"></div>
             <div id="rpRevHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
@@ -1196,11 +1258,17 @@
           <hr style="border:none;border-top:1px solid var(--border);margin:0;">
           <div>
             <div class="rp-section-title">Enhancement Plan</div>
+            <div style="font-size:11px;color:var(--text-dim);margin:-2px 0 8px;">
+              <strong>What:</strong> concrete, ready-to-apply spec edits (one per gap) that close the gaps.
+              <strong>Use:</strong> turn the gaps into committable patches (→ PR).
+              <strong>From:</strong> derives independently from the same analysis gaps — <em>not</em> from the review text above, so you can run it without the review.
+            </div>
             <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
               <button class="btn ghost btn-sm" id="rpEnhCopyBtn" style="display:none;">⧉ Copy</button>
               <button class="btn ghost btn-sm" id="rpEnhUseClaudeBtn">⧉ Use in Claude</button>
               <button class="btn ghost btn-sm" id="rpEnhReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
               <span id="rpEnhStatus" style="font-size:11px;color:var(--text-faint);display:none;"></span>
+              <span id="rpEnhCacheChip" style="font-size:10px;color:var(--text-faint);margin-left:auto;"></span>
             </div>
             <div id="rpEnhStream" class="arch-review-stream" style="display:none;"></div>
             <div id="rpEnhHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
@@ -1337,6 +1405,24 @@
       </div>
     </section>
 
+    <!-- ══════════════ USERS & ROLES (RBAC console) ══════════════ -->
+    <section class="pf-view" id="view-users">
+      <div style="padding:18px 22px;overflow-y:auto;height:100%;">
+        <div style="font-family:var(--serif);font-size:20px;margin-bottom:2px;">Users &amp; roles</div>
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Accounts, the role × privilege matrix, and role bindings (incl. LDAP group mappings).</div>
+        <div id="usersViewBody"></div>
+      </div>
+    </section>
+
+    <!-- ══════════════ PROJECTS ══════════════ -->
+    <section class="pf-view" id="view-projects">
+      <div style="padding:18px 22px;overflow-y:auto;height:100%;">
+        <div style="font-family:var(--serif);font-size:20px;margin-bottom:2px;">Projects</div>
+        <div style="font-size:12px;color:var(--text-dim);margin-bottom:14px;">Create, manage, archive and delete projects; assign members and their roles.</div>
+        <div id="projectsViewBody"></div>
+      </div>
+    </section>
+
     <!-- ══════════════ CONFIG ══════════════ -->
     <section class="pf-view" id="view-config">
   <div class="config-layout">
@@ -1363,6 +1449,12 @@
       <div class="config-nav-group">
         <div class="config-nav-cat" data-target="cfgSec-integrations">Integrations</div>
         <a class="config-nav-link" data-target="configMCPPanel">MCP servers</a>
+      </div>
+      <div class="config-nav-group" id="configNavAccess" style="display:none;">
+        <div class="config-nav-cat" data-target="cfgSec-access">Users &amp; Access</div>
+        <a class="config-nav-link" data-target="configProjectsPanel">Projects</a>
+        <a class="config-nav-link" data-target="configLdapPanel">LDAP / approval</a>
+        <a class="config-nav-link" data-target="configUsersPanel">Users &amp; roles</a>
       </div>
     </nav>
 
@@ -1657,21 +1749,21 @@
       <div class="cfg-card panel-card" id="configUCAssistPanel">
         <div class="panel-card-header">
           <div>
-            <div class="pc-title">UC Assist model</div>
-            <div class="pc-sub">Your personal default for NL-assisted use case authoring. Stored locally — does not affect other users.</div>
+            <div class="pc-title">UC Authoring model</div>
+            <div class="pc-sub">Project default for LLM-assisted use case authoring — the Assist panel, the UC Wizard, and Bulk import all use it. Can be overridden per use.</div>
           </div>
           <span id="ucAssistCfgStatus" style="font-size:10px;color:var(--text-faint);"></span>
         </div>
         <div class="panel-card-body">
           <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
             <select id="ucAssistModelSel" style="min-width:260px;">
-              <option value="">— select a model —</option>
+              <option value="">— no default set —</option>
             </select>
-            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('ucAssistModelSel',_ucAssistModelKey)">Browse…</button>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('ucAssistModelSel','ucAuthoringDefault')">Browse…</button>
             <button class="btn primary btn-sm" id="saveUCAssistBtn">Save</button>
             <span id="uacMsg" style="font-size:11px;color:var(--text-faint);"></span>
           </div>
-          <div class="form-hint" style="margin-top:8px;">Selected model is stored locally and passed with each request. Add endpoints in the Model Endpoints panel above.</div>
+          <div class="form-hint" style="margin-top:8px;">Stored server-side. Only registered model endpoints can be set as the project default.</div>
         </div>
       </div>
 
@@ -1693,6 +1785,27 @@
             <span id="archDefaultMsg" style="font-size:11px;color:var(--text-faint);"></span>
           </div>
           <div class="form-hint" style="margin-top:8px;">Stored server-side. Only registered model endpoints with <em>use_arch_review = true</em> are eligible.</div>
+        </div>
+      </div>
+
+      <div class="cfg-card panel-card" id="configEnhDefaultPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Enhancement model</div>
+            <div class="pc-sub">Project default for enhancement-plan generation (Review &amp; Plan tab). Falls back to the Arch Review model when unset. Can be overridden per call.</div>
+          </div>
+          <span id="enhDefaultStatus" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <select id="enhDefaultModelSel" style="min-width:260px;">
+              <option value="">— no default set —</option>
+            </select>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('enhDefaultModelSel','enhDefaultModel')">Browse…</button>
+            <button class="btn primary btn-sm" id="saveEnhDefaultBtn">Save</button>
+            <span id="enhDefaultMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div class="form-hint" style="margin-top:8px;">Stored server-side. Leave unset to share the Arch Review default.</div>
         </div>
       </div>
 
@@ -1760,6 +1873,106 @@
            repo in the Repos panel above to enable enhancement PR
            creation against it. -->
 
+      <!-- ── Users & Access (admin only) ── -->
+      <div class="cfg-sec-hdr" id="cfgSec-access" style="display:none;">
+        <span class="cfg-sec-title">Users &amp; Access</span>
+        <span class="cfg-sec-sub">LDAP-approved users and their roles (admin/editor/viewer)</span>
+      </div>
+      <div class="cfg-card panel-card" id="configProjectsPanel" style="display:none;">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Projects</div>
+            <div class="pc-sub">Create projects and manage who's in them. The masthead switcher sets your active project; data is scoped to it.</div>
+          </div>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px;">
+            <div><label style="font-size:10px;color:var(--text-faint);">Slug</label><input id="newProjSlug" placeholder="cost-mgmt" style="font-size:12px;width:140px;" /></div>
+            <div><label style="font-size:10px;color:var(--text-faint);">Name</label><input id="newProjName" placeholder="Cost Management" style="font-size:12px;width:200px;" /></div>
+            <button class="btn primary btn-sm" id="newProjBtn">+ Create project</button>
+            <span id="newProjMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div id="projectsList" style="font-size:12px;">Loading…</div>
+        </div>
+      </div>
+      <div class="cfg-card panel-card" id="configLdapPanel" style="display:none;">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">LDAP / approval</div>
+            <div class="pc-sub">Approved users are synced from the LDAP group. Verify the sync here before turning on enforcement.</div>
+          </div>
+          <span id="ldapStatusChip" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div id="ldapStatusBody" style="font-size:12px;color:var(--text-dim);line-height:1.7;">Loading…</div>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+            <button class="btn primary btn-sm" id="ldapSyncBtn">↻ Sync now</button>
+            <span id="ldapSyncMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <details style="margin-top:12px;"><summary style="cursor:pointer;font-size:12px;font-weight:600;">LDAP settings</summary>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;font-size:11px;">
+            <label style="grid-column:1/3;">Server URL<input id="ls-url" placeholder="ldaps://ldap.example.com:636" style="width:100%;"></label>
+            <label>Bind DN<input id="ls-bind_dn" placeholder="cn=svc,dc=…" style="width:100%;"></label>
+            <label>Bind password<input id="ls-bind_password" type="password" placeholder="(unchanged)" style="width:100%;"></label>
+            <label>User base<input id="ls-user_base" placeholder="ou=people,dc=…" style="width:100%;"></label>
+            <label>Approval group DN<input id="ls-group_dn" placeholder="cn=dav-users,…" style="width:100%;"></label>
+            <label>User attr<input id="ls-user_attr" placeholder="uid" style="width:100%;"></label>
+            <label>Mail attr<input id="ls-mail_attr" placeholder="mail" style="width:100%;"></label>
+            <label>Name attr<input id="ls-name_attr" placeholder="cn" style="width:100%;"></label>
+            <label>Member attr<input id="ls-member_attr" placeholder="member" style="width:100%;"></label>
+            <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="ls-start_tls" style="width:auto;"> StartTLS</label>
+            <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="ls-enforce" style="width:auto;"> Enforce (reject non-approved)</label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px;align-items:center;"><button class="btn primary btn-sm" id="ls-save">Save LDAP settings</button><button class="btn ghost btn-sm" id="ls-test">Test connection</button><span id="ls-msg" style="font-size:11px;color:var(--text-faint);"></span></div>
+          </details>
+        </div>
+      </div>
+      <div class="cfg-card panel-card" id="configSmtpPanel" style="display:none;">
+        <div class="panel-card-header"><div>
+          <div class="pc-title">Email (SMTP)</div>
+          <div class="pc-sub">Used to send project invitations. Optional — without it, invite links are shown to copy.</div>
+        </div></div>
+        <div class="panel-card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;">
+            <label>SMTP host<input id="sm-host" placeholder="smtp.example.com" style="width:100%;"></label>
+            <label>Port<input id="sm-port" type="number" placeholder="587" style="width:100%;"></label>
+            <label>Username<input id="sm-user" placeholder="(optional)" style="width:100%;"></label>
+            <label>Password<input id="sm-password" type="password" placeholder="(unchanged)" style="width:100%;"></label>
+            <label>From address<input id="sm-from_addr" placeholder="dav@example.com" style="width:100%;"></label>
+            <label>Base URL (for invite links)<input id="sm-base_url" placeholder="https://dav-review.apps…" style="width:100%;"></label>
+            <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="sm-tls" style="width:auto;"> Use STARTTLS</label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px;align-items:center;"><button class="btn primary btn-sm" id="sm-save">Save SMTP settings</button><button class="btn ghost btn-sm" id="sm-test">Send test email…</button><span id="sm-msg" style="font-size:11px;color:var(--text-faint);"></span></div>
+        </div>
+      </div>
+      <div class="cfg-card panel-card" id="configUsersPanel" style="display:none;">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Users &amp; roles</div>
+            <div class="pc-sub">Accounts are matrixed to roles; roles grant privileges. Add accounts, enable/disable, and assign platform or per-project roles.</div>
+          </div>
+          <span id="usersCountChip" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <input id="acctNewEmail" placeholder="email" style="font-size:12px;flex:1;min-width:150px;">
+            <input id="acctNewName" placeholder="display name (optional)" style="font-size:12px;width:150px;">
+            <input id="acctNewPw" type="password" placeholder="initial password (optional)" style="font-size:12px;width:165px;">
+            <button class="btn primary btn-sm" id="acctAddBtn">Add account</button>
+            <span id="acctAddMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div id="accountsList" style="font-size:12px;">Loading…</div>
+          <hr style="margin:14px 0;border:none;border-top:1px solid var(--border);">
+          <div class="pc-title" style="font-size:13px;">Roles &amp; privileges</div>
+          <div class="pc-sub" style="margin-bottom:8px;">What each role grants. Toggle cells to change a role's privileges; built-in roles can be retuned but not deleted.</div>
+          <div id="rolesMatrix" style="font-size:12px;overflow-x:auto;">Loading…</div>
+          <hr style="margin:14px 0;border:none;border-top:1px solid var(--border);">
+          <div class="pc-title" style="font-size:13px;">Role bindings</div>
+          <div class="pc-sub" style="margin-bottom:8px;">Who is bound to what, and where — accounts and LDAP/OCP groups. Account bindings come from the account list above; group → role mappings are managed here (applied at LDAP sync — a later slice).</div>
+          <div id="roleBindings" style="font-size:12px;">Loading…</div>
+        </div>
+      </div>
+
     </div><!-- /config-content -->
   </div><!-- /config-layout -->
     </section>
@@ -1787,6 +2000,14 @@
     </div>
     <div class="modal-body">
       <div id="newRunBanner" style="display:none;" class="modal-banner"></div>
+      <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Use cases</div>
+      <div class="form-field"><label>Set (which use cases to run)</label>
+        <select id="nrSetSel" style="width:100%;">
+          <option value="">Full corpus (all use cases)</option>
+        </select>
+        <div class="form-hint" id="nrSetHint">Pick a Set to run only its use cases, or run the full corpus.</div>
+      </div>
+      <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Session</div>
       <div class="form-row">
         <div class="form-field" style="flex:2"><label>Name (optional)</label>
@@ -1850,12 +2071,7 @@
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Inference</div>
       <div class="form-field"><label>Model</label>
-        <div style="display:flex;gap:6px;align-items:center;">
-          <select id="nrModelSel" style="flex:1;">
-            <option value="">— select a model —</option>
-          </select>
-          <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('nrModelSel','nrLastModel')">Browse…</button>
-        </div>
+        <select id="nrModelSel" style="width:100%;"></select>
       </div>
       <hr class="section-sep">
       <div class="form-field">
@@ -1907,7 +2123,6 @@
         <!-- Model selector -->
         <div style="padding:5px 10px; border-bottom:1px solid var(--border); display:flex; gap:6px; align-items:center; flex-shrink:0;">
           <select id="ucAssistPanelModelSel" style="flex:1; font-size:11px;"></select>
-          <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('ucAssistPanelModelSel',_ucAssistModelKey)" style="padding:3px 8px; font-size:10px;">Browse…</button>
         </div>
         <!-- Chat history -->
         <div id="ucAssistHistory" style="flex:1; overflow-y:auto; padding:10px 14px; font-size:12px; display:flex; flex-direction:column; gap:10px; min-height:0;"></div>
@@ -1956,8 +2171,7 @@
         <div class="form-field">
           <label>Model</label>
           <div style="display:flex;gap:6px;align-items:center;">
-            <select id="biModelSel" style="flex:1;"><option value="">— select a model —</option></select>
-            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('biModelSel','biLastModel')">Browse…</button>
+            <select id="biModelSel" style="flex:1;"></select>
           </div>
         </div>
       </div>
@@ -2031,8 +2245,7 @@
         <div class="form-field">
           <label>Model</label>
           <div style="display:flex;gap:6px;align-items:center;">
-            <select id="wzModelSel" style="flex:1;"><option value="">— select a model —</option></select>
-            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('wzModelSel','wzLastModel')">Browse…</button>
+            <select id="wzModelSel" style="flex:1;"></select>
           </div>
         </div>
         <div class="form-field">
@@ -2357,9 +2570,14 @@
 const API = '';
 
 // ── API helpers ──────────────────────────────────────────────
+let _activeProject = (() => { try { return localStorage.getItem('davActiveProject') || ''; } catch { return ''; } })();
 async function api(path, opts = {}) {
   const res = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(_activeProject ? { 'X-DAV-Project': _activeProject } : {}),
+      ...(opts.headers || {}),
+    },
     ...opts,
   });
   if (!res.ok) {
@@ -2369,9 +2587,21 @@ async function api(path, opts = {}) {
     // Try to parse JSON body so callers can branch on structured detail
     // (FastAPI HTTPException with a dict detail surfaces as {detail: {...}}).
     try { err.body = JSON.parse(txt); } catch { err.body = null; }
+    // 401 on a non-auth call means the session is no longer valid (account
+    // deleted/disabled, or never authenticated) — show the login screen so
+    // access is visibly cut off immediately.
+    if (res.status === 401 && !path.startsWith('/api/auth/')) {
+      const ov = document.getElementById('loginOverlay'); if (ov) ov.style.display = 'flex';
+    }
     throw err;
   }
-  return res.json();
+  // 204 No Content (e.g. DELETE endpoints) and any empty body have no JSON to
+  // parse — res.json() would throw on them, surfacing a spurious "failed" toast
+  // even though the call succeeded. Treat no-body as a successful null result.
+  if (res.status === 204) return null;
+  const txt = await res.text();
+  if (!txt) return null;
+  try { return JSON.parse(txt); } catch { return txt; }
 }
 
 // ── Auto-follow helper ──────────────────────────────────────────────────────
@@ -2625,29 +2855,754 @@ let ucSortByPriority = false;   // DCM feature #1: toggle roadmap-weight orderin
 let ucPriorityFilter = '';      // '' = all; else critical/high/medium/low
 
 // ── Init ─────────────────────────────────────────────────────
+// If the URL carries ?invite=<token>, show the accept overlay and short-circuit
+// the normal app boot (the invitee isn't logged in yet).
+async function _maybeHandleInvite() {
+  const token = new URLSearchParams(location.search).get('invite');
+  if (!token) return false;
+  const ov = document.getElementById('inviteAcceptOverlay');
+  if (ov) ov.style.display = 'flex';
+  const info = document.getElementById('inviteAcceptInfo');
+  try {
+    const inv = await api(`/api/invites/${encodeURIComponent(token)}`);
+    info.innerHTML = `You've been invited${inv.project_name ? ` to <strong>${esc(inv.project_name)}</strong>` : ''} as <code>${esc(inv.email)}</code>.`;
+    if (!inv.sessions_enabled) {
+      info.innerHTML += '<br><span style="color:var(--red)">App sessions aren\'t configured yet — contact your admin.</span>';
+      return true;
+    }
+    document.getElementById('inviteAcceptForm').style.display = '';
+    document.getElementById('inviteName').value = inv.display_name || '';
+    document.getElementById('inviteAcceptBtn').addEventListener('click', async () => {
+      const pw = document.getElementById('invitePw').value;
+      const name = document.getElementById('inviteName').value;
+      const msg = document.getElementById('inviteAcceptMsg');
+      if ((pw || '').length < 8) { msg.textContent = 'Password must be at least 8 characters'; msg.style.color = 'var(--red)'; return; }
+      msg.textContent = 'Joining…'; msg.style.color = 'var(--text-faint)';
+      try {
+        await api(`/api/invites/${encodeURIComponent(token)}/accept`, { method:'POST', body: JSON.stringify({ password: pw, display_name: name }) });
+        location.href = location.pathname;   // reload into the logged-in app
+      } catch(e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+    });
+  } catch(e) {
+    info.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+  }
+  return true;
+}
+
+async function _submitLogin() {
+  const email = document.getElementById('loginEmail').value;
+  const pw = document.getElementById('loginPw').value;
+  const msg = document.getElementById('loginMsg');
+  msg.textContent = 'signing in…'; msg.style.color = 'var(--text-faint)';
+  try { await api('/api/auth/login', { method:'POST', body: JSON.stringify({ email, password: pw }) }); location.reload(); }
+  catch(e){ msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+}
+document.getElementById('loginBtn')?.addEventListener('click', _submitLogin);
+['loginEmail','loginPw'].forEach(id => document.getElementById(id)?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); _submitLogin(); }
+}));
+
 async function init() {
+  if (await _maybeHandleInvite()) return;
   initTheme();
   initNavCollapse();
+  try { me = await api('/api/me'); } catch { me = { authenticated:false }; }
+  // Not signed in (relaxed-proxy mode) → show the sign-in screen and stop.
+  if (me && me.authenticated === false) {
+    document.getElementById('loginOverlay').style.display = 'flex';
+    return;
+  }
+  // Signed in but not yet approved (e.g. an OCP user an admin hasn't enabled).
+  if (me && me.authenticated && me.approved === false) {
+    const ov = document.getElementById('loginOverlay');
+    document.getElementById('loginTitle').textContent = 'Account pending approval';
+    document.getElementById('loginBody').innerHTML =
+      `<div style="font-size:12px;color:var(--text-dim);">Signed in as <code>${esc(me.reviewer||'')}</code>, but your account isn't enabled yet. Ask a platform admin to approve you.</div>
+       <button class="btn ghost" style="width:100%;margin-top:14px;" onclick="api('/api/auth/logout',{method:'POST'}).then(()=>location.reload())">Sign out</button>`;
+    ov.style.display = 'flex';
+    return;
+  }
   try { await Promise.all([loadMe(), loadRunStatus()]); setApiStatus(true); }
   catch (e) { console.error(e); setApiStatus(false, e.message); }
-  // Pre-load models so arch review + UC assist selectors are ready on any tab.
-  loadReviewModels().then(() => {
-    _populateModelSel('rdRevModelSel', 'reviewLastModel');
-    _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
-    _populateModelSel('nrModelSel', 'nrLastModel');
-    _populateUCAssistModelSel();
+  // Pre-load models + project model defaults so every default-aware override
+  // selector ("Use default — <name>") is ready on any tab.
+  loadReviewModels().then(async () => {
+    await loadArchDefault();      // _modelDefaults + Config default selectors + _refreshAllOverrides
+    _populateUCAssistModelSel();  // UC-authoring status chip + eval default
   }).catch(() => {});
+  loadProjectSwitcher();   // masthead active-project selector
+  _setupRbacViews();       // relocate Users/Projects panels into their own views
   switchView('usecases');
   // Load the run list on boot so the masthead run selector is ready on every tab
   // (same archived-aware source as the Runs tab).
   loadRuns();
 }
 
+let _defaultProject = '';
+async function loadProjectSwitcher() {
+  const sel = document.getElementById('globalProjectSel');
+  if (!sel) return;
+  try {
+    const r = await api('/api/projects/mine');
+    const projects = r.projects || [];
+    _defaultProject = r.default_project_id ? String(r.default_project_id) : '';
+    // On login (no client-side selection), land on the user's default project.
+    if (!_activeProject && _defaultProject && projects.some(p => String(p.id) === _defaultProject)) {
+      _activeProject = _defaultProject;
+      try { localStorage.setItem('davActiveProject', _activeProject); } catch {}
+    }
+    if (_activeProject && !projects.some(p => String(p.id) === String(_activeProject))) {
+      _activeProject = ''; try { localStorage.removeItem('davActiveProject'); } catch {}
+    }
+    sel.innerHTML = projects.length
+      ? projects.map(p => `<option value="${p.id}"${String(p.id)===String(_activeProject)?' selected':''}>${esc(p.name)}${String(p.id)===_defaultProject?' ★':''}</option>`).join('')
+      : '<option value="">No projects — ask an admin to add you</option>';
+    if (_activeProject) sel.value = _activeProject;
+    const chip = document.getElementById('projectChip');
+    if (chip) chip.style.display = '';
+    const star = document.getElementById('projSetDefaultBtn');
+    if (star) {
+      star.style.display = projects.length ? '' : 'none';
+      star.textContent = (_activeProject && _activeProject === _defaultProject) ? '★' : '☆';
+      star.title = (_activeProject && _activeProject === _defaultProject) ? 'This is your default project' : 'Make this my default project';
+    }
+  } catch(e) {}
+}
+document.getElementById('globalProjectSel')?.addEventListener('change', function() {
+  _activeProject = this.value || '';
+  try { _activeProject ? localStorage.setItem('davActiveProject', _activeProject) : localStorage.removeItem('davActiveProject'); } catch {}
+  location.reload();   // re-fetch everything scoped to the newly selected project
+});
+document.getElementById('projSetDefaultBtn')?.addEventListener('click', async () => {
+  if (!_activeProject) return;
+  try { await api('/api/me/default-project', { method:'PUT', body: JSON.stringify({ project_id: parseInt(_activeProject,10) }) });
+    _defaultProject = _activeProject; const s = document.getElementById('projSetDefaultBtn');
+    if (s) { s.textContent = '★'; s.title = 'This is your default project'; } toast('Default project set'); }
+  catch(e){ toast(e.message, true); }
+});
+
 async function loadMe() {
   try { me = await api('/api/me'); } catch { me = {reviewer:null,authenticated:false}; }
-  const chip = document.getElementById('reviewerChip');
-  if (me.authenticated && me.reviewer) { chip.textContent = me.reviewer; chip.classList.remove('anon'); }
-  else { chip.textContent = 'unauthenticated'; chip.classList.add('anon'); }
+  const chip = document.getElementById('acctChipLabel');
+  const who = document.getElementById('acctMenuWho');
+  if (me.authenticated && me.reviewer) {
+    chip.textContent = me.reviewer;
+    if (who) who.textContent = me.role ? `${me.reviewer} · ${me.role}` : me.reviewer;
+  } else {
+    chip.textContent = 'unauthenticated';
+    if (who) who.textContent = 'Not signed in';
+  }
+  _applyAccessVisibility();
+  if (me && me.must_change_password) {
+    // Forced first-login change — no cancel; messaging reflects that.
+    const sub = document.getElementById('pwChangeSub'); if (sub) sub.textContent = "You're using a default password — set your own to continue.";
+    const c = document.getElementById('pwChangeCancel'); if (c) c.style.display = 'none';
+    const ov = document.getElementById('pwChangeOverlay'); if (ov) ov.style.display = 'flex';
+  }
+}
+document.getElementById('pwChangeBtn')?.addEventListener('click', async () => {
+  const cur = document.getElementById('pwChangeCur').value;
+  const nw = document.getElementById('pwChangeNew').value;
+  const msg = document.getElementById('pwChangeMsg');
+  if ((nw||'').length < 8) { msg.textContent = 'New password must be at least 8 characters'; msg.style.color='var(--red)'; return; }
+  try {
+    await api('/api/auth/change-password', { method:'POST', body: JSON.stringify({ current_password: cur, new_password: nw }) });
+    document.getElementById('pwChangeOverlay').style.display = 'none';
+    toast('Password updated');
+  } catch(e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+});
+
+// Show the admin-only Users & Access UI when the caller is an admin.
+// Does the caller hold a project-scoped privilege in the active project?
+// platform.admin is a superuser. me.privileges is resolved for the active project
+// by /api/me, so this re-evaluates correctly after a project switch.
+function can(priv) {
+  return !!(me && (me.is_platform_admin || (me.privileges || []).includes(priv)));
+}
+
+function _applyAccessVisibility() {
+  const projAdmin = !!(me && me.is_admin);            // project admin or above
+  const platAdmin = !!(me && me.is_platform_admin);   // platform admin only
+  // Projects management (now in view-projects): project admins.
+  const cp = document.getElementById('configProjectsPanel'); if (cp) cp.style.display = projAdmin ? '' : 'none';
+  // Accounts/roles + LDAP + SMTP (now in view-users): platform admins only.
+  ['configUsersPanel','configLdapPanel','configSmtpPanel'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.style.display = platAdmin ? '' : 'none';
+  });
+  // The old Config "Users & Access" nav group + header are retired (panels moved to views).
+  ['configNavAccess','cfgSec-access'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+  // Left-nav views: Projects (project admin or project.create), Users (platform admin).
+  const canProjects = projAdmin || can('project.create');
+  const navP = document.getElementById('navProjects'); if (navP) navP.style.display = canProjects ? '' : 'none';
+  const navU = document.getElementById('navUsers');    if (navU) navU.style.display = platAdmin ? '' : 'none';
+  // Config panels are now project-scoped: gate each on its management privilege,
+  // and hide its config-nav link too so scroll-spy doesn't target a hidden panel.
+  const cfgGate = [
+    ['configReposPanel',  'project.repos'],
+    ['configModelsPanel', 'project.models'],
+    ['configMCPPanel',    'project.integrations'],
+  ];
+  for (const [panelId, priv] of cfgGate) {
+    const show = can(priv);
+    const panel = document.getElementById(panelId); if (panel) panel.style.display = show ? '' : 'none';
+    const link = document.querySelector(`.config-nav-link[data-target="${panelId}"]`);
+    if (link) link.style.display = show ? '' : 'none';
+  }
+  // Workflow action affordances (server enforces regardless; this is UX). Toggle
+  // body data-* flags that CSS can hang off, and hide tagged controls directly.
+  const flags = {
+    'data-can-usecases':    can('project.usecases'),
+    'data-can-runs-exec':   can('project.runs.execute'),
+    'data-can-runs-manage': can('project.runs.manage'),
+    'data-can-archreview':  can('project.archreview.execute'),
+    'data-can-archctx':     can('project.archreview.context'),
+    'data-can-enh':         can('project.enhancement.execute'),
+    'data-can-enh-pr':      can('project.enhancement.pr'),
+    'data-can-catalog':     can('project.catalog'),
+  };
+  for (const [attr, ok] of Object.entries(flags)) {
+    if (ok) document.body.setAttribute(attr, '1'); else document.body.removeAttribute(attr);
+  }
+  // Any element tagged data-needs-priv="<key>" is hidden unless the caller holds it.
+  document.querySelectorAll('[data-needs-priv]').forEach(el => {
+    el.style.display = can(el.getAttribute('data-needs-priv')) ? '' : 'none';
+  });
+}
+
+function loadAccessPanels() {
+  if (me && me.is_admin) loadProjectsAdmin();
+  if (me && me.is_platform_admin) { loadLdapStatus(); loadUsers(); loadLdapSettings(); loadSmtpSettings(); }
+}
+
+async function loadLdapSettings() {
+  try {
+    const s = await api('/api/settings/ldap');
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ''; };
+    set('ls-url', s.url); set('ls-bind_dn', s.bind_dn); set('ls-user_base', s.user_base);
+    set('ls-group_dn', s.group_dn); set('ls-user_attr', s.user_attr); set('ls-mail_attr', s.mail_attr);
+    set('ls-name_attr', s.name_attr); set('ls-member_attr', s.member_attr);
+    document.getElementById('ls-start_tls').checked = !!s.start_tls;
+    document.getElementById('ls-enforce').checked = !!s.enforce;
+    document.getElementById('ls-bind_password').placeholder = s.bind_password_set ? '•••• (set — leave blank to keep)' : '';
+  } catch(e) {}
+}
+document.getElementById('ls-save')?.addEventListener('click', async () => {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const body = { url:v('ls-url'), bind_dn:v('ls-bind_dn'), user_base:v('ls-user_base'), group_dn:v('ls-group_dn'),
+    user_attr:v('ls-user_attr'), mail_attr:v('ls-mail_attr'), name_attr:v('ls-name_attr'), member_attr:v('ls-member_attr'),
+    start_tls:document.getElementById('ls-start_tls').checked, enforce:document.getElementById('ls-enforce').checked };
+  const pw = v('ls-bind_password'); if (pw) body.bind_password = pw;
+  const msg = document.getElementById('ls-msg'); msg.textContent = 'saving…'; msg.style.color='var(--text-faint)';
+  try { const r = await api('/api/settings/ldap', { method:'PUT', body: JSON.stringify(body) });
+    msg.textContent = r.configured ? (r.synced_ok ? `saved — ${r.approved_identity_count} approved` : ('saved, sync failed: '+(r.last_error||''))) : 'saved (not configured)';
+    msg.style.color = r.synced_ok || !r.configured ? 'var(--green)' : 'var(--red)';
+    document.getElementById('ls-bind_password').value=''; loadLdapStatus();
+  } catch(e){ msg.textContent = e.message; msg.style.color='var(--red)'; }
+});
+function _ldapFormBody() {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const body = { url:v('ls-url'), bind_dn:v('ls-bind_dn'), user_base:v('ls-user_base'), group_dn:v('ls-group_dn'),
+    user_attr:v('ls-user_attr'), mail_attr:v('ls-mail_attr'), name_attr:v('ls-name_attr'), member_attr:v('ls-member_attr'),
+    start_tls:document.getElementById('ls-start_tls').checked, enforce:document.getElementById('ls-enforce').checked };
+  const pw = v('ls-bind_password'); if (pw) body.bind_password = pw;
+  return body;
+}
+document.getElementById('ls-test')?.addEventListener('click', async () => {
+  const msg = document.getElementById('ls-msg'); const btn = document.getElementById('ls-test');
+  btn.disabled = true; msg.textContent = 'testing…'; msg.style.color = 'var(--text-faint)';
+  try {
+    const r = await api('/api/settings/ldap/test', { method:'POST', body: JSON.stringify(_ldapFormBody()) });
+    if (r.ok) { msg.innerHTML = `✓ bound — ${r.count} group member${r.count===1?'':'s'}${r.sample&&r.sample.length?` (${r.sample.map(esc).join(', ')}${r.count>r.sample.length?'…':''})`:''}`; msg.style.color = 'var(--green)'; }
+    else { msg.textContent = '✕ ' + (r.error||'failed'); msg.style.color = 'var(--red)'; }
+  } catch(e){ msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+  btn.disabled = false;
+});
+async function loadSmtpSettings() {
+  try {
+    const s = await api('/api/settings/smtp');
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ''; };
+    set('sm-host', s.host); set('sm-port', s.port); set('sm-user', s.user); set('sm-from_addr', s.from_addr); set('sm-base_url', s.base_url);
+    document.getElementById('sm-tls').checked = s.tls !== false;
+    document.getElementById('sm-password').placeholder = s.password_set ? '•••• (set — leave blank to keep)' : '(optional)';
+  } catch(e) {}
+}
+document.getElementById('sm-save')?.addEventListener('click', async () => {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const body = { host:v('sm-host'), port:parseInt(v('sm-port')||'587',10), user:v('sm-user'),
+    from_addr:v('sm-from_addr'), base_url:v('sm-base_url'), tls:document.getElementById('sm-tls').checked };
+  const pw = v('sm-password'); if (pw) body.password = pw;
+  const msg = document.getElementById('sm-msg'); msg.textContent='saving…'; msg.style.color='var(--text-faint)';
+  try { await api('/api/settings/smtp', { method:'PUT', body: JSON.stringify(body) }); msg.textContent='saved'; msg.style.color='var(--green)'; document.getElementById('sm-password').value=''; }
+  catch(e){ msg.textContent=e.message; msg.style.color='var(--red)'; }
+});
+document.getElementById('sm-test')?.addEventListener('click', async () => {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const to = prompt('Send a test email to:', v('sm-from_addr') || (me && me.reviewer) || '');
+  if (to === null) return;
+  const msg = document.getElementById('sm-msg'); const btn = document.getElementById('sm-test');
+  btn.disabled = true; msg.textContent = 'sending…'; msg.style.color = 'var(--text-faint)';
+  const body = { host:v('sm-host'), port:parseInt(v('sm-port')||'587',10), user:v('sm-user'),
+    from_addr:v('sm-from_addr'), base_url:v('sm-base_url'), tls:document.getElementById('sm-tls').checked, test_to: to };
+  const pw = v('sm-password'); if (pw) body.password = pw;
+  try {
+    const r = await api('/api/settings/smtp/test', { method:'POST', body: JSON.stringify(body) });
+    if (r.ok) { msg.textContent = `✓ sent to ${r.sent_to}`; msg.style.color = 'var(--green)'; }
+    else { msg.textContent = '✕ ' + (r.error||'failed'); msg.style.color = 'var(--red)'; }
+  } catch(e){ msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+  btn.disabled = false;
+});
+
+// ── Projects admin (create / archive / membership) ───────────────────────────
+let _projApproved = null;   // cached approved-user list for member pickers
+async function _projApprovedUsers() {
+  if (_projApproved) return _projApproved;
+  try { _projApproved = (await api('/api/ldap/approved')).users || []; } catch { _projApproved = []; }
+  return _projApproved;
+}
+document.getElementById('newProjBtn')?.addEventListener('click', async () => {
+  const slug = document.getElementById('newProjSlug').value.trim();
+  const name = document.getElementById('newProjName').value.trim();
+  const msg = document.getElementById('newProjMsg');
+  if (!slug) { msg.textContent = 'slug required'; msg.style.color = 'var(--red)'; return; }
+  try {
+    await api('/api/projects', { method:'POST', body: JSON.stringify({ slug, name: name || slug }) });
+    document.getElementById('newProjSlug').value = ''; document.getElementById('newProjName').value = '';
+    msg.textContent = 'created'; msg.style.color = 'var(--green)';
+    loadProjectsAdmin(); loadProjectSwitcher();
+  } catch(e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+});
+async function loadProjectsAdmin() {
+  const el = document.getElementById('projectsList');
+  if (!el) return;
+  // Project creation is gated on the project.create privilege (platform admins by default).
+  const canCreate = !!(me && (me.is_platform_admin || (me.privileges||[]).includes('project.create')));
+  const createRow = document.getElementById('newProjSlug')?.closest('div');
+  if (createRow) createRow.style.display = canCreate ? '' : 'none';
+  try {
+    const r = await api('/api/projects?show_archived=true');
+    let projects = r.projects || [];
+    // Project admins see only the projects they administer.
+    if (me && !me.is_platform_admin && me.role !== 'admin') {
+      projects = projects.filter(p => p.my_role === 'admin');
+    }
+    el.innerHTML = projects.map(p => `
+      <div class="proj-row" data-pid="${p.id}" style="padding:8px 0;border-bottom:1px solid var(--border);${p.archived?'opacity:.55;':''}">
+        <div style="display:flex;gap:10px;align-items:center;">
+          <span style="flex:1;"><strong>${esc(p.name)}</strong> <code style="font-size:11px;">${esc(p.slug)}</code>
+            <span style="color:var(--text-faint);font-size:11px;">· ${p.member_count} member${p.member_count===1?'':'s'}</span>
+            ${p.archived?'<span style="font-size:10px;color:var(--red);">archived</span>':''}</span>
+          <button class="btn ghost btn-sm proj-members-btn" data-pid="${p.id}">Members</button>
+          ${(me&&me.can_manage_uc_sources)?`<button class="btn ghost btn-sm proj-ucdest-btn" data-pid="${p.id}">UC store</button>`:''}
+          ${p.slug!=='default'?`<button class="btn ghost btn-sm proj-archive-btn" data-pid="${p.id}" data-arch="${p.archived?0:1}" style="color:var(--text-faint);">${p.archived?'Unarchive':'Archive'}</button>`:''}
+          ${(me&&me.is_platform_admin&&projects.filter(x=>x.id!==p.id&&!x.archived).length)?`<select class="proj-move" data-pid="${p.id}" style="font-size:11px;"><option value="">move data →</option>${projects.filter(x=>x.id!==p.id&&!x.archived).map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>`:''}
+          ${(p.slug!=='default' && me && (me.is_platform_admin || p.my_role==='admin'))?`<a href="javascript:void(0)" class="proj-del" data-pid="${p.id}" data-name="${esc(p.name)}" style="color:var(--red);font-size:11px;">delete</a>`:''}
+        </div>
+        <div class="proj-members" data-pid="${p.id}" style="display:none;margin-top:8px;padding-left:10px;"></div>
+        <div class="proj-ucdest" data-pid="${p.id}" style="display:none;margin-top:8px;padding-left:10px;"></div>
+      </div>`).join('') || '<div style="color:var(--text-faint)">No projects.</div>';
+    el.querySelectorAll('.proj-archive-btn').forEach(b => b.addEventListener('click', async function() {
+      try { await api(`/api/projects/${this.dataset.pid}`, { method:'PATCH', body: JSON.stringify({ archived: this.dataset.arch==='1' }) }); loadProjectsAdmin(); loadProjectSwitcher(); }
+      catch(e){ toast('Failed: ' + e.message, true); }
+    }));
+    el.querySelectorAll('.proj-members-btn').forEach(b => b.addEventListener('click', function() {
+      const box = el.querySelector(`.proj-members[data-pid="${this.dataset.pid}"]`);
+      if (box.style.display === 'none') { box.style.display = ''; _renderProjectMembers(this.dataset.pid, box); }
+      else box.style.display = 'none';
+    }));
+    el.querySelectorAll('.proj-ucdest-btn').forEach(b => b.addEventListener('click', function() {
+      const box = el.querySelector(`.proj-ucdest[data-pid="${this.dataset.pid}"]`);
+      if (box.style.display === 'none') { box.style.display = ''; _renderUcDestination(this.dataset.pid, box); }
+      else box.style.display = 'none';
+    }));
+    el.querySelectorAll('.proj-move').forEach(s => s.addEventListener('change', async function() {
+      const tgt = this.value; if (!tgt) return;
+      const tgtName = this.options[this.selectedIndex].text;
+      if (!confirm(`Move ALL data from this project into "${tgtName}"? This reassigns use cases, runs, sessions, sets and cached outputs.`)) { this.value=''; return; }
+      try { const r = await api(`/api/projects/${this.dataset.pid}/move-data`, { method:'POST', body: JSON.stringify({ target_project_id: parseInt(tgt,10) }) });
+        toast(`Moved ${r.total} item(s): ${r.source} → ${r.target}`); loadProjectsAdmin(); loadProjectSwitcher(); }
+      catch(e){ toast(e.message, true); this.value=''; }
+    }));
+    el.querySelectorAll('.proj-del').forEach(a => a.addEventListener('click', async function() {
+      if (!confirm(`Delete project "${this.dataset.name}"? Its data must already be moved or removed.`)) return;
+      try { await api(`/api/projects/${this.dataset.pid}`, { method:'DELETE' }); toast('Project deleted'); loadProjectsAdmin(); loadProjectSwitcher(); }
+      catch(e){ toast(e.message, true); }
+    }));
+  } catch(e) { el.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+// UC git destination for a project (Phase 2 — where its use cases live).
+async function _renderUcDestination(pid, box) {
+  box.innerHTML = 'Loading…';
+  try {
+    const dest = await api(`/api/projects/${pid}/uc-destination`);
+    const repoResp = await api('/api/repos?role=uc-store');
+    const repos = repoResp.repos || [];
+    const opts = ['<option value="">— global default —</option>'].concat(repos.map(r => {
+      const pvc = (r.metadata && r.metadata.provider === 'pvc-local') || r.provider === 'pvc-local';
+      return `<option value="${esc(r.uuid)}"${dest.repo_uuid===r.uuid?' selected':''}>${esc(r.display_name||r.namespace)}${pvc?' (DAV-hosted)':''}</option>`;
+    })).join('');
+    box.innerHTML = `
+      <div style="font-size:11px;color:var(--text-faint);margin-bottom:4px;">Git home for this project's use cases (a uc-store repo). Per-UC overrides win.</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <select id="ucd-repo-${pid}" style="font-size:11px;">${opts}</select>
+        <input id="ucd-path-${pid}" placeholder="path (optional)" value="${esc(dest.path||'')}" style="font-size:11px;width:120px;">
+        <input id="ucd-branch-${pid}" placeholder="branch" value="${esc(dest.branch||'')}" style="font-size:11px;width:90px;">
+        <button class="btn primary btn-sm ucd-save" data-pid="${pid}">Save</button>
+        <span id="ucd-msg-${pid}" style="font-size:11px;color:var(--text-faint);"></span>
+      </div>
+      <div style="margin-top:6px;font-size:11px;">
+        <a href="javascript:void(0)" class="ucd-new-toggle" data-pid="${pid}" style="color:var(--accent)">+ Let DAV host a new store</a>
+        <span id="ucd-new-form-${pid}" style="display:none;margin-left:6px;">
+          <input id="ucd-new-ns-${pid}" placeholder="namespace (a-z0-9-)" style="font-size:11px;width:150px;">
+          <button class="btn ghost btn-sm ucd-new-go" data-pid="${pid}">Create</button>
+        </span>
+      </div>`;
+    box.querySelector('.ucd-save').addEventListener('click', async function() {
+      const repo_uuid = document.getElementById(`ucd-repo-${pid}`).value || null;
+      const path = document.getElementById(`ucd-path-${pid}`).value;
+      const branch = document.getElementById(`ucd-branch-${pid}`).value;
+      const msg = document.getElementById(`ucd-msg-${pid}`);
+      try { await api(`/api/projects/${pid}/uc-destination`, { method:'PUT', body: JSON.stringify({ repo_uuid, path, branch }) }); msg.textContent = 'saved'; msg.style.color = 'var(--green)'; }
+      catch(e){ msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+    });
+    box.querySelector('.ucd-new-toggle').addEventListener('click', function() {
+      const f = document.getElementById(`ucd-new-form-${pid}`); f.style.display = f.style.display === 'none' ? '' : 'none';
+    });
+    box.querySelector('.ucd-new-go').addEventListener('click', async function() {
+      const ns = (document.getElementById(`ucd-new-ns-${pid}`).value || '').trim();
+      if (!ns) return;
+      try { await api('/api/repos/pvc-local', { method:'POST', body: JSON.stringify({ namespace: ns }) }); toast('DAV-hosted store created'); _renderUcDestination(pid, box); }
+      catch(e){ toast(e.message, true); }
+    });
+  } catch(e) { box.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+// Project membership = per-project RBAC role assignments (same model as the
+// Accounts panel). A user may hold multiple project roles.
+const _LEGACY_PROJ_ROLE = { 'project-admin':'admin', 'project-edit':'editor', 'project-viewer':'viewer' };
+async function _renderProjectMembers(pid, box) {
+  box.innerHTML = 'Loading…';
+  try {
+    const mResp = await api(`/api/projects/${pid}/members`);
+    const approved = await _projApprovedUsers();
+    const rolesResp = await api('/api/rbac/roles');
+    const projRoles = (rolesResp.roles||[]).filter(r => r.scope === 'project');
+    const roleOpts = projRoles.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+    const members = mResp.members || [];
+    box.innerHTML = members.map(m => `
+      <div style="display:flex;gap:8px;align-items:center;padding:3px 0;">
+        <span style="flex:1;">${esc(m.display_name||m.reviewer)} <span style="color:var(--text-faint);font-size:11px;">${esc(m.email||m.reviewer)}</span></span>
+        <span style="font-size:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:1px 8px;">${esc(m.role_name||m.role_key)}</span>
+        <button class="btn ghost btn-sm pm-remove" data-pid="${pid}" data-rev="${esc(m.reviewer)}" data-role="${m.role_id}" style="color:var(--red);" title="Revoke this role">✕</button>
+      </div>`).join('') +
+      `<div style="display:flex;gap:6px;align-items:center;margin-top:6px;">
+        <select id="pm-add-${pid}" style="font-size:11px;flex:1;">
+          <option value="">+ add user…</option>
+          ${approved.map(u=>`<option value="${esc(u.reviewer)}">${esc(u.display_name||u.reviewer)}</option>`).join('')}
+        </select>
+        <select id="pm-add-role-${pid}" style="font-size:11px;">${roleOpts}</select>
+        <button class="btn ghost btn-sm pm-add-btn" data-pid="${pid}">Add</button>
+      </div>` +
+      `<div style="margin-top:8px;border-top:1px dashed var(--border);padding-top:8px;">
+        <div style="font-size:10px;color:var(--text-faint);margin-bottom:4px;">Invite a new user by email (they set a password &amp; join with this role):</div>
+        <div style="display:flex;gap:6px;">
+          <input id="inv-email-${pid}" placeholder="name@org" style="font-size:11px;flex:1;" />
+          <select id="inv-role-${pid}" style="font-size:11px;">${roleOpts}</select>
+          <button class="btn ghost btn-sm inv-send-btn" data-pid="${pid}">Invite</button>
+        </div>
+        <div id="inv-result-${pid}" style="font-size:10px;margin-top:5px;word-break:break-all;"></div>
+      </div>`;
+    box.querySelectorAll('.pm-remove').forEach(b => b.addEventListener('click', async function() {
+      try { await api(`/api/projects/${this.dataset.pid}/members/${encodeURIComponent(this.dataset.rev)}?role_id=${this.dataset.role}`, { method:'DELETE' }); _renderProjectMembers(pid, box); loadProjectsAdmin(); loadProjectSwitcher(); } catch(e){ toast(e.message, true); }
+    }));
+    box.querySelector('.pm-add-btn')?.addEventListener('click', async function() {
+      const rev = document.getElementById(`pm-add-${pid}`).value;
+      const role_id = parseInt(document.getElementById(`pm-add-role-${pid}`).value, 10);
+      if (!rev) return;
+      try { await api(`/api/projects/${pid}/members`, { method:'POST', body: JSON.stringify({ reviewer:rev, role_id }) }); _renderProjectMembers(pid, box); loadProjectsAdmin(); loadProjectSwitcher(); } catch(e){ toast(e.message, true); }
+    });
+    box.querySelector('.inv-send-btn')?.addEventListener('click', async function() {
+      const email = (document.getElementById(`inv-email-${pid}`).value || '').trim();
+      const role_id = parseInt(document.getElementById(`inv-role-${pid}`).value, 10);
+      const out = document.getElementById(`inv-result-${pid}`);
+      if (!email) { out.textContent = 'email required'; out.style.color = 'var(--red)'; return; }
+      out.textContent = 'creating invite…'; out.style.color = 'var(--text-faint)';
+      try {
+        const rk = (projRoles.find(r=>r.id===role_id)||{}).key;
+        const legacy = _LEGACY_PROJ_ROLE[rk] || 'viewer';
+        const r = await api('/api/invites', { method:'POST', body: JSON.stringify({ email, project_id: parseInt(pid,10), project_role: legacy }) });
+        const link = (r.link && r.link.startsWith('http')) ? r.link : (location.origin + (r.link||''));
+        out.innerHTML = (r.emailed ? '✓ emailed · ' : 'not emailed (no SMTP) · ')
+          + `<a href="javascript:void(0)" id="inv-copy-${pid}" style="color:var(--accent)">copy link</a>`;
+        out.style.color = 'var(--text-dim)';
+        document.getElementById(`inv-copy-${pid}`)?.addEventListener('click', () => { navigator.clipboard.writeText(link).then(()=>toast('Invite link copied')); });
+        document.getElementById(`inv-email-${pid}`).value = '';
+      } catch(e) { out.textContent = e.message; out.style.color = 'var(--red)'; }
+    });
+  } catch(e) { box.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+
+async function loadLdapStatus() {
+  const body = document.getElementById('ldapStatusBody');
+  const chip = document.getElementById('ldapStatusChip');
+  if (!body) return;
+  try {
+    const s = await api('/api/ldap/status');
+    if (chip) {
+      chip.textContent = s.configured ? (s.enforcing ? 'enforcing' : 'configured · not enforcing') : 'not configured';
+      chip.style.color = (s.configured && s.synced_ok) ? 'var(--ok)' : 'var(--text-faint)';
+    }
+    body.innerHTML = s.configured
+      ? `<div>Server: <code>${esc(s.url||'')}</code></div>
+         <div>Approval group: <code>${esc(s.group_dn||'')}</code></div>
+         <div>Last sync: ${s.synced_ok ? '<span style="color:var(--ok)">ok</span>' : '<span style="color:var(--red)">not yet</span>'} — ${s.group_member_count} group member(s), ${s.approved_identity_count} approved identit${s.approved_identity_count===1?'y':'ies'}</div>
+         ${s.last_error ? `<div style="color:var(--red)">Last error: ${esc(s.last_error)}</div>` : ''}
+         <div>Enforcement: <strong>${s.enforcing ? 'ON' : 'OFF'}</strong>${s.enforcing ? '' : ' — set <code>DAV_LDAP_ENFORCE=true</code> once the user list looks right'}</div>
+         <div>Bootstrap admins: ${(s.bootstrap_admins||[]).map(esc).join(', ') || '<span style="color:var(--text-faint)">none</span>'}</div>`
+      : `<div style="color:var(--text-faint)">LDAP is not configured. Set the <code>DAV_LDAP_*</code> env vars (from a Secret) on the API to enable approved-user access. The gate stays a no-op until configured <em>and</em> <code>DAV_LDAP_ENFORCE=true</code>.</div>`;
+  } catch(e) { body.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+
+document.getElementById('ldapSyncBtn')?.addEventListener('click', async () => {
+  const msg = document.getElementById('ldapSyncMsg'); const btn = document.getElementById('ldapSyncBtn');
+  btn.disabled = true; msg.textContent = 'syncing…'; msg.style.color = 'var(--text-faint)';
+  try {
+    const r = await api('/api/ldap/sync', { method:'POST', body:'{}' });
+    msg.textContent = r.synced_ok ? `synced — ${r.approved_identity_count} approved` : ('failed: ' + (r.last_error||''));
+    msg.style.color = r.synced_ok ? 'var(--green)' : 'var(--red)';
+    loadLdapStatus(); loadUsers();
+  } catch(e) { msg.textContent = 'error: ' + e.message; msg.style.color = 'var(--red)'; }
+  btn.disabled = false;
+});
+
+let _rbacRoles = [];
+let _rbacProjects = [];
+
+// Back-compat alias — callers refresh the whole Users & roles panel.
+async function loadUsers() { loadAccounts(); loadRolesMatrix(); }
+
+async function loadAccounts() {
+  const el = document.getElementById('accountsList');
+  const chip = document.getElementById('usersCountChip');
+  if (!el) return;
+  try {
+    const aResp = await api('/api/accounts');
+    const rResp = await api('/api/rbac/roles');
+    const pResp = await api('/api/projects');
+    const accounts = aResp.accounts || [];
+    _rbacRoles = rResp.roles || [];
+    _rbacProjects = (pResp.projects || []).filter(p => !p.archived);
+    if (chip) chip.textContent = `${accounts.length} account${accounts.length===1?'':'s'}`;
+    // Platform + Cross-project roles bind globally (no project); Project roles bind per-project.
+    const platRoles = _rbacRoles.filter(r => r.scope === 'platform' || r.scope === 'cross-project');
+    const projRoles = _rbacRoles.filter(r => r.scope === 'project');
+    el.innerHTML = accounts.map(a => {
+      const roleChips = (a.roles||[]).map(r => {
+        const lbl = r.scope==='project' ? `${esc(r.name)} · ${esc(r.project_name||('#'+r.project_id))}` : esc(r.name);
+        return `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:1px 7px;font-size:10px;">${lbl}<a href="javascript:void(0)" class="role-rm" data-rev="${esc(a.reviewer)}" data-role="${r.role_id}" data-proj="${r.project_id==null?'':r.project_id}" style="color:var(--text-faint);">✕</a></span>`;
+      }).join(' ') || '<span style="color:var(--text-faint);font-size:10px;">no roles</span>';
+      const platOpts = platRoles.map(r => `<option value="p:${r.id}">+ ${esc(r.name)}</option>`).join('');
+      const projOpts = projRoles.map(r => _rbacProjects.map(p => `<option value="r:${r.id}:${p.id}">+ ${esc(r.name)} · ${esc(p.name)}</option>`).join('')).join('');
+      return `<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+        <span style="flex:1;min-width:140px;"><strong>${esc(a.display_name||a.reviewer)}</strong> <span style="color:var(--text-faint);font-size:11px;">${esc(a.email||a.reviewer)}</span>${a.is_default_admin?' <span style="font-size:9px;color:var(--accent);">default</span>':''}</span>
+        <span style="display:flex;gap:4px;flex-wrap:wrap;flex:2;min-width:160px;">${roleChips}</span>
+        <select class="acct-assign" data-rev="${esc(a.reviewer)}" style="font-size:11px;max-width:170px;"><option value="">assign role…</option>${platOpts}${projOpts}</select>
+        <label style="font-size:10px;display:flex;align-items:center;gap:3px;"><input type="checkbox" class="acct-enabled" data-rev="${esc(a.reviewer)}" ${a.enabled?'checked':''}> enabled</label>
+        ${(!a.has_password && (a.email||'').indexOf('@')>=0)?`<a href="javascript:void(0)" class="acct-invite" data-rev="${esc(a.reviewer)}" style="color:var(--accent);font-size:11px;">send invite</a>`:''}
+        ${(me && a.reviewer===me.reviewer)?'<span style="font-size:10px;color:var(--text-faint);">(you)</span>':`<a href="javascript:void(0)" class="acct-del" data-rev="${esc(a.reviewer)}" data-default="${a.is_default_admin?1:0}" style="color:var(--red);font-size:11px;">${a.is_default_admin?'deactivate':'delete'}</a>`}
+      </div>`;
+    }).join('') || '<div style="color:var(--text-faint)">No accounts yet.</div>';
+    el.querySelectorAll('.acct-assign').forEach(s => s.addEventListener('change', async function() {
+      const v = this.value; if (!v) return; const rev = this.dataset.rev;
+      let body;
+      if (v.startsWith('p:')) body = { role_id: parseInt(v.slice(2),10) };
+      else { const parts = v.split(':'); body = { role_id: parseInt(parts[1],10), project_id: parseInt(parts[2],10) }; }
+      try { await api(`/api/accounts/${encodeURIComponent(rev)}/roles`, {method:'POST', body: JSON.stringify(body)}); toast('role assigned'); loadAccounts(); }
+      catch(e){ toast(e.message, true); this.value=''; }
+    }));
+    el.querySelectorAll('.role-rm').forEach(a => a.addEventListener('click', async function() {
+      const rev=this.dataset.rev, rid=this.dataset.role, proj=this.dataset.proj;
+      const q = proj!=='' ? `?role_id=${rid}&project_id=${proj}` : `?role_id=${rid}`;
+      try { await api(`/api/accounts/${encodeURIComponent(rev)}/roles${q}`, {method:'DELETE'}); loadAccounts(); }
+      catch(e){ toast(e.message, true); }
+    }));
+    el.querySelectorAll('.acct-enabled').forEach(c => c.addEventListener('change', async function() {
+      try { const r = await api(`/api/accounts/${encodeURIComponent(this.dataset.rev)}`, {method:'PATCH', body: JSON.stringify({enabled: this.checked})}); if (r && r.warning) toast(r.warning); else toast(this.checked?'enabled':'disabled'); loadAccounts(); }
+      catch(e){ toast(e.message, true); loadAccounts(); }
+    }));
+    el.querySelectorAll('.acct-del').forEach(a => a.addEventListener('click', async function() {
+      const isDefault = this.dataset.default==='1';
+      if (!confirm(`${isDefault?'Deactivate the break-glass default account':'Delete account'} ${this.dataset.rev}?`)) return;
+      try { const r = await api(`/api/accounts/${encodeURIComponent(this.dataset.rev)}`, {method:'DELETE'}); toast(r && r.warning ? r.warning : (r && r.deactivated ? 'Account deactivated' : 'Account deleted')); loadAccounts(); }
+      catch(e){ toast(e.message, true); }
+    }));
+    el.querySelectorAll('.acct-invite').forEach(a => a.addEventListener('click', async function() {
+      try {
+        const r = await api(`/api/accounts/${encodeURIComponent(this.dataset.rev)}/invite`, {method:'POST'});
+        if (r.emailed) toast('Invite emailed');
+        else { const abs=(r.link&&r.link.startsWith('http'))?r.link:(location.origin+(r.link||'')); navigator.clipboard.writeText(abs).then(()=>toast('SMTP off — invite link copied')); }
+      } catch(e){ toast(e.message, true); }
+    }));
+  } catch(e) { el.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+
+document.getElementById('acctAddBtn')?.addEventListener('click', async () => {
+  const email = (document.getElementById('acctNewEmail').value||'').trim();
+  const display_name = (document.getElementById('acctNewName').value||'').trim();
+  const password = document.getElementById('acctNewPw').value;
+  const msg = document.getElementById('acctAddMsg');
+  if (!email) { msg.textContent='email required'; msg.style.color='var(--red)'; return; }
+  try {
+    const r = await api('/api/accounts', {method:'POST', body: JSON.stringify({email, display_name, password: password||null})});
+    document.getElementById('acctNewEmail').value=''; document.getElementById('acctNewName').value=''; document.getElementById('acctNewPw').value='';
+    if (r.invited && r.emailed) { msg.textContent='account added · invite emailed'; msg.style.color='var(--green)'; }
+    else if (r.invited) { _showInviteLink(msg, r.link); }
+    else { msg.textContent='account added (password set)'; msg.style.color='var(--green)'; }
+    loadAccounts();
+  } catch(e){ msg.textContent=e.message; msg.style.color='var(--red)'; }
+});
+// Render a "copy invite link" affordance (SMTP not configured / not emailed).
+function _showInviteLink(el, link) {
+  const abs = (link && link.startsWith('http')) ? link : (location.origin + (link||''));
+  el.innerHTML = 'account added · <a href="javascript:void(0)" class="inv-copy-link" style="color:var(--accent)">copy invite link</a>';
+  el.style.color = 'var(--text-dim)';
+  el.querySelector('.inv-copy-link').addEventListener('click', () => navigator.clipboard.writeText(abs).then(()=>toast('Invite link copied')));
+}
+
+async function loadRolesMatrix() {
+  const el = document.getElementById('rolesMatrix');
+  if (!el) return;
+  try {
+    const rResp = await api('/api/rbac/roles');
+    const pResp = await api('/api/rbac/privileges');
+    const roles = rResp.roles || [];
+    const privs = pResp.privileges || [];
+    const RANK = { 'platform':3, 'cross-project':2, 'project':1 };
+    const SCOPE_LABEL = { 'platform':'Platform', 'cross-project':'Cross-project', 'project':'Project' };
+    const SCOPE_DESC = {
+      'platform':'The platform itself — settings, accounts, roles, repos. Bound globally.',
+      'cross-project':'Project-related but not tied to one project (e.g. create projects). Bound globally.',
+      'project':'A single project — its data, settings, members, deletion. Bound per-project.' };
+    const roleCard = (r) => {
+      // A role may hold privileges of its own scope or narrower (Platform ⊇ Cross-project ⊇ Project).
+      const chips = privs.filter(p => (RANK[p.scope]||1) <= (RANK[r.scope]||1)).map(p => {
+        const on = (r.privileges||[]).includes(p.key);
+        return `<label title="${esc(p.key)} — ${esc(p.description)}" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:5px;padding:3px 9px;margin:3px;cursor:pointer;"><input type="checkbox" class="rp-cell" data-role="${r.id}" data-priv="${esc(p.key)}" ${on?'checked':''}> ${esc(p.name)} <span style="font-size:9px;color:var(--text-faint);">${esc(p.scope)}</span></label>`;
+      }).join('');
+      return `<div style="padding:9px 0;border-bottom:1px solid var(--border);">
+        <div style="margin-bottom:3px;"><strong style="font-size:13px;">${esc(r.name)}</strong>
+          <span style="font-size:11px;color:var(--text-faint);"> · ${r.is_system?'built-in':'custom'} · ${r.assignment_count||0} binding${(r.assignment_count||0)===1?'':'s'}</span>
+          ${r.is_system?'':`<a href="javascript:void(0)" class="role-del" data-role="${r.id}" style="color:var(--red);font-size:11px;margin-left:8px;">delete</a>`}</div>
+        <div style="display:flex;flex-wrap:wrap;">${chips || '<span style="font-size:11px;color:var(--text-faint);">no privileges</span>'}</div>
+      </div>`;
+    };
+    const groups = ['platform','cross-project','project'].map(sc => {
+      const rs = roles.filter(r => r.scope === sc);
+      if (!rs.length) return '';
+      return `<div style="margin-top:12px;"><div style="font-size:12px;font-weight:600;color:var(--accent);">${SCOPE_LABEL[sc]} roles</div>
+        <div style="font-size:10px;color:var(--text-faint);margin-bottom:2px;">${SCOPE_DESC[sc]}</div>
+        ${rs.map(roleCard).join('')}</div>`;
+    }).join('');
+    el.innerHTML = `${groups}
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:14px;border-top:1px dashed var(--border);padding-top:10px;">
+        <span style="font-size:11px;color:var(--text-faint);">New role:</span>
+        <input id="roleNewKey" placeholder="key (a-z-)" style="font-size:12px;width:120px;">
+        <input id="roleNewName" placeholder="name" style="font-size:12px;width:150px;">
+        <select id="roleNewScope" style="font-size:12px;"><option value="project">Project</option><option value="cross-project">Cross-project</option><option value="platform">Platform</option></select>
+        <button class="btn ghost btn-sm" id="roleAddBtn">Add role</button>
+        <span id="roleAddMsg" style="font-size:11px;color:var(--text-faint);"></span>
+      </div>`;
+    el.querySelectorAll('.rp-cell').forEach(c => c.addEventListener('change', async function() {
+      const roleId = this.dataset.role;
+      const checked = Array.from(el.querySelectorAll(`.rp-cell[data-role="${roleId}"]`)).filter(x=>x.checked).map(x=>x.dataset.priv);
+      try { await api(`/api/rbac/roles/${roleId}`, {method:'PUT', body: JSON.stringify({privileges: checked})}); toast('role updated'); }
+      catch(e){ toast(e.message, true); loadRolesMatrix(); }
+    }));
+    el.querySelector('#roleAddBtn')?.addEventListener('click', async () => {
+      const key=(document.getElementById('roleNewKey').value||'').trim();
+      const name=(document.getElementById('roleNewName').value||'').trim();
+      const scope=document.getElementById('roleNewScope').value;
+      const msg=document.getElementById('roleAddMsg');
+      if(!key||!name){ msg.textContent='key + name required'; msg.style.color='var(--red)'; return; }
+      try { await api('/api/rbac/roles', {method:'POST', body: JSON.stringify({key,name,scope,privileges:[]})}); loadRolesMatrix(); loadAccounts(); }
+      catch(e){ msg.textContent=e.message; msg.style.color='var(--red)'; }
+    });
+    el.querySelectorAll('.role-del').forEach(a => a.addEventListener('click', async function() {
+      if(!confirm('Delete this custom role?')) return;
+      try { await api(`/api/rbac/roles/${this.dataset.role}`, {method:'DELETE'}); loadRolesMatrix(); loadAccounts(); loadRoleBindings(); }
+      catch(e){ toast(e.message, true); }
+    }));
+  } catch(e) { el.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+
+// Role bindings: who is bound to what, where — account bindings + LDAP/OCP group→role mappings.
+async function loadRoleBindings() {
+  const el = document.getElementById('roleBindings');
+  if (!el) return;
+  try {
+    const bResp = await api('/api/rbac/bindings');
+    const rResp = await api('/api/rbac/roles');
+    const pResp = await api('/api/projects?show_archived=false');
+    const roles = rResp.roles || [];
+    const projects = (pResp.projects || []).filter(p => !p.archived);
+    const accts = bResp.account_bindings || [];
+    const groups = bResp.group_mappings || [];
+    const SL = { 'platform':'Platform', 'cross-project':'Cross-project', 'project':'Project' };
+    const dash = '<span style="color:var(--text-faint);">—</span>';
+    const acctRows = accts.length ? accts.map(b => `
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:3px 8px;">${esc(b.display_name||b.subject)} <span style="color:var(--text-faint);font-size:10px;">${esc(b.subject)}</span></td>
+        <td style="padding:3px 8px;">${esc(b.role_name)} <span style="font-size:9px;color:var(--text-faint);">${esc(b.scope)}</span></td>
+        <td style="padding:3px 8px;">${b.project_name?esc(b.project_name):dash}</td>
+        <td style="padding:3px 8px;"><a href="javascript:void(0)" class="rb-acct-rm" data-rev="${esc(b.subject)}" data-role="${b.role_id}" data-proj="${b.project_id==null?'':b.project_id}" style="color:var(--red);">revoke</a></td>
+      </tr>`).join('') : `<tr><td colspan="4" style="padding:6px 8px;color:var(--text-faint);">No account bindings — assign roles from the account list above.</td></tr>`;
+    const groupRows = groups.length ? groups.map(g => `
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:3px 8px;"><span style="font-size:9px;color:var(--text-faint);">${esc(g.source)}</span> ${esc(g.subject)}</td>
+        <td style="padding:3px 8px;">${esc(g.role_name)} <span style="font-size:9px;color:var(--text-faint);">${esc(g.scope)}</span></td>
+        <td style="padding:3px 8px;">${g.project_name?esc(g.project_name):dash}</td>
+        <td style="padding:3px 8px;"><a href="javascript:void(0)" class="rb-grp-rm" data-id="${g.mapping_id}" style="color:var(--red);">remove</a></td>
+      </tr>`).join('') : `<tr><td colspan="4" style="padding:6px 8px;color:var(--text-faint);">No group mappings yet.</td></tr>`;
+    const roleOpts = roles.map(r => `<option value="${r.id}" data-scope="${esc(r.scope)}">${esc(r.name)} (${SL[r.scope]||r.scope})</option>`).join('');
+    const projOpts = projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+    const th = '<tr style="text-align:left;color:var(--text-faint);font-size:10px;"><th style="padding:2px 8px;">Subject</th><th style="padding:2px 8px;">Role</th><th style="padding:2px 8px;">Project</th><th></th></tr>';
+    el.innerHTML = `
+      <div style="font-size:11px;font-weight:600;margin:6px 0 2px;">Account bindings</div>
+      <table style="border-collapse:collapse;width:100%;font-size:12px;"><thead>${th}</thead><tbody>${acctRows}</tbody></table>
+      <div style="font-size:11px;font-weight:600;margin:14px 0 2px;">LDAP / OCP group → role mappings</div>
+      <table style="border-collapse:collapse;width:100%;font-size:12px;"><thead>${th}</thead><tbody>${groupRows}</tbody></table>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+        <select id="rbGrpSource" style="font-size:11px;"><option value="ldap">ldap</option><option value="ocp">ocp</option></select>
+        <input id="rbGrpKey" placeholder="group DN / name" style="font-size:11px;width:220px;">
+        <select id="rbGrpRole" style="font-size:11px;">${roleOpts}</select>
+        <select id="rbGrpProj" style="font-size:11px;display:none;"><option value="">— project —</option>${projOpts}</select>
+        <button class="btn ghost btn-sm" id="rbGrpAdd">Add mapping</button>
+        <span id="rbGrpMsg" style="font-size:11px;color:var(--text-faint);"></span>
+      </div>`;
+    const roleSel = document.getElementById('rbGrpRole');
+    const projSel = document.getElementById('rbGrpProj');
+    const syncProjVis = () => { const sc = roleSel.options[roleSel.selectedIndex]?.dataset.scope; projSel.style.display = sc==='project' ? '' : 'none'; };
+    roleSel.addEventListener('change', syncProjVis); syncProjVis();
+    document.getElementById('rbGrpAdd').addEventListener('click', async () => {
+      const source = document.getElementById('rbGrpSource').value;
+      const group_key = (document.getElementById('rbGrpKey').value||'').trim();
+      const role_id = parseInt(roleSel.value,10);
+      const sc = roleSel.options[roleSel.selectedIndex]?.dataset.scope;
+      const project_id = sc==='project' ? (parseInt(projSel.value,10)||null) : null;
+      const msg = document.getElementById('rbGrpMsg');
+      if (!group_key) { msg.textContent='group required'; msg.style.color='var(--red)'; return; }
+      if (sc==='project' && !project_id) { msg.textContent='pick a project'; msg.style.color='var(--red)'; return; }
+      try { await api('/api/rbac/group-mappings', {method:'POST', body: JSON.stringify({source, group_key, role_id, project_id})}); document.getElementById('rbGrpKey').value=''; loadRoleBindings(); }
+      catch(e){ msg.textContent=e.message; msg.style.color='var(--red)'; }
+    });
+    el.querySelectorAll('.rb-acct-rm').forEach(a => a.addEventListener('click', async function() {
+      const q = this.dataset.proj!=='' ? `?role_id=${this.dataset.role}&project_id=${this.dataset.proj}` : `?role_id=${this.dataset.role}`;
+      try { await api(`/api/accounts/${encodeURIComponent(this.dataset.rev)}/roles${q}`, {method:'DELETE'}); loadRoleBindings(); loadAccounts(); }
+      catch(e){ toast(e.message, true); }
+    }));
+    el.querySelectorAll('.rb-grp-rm').forEach(a => a.addEventListener('click', async function() {
+      try { await api(`/api/rbac/group-mappings/${this.dataset.id}`, {method:'DELETE'}); loadRoleBindings(); }
+      catch(e){ toast(e.message, true); }
+    }));
+  } catch(e) { el.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
 }
 
 async function loadRunStatus() {
@@ -2720,6 +3675,20 @@ function switchView(name) {
   if (name === 'improve')  loadImproveQueue();
   if (name === 'config')   loadConfig();
   if (name === 'inbox')    loadInbox();
+  if (name === 'users')    { loadAccounts(); loadRolesMatrix(); loadRoleBindings(); loadLdapStatus(); loadLdapSettings(); loadSmtpSettings(); }
+  if (name === 'projects') { loadProjectsAdmin(); loadProjectSwitcher(); }
+}
+
+// Relocate the Users/Projects management panels out of Config into their own
+// full-page views (built once at boot). Far safer than duplicating the markup;
+// the panels keep their ids so all the existing loaders keep working.
+function _setupRbacViews() {
+  const uBody = document.getElementById('usersViewBody');
+  const pBody = document.getElementById('projectsViewBody');
+  if (uBody) ['configUsersPanel','configLdapPanel','configSmtpPanel'].forEach(id => {
+    const el = document.getElementById(id); if (el) uBody.appendChild(el);
+  });
+  if (pBody) { const el = document.getElementById('configProjectsPanel'); if (el) pBody.appendChild(el); }
 }
 
 // ── Active run chip (masthead) ───────────────────────────────
@@ -2825,6 +3794,7 @@ function _renderRunItemHtml(r) {
       ${phaseHtml(r.phase)}<br>
       <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
       <div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;">
+        <button class="btn ghost btn-sm" title="Re-run with the same Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
         <button class="btn ghost btn-sm" title="${r.archived ? 'Unarchive' : 'Archive (hide from list)'}" onclick="event.stopPropagation();archiveRun('${r.name}',${r.archived ? 'false' : 'true'})">${r.archived ? 'Unarchive' : 'Archive'}</button>
         <button class="btn danger btn-sm" title="Delete completely — irreversible" onclick="event.stopPropagation();deleteRunConfirm('${r.name}')">Delete</button>
       </div>
@@ -3838,6 +4808,10 @@ async function loadNewRunDefaults(forcedSubpath) {
     const spec    = sources.spec      || {};
     const corpus  = sources.corpus    || {};
     const inf     = sources.inference || {};
+    // Engine default for the new-run override picker comes from the Inference
+    // source (the path the pipeline actually reads), not model_defaults.
+    _engineDefaultLabel = inf.model || inf.endpoint || 'project inference default';
+    _populateOverrideSel('nrModelSel', '__engine__');
     // Spec side: legacy single-source shows repo URL/branch inputs; multi-source
     // mode (post-M11a) hides those and renders a read-only source list instead —
     // editing happens in Config → Managed repos.
@@ -3967,6 +4941,67 @@ let _pendingRunFilter = null;   // { handles: string[], uuids: string[], managed
 let _pendingRunLineage = null;  // R2: { set_id?, set_name?, selection_mode: 'set'|'selection'|'individual'|'corpus' }
 const _selectedUCs = new Set(); // UUIDs of UCs checked in the list for batch ops
 
+// Apply a Set to the New Run modal: sets _pendingRunFilter/_pendingRunLineage and
+// returns the {subpath, banner} to drive the corpus field + banner. Empty setId
+// = full corpus (no filter). Shared by the inline selector + openNewRun.
+async function _applySetToNewRun(setId) {
+  if (!setId) {
+    _pendingRunFilter = null;
+    _pendingRunLineage = { selection_mode: 'corpus' };
+    return { subpath: undefined, banner: null };
+  }
+  const set = (allSets || []).find(s => String(s.id) === String(setId));
+  try {
+    const setData = await api(`/api/sets/${setId}`);
+    const subpathInfo = await api(`/api/sets/${setId}/corpus-subpath`);
+    _pendingRunFilter = _filterFromSetMembers(setData.members || []);
+    _pendingRunLineage = { set_id: Number(setId), set_name: set?.name, selection_mode: 'set' };
+    const skipMsg = subpathInfo.managed_count > 0
+      ? ` ⚠ ${subpathInfo.managed_count} managed UC(s) will be skipped (promote first).` : '';
+    const banner = `Running Set "${esc(set?.name || setId)}" — ${subpathInfo.corpus_count} corpus UC${subpathInfo.corpus_count!==1?'s':''} (engine-filtered).${skipMsg}`;
+    return { subpath: subpathInfo.subpath || undefined, banner };
+  } catch(e) {
+    _pendingRunFilter = null; _pendingRunLineage = { selection_mode: 'corpus' };
+    return { subpath: undefined, banner: null };
+  }
+}
+function _populateNrSetSel(selectedId) {
+  const sel = document.getElementById('nrSetSel');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Full corpus (all use cases)</option>' +
+    (allSets || []).map(s =>
+      `<option value="${s.id}"${String(s.id)===String(selectedId)?' selected':''}>${esc(s.name)}${s.is_default?' (default)':''}${s.member_count!=null?` — ${s.member_count} UC${s.member_count===1?'':'s'}`:''}</option>`
+    ).join('');
+  sel.value = selectedId ? String(selectedId) : '';
+}
+document.getElementById('nrSetSel')?.addEventListener('change', async function() {
+  const { subpath, banner } = await _applySetToNewRun(this.value);
+  const bannerEl = document.getElementById('newRunBanner');
+  if (banner) { bannerEl.innerHTML = banner; bannerEl.style.display = ''; } else { bannerEl.style.display = 'none'; }
+  await loadNewRunDefaults(subpath);
+});
+
+// Re-run an existing run: open New Run pre-filled with the same Set (UC
+// selection) + category + a "Rerun:" name, for the operator to review + trigger.
+async function rerunRun(name) {
+  const r = (allRuns || []).find(x => x.name === name);
+  if (!r) { toast('Run not found', true); return; }
+  await openNewRun();
+  const setSel = document.getElementById('nrSetSel');
+  if (setSel) {
+    setSel.value = r.set_id ? String(r.set_id) : '';
+    setSel.dispatchEvent(new Event('change'));   // apply the Set's filter/subpath/banner
+  }
+  const nameEl = document.getElementById('nrSessionName');
+  if (nameEl) nameEl.value = `Rerun: ${r.session_name || r.name}`;
+  if (r.category) {
+    const cat = document.getElementById('nrCategory');
+    if (cat && [...cat.options].some(o => o.value === r.category)) cat.value = r.category;
+  }
+  const title = document.getElementById('newRunTitle');
+  if (title) title.textContent = 'Rerun';
+}
+
 async function openNewRun(banner, subpath, ucFilter, branchOverride, lineage) {
   document.getElementById('newRunModal').classList.add('open');
   document.getElementById('nrStatus').textContent = '';
@@ -3978,33 +5013,28 @@ async function openNewRun(banner, subpath, ucFilter, branchOverride, lineage) {
   _pendingRunLineage = lineage || null;
   const bannerEl = document.getElementById('newRunBanner');
 
-  // If no explicit subpath/banner was supplied, fall back to the project default Set
+  // Populate the inline Set selector. Reflect an explicit lineage Set; else,
+  // when opened plainly (no subpath/banner/filter), the project default Set;
+  // else none (custom UC filter, e.g. re-analyze a single UC).
+  if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
   let effectiveSubpath = subpath;
   let effectiveBanner = banner;
-  if (subpath === undefined && !banner) {
-    // Make sure allSets is populated; loadSets is idempotent.
-    if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
+  let setForSel = lineage?.set_id || null;
+  if (subpath === undefined && !banner && !ucFilter && !setForSel) {
     const def = _getDefaultSet();
-    if (def) {
-      try {
-        const setData = await api(`/api/sets/${def.id}`);
-        const subpathInfo = await api(`/api/sets/${def.id}/corpus-subpath`);
-        if (subpathInfo.subpath) {
-          effectiveSubpath = subpathInfo.subpath;
-          const filter = _filterFromSetMembers(setData.members || []);
-          _pendingRunFilter = filter;
-          // R2: lineage from the default-Set fallback path
-          _pendingRunLineage = { set_id: def.id, set_name: def.name, selection_mode: 'set' };
-          const skipMsg = subpathInfo.managed_count > 0
-            ? ` ⚠ ${subpathInfo.managed_count} managed UC(s) will be skipped (promote first).`
-            : '';
-          effectiveBanner = `Pre-filled from default Set "${def.name}" — ${subpathInfo.corpus_count} corpus UC${subpathInfo.corpus_count!==1?'s':''} (engine-filtered).${skipMsg}`;
-        }
-      } catch(_) { /* fall through to auto-detect */ }
-    }
+    if (def) setForSel = def.id;
+  }
+  _populateNrSetSel(setForSel);
+  // Apply the Set (only when there's no explicit subpath/banner override) so the
+  // corpus field + filter + banner reflect it. Callers that pass their own
+  // subpath/banner (Run Set / re-analyze) keep those.
+  if (setForSel && subpath === undefined && !banner) {
+    const r = await _applySetToNewRun(setForSel);
+    if (r.subpath !== undefined) effectiveSubpath = r.subpath;
+    if (r.banner) effectiveBanner = r.banner;
   }
 
-  if (effectiveBanner) { bannerEl.textContent = effectiveBanner; bannerEl.style.display = ''; }
+  if (effectiveBanner) { bannerEl.innerHTML = effectiveBanner; bannerEl.style.display = ''; }
   else bannerEl.style.display = 'none';
   await loadNewRunDefaults(effectiveSubpath);
   if (branchOverride) {
@@ -5748,18 +6778,15 @@ let _ucAssistAvailable = null;  // null=unknown, true/false
 
 function _ucAssistCheckAvail() {
   if (_ucAssistAvailable !== null) return Promise.resolve(_ucAssistAvailable);
-  const resolved = _resolveFromStorage(_ucAssistModelKey);
-  _ucAssistAvailable = !!resolved;
+  // Effective model = per-panel override, else the Config UC-authoring default.
+  const override = _overrideModelBody('ucAssistPanelModelSel');
+  const effId = override.model_config_id || _modelDefaults['uc-authoring'];
+  _ucAssistAvailable = !!(effId || _reviewModels.some(m => m.enabled));
   const statusEl = document.getElementById('ucAssistStatus');
   if (statusEl) {
-    if (resolved && resolved.model_config_id) {
-      const m = _reviewModels.find(r => r.id === resolved.model_config_id);
-      statusEl.textContent = m ? m.name : 'configured';
-    } else if (resolved && resolved.model_id) {
-      statusEl.textContent = resolved.model_id;
-    } else {
-      statusEl.textContent = 'not configured';
-    }
+    const m = _reviewModels.find(r => r.id === effId);
+    statusEl.textContent = m ? _modelKindLabel(m)
+      : (_ucAssistAvailable ? 'using default' : 'not configured');
   }
   return Promise.resolve(_ucAssistAvailable);
 }
@@ -5772,16 +6799,12 @@ let _ucAssistPrompts = [];
 function _ucAssistOpen() {
   const panel = document.getElementById('ucAssistPanel');
   panel.style.display = 'flex';
-  _populateModelSel('ucAssistPanelModelSel', _ucAssistModelKey);
+  _populateOverrideSel('ucAssistPanelModelSel', 'uc-authoring');
   _ucAssistAvailable = null; // re-check on open
   _ucAssistCheckAvail();
   _ucAssistPrompts = [];   // reset prompt trail for this session
-  const modelSel = document.getElementById('ucAssistPanelModelSel');
-  if (!modelSel.value) {
-    modelSel.focus();
-  } else {
-    document.getElementById('ucAssistInput').focus();
-  }
+  // Blank value is the valid "use default" choice now — focus the input.
+  document.getElementById('ucAssistInput').focus();
 }
 
 // Build a top-of-YAML comment block that preserves the prompts that produced
@@ -5869,7 +6892,6 @@ async function _ucAssistSend() {
     document.getElementById('ucAssistPanelModelSel').focus();
     return;
   }
-  const ucResolved = _resolveFromStorage(_ucAssistModelKey);
   _ucAssistPrompts.push(msg);   // R4: record for later YAML stamping
   _ucAssistAppendMessage('user', msg);
   input.value = '';
@@ -5877,8 +6899,8 @@ async function _ucAssistSend() {
   btn.disabled = true; btn.textContent = '…';
   const currentYaml = document.getElementById('ucYamlEditor').value || '';
   try {
-    const ucPayload = { message: msg, current_yaml: currentYaml };
-    if (ucResolved) Object.assign(ucPayload, ucResolved);
+    const ucPayload = { message: msg, current_yaml: currentYaml,
+                        ..._overrideModelBody('ucAssistPanelModelSel') };
     const resp = await api('/api/uc-assist', {
       method: 'POST',
       body: JSON.stringify(ucPayload),
@@ -6075,13 +7097,7 @@ function openBulkImport() {
   primary.onclick = biRunExtract;
   _biExtracted = [];
   _biSavedUCs = [];
-  _populateModelSel('biModelSel', 'biLastModel');
-  // Default to env UC-assist model if user has nothing pinned
-  const sel = document.getElementById('biModelSel');
-  if (!sel.value) {
-    const stored = localStorage.getItem('ucAssistModelId');
-    if (stored && [...sel.options].some(o => o.value === stored)) sel.value = stored;
-  }
+  _populateOverrideSel('biModelSel', 'uc-authoring');
 }
 
 function closeBulkImport() {
@@ -6091,15 +7107,13 @@ function closeBulkImport() {
 async function biRunExtract() {
   const text = document.getElementById('biSourceText').value.trim();
   if (!text) { toast('Paste some text first', true); return; }
-  const resolved = _resolveEndpointModel('biModelSel', 'biLastModel');
-  if (!resolved) { toast('Pick a model first', true); return; }
   const primary = document.getElementById('biPrimaryBtn');
   primary.disabled = true;
   document.getElementById('biStatus').innerHTML = '<span class="llm-spinner"></span>extracting UCs…';
   const payload = {
     text,
     context: document.getElementById('biContext').value.trim() || null,
-    ...resolved,
+    ..._overrideModelBody('biModelSel'),
   };
   const pane = document.getElementById('biStep1');
   const approxMin = Math.max(1, Math.ceil(text.length / 4000));
@@ -6439,12 +7453,7 @@ function openUcWizard() {
   document.getElementById('wzExplanation').style.display = 'none';
   document.getElementById('wzValidateStatus').textContent = '';
   document.getElementById('wzStatus').textContent = '';
-  _populateModelSel('wzModelSel', 'wzLastModel');
-  const sel = document.getElementById('wzModelSel');
-  if (!sel.value) {
-    const stored = localStorage.getItem('ucAssistModelId');
-    if (stored && [...sel.options].some(o => o.value === stored)) sel.value = stored;
-  }
+  _populateOverrideSel('wzModelSel', 'uc-authoring');
   wzShowStep(1);
 }
 
@@ -6484,11 +7493,10 @@ async function wzNext() {
   if (n === 1) {
     const scenario = document.getElementById('wzScenario').value.trim();
     if (!scenario) { toast('Describe the scenario first', true); return; }
-    const resolved = _resolveEndpointModel('wzModelSel', 'wzLastModel');
-    if (!resolved) { toast('Pick a model first', true); return; }
     _wizardState.scenario = scenario;
     _wizardState.context = document.getElementById('wzContext').value.trim();
-    _wizardState.modelResolved = resolved;
+    // Blank ⇒ use the Config UC-authoring default; else the chosen override.
+    _wizardState.modelResolved = _overrideModelBody('wzModelSel');
     wzShowStep(2);
   } else if (n === 2) {
     const yaml = document.getElementById('wzYaml').value.trim();
@@ -7355,12 +8363,10 @@ function getResolvedMode() {
 function applyTheme() {
   document.documentElement.setAttribute('data-theme', currentTheme);
   document.documentElement.setAttribute('data-mode', getResolvedMode());
-  document.getElementById('themeChipLabel').textContent =
-    `${MODE_LABEL[currentMode]} · ${THEME_LABEL[currentTheme]}`;
-  // Mark the active option in the menu
-  document.querySelectorAll('#themeMenu [data-mode]').forEach(b =>
+  // Mark the active appearance options in the account menu.
+  document.querySelectorAll('#acctMenu [data-mode]').forEach(b =>
     b.classList.toggle('active', b.dataset.mode === currentMode));
-  document.querySelectorAll('#themeMenu [data-theme]').forEach(b =>
+  document.querySelectorAll('#acctMenu [data-theme]').forEach(b =>
     b.classList.toggle('active', b.dataset.theme === currentTheme));
 }
 
@@ -7394,20 +8400,34 @@ function initTheme() {
     else if (mql.addListener) mql.addListener(onChange);
   }
 
-  // Wire up menu
-  document.getElementById('themeChipBtn').addEventListener('click', e => {
+  // Wire up the account menu (appearance + account actions).
+  document.getElementById('acctChipBtn').addEventListener('click', e => {
     e.stopPropagation();
-    const m = document.getElementById('themeMenu');
-    m.classList.toggle('open');
+    document.getElementById('acctMenu').classList.toggle('open');
   });
-  document.querySelectorAll('#themeMenu [data-mode]').forEach(b =>
+  document.querySelectorAll('#acctMenu [data-mode]').forEach(b =>
     b.addEventListener('click', () => setMode(b.dataset.mode)));
-  document.querySelectorAll('#themeMenu [data-theme]').forEach(b =>
+  document.querySelectorAll('#acctMenu [data-theme]').forEach(b =>
     b.addEventListener('click', () => setTheme(b.dataset.theme)));
+  document.getElementById('acctLogout').addEventListener('click', async () => {
+    try { await api('/api/auth/logout', { method:'POST' }); } catch(e) {}
+    location.reload();
+  });
+  document.getElementById('acctChangePw').addEventListener('click', () => {
+    document.getElementById('acctMenu').classList.remove('open');
+    const c = document.getElementById('pwChangeCancel'); if (c) c.style.display = '';
+    const sub = document.getElementById('pwChangeSub'); if (sub) sub.textContent = 'Enter your current password and a new one.';
+    document.getElementById('pwChangeOverlay').style.display = 'flex';
+  });
+  document.getElementById('pwChangeCancel')?.addEventListener('click', () => {
+    document.getElementById('pwChangeOverlay').style.display = 'none';
+    document.getElementById('pwChangeCur').value = ''; document.getElementById('pwChangeNew').value = '';
+    document.getElementById('pwChangeMsg').textContent = '';
+  });
   document.addEventListener('click', e => {
-    const menu = document.getElementById('themeMenu');
-    const btn  = document.getElementById('themeChipBtn');
-    if (!menu.contains(e.target) && e.target !== btn) menu.classList.remove('open');
+    const menu = document.getElementById('acctMenu');
+    const btn  = document.getElementById('acctChipBtn');
+    if (!menu.contains(e.target) && !btn.contains(e.target)) menu.classList.remove('open');
   });
 }
 
@@ -7533,6 +8553,7 @@ const SOURCE_UI = {
 
 async function loadConfig() {
   // Load review models, MCP, code repos, UC assist, repos registry, and setup config nav
+  loadAccessPanels();          // Users & Access (admin-only; no-op otherwise)
   await loadCredentials();     // Shared credentials (M9) — load first so the
                                // Repos form's PAT/webhook-secret dropdowns can
                                // hydrate from the freshest list
@@ -7540,9 +8561,8 @@ async function loadConfig() {
                                // since sources are now projections over the registry
   await loadReviewModels();
   renderModelList();
-  _populateModelSel('rdRevModelSel', 'reviewLastModel');
-  _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
-  _populateModelSel('nrModelSel', 'nrLastModel');
+  _updateArchModelInfo();
+  _populateOverrideSel('nrModelSel', '__engine__');
   await loadUCAssistConfig();  // populates ucAssistModelSel from _reviewModels
   await loadEvalDefault();    // populates evalDefaultModelSel from DB
   await loadArchDefault();    // populates archDefaultModelSel from DB
@@ -7754,9 +8774,13 @@ function wireSourcesPanel(kind) {
 
 // ── Wire-up ──────────────────────────────────────────────────
 
-// Sidebar nav: .pf-nav-item clicks drive switchView
+// Sidebar nav: .pf-nav-item clicks drive switchView. Items with data-cfg also
+// jump to a specific Config panel (Users & roles / Projects nav shortcuts).
 document.querySelectorAll('.pf-nav-item').forEach(b =>
-  b.addEventListener('click', () => switchView(b.dataset.view)));
+  b.addEventListener('click', () => {
+    switchView(b.dataset.view);
+    if (b.dataset.cfg) setTimeout(() => { const t = document.getElementById(b.dataset.cfg); if (t) t.scrollIntoView({ behavior:'smooth', block:'start' }); }, 60);
+  }));
 
 // Masthead hamburger toggle
 document.getElementById('navToggleBtn').addEventListener('click', toggleNav);
@@ -7768,18 +8792,27 @@ function _populateGlobalRunSel(){
   const sel = document.getElementById('globalRunSel');
   if (!sel) return;
   const cur = activeRunResultId || '';
-  // Same source as the Runs tab (allRuns), excluding archived and not-yet-analyzed
-  // runs, so the top selector and the left list always agree.
-  const runs = (allRuns||[]).filter(r => r.run_id && !r.archived);
-  sel.innerHTML = '<option value="">— select run —</option>' + runs.map(r =>
-    `<option value="${esc(r.run_id)}"${r.run_id===cur?' selected':''}>${esc(r.session_name || r.name || r.run_id)}</option>`
-  ).join('');
+  // Mirror the Runs list (left) one-for-one: every non-archived run appears.
+  // Runs without an ingested analysis yet (run_id null — still running, failed,
+  // or just triggered) are shown but disabled: they can't drive the analysis
+  // stages until the pipeline finishes and results are ingested. Server already
+  // excludes archived, so the top selector and the left list always agree.
+  const runs = (allRuns||[]).filter(r => !r.archived);
+  sel.innerHTML = '<option value="">— select run —</option>' + runs.map(r => {
+    const label = esc(r.session_name || r.name || r.run_id || '(unnamed)');
+    if (r.run_id) {
+      return `<option value="${esc(r.run_id)}"${r.run_id===cur?' selected':''}>${label}</option>`;
+    }
+    const why = esc((r.phase || 'no analysis yet').toLowerCase());
+    return `<option value="" disabled>${label} — ${why}</option>`;
+  }).join('');
   sel.value = cur;
 }
 document.getElementById('globalRunSel')?.addEventListener('change', async function(){
   if (!this.value) return;
   await selectRunResult(this.value);
   _rpPopulateUCs(activeRunResultId);  // refresh Architecture UC scope
+  _rpLoadCached();                    // show cached Review/Enhancement for this run
   const cm = document.getElementById('rpCapMap');  // reset Engineering map prompt
   if (cm) cm.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Click <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on) for this run.</div>';
 });
@@ -8164,6 +9197,7 @@ document.getElementById('saveEvalDefaultBtn').addEventListener('click', async ()
 // explicit model_config_id / endpoint_url+model_id override.
 
 let _archDefaultModelId = null;
+let _archDefaultLoaded = false;
 
 function _populateArchDefaultSel(modelId) {
   const sel = document.getElementById('archDefaultModelSel');
@@ -8180,41 +9214,137 @@ function _populateArchDefaultSel(modelId) {
 }
 
 async function loadArchDefault() {
+  // Single loader for ALL project model defaults (arch-review, enhancement,
+  // uc-authoring, evaluation). Populates each Config default selector.
   try {
-    const defaults = await api('/api/model-defaults');
-    _archDefaultModelId = defaults['arch-review'] || null;
+    _modelDefaults = (await api('/api/model-defaults')) || {};
   } catch(e) {
-    _archDefaultModelId = null;
+    _modelDefaults = {};
   }
+  _archDefaultModelId = _modelDefaults['arch-review'] || null;
+  _archDefaultLoaded = true;   // set before _updateArchModelInfo to break recursion
   _populateArchDefaultSel(_archDefaultModelId);
+  _populateDefaultSel('enhDefaultModelSel', _modelDefaults['enhancement'] || null);
+  _populateDefaultSel('ucAssistModelSel',   _modelDefaults['uc-authoring'] || null);
+  _updateArchModelInfo();
 }
 
-document.getElementById('saveArchDefaultBtn').addEventListener('click', async () => {
-  const sel = document.getElementById('archDefaultModelSel');
-  const val = sel.value;
+// Reflect the Config "Default Arch Review model" into the Architecture view's
+// read-only label, so the operator sees which model a run will use. The model
+// itself is never chosen in the Architecture view — single source of truth is
+// the Config default (model_defaults key='arch-review'), which the API applies.
+// ── Two-tier model selection ────────────────────────────────────────────────
+// Tier 1 (Config): per-use "default" selectors, server-backed via model_defaults.
+// Tier 2 (views): per-use "override" selectors — first option "Use default —
+//   <name>"; a blank value sends no model so the endpoint resolves the default.
+//   Uses: arch-review, enhancement (chains to arch-review), uc-authoring
+//   (assist panel + wizard + bulk import), and __engine__ (new-run; default
+//   comes from the Config Inference source, not model_defaults).
+let _modelDefaults = {};                 // {key: model_config_id}
+let _engineDefaultLabel = 'project inference default';
+
+function _modelKindLabel(m) {
+  const suffix = m.is_local ? 'local' : 'frontier';
+  return m.name.toLowerCase().includes(`(${suffix})`) ? m.name : `${m.name} (${suffix})`;
+}
+
+// Effective default model NAME for a use-key (enhancement chains to arch-review).
+function _defaultModelName(key) {
+  if (key === '__engine__') return _engineDefaultLabel;
+  const m = (_reviewModels || []).find(x => String(x.id) === String(_modelDefaults[key]));
+  if (m) return _modelKindLabel(m);
+  if (key === 'enhancement' && _modelDefaults['arch-review']) {
+    return _defaultModelName('arch-review') + ' (via Arch Review)';
+  }
+  return 'not set';
+}
+
+// Tier-2 override selector. Blank value ⇒ use the Config default for `key`.
+function _populateOverrideSel(selId, key) {
+  const sel = document.getElementById(selId);
+  if (!sel) return;
+  const enabled = (_reviewModels || []).filter(m => m.enabled);
+  const prev = sel.value;
+  sel.innerHTML = `<option value="">Use default — ${esc(_defaultModelName(key))}</option>` +
+    enabled.map(m => `<option value="${m.id}">${esc(_modelKindLabel(m))}</option>`).join('');
+  if (prev && Array.prototype.some.call(sel.options, o => o.value === prev)) sel.value = prev;
+}
+
+// Body fragment for a request: {} ⇒ use Config default; else explicit override.
+function _overrideModelBody(selId) {
+  const sel = document.getElementById(selId);
+  const v = sel && sel.value;
+  return v ? { model_config_id: parseInt(v, 10) } : {};
+}
+
+// Repopulate every per-view override selector (after models/defaults (re)load).
+function _refreshAllOverrides() {
+  _populateOverrideSel('rpRevModelSel', 'arch-review');
+  _populateOverrideSel('rpEnhModelSel', 'enhancement');
+  _populateOverrideSel('rdRevModelSel', 'arch-review');
+  _populateOverrideSel('rdEnhModelSel', 'enhancement');
+  _populateOverrideSel('biModelSel',    'uc-authoring');
+  _populateOverrideSel('wzModelSel',    'uc-authoring');
+  _populateOverrideSel('ucAssistPanelModelSel', 'uc-authoring');
+  _populateOverrideSel('nrModelSel',    '__engine__');
+}
+
+// Back-compat name — older call sites invoke this to refresh the arch/enh
+// pickers; it now refreshes every override selector.
+async function _updateArchModelInfo() {
+  if (!_reviewModels || !_reviewModels.length) { try { await loadReviewModels(); } catch(e){} }
+  if (!_archDefaultLoaded) { try { await loadArchDefault(); } catch(e){} }
+  _refreshAllOverrides();
+}
+
+// Generic Config "default model" selector populate — one consistent component
+// for every model-use. gateField (optional) limits eligibility (e.g. arch
+// review requires use_arch_review=true).
+function _populateDefaultSel(selId, modelId, gateField) {
+  const sel = document.getElementById(selId);
+  if (!sel) return;
+  const eligible = (_reviewModels || []).filter(m => m.enabled && (!gateField || m[gateField]));
+  sel.innerHTML = '<option value="">— no default set —</option>' +
+    eligible.map(m => `<option value="${m.id}">${esc(_modelKindLabel(m))}</option>`).join('');
+  if (modelId) sel.value = String(modelId);
+}
+
+// Generic save for a Config default selector → model_defaults[key] (server-side).
+async function _saveModelDefault(key, selId, msgId, btnId) {
+  const sel = document.getElementById(selId);
+  const val = sel ? sel.value : '';
+  const msgEl = document.getElementById(msgId);
+  const btn = document.getElementById(btnId);
   if (val === '__custom__') {
-    document.getElementById('archDefaultMsg').textContent = 'Custom endpoints cannot be a project default — register the endpoint in Model Endpoints first.';
+    if (msgEl) { msgEl.textContent = 'Custom endpoints cannot be a project default — register the endpoint in Model Endpoints first.'; msgEl.style.color = 'var(--red)'; }
     return;
   }
   const modelId = val ? parseInt(val, 10) : null;
-  const btn = document.getElementById('saveArchDefaultBtn');
-  const msgEl = document.getElementById('archDefaultMsg');
-  btn.disabled = true; msgEl.textContent = '';
+  if (btn) btn.disabled = true;
+  if (msgEl) msgEl.textContent = '';
   try {
-    await api('/api/model-defaults/arch-review', {
+    await api(`/api/model-defaults/${key}`, {
       method: 'PUT',
       body: JSON.stringify({ model_config_id: modelId }),
     });
-    _archDefaultModelId = modelId;
-    msgEl.textContent = modelId ? 'Default saved' : 'Default cleared';
-    msgEl.style.color = 'var(--green)';
-    setTimeout(() => { msgEl.textContent = ''; msgEl.style.color = ''; }, 2500);
+    _modelDefaults[key] = modelId;
+    if (key === 'arch-review') _archDefaultModelId = modelId;
+    _refreshAllOverrides();   // every override's "Use default — <name>" reflects it
+    if (msgEl) {
+      msgEl.textContent = modelId ? 'Default saved' : 'Default cleared';
+      msgEl.style.color = 'var(--green)';
+      setTimeout(() => { if (msgEl) { msgEl.textContent = ''; msgEl.style.color = ''; } }, 2500);
+    }
   } catch(e) {
-    msgEl.textContent = 'Save failed: ' + e.message;
-    msgEl.style.color = 'var(--red)';
+    if (msgEl) { msgEl.textContent = 'Save failed: ' + e.message; msgEl.style.color = 'var(--red)'; }
   }
-  btn.disabled = false;
-});
+  if (btn) btn.disabled = false;
+}
+
+document.getElementById('saveArchDefaultBtn').addEventListener('click',
+  () => _saveModelDefault('arch-review', 'archDefaultModelSel', 'archDefaultMsg', 'saveArchDefaultBtn'));
+document.getElementById('saveEnhDefaultBtn')?.addEventListener('click',
+  () => _saveModelDefault('enhancement', 'enhDefaultModelSel', 'enhDefaultMsg', 'saveEnhDefaultBtn'));
 
 // ── MCP refresh (Config panel: Pipeline Sources → MCP refresh) ────────────────
 
@@ -8442,9 +9572,8 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     }
     await loadReviewModels();
     renderModelList();
-    _populateModelSel('rdRevModelSel', 'reviewLastModel');
-    _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
-    _populateModelSel('nrModelSel', 'nrLastModel');
+    _updateArchModelInfo();
+    _populateOverrideSel('nrModelSel', '__engine__');
     _populateUCAssistModelSel();
     document.getElementById('modelFormCard').style.display = 'none';
     toast(_mfEditId ? 'Model updated' : 'Model added');
@@ -8479,9 +9608,8 @@ async function deleteModel(id, btn) {
       await api(`/api/models/${id}`, { method:'DELETE' });
       await loadReviewModels();
       renderModelList();
-      _populateModelSel('rdRevModelSel', 'reviewLastModel');
-      _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
-      _populateModelSel('nrModelSel', 'nrLastModel');
+      _updateArchModelInfo();
+      _populateOverrideSel('nrModelSel', '__engine__');
       _populateUCAssistModelSel();
       toast('Model deleted');
     } catch(e) {
@@ -8506,6 +9634,7 @@ function rdSwitchTab(tab) {
   const tabRev = document.getElementById('rdTabReview');
   if (tabRun) tabRun.classList.toggle('active', isRun);
   if (tabRev) tabRev.classList.toggle('active', !isRun);
+  if (!isRun) _updateArchModelInfo();   // reflect the Config arch-review default
 }
 
 function openReviewPane(scope, ucUuid, startAt = 'review') {
@@ -8541,7 +9670,7 @@ function openReviewPane(scope, ucUuid, startAt = 'review') {
       const ucEntry = (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid);
       if (link) { link.textContent = `UC: ${ucEntry?.uc_handle||ucUuid}`; link.style.display = ''; }
     }
-    _populateModelSel('rpModelSel', 'reviewLastModel');
+    _updateArchModelInfo();
   }, 50);
 }
 
@@ -8564,8 +9693,7 @@ function openRunDetailReview(scope, ucUuid, startAt = 'review') {
   const enhSel = document.getElementById('rdEnhScopeSel');
   if (enhSel) { enhSel.value = scope; enhSel.querySelector('option[value="uc"]').disabled = !ucUuid; }
 
-  _populateModelSel('rdRevModelSel', 'reviewLastModel');
-  _populateModelSel('rdEnhModelSel', 'enhanceLastModel');
+  _updateArchModelInfo();
 
   ['rdRevStream','rdEnhStream'].forEach(id => {
     const el = document.getElementById(id); if (!el) return;
@@ -8612,11 +9740,11 @@ async function loadReviewTab() {
     sel.appendChild(o);
   });
   if (prev) sel.value = prev;
-  // Populate model selector
-  _populateModelSel('rpModelSel', 'reviewLastModel');
+  // Arch-review model comes from the Config default — just show which one.
+  _updateArchModelInfo();
   _loadStageContext();
   _populateGlobalRunSel();
-  if (activeRunResultId) _rpPopulateUCs(activeRunResultId);
+  if (activeRunResultId) { _rpPopulateUCs(activeRunResultId); _rpLoadCached(); }
   // If results not yet loaded, load them
   if (!allResults.length) {
     try {
@@ -8679,34 +9807,116 @@ function _rpGetContext() {
   const runId   = activeRunResultId;   // the single system-wide current run
   const scope   = document.getElementById('rpScopeUC')?.checked ? 'uc' : 'run';
   const ucUuid  = scope === 'uc' ? (document.getElementById('rpUCSel')?.value || null) : null;
-  const resolved = _resolveEndpointModel('rpModelSel', 'reviewLastModel');
-  return { runId, scope, ucUuid, resolved };
+  // Model is NOT chosen here — arch-review uses the Config "Default Arch Review
+  // model" (model_defaults key='arch-review'); the API falls back to it when the
+  // request carries no model. Single source of truth, set in the Config view.
+  return { runId, scope, ucUuid };
 }
 
 document.getElementById('rpRunSel')?.addEventListener('change', function() {
   activeRunResultId = this.value;
   _rpPopulateUCs(this.value);
+  _rpLoadCached();
 });
 
 document.getElementById('rpScopeRun')?.addEventListener('change', () => {
   const sel = document.getElementById('rpUCSel');
   if (sel) sel.disabled = true;
+  _rpLoadCached();
 });
 document.getElementById('rpScopeUC')?.addEventListener('change', () => {
   const runId = activeRunResultId;   // single system-wide current run
   const sel = document.getElementById('rpUCSel');
   if (sel) { sel.disabled = false; _rpPopulateUCs(runId); }
+  _rpLoadCached();
 });
+document.getElementById('rpUCSel')?.addEventListener('change', _rpLoadCached);
+
+// ── Cached Review / Enhancement output (Phase B) ─────────────────────────────
+// On run/scope/UC change, show the stored generation (if any) instead of a
+// blank pane, with a chip noting when + which model produced it, and whether
+// it's stale (the run was re-ingested since). The Run buttons regenerate and
+// the API re-caches; a cache present prompts a replace-confirm.
+const _RP_CACHE = {
+  review:      { streamEl:'rpRevStream', raw:()=>_rpRevRaw, mode:'markdown',    copy:'rpRevCopyBtn', reason:'rpRevReasoningBtn', chip:'rpRevCacheChip', reasonKey:'rpRevShowReasoning' },
+  enhancement: { streamEl:'rpEnhStream', raw:()=>_rpEnhRaw, mode:'enhancement', copy:'rpEnhCopyBtn', reason:'rpEnhReasoningBtn', chip:'rpEnhCacheChip', reasonKey:'rpEnhShowReasoning' },
+};
+// Real "is there a cached result?" per kind — the Run replace-confirm keys on
+// THIS, not chip text (the empty-state chip text is non-empty but means no cache).
+const _rpCached = { review:false, enhancement:false };
+function _rpCacheChip(kind, data){
+  const chip = document.getElementById(_RP_CACHE[kind].chip);
+  if (!chip) return;
+  if (!data || !data.cached) { chip.textContent = ''; return; }
+  const when  = data.created_at ? new Date(data.created_at).toLocaleString() : '';
+  const model = data.model_label ? ` · ${esc(data.model_label)}` : '';
+  if (data.stale) {
+    chip.innerHTML = `⚠ cached ${esc(when)}${model} — run re-ingested; re-run to refresh`;
+    chip.style.color = 'var(--red)';
+  } else {
+    chip.innerHTML = `↻ cached ${esc(when)}${model}`;
+    chip.style.color = 'var(--text-faint)';
+  }
+}
+async function _rpLoadCached(){
+  const { runId, scope, ucUuid } = _rpGetContext();
+  for (const kind of ['review','enhancement']) {
+    const cfg = _RP_CACHE[kind];
+    const el  = document.getElementById(cfg.streamEl);
+    const chip = document.getElementById(cfg.chip);
+    if (!el) continue;
+    let data = null;
+    if (runId && !(scope === 'uc' && !ucUuid)) {
+      const qs = `run_id=${encodeURIComponent(runId)}&kind=${kind}&scope=${scope}`
+               + (scope === 'uc' && ucUuid ? `&uc_uuid=${encodeURIComponent(ucUuid)}` : '');
+      try { data = await api(`/api/analysis/output?${qs}`); } catch(e){ data = null; }
+    }
+    _rpCached[kind] = !!(data && data.cached);
+    if (data && data.cached) {
+      const holder = cfg.raw(); holder.text = data.content || '';
+      el.dataset.renderMode = cfg.mode;
+      el.style.display = '';                 // reveal BEFORE rendering — a render
+      const cp = document.getElementById(cfg.copy);   if (cp) cp.style.display = '';   // throw can never leave it hidden
+      const rb = document.getElementById(cfg.reason); if (rb) rb.style.display = '';
+      try {
+        const showReason = localStorage.getItem(cfg.reasonKey) === '1';
+        _applyStreamRender(el, showReason ? holder.text : _stripThink(holder.text), cfg.mode);
+      } catch(e){ el.textContent = holder.text; }
+      _rpCacheChip(kind, data);
+    } else {
+      const holder = cfg.raw(); holder.text = '';
+      el.style.display = 'none'; el.innerHTML = '';
+      const cp = document.getElementById(cfg.copy); if (cp) cp.style.display = 'none';
+      if (chip) {
+        const haveCtx = runId && !(scope === 'uc' && !ucUuid);
+        chip.textContent = haveCtx ? 'not generated for this run yet' : '';
+        chip.style.color = 'var(--text-faint)';
+      }
+    }
+  }
+}
+// Update ONLY the cache chip for one kind — never touches the output pane, so it
+// is safe to call right after a generation (the pane already holds the fresh
+// output; this just stamps "cached <when>" once the write has committed).
+async function _rpRefreshChip(kind){
+  const { runId, scope, ucUuid } = _rpGetContext();
+  if (!runId || (scope === 'uc' && !ucUuid)) return;
+  const qs = `run_id=${encodeURIComponent(runId)}&kind=${kind}&scope=${scope}`
+           + (scope === 'uc' && ucUuid ? `&uc_uuid=${encodeURIComponent(ucUuid)}` : '');
+  try { const d = await api(`/api/analysis/output?${qs}`); _rpCached[kind] = !!(d && d.cached); _rpCacheChip(kind, d); } catch(e){}
+}
 
 document.getElementById('rpRevRunBtn')?.addEventListener('click', async () => {
-  const { runId, scope, ucUuid, resolved } = _rpGetContext();
+  const { runId, scope, ucUuid } = _rpGetContext();
   if (!runId) { toast('Select a run first'); return; }
-  if (!resolved) { toast('Select a model first'); return; }
   if (scope === 'uc' && !ucUuid) { toast('Select a use case or switch to Full run'); return; }
-  const body = { scope, run_id: runId, ...resolved };
+  // Warn before discarding a cached generation (real cache only, not the hint).
+  if (_rpCached.review &&
+      !confirm('Re-run the Architectural Review and replace the cached result?')) return;
+  const body = { scope, run_id: runId, ..._overrideModelBody('rpRevModelSel') };
   if (scope === 'uc') body.uc_uuid = ucUuid;
   _reviewCtx = { runId, ucUuid };
-  await _runStream({
+  const _ok = await _runStream({
     endpoint: '/api/arch-review', body,
     streamEl:     document.getElementById('rpRevStream'),
     statusEl:     document.getElementById('rpRevStatus'),
@@ -8718,17 +9928,20 @@ document.getElementById('rpRevRunBtn')?.addEventListener('click', async () => {
     showReasoningKey: 'rpRevShowReasoning',
     renderMode: 'markdown',
   });
+  _rpRefreshChip('review');   // chip only — never hides the just-rendered pane
+  if (_ok) toast('✓ Architectural Review ready');   // notify even if you navigated away
 });
 
 document.getElementById('rpEnhRunBtn')?.addEventListener('click', async () => {
-  const { runId, scope, ucUuid, resolved } = _rpGetContext();
+  const { runId, scope, ucUuid } = _rpGetContext();
   if (!runId) { toast('Select a run first'); return; }
-  if (!resolved) { toast('Select a model first'); return; }
   if (scope === 'uc' && !ucUuid) { toast('Select a use case or switch to Full run'); return; }
-  const body = { scope, run_id: runId, ...resolved };
+  if (_rpCached.enhancement &&
+      !confirm('Re-run the Enhancement Plan and replace the cached result?')) return;
+  const body = { scope, run_id: runId, ..._overrideModelBody('rpEnhModelSel') };
   if (scope === 'uc') body.uc_uuid = ucUuid;
   _reviewCtx = { runId, ucUuid };
-  await _runStream({
+  const _ok = await _runStream({
     endpoint: '/api/enhancements', body,
     streamEl:     document.getElementById('rpEnhStream'),
     statusEl:     document.getElementById('rpEnhStatus'),
@@ -8740,6 +9953,8 @@ document.getElementById('rpEnhRunBtn')?.addEventListener('click', async () => {
     showReasoningKey: 'rpEnhShowReasoning',
     renderMode: 'enhancement',
   });
+  _rpRefreshChip('enhancement');   // chip only — never hides the just-rendered pane
+  if (_ok) toast('✓ Enhancement Plan ready');   // notify even if you navigated away
 });
 
 // ── Capability demand density (DCM feature #2) ──────────────────────────────
@@ -9181,34 +10396,45 @@ function mdToHtml(raw){
 function renderEnhancementCards(raw){
   try {
     const clean = _stripThink(raw || '');
-    const parts = clean.split(/\n(?=ENHANCEMENT\s+\S)/);
-    const preamble = (parts[0] && !/^\s*ENHANCEMENT\s+\S/.test(parts[0])) ? parts[0].trim() : '';
-    const blocks = parts.filter(p => /^\s*ENHANCEMENT\s+\S/.test(p));
+    // Tolerate leading indentation and markdown decoration (#, *, >) before the
+    // ENHANCEMENT keyword — models routinely mirror the indented prompt example
+    // or wrap headings/bold around it. Without this the parser found no blocks
+    // and fell back to mdToHtml(), which collapsed the line-per-field layout
+    // into a garbled paragraph.
+    const HEAD = '[ \\t#>*]*ENHANCEMENT\\s+\\S';
+    const isHead = p => new RegExp('^' + HEAD).test(p);
+    const parts = clean.split(new RegExp('\\n(?=' + HEAD + ')'));
+    const preamble = (parts[0] && !isHead(parts[0])) ? parts[0].trim() : '';
+    const blocks = parts.filter(isHead);
     if (!blocks.length) return mdToHtml(raw);
-    const field = (b,n)=>{ const m=b.match(new RegExp('^'+n+':\\s*(.*)$','m')); return m?m[1].trim():''; };
-    let html = preamble ? `<div style="margin-bottom:8px;">${mdToHtml(preamble)}</div>` : '';
+    // Field reader tolerant of indent + optional markdown bold around the label.
+    const field = (b,n)=>{ const m=b.match(new RegExp('^[ \\t>*]*\\**'+n+'\\**:\\s*(.*)$','m')); return m?m[1].replace(/\*+$/,'').trim():''; };
+    // Render the SAME way the Arch Review does — convert the structured blocks
+    // into clean markdown, then mdToHtml. (The structured format stays intact in
+    // the raw text for enhancement_apply's PR parser; this only affects display.)
+    let md = preamble ? preamble + '\n\n' : '';
+    let renderedAny = false;
     for (const b of blocks){
-      const idm = b.match(/^\s*ENHANCEMENT\s+(\S+)\s*(?:\(([^)]*)\))?/);
+      const idm = b.match(new RegExp('^[ \\t#>*]*ENHANCEMENT\\s+(\\S+)\\s*(?:\\(([^)]*)\\))?'));
       const id = idm?idm[1]:'?', meta = idm&&idm[2]?idm[2]:'';
       const action = field(b,'action'), target = field(b,'target'), pos = field(b,'position');
       const sect = field(b,'section_title'), rat = field(b,'rationale'), acc = field(b,'acceptance');
-      const cm = b.match(/```[\w-]*\n?([\s\S]*?)```/); const patch = cm?cm[1]:'';
-      html += `<div style="border:1px solid var(--border);border-radius:3px;padding:8px 10px;margin-bottom:8px;background:var(--bg-panel);">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <span style="font-family:var(--mono,monospace);font-weight:600;color:var(--accent);">${esc(id)}</span>
-          ${action?`<span class="tag">${esc(action)}</span>`:''}
-          ${meta?`<span style="font-size:10px;color:var(--text-faint);">${esc(meta)}</span>`:''}
-        </div>
-        ${target?`<div style="font-size:11px;margin-top:4px;"><span style="color:var(--text-faint);">target</span> <code>${esc(target)}</code>${pos?` <span style="color:var(--text-faint);">· ${esc(pos)}</span>`:''}</div>`:''}
-        ${sect?`<div style="font-size:11px;"><span style="color:var(--text-faint);">section</span> ${esc(sect)}</div>`:''}
-        ${rat?`<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${esc(rat)}</div>`:''}
-        ${patch?`<div style="border:1px solid var(--border);border-radius:3px;padding:6px 9px;margin-top:5px;background:var(--bg-raised);font-size:11px;">${mdToHtml(patch)}</div>`:''}
-        ${acc?`<div style="font-size:10px;color:var(--green);margin-top:4px;">✓ ${esc(acc)}</div>`:''}
-      </div>`;
+      const cm = b.match(/```[\w-]*\n?([\s\S]*?)```/); const patch = cm?cm[1].trim():'';
+      if (action||target||sect||rat||patch) renderedAny = true;
+      md += `### ${id}${meta?` — ${meta}`:''}\n\n`;
+      if (action) md += `**Action:** ${action}  \n`;
+      if (target) md += `**Target:** \`${target}\`${pos?` · ${pos}`:''}  \n`;
+      if (sect)   md += `**Section:** ${sect}  \n`;
+      if (rat)    md += `**Rationale:** ${rat}\n`;
+      if (patch)  md += `\n${patch}\n`;
+      if (acc)    md += `\n**Acceptance:** ${acc}\n`;
+      md += `\n`;
     }
-    const om = clean.match(/^ORDER:\s*(.*)$/m);
-    if (om) html += `<div style="font-size:11px;margin-top:4px;"><span style="color:var(--text-faint);">apply order:</span> <code>${esc(om[1])}</code></div>`;
-    return html;
+    // If the format was too far off to extract anything, render plain markdown.
+    if (!renderedAny) return mdToHtml(raw);
+    const om = clean.match(/^[ \t]*ORDER:\s*(.*)$/m);
+    if (om) md += `**Apply order:** ${om[1]}\n`;
+    return mdToHtml(md);
   } catch(e){ return mdToHtml(raw); }
 }
 function _applyStreamRender(el, text, mode){
@@ -9298,11 +10524,13 @@ async function _runStream({ endpoint, body, streamEl, statusEl, copyBtn, runBtn,
       _applyStreamRender(streamEl, _fin, renderMode || 'plain'); }
     if (copyBtn) copyBtn.style.display = '';
     if (nextRow) nextRow.style.display = '';
+    return true;
   } catch(e) {
     statusEl.classList.remove('thinking-status');
     statusEl.style.color = 'var(--red)';
     statusEl.textContent = 'Error: ' + e.message;
     streamEl.classList.remove('streaming');
+    return false;
   } finally {
     runBtn.disabled = false;
   }
@@ -9319,18 +10547,14 @@ document.getElementById('rdRevReasoningBtn').addEventListener('click', function(
   el.scrollTop = el.scrollHeight;
 });
 
-document.getElementById('rdRevModelSel').addEventListener('change', function() {
-  if (this.value) localStorage.setItem('reviewLastModel', this.value);
-});
-
 document.getElementById('rdRevRunBtn').addEventListener('click', async () => {
-  const resolved = _resolveEndpointModel('rdRevModelSel', 'reviewLastModel');
-  if (!resolved) { toast('Select a model first'); return; }
+  // Model defaults to the Config Arch Review default; the override picker sends
+  // an explicit model only when the operator changes it.
   const scope  = document.getElementById('rdRevScopeSel').value;
   const { runId, ucUuid } = _reviewCtx;
   if (!runId) { toast('No run selected'); return; }
   if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
-  const body = { scope, run_id: runId, ...resolved };
+  const body = { scope, run_id: runId, ..._overrideModelBody('rdRevModelSel') };
   if (scope === 'uc') body.uc_uuid = ucUuid;
   await _runStream({
     endpoint: '/api/arch-review', body,
@@ -9378,10 +10602,8 @@ document.getElementById('rdRevUseClaudeBtn').addEventListener('click', () =>
 document.getElementById('rdRevToEnhBtn').addEventListener('click', () => {
   const enhSec = document.getElementById('rdEnhSection');
   enhSec.style.display = '';
-  // Sync scope + model from arch review
+  // Sync scope from arch review (model is the shared Config arch-review default).
   document.getElementById('rdEnhScopeSel').value = document.getElementById('rdRevScopeSel').value;
-  const revModel = document.getElementById('rdRevModelSel').value;
-  if (revModel) document.getElementById('rdEnhModelSel').value = revModel;
   setTimeout(() => enhSec.scrollIntoView({ behavior:'smooth', block:'start' }), 30);
 });
 
@@ -9396,18 +10618,14 @@ document.getElementById('rdEnhReasoningBtn').addEventListener('click', function(
   el.scrollTop = el.scrollHeight;
 });
 
-document.getElementById('rdEnhModelSel').addEventListener('change', function() {
-  if (this.value) localStorage.setItem('enhanceLastModel', this.value);
-});
-
 document.getElementById('rdEnhRunBtn').addEventListener('click', async () => {
-  const resolved = _resolveEndpointModel('rdEnhModelSel', 'enhanceLastModel');
-  if (!resolved) { toast('Select a model first'); return; }
+  // Model defaults to the Config Enhancement default (→ Arch Review when unset);
+  // the override picker sends an explicit model only when changed.
   const scope  = document.getElementById('rdEnhScopeSel').value;
   const { runId, ucUuid } = _reviewCtx;
   if (!runId) { toast('No run selected'); return; }
   if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
-  const body = { scope, run_id: runId, ...resolved };
+  const body = { scope, run_id: runId, ..._overrideModelBody('rdEnhModelSel') };
   if (scope === 'uc') body.uc_uuid = ucUuid;
   await _runStream({
     endpoint: '/api/enhancements', body,
@@ -10142,9 +11360,10 @@ async function saveRepo() {
         body: JSON.stringify(payload),
       });
     }
-    msgEl.innerHTML = `<span style="color:var(--green);">Saved · ${esc(resp.namespace)}${resp._projection ? ' · ' + _describeRepoProjection(resp._projection, false) : ''}</span>`;
+    msgEl.innerHTML = `<span style="color:var(--green);">Saved · ${esc(resp.namespace)}${resp._projection ? ' · ' + _describeRepoProjection(resp._projection, false) : ''}</span>${resp._warning ? `<div style="color:var(--accent);margin-top:5px;">⚠ ${esc(resp._warning)}</div>` : ''}`;
     await loadRepos();
-    setTimeout(() => hideRepoForm(), 1200);
+    // Keep the form open if the repo/branch couldn't be reached, so the warning is seen.
+    if (!resp._warning) setTimeout(() => hideRepoForm(), 1200);
   } catch (e) {
     msgEl.innerHTML = `<span style="color:var(--red);">${esc(e.message)}</span>`;
   }
@@ -10252,7 +11471,12 @@ let _inboxState = {
   selectedUuid: null,
   statusFilter: 'new',
   repoFilter: '',
+  threadByPR: false,
 };
+document.getElementById('inboxThreadToggle')?.addEventListener('change', function() {
+  _inboxState.threadByPR = this.checked;
+  renderInboxList();
+});
 
 // ════════════════ IMPROVE — self-improvement: diagnose & propose ════════════════
 // Review queue for the typed change proposals the diagnoser (diagnose.py) files
@@ -10700,7 +11924,7 @@ function renderInboxList() {
     </div>`;
     return;
   }
-  el.innerHTML = _inboxState.list.map(c => {
+  const rowHtml = (c, threaded) => {
     const isActive = c.uuid === _inboxState.selectedUuid;
     const statusColor = c.status === 'new' ? 'var(--accent)'
       : (c.status === 'drafted_to_uc' ? 'var(--green)' : 'var(--text-faint)');
@@ -10708,28 +11932,47 @@ function renderInboxList() {
     const uuidJson = attrJson(c.uuid);
     return `
       <div class="inbox-row" data-uuid="${esc(c.uuid)}"
-           style="padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;
+           style="padding:10px 14px${threaded ? ' 10px 26px' : ''};border-bottom:1px solid var(--border);cursor:pointer;
                   ${isActive ? 'background:var(--bg-raised);border-left:2px solid var(--accent);' : ''}"
            onclick="selectInboxComment(${uuidJson})">
         <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
           <div style="font-size:11px;font-weight:600;">
             <span style="color:var(--text-faint);">@</span>${esc(c.author_login)}
-            <span style="color:var(--text-faint);font-weight:400;font-size:10px;"> · PR #${c.pr_number}</span>
+            ${threaded ? '' : `<span style="color:var(--text-faint);font-weight:400;font-size:10px;"> · PR #${c.pr_number}</span>`}
           </div>
           <div style="display:flex;gap:5px;align-items:center;">
-            ${c.repo_namespace ? `<span title="Source repo namespace — drafted UCs from this comment auto-scope to spec_namespaces: [${esc(c.repo_namespace)}]" style="font-size:9px;font-family:var(--mono,monospace);color:var(--accent);background:var(--accent-bg);padding:1px 5px;border-radius:2px;">${esc(c.repo_namespace)}</span>` : ''}
+            ${(!threaded && c.repo_namespace) ? `<span title="Source repo namespace — drafted UCs auto-scope to spec_namespaces: [${esc(c.repo_namespace)}]" style="font-size:9px;font-family:var(--mono,monospace);color:var(--accent);background:var(--accent-bg);padding:1px 5px;border-radius:2px;">${esc(c.repo_namespace)}</span>` : ''}
             <span style="font-size:9px;color:${statusColor};text-transform:uppercase;letter-spacing:.06em;">${esc(c.status)}</span>
           </div>
         </div>
-        <div style="font-size:10px;color:var(--text-faint);margin:2px 0 4px;">
-          ${esc(c.pr_title || '(no title)')}
-        </div>
+        ${threaded ? '' : `<div style="font-size:10px;color:var(--text-faint);margin:2px 0 4px;">${esc(c.pr_title || '(no title)')}</div>`}
         <div style="font-size:11px;color:var(--text-dim);line-height:1.4;">${esc(preview)}${preview.length >= 140 ? '…' : ''}</div>
         <div style="font-size:9px;color:var(--text-faint);margin-top:4px;font-family:var(--mono,monospace);">
           ${esc(c.github_comment_type)} · ${esc(fmtTs(c.github_updated_at))} · src: ${esc(c.ingestion_source)}
         </div>
       </div>`;
-  }).join('');
+  };
+  if (_inboxState.threadByPR) {
+    // Group the conversation by PR (repo namespace + pr_number), newest PR first.
+    const groups = new Map();
+    _inboxState.list.forEach(c => {
+      const key = `${c.repo_namespace || ''}#${c.pr_number}`;
+      if (!groups.has(key)) groups.set(key, { pr: c.pr_number, title: c.pr_title, ns: c.repo_namespace, url: c.pr_url, items: [] });
+      groups.get(key).items.push(c);
+    });
+    el.innerHTML = [...groups.values()].map(g => `
+      <div style="padding:7px 14px;background:var(--bg-raised);border-bottom:1px solid var(--border);">
+        <div style="font-size:11px;font-weight:600;">
+          ${g.ns ? `<span style="font-family:var(--mono,monospace);color:var(--accent);font-size:9px;">${esc(g.ns)}</span> ` : ''}PR #${g.pr}
+          <span style="color:var(--text-faint);font-weight:400;"> ${esc(g.title || '')}</span>
+          <span style="color:var(--text-faint);font-size:9px;font-weight:400;"> · ${g.items.length} comment${g.items.length===1?'':'s'}</span>
+          ${g.url ? ` <a href="${esc(g.url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--text-faint);font-size:9px;">↗</a>` : ''}
+        </div>
+      </div>
+      ${g.items.map(c => rowHtml(c, true)).join('')}`).join('');
+  } else {
+    el.innerHTML = _inboxState.list.map(c => rowHtml(c, false)).join('');
+  }
 }
 
 function _showInboxEmpty() {
@@ -10851,10 +12094,10 @@ async function draftUCFromComment(uuid) {
           <pre style="font-family:var(--mono,monospace);font-size:11px;background:var(--bg-panel);padding:8px;border:1px solid var(--border);border-radius:2px;overflow-x:auto;max-height:50vh;">${esc(r.yaml_suggestion)}</pre>
         </details>` : '<div style="color:var(--accent);">(no YAML extracted from response — see raw output below)</div>'}
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-          <button class="btn primary" onclick="copyInboxDraftYaml(${attrJson(r.yaml_suggestion || '')})" ${r.yaml_suggestion ? '' : 'disabled'} title="Copy the YAML to clipboard so you can paste it into the UC editor">⎘ Copy YAML</button>
-          <button class="btn ghost" onclick="openUCEditorWithDraft('${esc(uuid)}', ${attrJson(r.yaml_suggestion || '')})" ${r.yaml_suggestion ? '' : 'disabled'} title="Stash draft in sessionStorage + switch to Use Cases tab (paste manually)">↑ Switch to Use Cases</button>
-          <button class="btn ghost" onclick="document.getElementById('inboxDraftOutput').style.display='none';">Hide draft</button>
-          <span style="font-size:10px;color:var(--text-faint);">After saving the UC, mark the comment as <em>Drafted</em> below to record the link.</span>
+          <button class="btn primary" onclick="saveInboxDraft('${esc(uuid)}', ${attrJson(r.yaml_suggestion || '')})" ${r.yaml_suggestion ? '' : 'disabled'} title="Save this draft as a Draft use case + record the link to this comment">💾 Save as Draft</button>
+          <button class="btn ghost" onclick="copyInboxDraftYaml(${attrJson(r.yaml_suggestion || '')})" ${r.yaml_suggestion ? '' : 'disabled'} title="Copy the YAML to clipboard">⎘ Copy YAML</button>
+          <button class="btn ghost" onclick="openUCEditorWithDraft('${esc(uuid)}', ${attrJson(r.yaml_suggestion || '')})" ${r.yaml_suggestion ? '' : 'disabled'} title="Stash draft + switch to Use Cases tab (paste manually)">↑ Edit in Use Cases</button>
+          <button class="btn ghost" onclick="document.getElementById('inboxDraftOutput').style.display='none';">Hide</button>
         </div>
         ${r.raw && !r.yaml_suggestion ? `<details style="margin-top:8px;"><summary style="font-size:10px;color:var(--text-faint);cursor:pointer;">Raw response</summary>
           <pre style="font-family:var(--mono,monospace);font-size:10px;background:var(--bg-panel);padding:8px;border:1px solid var(--border);max-height:30vh;overflow-y:auto;">${esc(r.raw)}</pre>
@@ -10874,6 +12117,49 @@ async function copyInboxDraftYaml(yamlText) {
     toast('YAML copied to clipboard');
   } catch (e) {
     toast('Copy failed: ' + e.message, true);
+  }
+}
+
+// Re-draft choice when a comment already produced a UC: replace / new / cancel.
+function _redraftChoice(links) {
+  const u = links[0].uc_uuid;
+  if (confirm(`This comment already drafted UC ${u}.\n\nOK = REPLACE that UC with this new draft.\nCancel = choose another option…`)) return 'replace';
+  if (confirm('Create a NEW separate UC instead?\n\nOK = create new.\nCancel = abort.')) return 'new';
+  return 'cancel';
+}
+
+// Save the LLM draft as a real Draft use case + record the comment↔UC link. If
+// the comment already drafted a UC, prompt to replace / create-new / cancel.
+async function saveInboxDraft(commentUuid, yaml) {
+  if (!yaml || !yaml.trim()) { toast('No YAML to save', true); return; }
+  const msgEl = document.getElementById('inboxDetailMsg');
+  let links = [];
+  try { const c = await api(`/api/inbox/${encodeURIComponent(commentUuid)}`); links = c.uc_links || []; } catch(e){}
+  let mode = 'new', targetUuid = null;
+  if (links.length) {
+    const choice = _redraftChoice(links);
+    if (choice === 'cancel') return;
+    if (choice === 'replace') { mode = 'replace'; targetUuid = links[0].uc_uuid; }
+  }
+  if (msgEl) { msgEl.textContent = 'saving…'; msgEl.style.color = 'var(--text-faint)'; }
+  try {
+    let ucUuid;
+    if (mode === 'replace') {
+      // PUT requires the YAML uuid to match the URL — rewrite it to the existing UC.
+      const y2 = yaml.replace(/^[ \t]*uuid:\s*\S+/m, `uuid: ${targetUuid}`);
+      await api(`/api/use-cases/${encodeURIComponent(targetUuid)}`, { method:'PUT', body: JSON.stringify({ yaml_content: y2 }) });
+      ucUuid = targetUuid;
+    } else {
+      const r = await api('/api/use-cases', { method:'POST', body: JSON.stringify({ yaml_content: yaml }) });
+      ucUuid = r.uuid;
+    }
+    await api(`/api/inbox/${encodeURIComponent(commentUuid)}/status`, { method:'POST', body: JSON.stringify({ status:'drafted_to_uc', uc_uuid: ucUuid }) });
+    toast(mode === 'replace' ? `Replaced UC ${ucUuid}` : `Saved Draft UC ${ucUuid}`);
+    selectInboxComment(commentUuid);   // refresh detail → shows the link
+    loadInbox();
+  } catch(e) {
+    if (msgEl) { msgEl.innerHTML = `<span style="color:var(--red);">Save failed: ${esc(e.message)}</span>`; }
+    else toast('Save failed: ' + e.message, true);
   }
 }
 
@@ -10973,74 +12259,38 @@ document.getElementById('copyCursorBtn').addEventListener('click', () => {
 
 // ── UC Assist config ─────────────────────────────────────────────────────────
 
-const _ucAssistModelKey = 'ucAssistModelId';
+const _ucAssistModelKey = 'ucAssistModelId';   // legacy key — no longer written
 
-function _populateUCAssistModelSel() {
-  _populateModelSel('ucAssistModelSel', _ucAssistModelKey);
-  _populateModelSel('ucAssistPanelModelSel', _ucAssistModelKey);
-  _populateEvalDefaultSel(_evalDefaultModelId);
+function _ucAssistStatus() {
   const sel = document.getElementById('ucAssistModelSel');
   const statusEl = document.getElementById('ucAssistCfgStatus');
+  if (!statusEl) return;
   const hasModels = _reviewModels.some(m => m.enabled);
+  statusEl.textContent = hasModels ? (sel && sel.value ? '✓ default set' : 'no default set') : 'no models configured';
+  statusEl.style.color = (sel && sel.value) ? 'var(--ok)' : 'var(--text-faint)';
+}
+
+function _populateUCAssistModelSel() {
+  // Config "UC Authoring" default selector — server-backed (uc-authoring).
+  _populateDefaultSel('ucAssistModelSel', _modelDefaults['uc-authoring'] || null);
+  _populateEvalDefaultSel(_evalDefaultModelId);
+  // Panel picker is a default-aware override now.
+  _populateOverrideSel('ucAssistPanelModelSel', 'uc-authoring');
   _ucAssistAvailable = null;
-  if (statusEl) {
-    statusEl.textContent = hasModels ? (sel && sel.value ? '✓ model selected' : 'no model selected') : 'no models configured';
-    statusEl.style.color = (sel && sel.value) ? 'var(--ok)' : 'var(--text-faint)';
-  }
+  _ucAssistStatus();
 }
 
 async function loadUCAssistConfig() {
-  // Models already loaded by loadReviewModels(); just populate the selector.
+  // model_defaults loaded by loadArchDefault(); just (re)populate the selectors.
   _populateUCAssistModelSel();
 }
 
-document.getElementById('ucAssistModelSel').addEventListener('change', function() {
-  localStorage.setItem(_ucAssistModelKey, this.value);
+// The UC-Authoring default is saved server-side (model_defaults['uc-authoring'])
+// and shared by the assist panel, wizard, and bulk import.
+document.getElementById('saveUCAssistBtn').addEventListener('click', async () => {
+  await _saveModelDefault('uc-authoring', 'ucAssistModelSel', 'uacMsg', 'saveUCAssistBtn');
   _ucAssistAvailable = null;
-  // Mirror to panel selector if open
-  const panelSel = document.getElementById('ucAssistPanelModelSel');
-  if (panelSel && panelSel.querySelector(`option[value="${this.value}"]`)) panelSel.value = this.value;
-});
-
-document.getElementById('ucAssistPanelModelSel').addEventListener('change', function() {
-  localStorage.setItem(_ucAssistModelKey, this.value);
-  _ucAssistAvailable = null;
-  // Mirror to Config selector
-  const cfgSel = document.getElementById('ucAssistModelSel');
-  if (cfgSel && cfgSel.querySelector(`option[value="${this.value}"]`)) cfgSel.value = this.value;
-});
-
-// Explicit Save button on the Config UC Assist panel — UX consistency with
-// the Evaluation and Arch Review pickers. The change-listener above already
-// auto-persists to localStorage on every change; this just confirms the
-// current selection visibly, mirroring the other two panels' Save flow.
-document.getElementById('saveUCAssistBtn').addEventListener('click', () => {
-  const sel = document.getElementById('ucAssistModelSel');
-  const msgEl = document.getElementById('uacMsg');
-  const btn = document.getElementById('saveUCAssistBtn');
-  btn.disabled = true;
-  try {
-    localStorage.setItem(_ucAssistModelKey, sel.value || '');
-    _ucAssistAvailable = null;
-    // Mirror to the run-drawer panel selector if it's been instantiated.
-    const panelSel = document.getElementById('ucAssistPanelModelSel');
-    if (panelSel && (sel.value === '' || panelSel.querySelector(`option[value="${sel.value}"]`))) {
-      panelSel.value = sel.value;
-    }
-    msgEl.textContent = sel.value ? 'Saved' : 'Cleared';
-    msgEl.style.color = 'var(--green)';
-    // Refresh the header status chip on the panel.
-    const statusEl = document.getElementById('ucAssistCfgStatus');
-    if (statusEl) {
-      statusEl.textContent = sel.value ? '✓ model selected' : 'no model selected';
-      statusEl.style.color = sel.value ? 'var(--ok)' : 'var(--text-faint)';
-    }
-    setTimeout(() => { msgEl.textContent = ''; msgEl.style.color = ''; }, 2500);
-  } catch(e) {
-    msgEl.textContent = 'Save failed: ' + e.message;
-    msgEl.style.color = 'var(--red)';
-  }
-  btn.disabled = false;
+  _ucAssistStatus();
 });
 
 // ── Enhancement Targets (ADR-006) ────────────────────────────────────────────

@@ -1,0 +1,73 @@
+---
+# HTTP-level nginx config for the external MetalLB path: a TLS server block on
+# the in-pod port {{ review_console_loadbalancer_tls_port }}. This file lands in
+# /opt/app-root/etc/nginx.d/ (the image's *http*-context include) rather than
+# nginx.default.d/ (the *server*-context include used by the baked :8080 block),
+# because a new server{} can only be declared at http level.
+#
+# It reuses the SAME location blocks as the :8080 server by including
+# nginx.default.d/*.conf, so /api proxying, security headers, /healthz and the
+# SPA fallback behave identically — just over TLS, with no oauth-proxy in front
+# (external users authenticate app-natively; DAV_REQUIRE_AUTH must be on).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dav-review-ui-nginx-tls
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-review
+    component: review-console-ui
+data:
+  tls-server.conf: |
+    server {
+        # nginx 1.24 (UBI nginx-124) enables HTTP/2 via the listen parameter,
+        # not the standalone `http2 on;` directive (that's nginx 1.25.1+).
+        listen {{ review_console_loadbalancer_tls_port }} ssl http2;
+        server_name {{ review_console_hostname }};
+        root /opt/app-root/src;
+        index index.html;
+
+        ssl_certificate     /etc/nginx/tls/tls.crt;
+        ssl_certificate_key /etc/nginx/tls/tls.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_prefer_server_ciphers on;
+
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+        location = /healthz {
+            access_log off;
+            return 200 "ok\n";
+            add_header Content-Type text/plain;
+        }
+
+        # This listener has NO oauth-proxy in front (it's the external MetalLB
+        # path). We define /api here rather than including the :8080 server's
+        # config because we MUST clear any client-supplied identity headers —
+        # otherwise a caller could spoof X-Forwarded-User and impersonate any
+        # account. Identity on this path comes ONLY from the signed session
+        # cookie (DAV app-native auth).
+        location /api/ {
+            proxy_pass http://dav-review-api:8000;
+            proxy_http_version 1.1;
+            # $http_host (not $host) so the custom port is preserved — the API
+            # builds invite links from this, and we're not on the default port.
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            # SECURITY: strip spoofable identity headers on this proxy-less path.
+            proxy_set_header X-Forwarded-User "";
+            proxy_set_header X-Forwarded-Email "";
+            proxy_set_header X-Auth-Request-User "";
+            proxy_set_header X-Auth-Request-Email "";
+            proxy_connect_timeout 10s;
+            proxy_send_timeout    60s;
+            proxy_read_timeout    600s;
+        }
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }

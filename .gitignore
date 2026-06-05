@@ -31,3 +31,9 @@ Thumbs.db
 # Ansible
 .vault_pass
 ansible/inventory/group_vars/all/vars.local.yaml
+
+# Meeting transcripts / internal notes
+docs/2026-05-19-barclays-dcm-followup-takeaways.md
+docs/2026-06-02-dcm-cost-mgmt-meeting-takeaways.md
+docs/2026-Q1Q2-meeting-transcript-analysis.md
+docs/2026-05-28-pnc-exec-summary.md

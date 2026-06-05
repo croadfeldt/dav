@@ -234,6 +234,15 @@
 
 # --- API Deployment ---
 
+- name: Deploy DAV-hosted UC repos PVC (pvc-local backend)
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-uc-repos-pvc.yaml.j2') | from_yaml }}"
+  when: review_console_uc_repos_enabled | default(true) | bool
+
 - name: Deploy review console API ServiceAccount
   kubernetes.core.k8s:
     state: present
@@ -340,6 +349,14 @@
     definition: "{{ lookup('template', 'review-console-ui-nginx-cm.yaml.j2') | from_yaml }}"
   register: review_ui_nginx_cm
 
+- name: Deploy review console UI nginx TLS ConfigMap (external LoadBalancer path)
+  kubernetes.core.k8s:
+    state: present
+    force: true
+    definition: "{{ lookup('template', 'review-console-ui-nginx-tls-cm.yaml.j2') | from_yaml }}"
+  register: review_ui_nginx_tls_cm
+  when: review_console_loadbalancer_enabled | default(false) | bool
+
 - name: Deploy review console UI Service
   kubernetes.core.k8s:
     state: present
@@ -347,6 +364,43 @@
       field_manager: ansible
       force_conflicts: true
     definition: "{{ lookup('template', 'review-console-ui-service.yaml.j2') | from_yaml }}"
+
+- name: Assert external LoadBalancer prerequisites
+  ansible.builtin.assert:
+    that:
+      - (review_console_loadbalancer_ip | default('') | length > 0) or (review_console_loadbalancer_pool | default('') | length > 0)
+      - review_console_require_auth | default(false) | bool
+    fail_msg: >-
+      review_console_loadbalancer_enabled requires (a) an explicit
+      review_console_loadbalancer_ip OR a review_console_loadbalancer_pool, and
+      (b) review_console_require_auth: true — the LoadBalancer path has no
+      oauth-proxy in front, so without app-native auth enforcement /api would be
+      exposed. Set these in vars.local.yaml.
+  when: review_console_loadbalancer_enabled | default(false) | bool
+
+- name: Create review console public TLS Certificate (cert-manager, DNS-01)
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-ui-public-cert.yaml.j2') | from_yaml }}"
+  when:
+    - review_console_loadbalancer_enabled | default(false) | bool
+    - review_console_loadbalancer_create_cert | default(false) | bool
+
+- name: Wait for the public TLS Secret to be issued (first issuance can take minutes)
+  kubernetes.core.k8s_info:
+    kind: Secret
+    namespace: "{{ dav_namespace }}"
+    name: "{{ review_console_loadbalancer_tls_secret }}"
+  register: review_public_tls_secret
+  until: review_public_tls_secret.resources | length > 0
+  retries: 60
+  delay: 10
+  when:
+    - review_console_loadbalancer_enabled | default(false) | bool
+    - review_console_loadbalancer_create_cert | default(false) | bool
 
 - name: Check if review console UI Deployment exists
   kubernetes.core.k8s_info:
@@ -369,13 +423,69 @@
     cmd: "oc rollout restart deployment/dav-review-ui -n {{ dav_namespace }}"
   when:
     - review_ui_existing.resources | length > 0
-    - (review_ui_deploy.changed or review_ui_html_cm.changed or review_ui_nginx_cm.changed)
+    # (review_ui_html_cm removed — the HTML ConfigMap is gone; index.html is
+    #  baked into the image. Its dangling .changed reference here would crash
+    #  any run where the deployment already exists.)
+    - (review_ui_deploy.changed or review_ui_nginx_cm.changed or (review_ui_nginx_tls_cm.changed | default(false)))
 
 - name: Wait for review console UI rollout
   ansible.builtin.command:
     cmd: "oc rollout status deployment/dav-review-ui -n {{ dav_namespace }} --timeout=180s"
   register: review_ui_rollout
   changed_when: false
+
+# --- TLS via cert-manager (Let's Encrypt) ---
+
+- name: Assert cert-manager Let's Encrypt settings when issuer creation is requested
+  ansible.builtin.assert:
+    that:
+      - review_console_letsencrypt_email | default('') | length > 0
+      - review_console_cert_manager_issuer_name | default('') | length > 0
+    fail_msg: >-
+      review_console_cert_manager_create_issuer is true but
+      review_console_letsencrypt_email / review_console_cert_manager_issuer_name
+      are not set. Add them to vars.local.yaml.
+  when:
+    - review_console_cert_manager_enabled | default(false) | bool
+    - review_console_cert_manager_create_issuer | default(false) | bool
+
+# Safety: never overwrite an existing issuer of this name. The cluster may
+# already have a (DNS-01) ClusterIssuer named e.g. letsencrypt-prod shared with
+# other apps; recreating it from this HTTP-01 template would break them. So
+# "create_issuer" means create-only-if-absent.
+- name: Check for an existing cert-manager issuer of this name
+  kubernetes.core.k8s_info:
+    api_version: cert-manager.io/v1
+    kind: "{{ review_console_cert_manager_issuer_kind }}"
+    name: "{{ review_console_cert_manager_issuer_name }}"
+    namespace: "{{ dav_namespace if review_console_cert_manager_issuer_kind == 'Issuer' else omit }}"
+  register: review_existing_issuer
+  when:
+    - review_console_cert_manager_enabled | default(false) | bool
+    - review_console_cert_manager_create_issuer | default(false) | bool
+
+- name: Create review console Let's Encrypt issuer (only if absent)
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-cert-issuer.yaml.j2') | from_yaml }}"
+  when:
+    - review_console_cert_manager_enabled | default(false) | bool
+    - review_console_cert_manager_create_issuer | default(false) | bool
+    - (review_existing_issuer.resources | default([]) | length) == 0
+
+- name: Note when an existing issuer was reused instead of created
+  ansible.builtin.debug:
+    msg: >-
+      cert-manager {{ review_console_cert_manager_issuer_kind }}
+      '{{ review_console_cert_manager_issuer_name }}' already exists — reusing it,
+      not overwriting (create_issuer was requested but the issuer is present).
+  when:
+    - review_console_cert_manager_enabled | default(false) | bool
+    - review_console_cert_manager_create_issuer | default(false) | bool
+    - (review_existing_issuer.resources | default([]) | length) > 0
 
 - name: Deploy review console Route
   kubernetes.core.k8s:
@@ -388,6 +498,42 @@
 - name: Report review console URL
   ansible.builtin.debug:
     msg: "Review Console → https://{{ review_console_hostname }}"
+
+# --- External MetalLB LoadBalancer (custom port) ---
+
+- name: Deploy review console external LoadBalancer Service
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'review-console-ui-lb-service.yaml.j2') | from_yaml }}"
+  when: review_console_loadbalancer_enabled | default(false) | bool
+
+- name: Remove review console external LoadBalancer Service when disabled
+  ansible.builtin.command:
+    cmd: "oc -n {{ dav_namespace }} delete service/dav-review-ui-lb --ignore-not-found"
+  when: not (review_console_loadbalancer_enabled | default(false) | bool)
+  changed_when: false
+
+- name: Deploy review console cert-renewal CronJob
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'review-console-cert-renewal-cronjob.yaml.j2') | from_yaml_all | list }}"
+  when:
+    - review_console_loadbalancer_enabled | default(false) | bool
+    - review_console_loadbalancer_cert_renewal_restart | default(true) | bool
+
+- name: Remove review console cert-renewal CronJob when disabled
+  ansible.builtin.command:
+    cmd: "oc -n {{ dav_namespace }} delete cronjob/dav-review-cert-renewal --ignore-not-found"
+  when: not (review_console_loadbalancer_enabled | default(false) | bool and review_console_loadbalancer_cert_renewal_restart | default(true) | bool)
+  changed_when: false
+
+- name: Report review console external URL
+  ansible.builtin.debug:
+    msg: "External (MetalLB) → https://{{ review_console_hostname }}:{{ review_console_loadbalancer_port }} on {{ review_console_loadbalancer_ip | default(review_console_loadbalancer_pool) }}"
+  when: review_console_loadbalancer_enabled | default(false) | bool
 
 - name: Deploy self-improvement scan CronJob (Phase 3)
   kubernetes.core.k8s:
