@@ -368,6 +368,20 @@ online popover). Design principles gained *Standardization over customization*,
 *Whole-system reuse*, and *Secure by construction*. See review-console-design.md
 §Service-to-service auth, §"All Use Cases", §Design-system layer.
 
+**v0.17.0 (2026-06-05) — run time-budget + historical metrics + corpus-cache resync:**
+Runs gained a dynamic **failsafe "time allowed"** (ETA = uc_count × data-driven
+per-UC median, + buffer; 30-min default until history; editable mid-run via the
+run header + settable in New Run) replacing the fixed 2h pipeline timeout that
+killed long runs. The run drawer's **completed-run metrics now show the run's own
+historical window averages** ("during run") instead of the live cluster snapshot,
+and the **header consolidates the session stats** into full-width strips (time +
+scope/estimate). **Corpus-files cache resync**: the `files` table (All-set
+membership, catalog, `/api/corpus`) had become a stale orphan after the
+multi-source migration disabled its pre-seed — it's now reconciled from the same
+registered corpus repos the engine clones, mark-and-swept, on **boot · hourly ·
+corpus-push webhook · pre-run · manual**. See review-console-design.md
+§Corpus-files cache reconciliation.
+
 ### Console v2 — multi-project / multi-repo support — **IN PROGRESS (M1-M8, 2026-05-27+)**
 
 Originally scoped as a `dav-console-projects` ConfigMap. Superseded by the

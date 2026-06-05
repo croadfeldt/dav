@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-06-05  
-**Current version:** v0.16.0  
+**Current version:** v0.17.0  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -731,6 +731,48 @@ The engine (the Tekton **run-corpus** task) materializes *managed* UCs at run st
 **Verification (deploy-time):** from an in-namespace pod, a request to `/api/use-cases/{uuid}` with **no token → 401**, with a **valid pipeline-SA token (aud `dav-api`) → 200**, with a **wrong-audience token → 401**.
 
 **Ansible:** `dav_api_token_audience` (default `dav-api`), `dav_pipeline_service_account` (default `pipeline`), `dav_api_networkpolicy_enabled` (default true); the auth-delegator binding ships in `review-console-self-test-rbac.yaml.j2`, the NetworkPolicy in `namespace.yaml`, the projected-token volume in `tekton-tasks/dav-run-corpus.yaml.j2`.
+
+---
+
+## Corpus-files cache reconciliation (v0.17.0)
+
+The `files` table is the API's projection of the corpus — it backs **All-set
+membership**, the capability **catalog**, and `/api/corpus`. Originally it was
+pre-seeded at boot from a single-source clone (`/data/repo`). When DAV moved to
+**multi-source corpus** (ADR-007/M11b: the engine clones each registered corpus
+repo at run time), that pre-seed was disabled but **nothing replaced it** — the
+cache became a **stale orphan**, carrying old single-source layouts
+(`dav/`, `use-cases/`, `use_cases/`) while the engine ran the current `dcm`/`udlm`
+repos. Symptom: an "All Use Cases" run showed 32 UCs in the set but only ran 30
+(2 cached UCs no longer existed in the live corpus).
+
+**Fix — `sync_corpus_files()` reconciles from the same source the engine uses.**
+It clones each registered corpus repo (`managed_repos` where `roles @> {corpus}`,
+reusing `walk_corpus` + `resolve_root_path(repo,'corpus')` + `crypto.decrypt` +
+the `x-access-token` clone pattern), upserts every UC file with the path scheme
+that **mirrors the engine's staging exactly** — `<namespace>/<path under the
+corpus role's root_path>` (so `dcm` root_path `dav` → `dcm/use-cases/…`, `udlm`
+→ `udlm/…`) — then **mark-and-sweeps**: `DELETE FROM files WHERE last_seen_at <
+sync_start`. **Guard:** the sweep runs only when **every** repo cloned
+successfully and ≥1 file loaded, so a transient clone failure never wipes the
+cache; counts (seen / pruned / per-repo) are logged (no silent truncation).
+
+**Triggers (all five):**
+- **Boot + hourly** — `_corpus_sync_loop` (first pass ~20 s after start, then 1 h
+  as a backstop for missed webhooks / out-of-band edits).
+- **Webhook** — a GitHub `push` to a corpus repo (HMAC-validated against the
+  repo's per-repo secret) → `sync_corpus_files`; add **Pushes** to the existing
+  `/api/webhooks/github/pr-comments` URL's events.
+- **Pre-run validation** — `set_corpus_subpath` calls `_ensure_corpus_fresh`
+  (10-min gate) when a set is selected in New Run, so the UC count + membership
+  are current before the run.
+- **Manual** — `POST /api/corpus/resync` (platform-admin) + `GET
+  /api/corpus/sync-status`; surfaced as **Config → Evaluation corpus → ↻ Resync
+  corpus cache** with a freshness line.
+
+Verified live: reconciled 195 stale rows → 63 accurate (`dcm` 12 + `udlm` 51, the
+9 `dcm` UCs at `dcm/use-cases/…`); a planted ghost row was pruned (`pruned:1`);
+idempotent.
 
 ---
 
