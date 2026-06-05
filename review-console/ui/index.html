@@ -4198,6 +4198,7 @@ let _rdTokenBaseline  = {gen: null, prompt: null};
 // every 60s for in-flight runs). Null = not yet loaded.
 let _rdSparklines     = null;
 let _rdSparkTimer     = null;  // periodic re-fetch for in-flight runs
+let _rdSampleCount    = 1;     // ensemble samples/iterations per UC (run param)
 let _rdLastSnap       = null;  // most recent live snapshot — its values are
                                // appended as each sparkline's latest point so
                                // the graph tip always matches the live number.
@@ -4310,6 +4311,7 @@ function rdRenderPrompts() {
   // Cap to most recent 400 to keep DOM bounded
   const visible = all.slice(-400);
   let lastBoundaryKey = null;
+  const _ucIterSeen = {};   // uc → ensemble-iterations seen so far (this render)
   const html = visible.map((r, idx) => {
     const kind = r.kind || 'turn';
     let head = `<span class="kind ${esc(kind)}">${esc(kind)}</span>`;
@@ -4354,8 +4356,15 @@ function rdRenderPrompts() {
       let seed = (r.sample_seed != null) ? r.sample_seed : null;
       if (seed == null && r._file) { const m = r._file.match(/seed-(\d+)/); if (m) seed = m[1]; }
       const ucShort = recUuid || (r._file ? r._file.replace(/^.*\//, '').replace(/\.jsonl$/, '') : '?');
+      // Which ensemble iteration of THIS UC — count distinct seeds seen for the
+      // UC in order; total = the run's sample count.
+      const ucKey = recUuid || ucShort;
+      _ucIterSeen[ucKey] = (_ucIterSeen[ucKey] || 0) + 1;
+      const iter = _ucIterSeen[ucKey];
+      const total = _rdSampleCount || null;
       boundary = `<div class="uc-boundary">▶ Use case <span class="uc-uuid">${esc(ucShort)}</span>`
-        + (seed != null ? `<span class="uc-meta">· sample seed ${esc(String(seed))}</span>` : '')
+        + `<span class="uc-meta">· iteration <b style="color:var(--accent)">${iter}</b>${total ? ' of ' + total : ''}</span>`
+        + (seed != null ? `<span class="uc-meta">· seed ${esc(String(seed))}</span>` : '')
         + (ts ? `<span class="uc-meta">· ${esc(ts)}</span>` : '')
         + `<span class="uc-meta">· turns restart at 0</span></div>`;
       lastBoundaryKey = boundaryKey;
@@ -4803,23 +4812,45 @@ function renderRunDrawerDetail(d) {
   const _startMs = _start ? Date.parse(_start) : null;
   const _terminal = ['Succeeded','Failed','Cancelled','TimedOut'].includes(d.phase);
   const ucCount = (d.progress && d.progress.total_ucs) || (s && s.uc_total) || null;
-  const perUc = d.est_per_uc_seconds || 600;
+  const p = d.progress || {};
+  // Sample count (ensemble iterations per UC) — for the turn-record "iteration
+  // X of N" labels. From the run's param, else the mode default.
+  _rdSampleCount = parseInt((d.params || {})['sample-count'])
+    || ({verification:3, explore:10, reproduce:1}[(d.params || {}).mode] || 1);
+  // Live pace: actual seconds/UC observed so far THIS run (elapsed ÷ completed).
+  // It overrides the history/default estimate the moment ≥1 UC finishes — the
+  // only signal that's accurate for the run actually in flight.
+  const liveDone = p.completed || 0;
+  const livePerUc = (!_terminal && liveDone > 0 && p.elapsed_seconds)
+    ? (p.elapsed_seconds / liveDone) : null;
+  const perUc = livePerUc || d.est_per_uc_seconds || 1800;
+  const perUcLive = livePerUc != null;
   const estTotal = ucCount ? ucCount * perUc : null;
-  const etaMs = (_startMs && estTotal && !_terminal) ? _startMs + estTotal*1000 : null;
+  // ETA: live = elapsed + remaining × pace; else started + total × per-UC.
+  let etaMs = null;
+  if (!_terminal && _startMs && estTotal) {
+    etaMs = (perUcLive && ucCount != null)
+      ? _startMs + (p.elapsed_seconds + (ucCount - liveDone) * perUc) * 1000
+      : _startMs + estTotal * 1000;
+  }
   const toSec = d.timeout_seconds || null;
+  const killMs = (!_terminal && _startMs && toSec) ? _startMs + toSec * 1000 : null;
+  const willExceed = !!(etaMs && killMs && etaMs > killMs);
   // Row 2 — time
   let timeBits = `${phaseHtml(d.phase)} · started ${esc(fmtTs(_start))} · ${_terminal?'':'elapsed '}${esc(fmtDuration(_start, d.completed_at))}`;
-  if (!_terminal && etaMs) timeBits += ` · ETA ${esc(_fmtClock(etaMs))}`;
-  if (!_terminal && toSec) timeBits += ` · time allowed <b style="color:var(--text);font-family:var(--mono)">${esc(_fmtDurShort(toSec))}</b><span class="rd-hstat-edit" title="Edit time allowed (failsafe — don't go past this long)" onclick="editRunTimeout('${esc(d.name)}',${toSec})">✎</span>`;
+  if (!_terminal && etaMs) timeBits += ` · ETA ${esc(_fmtClock(etaMs))}${perUcLive?' <span style="color:var(--blue);font-size:9px">live</span>':''}`;
+  if (!_terminal && toSec) timeBits += ` · time allowed <b style="color:var(--text);font-family:var(--mono)">${esc(_fmtDurShort(toSec))}</b><span class="rd-hstat-edit" title="Edit time allowed (failsafe — don't go past this long; never auto-extended)" onclick="editRunTimeout('${esc(d.name)}',${toSec})">✎</span>`;
+  if (willExceed) timeBits += ` · <span style="color:var(--red);font-weight:500" title="At the current pace the run won't finish before the time allowed — extend it (✎) or it will be stopped">⚠ exceeds time allowed</span>`;
   if (_terminal && d.status_reason) timeBits += ` · <span style="color:var(--text-dim)">${esc(d.status_reason)}</span>`;
   document.getElementById('rdSub').innerHTML = timeBits;
   // Row 3 — scope / estimate
   const hs = [];
   if (ucCount != null) hs.push(`<span class="rd-hstat"><span class="l" style="text-transform:none">UCs</span><b>${ucCount}</b></span>`);
   if (!_terminal && ucCount != null) {
-    const estDef = d.est_per_uc_is_default
-      ? `<span style="color:var(--text-faint);font-size:9px;margin-left:3px" title="No run history yet — this estimate adjusts as runs complete">≈ default</span>` : '';
-    hs.push(`<span class="rd-hstat"><span class="l">est/UC</span><b>~${esc(_fmtDurShort(perUc))}</b>${estDef}</span>`);
+    const tag = perUcLive
+      ? `<span style="color:var(--blue);font-size:9px;margin-left:3px" title="Live — actual pace observed this run (${liveDone}/${ucCount} done)">live</span>`
+      : (d.est_per_uc_is_default ? `<span style="color:var(--text-faint);font-size:9px;margin-left:3px" title="No run history yet — adjusts as runs complete + live once UCs finish">≈ default</span>` : '');
+    hs.push(`<span class="rd-hstat"><span class="l">est/UC</span><b>~${esc(_fmtDurShort(perUc))}</b>${tag}</span>`);
     if (estTotal) hs.push(`<span class="rd-hstat"><span class="l">est total</span><b>~${esc(_fmtDurShort(estTotal))}</b></span>`);
   }
   if (_terminal && s && s.uc_total != null) {
