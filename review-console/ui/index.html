@@ -6335,7 +6335,7 @@ async function _openBatchAddSetPopover(anchor) {
     return;
   }
   let h = '<div style="padding:4px 0;font-size:12px;">';
-  allSets.forEach(s => {
+  allSets.filter(s => s.id !== 0).forEach(s => {
     h += `<div style="padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;"
              onmouseover="this.style.background='var(--bg-raised)'" onmouseout="this.style.background=''"
              onclick="_batchAddSelectedToSet(${s.id}, ${attrJson(s.name)})">
@@ -7429,7 +7429,7 @@ async function biPrepStep3() {
   try { await loadSets(); } catch(_) {}
   const sel = document.getElementById('biSetExistingSel');
   sel.innerHTML = '<option value="">— pick a set —</option>' +
-    (allSets || []).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
+    (allSets || []).filter(s => s.id !== 0).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
   // Individual-pickers grid
   const grid = document.getElementById('biIndividualPickers');
   grid.innerHTML = '';
@@ -7437,7 +7437,7 @@ async function biPrepStep3() {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex; align-items:center; gap:6px; font-size:11px;';
     const opts = '<option value="">— none —</option>' +
-      (allSets || []).map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+      (allSets || []).filter(s => s.id !== 0).map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
     row.innerHTML = `<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(uc.title)}</span>
       <select data-ucuuid="${esc(uc.uuid)}" class="bi-indiv-sel" style="flex:0 0 200px;">${opts}</select>`;
     grid.appendChild(row);
@@ -7820,7 +7820,7 @@ async function wzEnterStep4() {
   if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
   const sel = document.getElementById('wzSetExistingSel');
   sel.innerHTML = '<option value="">— pick a set —</option>' +
-    (allSets || []).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
+    (allSets || []).filter(s => s.id !== 0).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
 }
 
 // ── Step 5: summary + save ────────────────────────────────────────────────────
@@ -7925,9 +7925,11 @@ function renderSetFilterRail() {
   const totalUCs = (allUCs || []).length;
   const noSetUCs = (allUCs || []).filter(u => !u.set_ids || !u.set_ids.length).length;
   const items = [];
-  items.push({key: '__all__',   label: 'All UCs',  count: totalUCs, isAll: true});
+  items.push({key: '__all__',   label: 'All Use Cases', count: totalUCs, isAll: true});
   items.push({key: '__none__',  label: '(No set)', count: noSetUCs});
-  (allSets || []).forEach(s => items.push({
+  // The synthetic "All Use Cases" set (id 0) is represented by the __all__ item
+  // above in the rail — skip the duplicate from /api/sets here.
+  (allSets || []).filter(s => s.id !== 0).forEach(s => items.push({
     key: s.id, label: s.name, count: s.member_count, isDefault: s.is_default,
   }));
 
@@ -8082,7 +8084,7 @@ function _openAddSetPicker(ucUuid, ucSource, ucHandle, ucPath, anchorEl) {
   const uc = (allUCs || []).find(u => u.uuid === ucUuid);
   const memberOf = new Set((uc && uc.set_ids) || []);
   let h = '<div style="padding:4px 0;">';
-  allSets.forEach(s => {
+  allSets.filter(s => s.id !== 0).forEach(s => {
     const isMember = memberOf.has(s.id);
     h += `<div style="padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:12px;${isMember ? 'background:var(--accent-bg);' : ''}"
              onmouseover="this.style.background='var(--bg-raised)'" onmouseout="this.style.background='${isMember ? 'var(--accent-bg)' : ''}'"
@@ -8188,7 +8190,19 @@ function renderUCListSetBanner() {
   const banner = document.getElementById('ucListSetBanner');
   const label  = document.getElementById('ucListSetBannerLabel');
   if (!banner || !label) return;
-  if (activeSetId === null) { banner.style.display = 'none'; return; }
+  if (activeSetId === null) {
+    // "All Use Cases" — the synthetic set. Runnable (run/arch-review against
+    // everything), but not editable: no Manage, no Clear (it IS the cleared state).
+    banner.style.display = 'flex';
+    const n = (allUCs || []).length;
+    label.textContent = `All Use Cases (${n} UC${n !== 1 ? 's' : ''})`;
+    document.getElementById('ucListSetBannerRunBtn').style.display = '';
+    document.getElementById('ucListSetBannerManageBtn').style.display = 'none';
+    document.getElementById('ucListSetBannerClearBtn').style.display = 'none';
+    return;
+  }
+  // Real sets (and No-set) show the clear (×) control.
+  document.getElementById('ucListSetBannerClearBtn').style.display = '';
   if (activeSetId === '__none__') {
     banner.style.display = 'flex';
     label.textContent = 'Filtered: (No set)';
@@ -8223,7 +8237,7 @@ function renderManageSetsList() {
     return;
   }
   let h = '';
-  allSets.forEach(s => {
+  allSets.filter(s => s.id !== 0).forEach(s => {
     const defBadge = s.is_default
       ? '<span style="font-size:9px;color:var(--accent);border:1px solid var(--accent-soft);padding:1px 5px;border-radius:2px;margin-left:8px;">DEFAULT</span>'
       : '';
@@ -9101,6 +9115,7 @@ document.getElementById('manageSetsDoneBtn').addEventListener('click', closeMana
 document.getElementById('manageSetsNewBtn').addEventListener('click', () => { closeManageSetsModal(); openSetModal(); });
 // Active-set banner buttons
 document.getElementById('ucListSetBannerRunBtn').addEventListener('click', () => {
+  if (activeSetId === null) { runSet(0, 'All Use Cases'); return; }  // synthetic All set
   if (typeof activeSetId !== 'number') return;
   const s = (allSets || []).find(x => x.id === activeSetId);
   if (s) runSet(s.id, s.name);

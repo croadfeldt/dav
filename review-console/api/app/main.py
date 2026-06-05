@@ -4491,12 +4491,45 @@ async def get_use_case_lifecycle(uuid: str):
 # ========================= SETS =========================
 
 
+# The synthetic, immutable "All Use Cases" set. NOT a stored row — its membership
+# is always every managed UC in the active project (dynamic, never drifts).
+# Surfaced in /api/sets under a reserved id so it rides the standard set machinery
+# (run / arch-review / export, etc.) everywhere, but it can't be edited or deleted
+# and is the project default selection for "run against everything".
+ALL_SET_ID = 0
+ALL_SET_NAME = "All Use Cases"
+
+
+def _is_all_set(set_id) -> bool:
+    try:
+        return int(set_id) == ALL_SET_ID
+    except (TypeError, ValueError):
+        return False
+
+
+async def _all_set_dict(conn, pid) -> dict:
+    cnt = int(await conn.fetchval(
+        "SELECT count(*) FROM managed_use_cases WHERE project_id=$1", pid) or 0)
+    return {
+        "id": ALL_SET_ID, "name": ALL_SET_NAME,
+        "description": "Every use case in this project — auto-maintained, read-only.",
+        "is_default": False, "is_system": True, "member_count": cnt,
+        "created_by": "system", "created_at": None, "updated_at": None,
+    }
+
+
+def _reject_all_set_edit(set_id) -> None:
+    if _is_all_set(set_id):
+        raise HTTPException(400, "the 'All Use Cases' set is read-only (auto-maintained)")
+
+
 def _set_row(r, member_count: int = 0) -> dict:
     return {
         "id": r["id"],
         "name": r["name"],
         "description": r["description"],
         "is_default": bool(r["is_default"]) if "is_default" in r else False,
+        "is_system": bool(r["is_system"]) if "is_system" in r else False,
         "created_by": r["created_by"],
         "created_at": r["created_at"].isoformat(),
         "updated_at": r["updated_at"].isoformat(),
@@ -4516,7 +4549,9 @@ async def list_sets(request: Request):
                GROUP BY s.id ORDER BY s.name""",
             pid,
         )
-    return {"sets": [_set_row(r, r["member_count"]) for r in rows]}
+        all_set = await _all_set_dict(conn, pid)
+    # The synthetic "All Use Cases" set is always first.
+    return {"sets": [all_set] + [_set_row(r, r["member_count"]) for r in rows]}
 
 
 @app.post("/api/sets")
@@ -4539,6 +4574,16 @@ async def create_set(payload: SetIn, request: Request):
 @app.get("/api/sets/{set_id}")
 async def get_set(set_id: int, request: Request):
     async with pool.acquire() as conn:
+        # The synthetic All set: members are every managed UC in the active
+        # project (computed live), so a run/arch-review over it is "everything".
+        if _is_all_set(set_id):
+            pid = await _active_project_id(request, conn)
+            await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+            ucs = await conn.fetch(
+                "SELECT uuid, title FROM managed_use_cases WHERE project_id=$1 ORDER BY title", pid)
+            members = [{"uc_uuid": u["uuid"], "uc_source": "managed", "uc_handle": None,
+                        "uc_path": None, "added_by": "system", "added_at": None} for u in ucs]
+            return {**(await _all_set_dict(conn, pid)), "members": members}
         await _gate_resource(conn, request, "use_case_sets", "id", set_id,
                              rbac.P_PROJECT_READ, f"set {set_id} not found")
         row = await conn.fetchrow(
@@ -4566,6 +4611,7 @@ async def get_set(set_id: int, request: Request):
 @app.put("/api/sets/{set_id}")
 async def update_set(set_id: int, payload: SetIn, request: Request):
     user = get_user(request)  # noqa: F841 — auth check
+    _reject_all_set_edit(set_id)
     async with pool.acquire() as conn:
         owner = await _gate_resource(conn, request, "use_case_sets", "id", set_id,
                                      rbac.P_PROJECT_USECASES, f"set {set_id} not found")
@@ -4584,6 +4630,7 @@ async def update_set(set_id: int, payload: SetIn, request: Request):
 @app.delete("/api/sets/{set_id}")
 async def delete_set(set_id: int, request: Request):
     user = get_user(request)  # noqa: F841 — auth check
+    _reject_all_set_edit(set_id)
     async with pool.acquire() as conn:
         owner = await _gate_resource(conn, request, "use_case_sets", "id", set_id,
                                      rbac.P_PROJECT_USECASES, f"set {set_id} not found")
@@ -4601,6 +4648,7 @@ async def set_default_set(set_id: int, request: Request):
     out-of-band run scheduling that needs an implicit UC set.
     """
     get_user(request)  # auth check
+    _reject_all_set_edit(set_id)
     async with pool.acquire() as conn:
         async with conn.transaction():
             owner = await _gate_resource(conn, request, "use_case_sets", "id", set_id,
@@ -4620,6 +4668,7 @@ async def set_default_set(set_id: int, request: Request):
 async def clear_default_set(set_id: int, request: Request):
     """Unmark this Set as the project default, leaving no default."""
     get_user(request)
+    _reject_all_set_edit(set_id)
     async with pool.acquire() as conn:
         owner = await _gate_resource(conn, request, "use_case_sets", "id", set_id,
                                      rbac.P_PROJECT_USECASES, f"set {set_id} not found")
@@ -4635,6 +4684,7 @@ async def clear_default_set(set_id: int, request: Request):
 @app.post("/api/sets/{set_id}/members")
 async def add_set_member(set_id: int, payload: SetMemberIn, request: Request):
     user = get_user(request)
+    _reject_all_set_edit(set_id)
     if payload.uc_source not in ("managed", "corpus"):
         raise HTTPException(400, "uc_source must be 'managed' or 'corpus'")
     async with pool.acquire() as conn:
@@ -4656,6 +4706,7 @@ async def add_set_member(set_id: int, payload: SetMemberIn, request: Request):
 @app.delete("/api/sets/{set_id}/members/{uc_uuid:path}")
 async def remove_set_member(set_id: int, uc_uuid: str, request: Request):
     user = get_user(request)  # noqa: F841
+    _reject_all_set_edit(set_id)
     async with pool.acquire() as conn:
         await _gate_resource(conn, request, "use_case_sets", "id", set_id,
                              rbac.P_PROJECT_USECASES, f"set {set_id} not found")
@@ -4669,9 +4720,16 @@ async def remove_set_member(set_id: int, uc_uuid: str, request: Request):
 
 
 @app.get("/api/sets/{set_id}/corpus-subpath")
-async def set_corpus_subpath(set_id: int):
+async def set_corpus_subpath(set_id: int, request: Request):
     """Return the common corpus path prefix for corpus UCs in this set.
     Used by the UI to pre-fill corpus_subpath when triggering a set run."""
+    # The All set is all managed UCs — no corpus members, no subpath to prefill.
+    if _is_all_set(set_id):
+        async with pool.acquire() as conn:
+            pid = await _active_project_id(request, conn)
+            mc = int(await conn.fetchval(
+                "SELECT count(*) FROM managed_use_cases WHERE project_id=$1", pid) or 0)
+        return {"subpath": None, "corpus_count": 0, "managed_count": mc}
     async with pool.acquire() as conn:
         exists = await conn.fetchval("SELECT 1 FROM use_case_sets WHERE id=$1", set_id)
         if not exists:
@@ -4718,15 +4776,21 @@ async def promote_set_members(set_id: int, payload: SetPromoteIn, request: Reque
             f"allowed: {sorted(allowed) or 'none'}",
         )
     async with pool.acquire() as conn:
-        exists = await conn.fetchval("SELECT 1 FROM use_case_sets WHERE id=$1", set_id)
-        if not exists:
-            raise HTTPException(404, f"set {set_id} not found")
-        members = await conn.fetch(
-            """SELECT uc.uuid FROM managed_use_cases uc
-               JOIN use_case_set_members m ON m.uc_uuid = uc.uuid AND m.uc_source = 'managed'
-               WHERE m.set_id = $1 AND uc.lifecycle_state = $2""",
-            set_id, payload.from_state,
-        )
+        if _is_all_set(set_id):
+            pid = await _active_project_id(request, conn)
+            members = await conn.fetch(
+                "SELECT uuid FROM managed_use_cases WHERE project_id=$1 AND lifecycle_state=$2",
+                pid, payload.from_state)
+        else:
+            exists = await conn.fetchval("SELECT 1 FROM use_case_sets WHERE id=$1", set_id)
+            if not exists:
+                raise HTTPException(404, f"set {set_id} not found")
+            members = await conn.fetch(
+                """SELECT uc.uuid FROM managed_use_cases uc
+                   JOIN use_case_set_members m ON m.uc_uuid = uc.uuid AND m.uc_source = 'managed'
+                   WHERE m.set_id = $1 AND uc.lifecycle_state = $2""",
+                set_id, payload.from_state,
+            )
         promoted = 0
         async with conn.transaction():
             for row in members:
@@ -4747,7 +4811,7 @@ async def promote_set_members(set_id: int, payload: SetPromoteIn, request: Reque
 
 
 @app.get("/api/sets/{set_id}/readiness")
-async def set_readiness(set_id: int):
+async def set_readiness(set_id: int, request: Request):
     """Readiness scorecard for a Set's managed UCs (DCM feature #4).
 
     The "batch check on a Set before triggering a run" from the meeting: score
@@ -4755,15 +4819,21 @@ async def set_readiness(set_id: int):
     analyses. Returns per-UC scores (with the failing check ids) and a rollup.
     """
     async with pool.acquire() as conn:
-        exists = await conn.fetchval("SELECT 1 FROM use_case_sets WHERE id=$1", set_id)
-        if not exists:
-            raise HTTPException(404, f"set {set_id} not found")
-        rows = await conn.fetch(
-            """SELECT uc.uuid, uc.title, uc.yaml_content FROM managed_use_cases uc
-               JOIN use_case_set_members m ON m.uc_uuid = uc.uuid AND m.uc_source = 'managed'
-               WHERE m.set_id = $1 ORDER BY uc.title""",
-            set_id,
-        )
+        if _is_all_set(set_id):
+            pid = await _active_project_id(request, conn)
+            rows = await conn.fetch(
+                "SELECT uuid, title, yaml_content FROM managed_use_cases "
+                "WHERE project_id=$1 ORDER BY title", pid)
+        else:
+            exists = await conn.fetchval("SELECT 1 FROM use_case_sets WHERE id=$1", set_id)
+            if not exists:
+                raise HTTPException(404, f"set {set_id} not found")
+            rows = await conn.fetch(
+                """SELECT uc.uuid, uc.title, uc.yaml_content FROM managed_use_cases uc
+                   JOIN use_case_set_members m ON m.uc_uuid = uc.uuid AND m.uc_source = 'managed'
+                   WHERE m.set_id = $1 ORDER BY uc.title""",
+                set_id,
+            )
 
     items = []
     for r in rows:
