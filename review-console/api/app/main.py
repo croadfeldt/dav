@@ -5995,7 +5995,7 @@ def _resolve_run_id(id_or_name: str) -> Optional[str]:
     if _results.get_run_summary(id_or_name) is not None:
         return id_or_name  # already a workspace run_id
     try:
-        detail = await asyncio.to_thread(validations.get_run_detail, id_or_name)
+        detail = validations.get_run_detail(id_or_name)  # sync helper (_resolve_run_id)
         started = detail.get("started_at") or detail.get("created_at")
         if started:
             prog = _results.find_progress_near(started, tolerance_seconds=600)
