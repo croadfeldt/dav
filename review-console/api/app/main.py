@@ -5066,6 +5066,9 @@ async def set_corpus_subpath(set_id: int, request: Request):
     # The All set spans managed + corpus — compute both counts + the corpus subpath.
     if _is_all_set(set_id):
         async with pool.acquire() as conn:
+            # Pre-run validation: reconcile the corpus cache if stale so the UC
+            # count + membership reflect the current corpus before the run.
+            await _ensure_corpus_fresh(conn)
             pid = await _active_project_id(request, conn)
             members = await _all_set_members(conn, pid)
         managed_count = sum(1 for m in members if m["uc_source"] == "managed")
@@ -7520,6 +7523,47 @@ def _repo_url_candidates(payload: dict) -> list[str]:
     return candidates
 
 
+async def _handle_corpus_push(body_bytes: bytes, sig_header: str) -> dict:
+    """GitHub `push` to a registered corpus repo → reconcile the corpus-files
+    cache (mark-and-sweep). HMAC-validated against the repo's per-repo webhook
+    secret (ADR-004). Same payload URL as pr-comments — add 'Pushes' to the
+    repo's webhook events. No-op for non-corpus / unregistered repos."""
+    import hashlib
+    import hmac
+    import json
+    try:
+        payload = json.loads(body_bytes)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "body is not valid JSON")
+    url_candidates = _repo_url_candidates(payload)
+    if not url_candidates:
+        raise HTTPException(400, "payload missing repository identifiers")
+    async with pool.acquire() as conn:
+        repo_row = await conn.fetchrow(
+            "SELECT namespace, roles, github_webhook_secret_encrypted "
+            "FROM managed_repos WHERE repo_url = ANY($1::text[]) LIMIT 1",
+            url_candidates)
+        if not repo_row:
+            return {"status": "ignored", "reason": "repo not in managed_repos"}
+        if "corpus" not in list(repo_row["roles"] or []):
+            return {"status": "ignored", "reason": "not a corpus repo"}
+        if not repo_row["github_webhook_secret_encrypted"]:
+            raise HTTPException(400, "repo has no github_webhook_secret configured")
+        try:
+            secret = crypto.decrypt(repo_row["github_webhook_secret_encrypted"])
+        except Exception:
+            raise HTTPException(503, "cannot decrypt webhook secret")
+        if not sig_header.startswith("sha256="):
+            raise HTTPException(400, "missing or malformed X-Hub-Signature-256")
+        expected = "sha256=" + hmac.new(
+            secret.encode("utf-8"), body_bytes, hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig_header, expected):
+            log.warning("corpus push webhook: HMAC mismatch for %s", repo_row["namespace"])
+            raise HTTPException(403, "signature mismatch")
+        result = await sync_corpus_files(conn, reason="webhook")
+    return {"status": "synced", "corpus": result}
+
+
 @app.post("/api/webhooks/github/pr-comments")
 async def github_pr_comments_webhook(request: Request):
     """Receive GitHub issue_comment + pull_request_review_comment events.
@@ -7545,6 +7589,9 @@ async def github_pr_comments_webhook(request: Request):
     # a 200 + "ignored" so GitHub doesn't retry.
     if event == "ping":
         return {"status": "pong"}
+    if event == "push":
+        # A push to a registered corpus repo → reconcile the corpus-files cache.
+        return await _handle_corpus_push(body_bytes, sig_header)
     if event not in ("issue_comment", "pull_request_review_comment"):
         return {"status": "ignored", "reason": f"unhandled event: {event}"}
 

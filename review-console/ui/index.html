@@ -1719,6 +1719,10 @@
             Unlike spec, corpus changes don't roll a Deployment — each Tekton run reads the ConfigMap fresh at start.
             Use the <strong>↻ Project all</strong> button on the Managed repos panel to force a reconcile.
           </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);flex-wrap:wrap;">
+            <button class="btn ghost btn-sm" id="corpusResyncBtn" title="Reconcile the corpus-files cache (All-set membership, catalog, /api/corpus) from the corpus repos now. Runs automatically on boot, hourly, on corpus push, and before a run; this is a manual trigger.">↻ Resync corpus cache</button>
+            <span id="corpusCacheStatus" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
           <span id="srcCorpusMsg" style="font-size:11px;color:var(--text-faint);display:none;"></span>
         </div>
       </div>
@@ -8889,6 +8893,7 @@ async function loadConfig() {
   await loadMCPServers();
   await loadCodeRepos();
   await loadMCPRefreshStatus();   // populates configMCPRefreshPanel
+  loadCorpusCacheStatus();        // corpus-files cache freshness
   setupConfigNav();
   try {
     const resp = await api('/api/sources');
@@ -9679,6 +9684,33 @@ function _mcpRefreshFmtRolloutChip(rollout) {
     : `<span style="color:var(--accent)">rolling</span>`;
   return `${phase} (${ready}/${desired} ready, ${updated} updated)`;
 }
+
+async function loadCorpusCacheStatus() {
+  const el = document.getElementById('corpusCacheStatus');
+  if (!el) return;
+  try {
+    const s = await api('/api/corpus/sync-status');
+    const r = s.result || {};
+    const age = s.age_seconds;
+    const ago = (age == null) ? 'pending'
+      : age < 90 ? `${age}s ago` : age < 5400 ? `${Math.round(age/60)}m ago` : `${(age/3600).toFixed(1)}h ago`;
+    const repos = (r.repos || []).map(x => x.error ? `${x.namespace} ⚠` : `${x.namespace} ${x.files}`).join(' · ');
+    el.textContent = `cache: ${r.files_seen != null ? r.files_seen + ' files' : '—'}${repos ? ' (' + repos + ')' : ''} · synced ${ago}`;
+  } catch(e) { el.textContent = ''; }
+}
+async function resyncCorpusCache() {
+  const btn = document.getElementById('corpusResyncBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '↻ Resyncing…'; }
+  try {
+    const r = await api('/api/corpus/resync', {method:'POST'});
+    toast(`Corpus cache resynced — ${r.files_seen} files, ${r.pruned} pruned`);
+  } catch(e) { toast(e.message, true); }
+  finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Resync corpus cache'; }
+    loadCorpusCacheStatus();
+  }
+}
+document.getElementById('corpusResyncBtn')?.addEventListener('click', resyncCorpusCache);
 
 async function loadMCPRefreshStatus() {
   try {
