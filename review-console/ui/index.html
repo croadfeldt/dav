@@ -4395,14 +4395,14 @@ function selectRun(name) {
     <!-- Operational stats: GPU + Inference side-by-side on wide screens (≥1100px) -->
     <div class="rd-stats-grid">
       <div class="run-section" id="rdGpusSection">
-        <div class="run-section-title">GPUs (live)<span id="rdGpuFresh" class="freshness-chip"></span></div>
+        <div class="run-section-title">GPUs <span id="rdGpuMode">(live)</span><span id="rdGpuFresh" class="freshness-chip"></span></div>
         <div id="rdGpus"><div class="empty" style="font-size:11px">loading metrics…</div></div>
         <div style="font-size:10px;color:var(--text-faint);margin-top:6px;line-height:1.6;">
           <b>VRAM</b> stays near 100% (vLLM pre-allocates). AMD <b>GFX activity</b> on RDNA4 latches at 100% under light load — use <b>power</b> and <b>KV cache %</b> as the real busy signal.
         </div>
       </div>
       <div class="run-section" id="rdVllmSection">
-        <div class="run-section-title">Inference (vLLM, live)<span id="rdVllmFresh" class="freshness-chip"></span></div>
+        <div class="run-section-title">Inference (vLLM, <span id="rdVllmMode">live</span>)<span id="rdVllmFresh" class="freshness-chip"></span></div>
         <div id="rdVllm" class="vllm-grid"></div>
       </div>
     </div>
@@ -4598,10 +4598,43 @@ async function _fetchSparklines(startedAt, completedAt) {
 // cosmetic. Returns a fresh values array (never mutates the cached series).
 function _liveTip(series, liveVal) {
   const vals = (series && series.values) ? series.values.slice() : [];
+  // For a completed run the panel is historical — the series IS the run's data,
+  // so don't graft a "live" tip onto it.
+  if (_rdLastSnap && _rdLastSnap._historical) return vals;
   if (vals.length && typeof liveVal === 'number' && isFinite(liveVal)) {
     vals.push([vals[vals.length - 1][0] + 30, liveVal]);
   }
   return vals;
+}
+
+// Build a synthetic "snapshot" from the run's historical timeseries (per-GPU +
+// vLLM window averages / peaks) so a COMPLETED run's tiles show what it actually
+// used during its window — not the live cluster state. Mirrors the live
+// snapshot shape so renderRunDrawerMetrics consumes it unchanged.
+function _histSnapFromSparklines() {
+  const sp = _rdSparklines;
+  if (!sp) return null;
+  const avg  = (s) => (s && s.values && s.values.length) ? s.values.reduce((a,p)=>a+p[1],0)/s.values.length : null;
+  const peak = (s) => (s && s.values && s.values.length) ? Math.max(...s.values.map(p=>p[1])) : null;
+  const gpus = (sp.gpu_gfx_activity || []).map((s, i) => ({
+    gpu_id: (s.metric && s.metric.gpu_id) ?? i,
+    gpu_gfx_activity: avg(s),
+    used_vram_pct:    avg((sp.gpu_vram_pct  || [])[i]),
+    gpu_power_watts:  avg((sp.gpu_power_watts|| [])[i]),
+    gpu_edge_temp_c:  avg((sp.gpu_temp       || [])[i]),
+  }));
+  const v0 = (k) => (sp[k] || [])[0];
+  return {
+    available: true, _historical: true, gpus,
+    vllm: {
+      running_requests: avg(v0('vllm_running')),
+      waiting_requests: avg(v0('vllm_waiting')),
+      kv_cache_pct:     peak(v0('vllm_kv_pct')),     // peak is the meaningful one
+      generation_tps:   avg(v0('vllm_gen_tps')),
+      prompt_tps:       avg(v0('vllm_prompt_tps')),
+      ttft_p95_seconds: avg(v0('vllm_ttft_p95')),
+    },
+  };
 }
 
 function _renderSparklines() {
@@ -4689,37 +4722,45 @@ async function refreshRunDrawer() {
     if (isTerminal) {
       if (_rdPollTimer) { clearInterval(_rdPollTimer); _rdPollTimer = null; }
     }
-    // Sparklines: fetch once when we first get start/end timestamps.
-    // For terminal runs: one-shot. For in-flight runs: refresh every 60s.
-    const startedAt   = detail.started_at || detail.created_at;
-    const completedAt = isTerminal ? (detail.completed_at || null) : null;
-    if (startedAt && _rdSparklines === null) {
-      _fetchSparklines(startedAt, completedAt);
-      if (!isTerminal) {
+    // Sparklines (historical timeseries). In-flight: fetch + refresh every 20s.
+    // Terminal: fetched + awaited in the metrics block below.
+    const startedAt = detail.started_at || detail.created_at;
+    if (!isTerminal) {
+      if (startedAt && _rdSparklines === null) {
+        _fetchSparklines(startedAt, null);
         if (_rdSparkTimer) clearInterval(_rdSparkTimer);
         _rdSparkTimer = setInterval(() => _fetchSparklines(startedAt, null), 20000);
+      } else if (_rdSparklines) {
+        _renderSparklines();
       }
-    } else if (_rdSparklines) {
-      // Already loaded — just re-render in case DOM was rebuilt
-      _renderSparklines();
     }
   }
-  // Inject server-computed live session deltas (persisted across reloads)
-  // into the snapshot before rendering, so the vLLM tiles render them.
-  if (snap && !snap._err && detail && !detail._err) {
-    snap.vllm = snap.vllm || {};
-    if (detail.live_session_gen_tokens !== undefined)    snap.vllm._live_session_gen    = detail.live_session_gen_tokens;
-    if (detail.live_session_prompt_tokens !== undefined) snap.vllm._live_session_prompt = detail.live_session_prompt_tokens;
-    // Total GPU energy used by the run (cumulative power×time). Prefer the
-    // finalized value; else the live in-flight estimate. Shown in the inference
-    // grid's bottom-right cell.
-    const sess = detail.session || {};
-    const energyJ = (sess.gpu_energy_joules ?? sess.live_gpu_energy_joules);
-    if (energyJ !== undefined && energyJ !== null) snap.vllm._gpu_energy_j = energyJ;
+  // Metrics panel: live snapshot for in-flight runs; the run's OWN historical
+  // window (per-GPU + vLLM averages from its timeseries) for completed runs —
+  // the live snapshot would show current cluster state, not this run.
+  const _isTerminal = detail && !detail._err && ['Succeeded','Failed','Cancelled','TimedOut'].includes(detail.phase);
+  let metricsSnap = snap, metricsOpts = {};
+  if (_isTerminal) {
+    const startedAt = detail.started_at || detail.created_at;
+    if (_rdSparklines === null && startedAt) await _fetchSparklines(startedAt, detail.completed_at || null);
+    const hist = _histSnapFromSparklines();
+    if (hist) { metricsSnap = hist; metricsOpts = { historical: true }; }
   }
-  renderRunDrawerMetrics(snap);
+  // Session token totals + GPU energy (finalized for completed runs, else the
+  // live in-flight deltas) — injected into whichever snap we render.
+  if (metricsSnap && !metricsSnap._err && detail && !detail._err) {
+    metricsSnap.vllm = metricsSnap.vllm || {};
+    const sess = detail.session || {};
+    const gen = (sess.total_gen_tokens != null) ? sess.total_gen_tokens : detail.live_session_gen_tokens;
+    const prm = (sess.total_prompt_tokens != null) ? sess.total_prompt_tokens : detail.live_session_prompt_tokens;
+    if (gen !== undefined) metricsSnap.vllm._live_session_gen = gen;
+    if (prm !== undefined) metricsSnap.vllm._live_session_prompt = prm;
+    const energyJ = (sess.gpu_energy_joules ?? sess.live_gpu_energy_joules);
+    if (energyJ !== undefined && energyJ !== null) metricsSnap.vllm._gpu_energy_j = energyJ;
+  }
+  renderRunDrawerMetrics(metricsSnap, metricsOpts);
   // Compact one-row stats — only visible in the non-detailed layouts (CSS-gated).
-  rdRenderCompactStats(snap, detail && !detail._err ? detail : null);
+  rdRenderCompactStats(metricsSnap, detail && !detail._err ? detail : null);
 }
 
 function _fmtEnergy(j) {
@@ -4874,8 +4915,13 @@ function _fmtN(v, digits) {
   return Number(v).toLocaleString(undefined, {maximumFractionDigits: digits ?? 1});
 }
 
-function renderRunDrawerMetrics(snap) {
+function renderRunDrawerMetrics(snap, opts) {
   _rdLastSnap = snap;   // cache so _renderSparklines can append live tips
+  // Label the sections: live cluster state (in-flight) vs the run's own window
+  // averages (completed). Historical values come from the timeseries.
+  const _hist = !!(opts && opts.historical) || !!(snap && snap._historical);
+  const _gm = document.getElementById('rdGpuMode'); if (_gm) _gm.textContent = _hist ? '(during run)' : '(live)';
+  const _vm = document.getElementById('rdVllmMode'); if (_vm) _vm.textContent = _hist ? 'during run' : 'live';
   const gpusEl = document.getElementById('rdGpus');
   const vllmEl = document.getElementById('rdVllm');
   if (snap._err) {
