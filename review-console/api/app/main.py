@@ -91,6 +91,65 @@ ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "tru
 # Secured dav-docs-mcp self-registration (its LoadBalancer SSE URL + bearer token).
 DAV_DOCS_MCP_URL = os.environ.get("DAV_DOCS_MCP_URL", "").strip()
 DAV_DOCS_MCP_TOKEN = os.environ.get("DAV_DOCS_MCP_TOKEN", "").strip()
+# --- Internal service-to-service auth (engine → this API) ---------------------
+# The engine fetches managed UCs from this API's gated /api/use-cases endpoint.
+# Rather than a shared static secret, it presents its Kubernetes ServiceAccount
+# *projected token* (audience-scoped, ~1h TTL, auto-rotated by the kubelet) as a
+# Bearer token. We validate it via the TokenReview API and accept ONLY our
+# pipeline ServiceAccount scoped to our audience — short-lived, identity-bound,
+# nothing static to leak. A valid token resolves to identity "system:engine" and
+# bypasses the approval gate + project privilege checks for that request only,
+# WITHOUT widening the externally-reachable surface.
+INTERNAL_IDENTITY = "system:engine"
+DAV_API_AUDIENCE = os.environ.get("DAV_API_AUDIENCE", "dav-api").strip()
+_TRUSTED_SERVICE_ACCOUNTS = set(
+    s.strip() for s in os.environ.get(
+        "DAV_TRUSTED_SERVICE_ACCOUNTS",
+        f"system:serviceaccount:{os.environ.get('DAV_NAMESPACE', 'dav')}:pipeline",
+    ).split(",") if s.strip()
+)
+# Short-lived positive/negative cache keyed by token digest, so a multi-UC fetch
+# (~23 calls) doesn't issue 23 TokenReviews.
+_svc_token_cache: dict = {}
+
+
+async def _validate_service_token(request) -> bool:
+    """Validate the request's Bearer SA token via TokenReview (cached briefly by
+    digest). Network call → offloaded to a thread. Returns True iff it's our
+    trusted, audience-scoped pipeline ServiceAccount."""
+    authz = request.headers.get("Authorization", "")
+    if not authz.startswith("Bearer "):
+        return False
+    token = authz[7:].strip()
+    if token.count(".") != 2:   # must look like a JWT — skip cheap bogus values
+        return False
+    import hashlib
+    import time as _t
+    key = hashlib.sha256(token.encode()).hexdigest()
+    now = _t.monotonic()
+    hit = _svc_token_cache.get(key)
+    if hit and hit[1] > now:
+        return hit[0]
+    try:
+        ok = await asyncio.to_thread(
+            validations.review_service_token,
+            token, DAV_API_AUDIENCE, _TRUSTED_SERVICE_ACCOUNTS,
+        )
+    except Exception as e:
+        log.warning("service-token validation error: %s", e)
+        ok = False
+    # Cap the cache so a flood of distinct bogus tokens can't grow it unbounded.
+    if len(_svc_token_cache) > 512:
+        _svc_token_cache.clear()
+    _svc_token_cache[key] = (ok, now + (60.0 if ok else 10.0))
+    return ok
+
+
+def _service_token_ok(request) -> bool:
+    """Sync read of the per-request flag set by the approval gate after a
+    successful TokenReview. The endpoints/guards call this; the (async)
+    validation itself happens once, up front, in _approval_gate."""
+    return bool(getattr(request.state, "_svc_ok", False))
 
 STATUSES = {"unreviewed", "in-review", "needs-work", "approved", "stale"}
 VALID_MODES = {"verification", "reproduce", "explore"}
@@ -141,7 +200,7 @@ async def _finalizer_loop():
                 )
             for r in rows:
                 try:
-                    detail = validations.get_run_detail(r["run_name"])
+                    detail = await asyncio.to_thread(validations.get_run_detail, r["run_name"])
                     if detail.get("phase") in TERMINAL_PHASES:
                         await _maybe_finalize_session(detail)
                 except KeyError:
@@ -693,6 +752,13 @@ async def _approval_gate(request: Request, call_next):
             or not ((_ldap_is_configured() and _ldap_enforcing()) or _REQUIRE_AUTH)
             or request.url.path.startswith(_GATE_EXEMPT_PREFIXES)):
         return await call_next(request)
+    # Trusted in-cluster service (the engine) authenticated by its SA projected
+    # token via TokenReview. Validate once here, up front, and flag the request
+    # so the downstream guards (get_user / require_priv) honor it without each
+    # re-issuing a TokenReview.
+    if await _validate_service_token(request):
+        request.state._svc_ok = True
+        return await call_next(request)
     try:
         user = get_user(request)
     except HTTPException:
@@ -723,6 +789,10 @@ async def _approval_gate(request: Request, call_next):
 
 
 def get_user(request: Request) -> str:
+    # Trusted in-cluster service (the engine fetching managed UCs) — a valid
+    # internal token resolves to the system identity, no cookie/header needed.
+    if _service_token_ok(request):
+        return INTERNAL_IDENTITY
     # App-native session (internal users) first, then the oauth-proxy headers
     # (OCP/FreeIPA users), then anon. Identity is the email/username string.
     sess = local_auth.read_session(request.cookies.get(local_auth.SESSION_COOKIE, ""))
@@ -1028,6 +1098,8 @@ async def require_role(request: Request, minimum: str) -> str:
     """Legacy guard mapped onto privileges: 'admin' and 'platform-admin' both
     require platform.admin; lower minimums just require an enabled account."""
     user = get_user(request)
+    if _service_token_ok(request):
+        return user
     if not _multiuser():
         return user
     if minimum in ("admin", "platform-admin"):
@@ -1040,6 +1112,8 @@ async def require_priv(request: Request, privilege: str, project_id: Optional[in
     """Auth dependency: require a specific privilege (optionally project-scoped).
     platform.admin is a superuser and passes any check."""
     user = get_user(request)
+    if _service_token_ok(request):
+        return user
     if not _multiuser():
         return user
     privs = await _privs(user, project_id)
@@ -1054,6 +1128,8 @@ async def _require_priv_conn(conn, request: Request, privilege: str,
     pool.acquire when the handler also needs _active_project_id). platform.admin
     is a superuser."""
     user = get_user(request)
+    if _service_token_ok(request):
+        return user
     if not _multiuser():
         return user
     privs = await rbac.privileges_for(conn, user, project_id)
@@ -2371,7 +2447,7 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
     if not validations.ENABLED:
         return {"runs": [], "enabled": False}
     try:
-        runs = validations.list_recent(limit=limit)
+        runs = await asyncio.to_thread(validations.list_recent, limit)
     except Exception as e:
         log.exception("list runs failed")
         raise HTTPException(500, f"list failed: {e}")
@@ -2470,6 +2546,21 @@ async def archive_run(name: str, payload: RunArchiveIn, request: Request):
     return {"ok": True, "name": name, "archived": payload.archived}
 
 
+@app.post("/api/runs/{name}/cancel")
+async def stop_run(name: str, request: Request):
+    """Stop an in-flight run: gracefully cancel its Tekton PipelineRun (the
+    finally task GCs the per-run workspace). Any ingested results + DB rows are
+    kept — use DELETE to remove a run entirely. Gated on runs.execute (whoever
+    can start a run can stop one)."""
+    async with pool.acquire() as conn:
+        rpid = await _run_project_id(conn, name)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_RUNS_EXECUTE, rpid)
+    ok = await asyncio.to_thread(validations.cancel_run, name)
+    if not ok:
+        raise HTTPException(404, "run not found or already finished")
+    return {"ok": True, "name": name, "status": "Cancelled"}
+
+
 @app.delete("/api/runs/{name}")
 async def delete_run(name: str, request: Request):
     """Completely and irreversibly remove a run: its ingested analysis (cascades to
@@ -2493,7 +2584,7 @@ async def delete_run(name: str, request: Request):
     removed["analysis_runs"] = int(r1.split()[-1]) if r1.startswith("DELETE") else 0
     removed["run_sessions"]  = int(r2.split()[-1]) if r2.startswith("DELETE") else 0
     try:
-        removed["pipelinerun"] = validations.delete_run(name)
+        removed["pipelinerun"] = await asyncio.to_thread(validations.delete_run, name)
     except Exception as e:
         log.warning("delete pipelinerun %s failed: %s", name, e)
     log.info("Deleted run %s completely: %s", name, removed)
@@ -2604,7 +2695,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                             prm if isinstance(prm, str) else json.dumps(prm)
                         )
     try:
-        result = validations.trigger_run(
+        result = await asyncio.to_thread(validations.trigger_run,
             triggered_by=reviewer,
             branch=payload.branch,
             commit_sha=payload.commit_sha,
@@ -2686,7 +2777,13 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                 payload.category or "ad-hoc", payload.tags or [],
                 payload.mode, reviewer,
                 baseline_gen, baseline_prompt,
-                payload.set_id, payload.set_name, payload.selection_mode,
+                # The synthetic "All Use Cases" set (id 0) has no use_case_sets
+                # row, so set_id must be NULL (FK run_sessions.set_id →
+                # use_case_sets.id) — the lineage is carried by set_name. Sending
+                # 0 here would violate the FK and drop the whole session row,
+                # making the run invisible in the list.
+                (None if _is_all_set(payload.set_id) else payload.set_id),
+                payload.set_name, payload.selection_mode,
                 json.dumps(uc_state_snapshot) if uc_state_snapshot else None,
                 payload.spec_namespaces, payload.corpus_namespaces, _run_pid,
             )
@@ -2722,7 +2819,7 @@ async def get_run_task_logs(
     if not validations.ENABLED:
         raise HTTPException(403, "pipeline trigger disabled")
     try:
-        result = validations.get_task_logs(run_name=name, step=task, tail=tail)
+        result = await asyncio.to_thread(validations.get_task_logs, name, task, tail)
     except KeyError as e:
         raise HTTPException(404, str(e))
     except Exception as e:
@@ -2790,7 +2887,7 @@ async def get_run_turns(
         raise HTTPException(403, "pipeline trigger disabled")
     # Resolve PipelineRun → workspace run_id via timestamp correlation
     try:
-        detail = validations.get_run_detail(name)
+        detail = await asyncio.to_thread(validations.get_run_detail, name)
     except KeyError:
         raise HTTPException(404, f"run {name!r} not found")
     started = detail.get("started_at") or detail.get("created_at")
@@ -2898,7 +2995,7 @@ async def get_run_detail(name: str):
     if not validations.ENABLED:
         raise HTTPException(403, "pipeline trigger disabled")
     try:
-        detail = validations.get_run_detail(name)
+        detail = await asyncio.to_thread(validations.get_run_detail, name)
     except KeyError:
         raise HTTPException(404, f"run {name!r} not found")
     except Exception as e:
@@ -5898,7 +5995,7 @@ def _resolve_run_id(id_or_name: str) -> Optional[str]:
     if _results.get_run_summary(id_or_name) is not None:
         return id_or_name  # already a workspace run_id
     try:
-        detail = validations.get_run_detail(id_or_name)
+        detail = await asyncio.to_thread(validations.get_run_detail, id_or_name)
         started = detail.get("started_at") or detail.get("created_at")
         if started:
             prog = _results.find_progress_near(started, tolerance_seconds=600)
@@ -6285,7 +6382,7 @@ async def _trigger_eval_run(conn, *, mc, managed_uuids, sample_count,
     if profile_override:
         profile = {**profile, **profile_override}
     use_profile_json = json.dumps(profile) if profile else None
-    result = validations.trigger_run(
+    result = await asyncio.to_thread(validations.trigger_run,
         triggered_by=reviewer, inference_endpoint=mc["endpoint"],
         inference_model=mc["model_id"], mode="verification",
         sample_count=sample_count, managed_uc_uuids=managed_uuids,
@@ -6382,7 +6479,7 @@ async def _maybe_score_experiment(conn, exp: dict) -> dict:
             if done:
                 continue
             try:
-                phase = validations.get_run_detail(exp[arm]).get("phase")
+                phase = (await asyncio.to_thread(validations.get_run_detail, exp[arm])).get("phase")
             except Exception:
                 phase = None
             if phase in {"Cancelled", "Failed", "PipelineRunCancelled",
@@ -6563,7 +6660,7 @@ async def get_experiment(exp_id: int):
         phases = {}
         for arm in ("baseline_run", "candidate_run"):
             try:
-                phases[arm] = validations.get_run_detail(exp[arm]).get("phase")
+                phases[arm] = (await asyncio.to_thread(validations.get_run_detail, exp[arm])).get("phase")
             except Exception:
                 phases[arm] = None
     out = _exp_out(exp)
@@ -7621,7 +7718,7 @@ async def self_test_run(payload: RunTriggerIn, request: Request):
         raise HTTPException(403, "trigger disabled")
     reviewer = get_user(request)
     try:
-        result = validations.trigger_run(
+        result = await asyncio.to_thread(validations.trigger_run,
             triggered_by=reviewer,
             branch=payload.branch,
             commit_sha=payload.commit_sha,
@@ -7638,7 +7735,7 @@ async def self_test_runs(limit: int = Query(20, ge=1, le=100)):
     if not validations.ENABLED:
         return {"runs": [], "enabled": False}
     try:
-        runs = validations.list_recent(limit=limit)
+        runs = await asyncio.to_thread(validations.list_recent, limit)
         return {"runs": runs, "enabled": True}
     except Exception as e:
         log.exception("list self-test runs failed")
