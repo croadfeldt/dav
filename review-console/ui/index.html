@@ -4305,7 +4305,7 @@ function rdRenderPrompts() {
   }
   // Cap to most recent 400 to keep DOM bounded
   const visible = all.slice(-400);
-  let lastUcUuid = null;
+  let lastBoundaryKey = null;
   const html = visible.map((r, idx) => {
     const kind = r.kind || 'turn';
     let head = `<span class="kind ${esc(kind)}">${esc(kind)}</span>`;
@@ -4337,16 +4337,24 @@ function rdRenderPrompts() {
     } else {
       body = `<div>${esc(JSON.stringify(r).slice(0,300))}</div>`;
     }
-    // UC boundary banner — emitted whenever the uc_uuid changes (including
-    // the very first record). Lets the eye land on "new UC starts here"
-    // without scanning for the small "start" chip on a turn header.
+    // Boundary banner whenever the UC *or* the ensemble sample (seed) changes.
+    // Each UC, and each ensemble sample within it, is a SEPARATE agent loop, so
+    // the turn counter restarts at 0 every time — without this the repeated
+    // "turn 0…N" blocks read like a glitch. One JSONL file = one UC+seed
+    // sequence, so the file path is the reliable boundary key.
     let boundary = '';
     const recUuid = r.uc_uuid || null;
-    if (recUuid && recUuid !== lastUcUuid) {
+    const boundaryKey = r._file || (recUuid != null ? `${recUuid}::${r.sample_seed ?? ''}` : null);
+    if (boundaryKey && boundaryKey !== lastBoundaryKey) {
       const ts = r.ts ? new Date(r.ts).toLocaleTimeString() : '';
-      const fileBits = r._file ? r._file.replace(/^.*\//, '').replace(/\.jsonl$/, '') : '';
-      boundary = `<div class="uc-boundary">▶ Use case <span class="uc-uuid">${esc(recUuid)}</span>${ts ? `<span class="uc-meta">first record at ${esc(ts)}</span>` : ''}${fileBits ? `<span class="uc-meta">· ${esc(fileBits)}</span>` : ''}</div>`;
-      lastUcUuid = recUuid;
+      let seed = (r.sample_seed != null) ? r.sample_seed : null;
+      if (seed == null && r._file) { const m = r._file.match(/seed-(\d+)/); if (m) seed = m[1]; }
+      const ucShort = recUuid || (r._file ? r._file.replace(/^.*\//, '').replace(/\.jsonl$/, '') : '?');
+      boundary = `<div class="uc-boundary">▶ Use case <span class="uc-uuid">${esc(ucShort)}</span>`
+        + (seed != null ? `<span class="uc-meta">· sample seed ${esc(String(seed))}</span>` : '')
+        + (ts ? `<span class="uc-meta">· ${esc(ts)}</span>` : '')
+        + `<span class="uc-meta">· turns restart at 0</span></div>`;
+      lastBoundaryKey = boundaryKey;
     }
     return `${boundary}<div class="turn-rec kind-${esc(kind)}"><div class="head">${head}</div><div class="body">${body}</div></div>`;
   }).join('');
