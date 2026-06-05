@@ -1211,6 +1211,9 @@ class RunTriggerIn(BaseModel):
     set_id:         Optional[int] = None
     set_name:       Optional[str] = None
     selection_mode: Optional[str] = None  # 'set' | 'selection' | 'individual' | 'corpus'
+    # Optional "time allowed" (failsafe pipeline timeout) in seconds. Blank =
+    # auto (ETA = uc_count × data-driven per-UC estimate, + failsafe buffer).
+    time_allowed_seconds: Optional[int] = None
     # User-facing session metadata (persisted to run_sessions)
     name: str = ""
     description: str = ""
@@ -2713,6 +2716,16 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                         use_profile_json = (
                             prm if isinstance(prm, str) else json.dumps(prm)
                         )
+    # Time budget: planned UC count → the failsafe "time allowed". Use the
+    # operator's explicit value if given, else ETA (uc_count × data-driven
+    # per-UC estimate) + failsafe buffer. 0 (full corpus) → None, so
+    # _mk_pipelinerun applies its generous fixed default.
+    _trig_uc_count = (len(payload.uc_handles or []) + len(payload.uc_uuids or [])
+                      + len(payload.managed_uc_uuids or []))
+    _trig_time_allowed = payload.time_allowed_seconds
+    if not _trig_time_allowed and _trig_uc_count > 0:
+        _est, _ = await _est_per_uc_seconds()
+        _trig_time_allowed = _trig_uc_count * _est + validations.FAILSAFE_BUFFER_SEC
     try:
         result = await asyncio.to_thread(validations.trigger_run,
             triggered_by=reviewer,
@@ -2737,11 +2750,11 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             capabilities_json=capabilities_json,
             use_profile_json=use_profile_json,
             stage2_two_pass=payload.stage2_two_pass,
-            # Planned UC count drives the dynamic failsafe pipeline timeout. From
-            # the explicit selection; 0 (full corpus, unknown count) falls back
-            # to a generous default inside _mk_pipelinerun.
-            uc_count=(len(payload.uc_handles or []) + len(payload.uc_uuids or [])
-                      + len(payload.managed_uc_uuids or [])),
+            uc_count=_trig_uc_count,
+            # Explicit "time allowed" from the modal, else the data-driven
+            # default (ETA = uc_count × median per-UC + buffer); None for full
+            # corpus → _mk_pipelinerun's generous fixed fallback.
+            time_allowed_seconds=_trig_time_allowed,
         )
     except Exception as e:
         log.exception("run trigger failed")
@@ -3010,16 +3023,19 @@ async def _maybe_finalize_session(detail: dict) -> Optional[dict]:
     return out
 
 
-_est_per_uc_cache: dict = {"val": None, "exp": 0.0}
+_est_per_uc_cache: dict = {"val": None, "is_default": True, "exp": 0.0}
 
 
-async def _est_per_uc_seconds() -> int:
-    """Per-UC wall-time estimate: median(wall_time/uc_total) over finalized runs,
-    else the env default. Cached ~5 min — improves as real runs complete."""
+async def _est_per_uc_seconds() -> tuple[int, bool]:
+    """Per-UC wall-time estimate, data-driven: median(wall_time/uc_total) over
+    finalized runs. With NO history yet it returns the env default (30 min) and
+    is_default=True so the UI can note "adjusts as runs complete". Self-improves
+    as real runs finish (cached ~5 min)."""
     now = time.monotonic()
     if _est_per_uc_cache["val"] is not None and _est_per_uc_cache["exp"] > now:
-        return _est_per_uc_cache["val"]
-    val = int(os.environ.get("DAV_EST_SEC_PER_UC", "600"))
+        return _est_per_uc_cache["val"], _est_per_uc_cache["is_default"]
+    val = int(os.environ.get("DAV_EST_SEC_PER_UC", "1800"))
+    is_default = True
     try:
         async with pool.acquire() as conn:
             med = await conn.fetchval(
@@ -3027,12 +3043,22 @@ async def _est_per_uc_seconds() -> int:
                 "(ORDER BY wall_time_seconds / uc_total) FROM run_sessions "
                 "WHERE finalized_at IS NOT NULL AND uc_total > 0 AND wall_time_seconds > 0")
         if med and med > 0:
-            val = int(med)
+            val, is_default = int(med), False
     except Exception as e:
         log.debug("est_per_uc median query failed: %s", e)
-    _est_per_uc_cache["val"] = val
-    _est_per_uc_cache["exp"] = now + 300
-    return val
+    _est_per_uc_cache.update(val=val, is_default=is_default, exp=now + 300)
+    return val, is_default
+
+
+@app.get("/api/runs/estimate")
+async def run_estimate():
+    """Per-UC time estimate (data-driven median, else 30-min default) + failsafe
+    buffer, for the New Run modal to suggest a 'time allowed' = uc_count × per-UC
+    + buffer and note when it's still the default. Defined before /{name} so the
+    literal path wins route matching."""
+    est, is_default = await _est_per_uc_seconds()
+    return {"est_per_uc_seconds": est, "est_per_uc_is_default": is_default,
+            "failsafe_buffer_seconds": validations.FAILSAFE_BUFFER_SEC}
 
 
 @app.get("/api/runs/{name}")
@@ -3112,9 +3138,12 @@ async def get_run_detail(name: str):
                 detail["live_session_prompt_tokens"] = int(prompt_delta) if prompt_delta is not None else None
         except Exception as e:
             log.info("live token delta failed for %s: %s", name, e)
-    # Per-UC time estimate (median over finalized runs, else default) — the UI
-    # multiplies by the UC count to show est total + ETA in the header.
-    detail["est_per_uc_seconds"] = await _est_per_uc_seconds()
+    # Per-UC time estimate (median over finalized runs, else 30-min default) —
+    # the UI multiplies by the UC count to show est total + ETA in the header,
+    # and notes "adjusts as runs complete" while it's still the default.
+    est_per_uc, est_is_default = await _est_per_uc_seconds()
+    detail["est_per_uc_seconds"] = est_per_uc
+    detail["est_per_uc_is_default"] = est_is_default
     return detail
 
 

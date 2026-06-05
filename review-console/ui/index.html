@@ -2114,6 +2114,13 @@
           <div class="form-hint">verification default: 3 · explore default: 10</div>
         </div>
       </div>
+      <div class="form-row">
+        <div class="form-field"><label>Time allowed (hours)</label>
+          <input id="nrTimeAllowed" type="number" min="0.5" max="24" step="0.5" placeholder="(auto from UC count)" />
+          <div class="form-hint">Failsafe that stops a runaway run — it won't cut short a run that finishes first. Auto-suggested from the UC count (ETA + buffer); blank = auto. Editable mid-run.</div>
+        </div>
+        <div class="form-field"></div>
+      </div>
       <hr class="section-sep">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
         <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint);">Corpus <span id="nrCorpusDetected" style="text-transform:none;letter-spacing:0;color:var(--text-faint);font-size:10px;"></span></div>
@@ -4757,7 +4764,9 @@ function renderRunDrawerDetail(d) {
   const hs = [];
   if (ucCount != null) hs.push(`<span class="rd-hstat"><span class="l">UCs</span><b>${ucCount}</b></span>`);
   if (!_terminal && ucCount != null) {
-    hs.push(`<span class="rd-hstat"><span class="l">est/UC</span><b>~${esc(_fmtDurShort(perUc))}</b></span>`);
+    const estDef = d.est_per_uc_is_default
+      ? `<span style="color:var(--text-faint);font-size:9px;margin-left:3px" title="No run history yet — this estimate adjusts as runs complete">≈ default</span>` : '';
+    hs.push(`<span class="rd-hstat"><span class="l">est/UC</span><b>~${esc(_fmtDurShort(perUc))}</b>${estDef}</span>`);
     if (estTotal) hs.push(`<span class="rd-hstat"><span class="l">est total</span><b>~${esc(_fmtDurShort(estTotal))}</b></span>`);
   }
   if (_terminal && s && s.uc_total != null) {
@@ -5162,6 +5171,7 @@ const _selectedUCs = new Set(); // UUIDs of UCs checked in the list for batch op
 // Apply a Set to the New Run modal: sets _pendingRunFilter/_pendingRunLineage and
 // returns the {subpath, banner} to drive the corpus field + banner. Empty setId
 // = full corpus (no filter). Shared by the inline selector + openNewRun.
+let _runEstimate = null;   // cached {est_per_uc_seconds, is_default, buffer}
 async function _applySetToNewRun(setId) {
   if (!setId) {
     _pendingRunFilter = null;
@@ -5177,10 +5187,23 @@ async function _applySetToNewRun(setId) {
     // Both kinds run: corpus UCs are engine-filtered in the corpus; managed UCs
     // are fetched from the console API at run start (no push/promote needed).
     const c = subpathInfo.corpus_count || 0, m = subpathInfo.managed_count || 0;
+    const ucCount = c + m;
+    // Suggest a "time allowed" (failsafe) from the data-driven per-UC estimate.
+    let estNote = '';
+    try {
+      if (!_runEstimate) _runEstimate = await api('/api/runs/estimate');
+      if (_runEstimate && ucCount > 0) {
+        const perUc = _runEstimate.est_per_uc_seconds || 1800;
+        const sec = ucCount * perUc + (_runEstimate.failsafe_buffer_seconds || 7200);
+        const taEl = document.getElementById('nrTimeAllowed');
+        if (taEl) taEl.value = (sec/3600).toFixed(1);
+        estNote = ` · est ~${(ucCount*perUc/3600).toFixed(1)}h (~${Math.round(perUc/60)}m/UC${_runEstimate.est_per_uc_is_default ? ', adjusts as runs complete' : ''})`;
+      }
+    } catch(_) {}
     const bits = [];
     if (m) bits.push(`${m} managed (fetched from API)`);
     if (c) bits.push(`${c} corpus`);
-    const banner = `Running Set "${esc(set?.name || setId)}" — ${bits.join(' + ') || 'no UCs'} · engine-filtered to exactly these.`;
+    const banner = `Running Set "${esc(set?.name || setId)}" — ${bits.join(' + ') || 'no UCs'} · engine-filtered to exactly these.${estNote}`;
     return { subpath: subpathInfo.subpath || undefined, banner };
   } catch(e) {
     _pendingRunFilter = null; _pendingRunLineage = { selection_mode: 'corpus' };
@@ -5361,6 +5384,9 @@ async function submitNewRun() {
     name:               document.getElementById('nrSessionName').value.trim(),
     description:        document.getElementById('nrDescription').value.trim(),
     category:           document.getElementById('nrCategory').value || 'ad-hoc',
+    // Failsafe "time allowed" (hours → seconds). Blank = auto (server computes
+    // ETA + buffer from the data-driven per-UC estimate).
+    time_allowed_seconds: (function(){ const h = parseFloat(document.getElementById('nrTimeAllowed').value); return (h > 0) ? Math.round(h*3600) : null; })(),
     // Optional engine-side UC filter — set by runSet / testRunUC. When
     // present, engine processes only these UCs from within corpus_subpath.
     uc_handles:         (_pendingRunFilter?.handles?.length ? _pendingRunFilter.handles : null),
