@@ -129,7 +129,15 @@ TunableOp off. Validated-good.
     2 major / 22 moderate (envelope 2–8 major); per-UC swings within the
     established stochasticity (custom-service ranges 1–5 across all runs);
     semantic spot-check valid (DNS gaps consolidated into one cleaner statement).
-- Confirmation pass `756549` (Exp5b) launched for run-to-run stability.
+- **Exp5b confirmation `756549`:** efficiency STABLE — 15/15, mean 8.0 turns
+  (run 1: 7.9), 1h13m, 1 dup block (caught by the backstop, layered design
+  working). Gaps **22 / 1.47 per UC** — below the historical band (24–29) but
+  structurally sound: every UC ≥1 gap (8×1, 7×2), 4 majors, no misses.
+- **Exp5c tie-break `761248` launched.** Decision rule: ≥24 gaps (in band) →
+  memo confirmed (2/3 in band); ≤22 again → low-side pattern → flag to user /
+  consider `DAV_RETRIEVAL_MEMO=0`. Run 1 being IDENTICAL to baseline argues the
+  memo doesn't systematically suppress; one low run can be ordinary tail
+  variance (non-memo runs only exact-match ~35% run-to-run).
 - Disable path remains `DAV_RETRIEVAL_MEMO=0` (env, no rebuild).
 
 ### Cumulative (vs original ROCM_ATTN + 8k crawl)
