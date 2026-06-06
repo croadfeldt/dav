@@ -523,6 +523,13 @@ def _cli():
         help="Model name to send to the endpoint.",
     )
     parser.add_argument(
+        "--inference-api-key-env", type=str, default=None,
+        help="Name of the env var holding the inference API key for external "
+             "frontier models (e.g. CLAUDE_API_KEY / OPENAI_API_KEY), injected "
+             "from a Secret. Falls back to DAV_INFERENCE_API_KEY. Local vLLM "
+             "needs none.",
+    )
+    parser.add_argument(
         "--inference-topology", type=str, default="",
         help="Operator-supplied label describing the inference topology "
              "(e.g. 'dual-r9700-tp2-q8' or 'single-l4-fp16'). Stamped onto "
@@ -850,9 +857,19 @@ def _cli():
     # use_profile may override chat_template_kwargs too — last writer wins.
     if "chat_template_kwargs" in use_profile and use_profile["chat_template_kwargs"] is not None:
         chat_template_kwargs = use_profile["chat_template_kwargs"]
+    # External frontier models (Claude/OpenAI) need a real key; local vLLM
+    # ignores it. Resolve from the named env var (--inference-api-key-env, e.g.
+    # CLAUDE_API_KEY, injected from a Secret) or the generic DAV_INFERENCE_API_KEY.
+    _key_env = getattr(args, "inference_api_key_env", None)
+    inference_api_key = (
+        (os.environ.get(_key_env) if _key_env else None)
+        or os.environ.get("DAV_INFERENCE_API_KEY")
+        or "no-key-needed"
+    )
     primary = EndpointConfig(
         url=args.inference_endpoint,
         model=args.inference_model,
+        api_key=inference_api_key,
         chat_template_kwargs=chat_template_kwargs,
         cache_prompt=cache_prompt,
         top_k=top_k,

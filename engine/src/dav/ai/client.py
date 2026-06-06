@@ -234,6 +234,15 @@ class ChatResponse:
     usage: dict[str, int]                      # {prompt_tokens, completion_tokens, ...}
     endpoint_used: str                         # which endpoint served the response
 
+def _is_anthropic(endpoint: "EndpointConfig") -> bool:
+    """Route to the native Anthropic Messages API (for prompt caching + the
+    different request/response shape) when the endpoint is Claude. Detected by
+    the host or a claude-* model id, so a model_config pointing at
+    https://api.anthropic.com/v1 with model 'claude-*' just works."""
+    return ("anthropic" in (endpoint.url or "").lower()
+            or (endpoint.model or "").lower().startswith("claude"))
+
+
 class InferenceClient:
     """
     OpenAI-compatible chat client with optional fallback.
@@ -260,6 +269,9 @@ class InferenceClient:
         guided_json_schema: dict[str, Any] | None = None,
         seed: int | None = None,
     ) -> ChatResponse:
+        if _is_anthropic(self.primary):
+            return self._chat_anthropic(self.primary, messages, tools,
+                                        temperature, max_tokens, seed)
         body = self._build_body(self.primary, messages, tools, temperature,
                                  max_tokens, guided_json_schema, seed)
         try:
@@ -273,6 +285,119 @@ class InferenceClient:
             body = self._build_body(self.fallback, messages, tools, temperature,
                                      max_tokens, guided_json_schema, seed)
             return self._post(self.fallback, body)
+
+    # --- Anthropic native path (prompt caching + Messages-API format) ---
+    # NOTE: built model-agnostically; NEEDS end-to-end validation against the live
+    # API once a key is configured (untested without one). guided_json is not
+    # supported by Anthropic — Claude produces the final JSON from the prompt
+    # instruction instead (validate final-JSON reliability on the first run).
+
+    @staticmethod
+    def _to_anthropic(messages: list[ChatMessage]) -> tuple[Any, list[dict[str, Any]]]:
+        """OpenAI-format ChatMessage list -> (system_blocks, anthropic_messages).
+        The FIRST system message becomes the top-level system (cache_control'd);
+        any later system message (the retrieval memo) is appended as a text block
+        to the trailing user message. Tool results become tool_result blocks
+        batched into user messages; assistant tool_calls become tool_use blocks.
+        Consecutive same-role messages are merged (Anthropic requires alternation).
+        A rolling cache breakpoint is pinned on the last tool_result so the
+        conversation-so-far re-bills at ~0.1x like the static system prefix."""
+        system_text = None
+        a_msgs: list[dict[str, Any]] = []
+
+        def _user(blocks):
+            if a_msgs and a_msgs[-1]["role"] == "user":
+                a_msgs[-1]["content"].extend(blocks)
+            else:
+                a_msgs.append({"role": "user", "content": list(blocks)})
+
+        for m in messages:
+            content = m.content if isinstance(m.content, str) else ""
+            if m.role == "system":
+                if system_text is None:
+                    system_text = content
+                else:
+                    _user([{"type": "text", "text": content}])          # retrieval memo
+            elif m.role == "user":
+                _user([{"type": "text", "text": content}])
+            elif m.role == "tool":
+                _user([{"type": "tool_result", "tool_use_id": m.tool_call_id,
+                        "content": content}])
+            elif m.role == "assistant":
+                blocks: list[dict[str, Any]] = []
+                if content:
+                    blocks.append({"type": "text", "text": content})
+                for tc in (m.tool_calls or []):
+                    fn = tc.get("function", {})
+                    raw = fn.get("arguments", "{}")
+                    try:
+                        inp = json.loads(raw) if isinstance(raw, str) else raw
+                    except json.JSONDecodeError:
+                        inp = {}
+                    blocks.append({"type": "tool_use", "id": tc.get("id"),
+                                   "name": fn.get("name", ""), "input": inp})
+                if not blocks:
+                    blocks = [{"type": "text", "text": ""}]
+                if a_msgs and a_msgs[-1]["role"] == "assistant":
+                    a_msgs[-1]["content"].extend(blocks)
+                else:
+                    a_msgs.append({"role": "assistant", "content": blocks})
+
+        system_blocks = None
+        if system_text is not None:
+            system_blocks = [{"type": "text", "text": system_text,
+                              "cache_control": {"type": "ephemeral"}}]
+        for msg in reversed(a_msgs):                                    # rolling breakpoint
+            done = False
+            for blk in reversed(msg["content"]):
+                if blk.get("type") == "tool_result":
+                    blk["cache_control"] = {"type": "ephemeral"}
+                    done = True
+                    break
+            if done:
+                break
+        return system_blocks, a_msgs
+
+    def _chat_anthropic(self, endpoint, messages, tools, temperature, max_tokens, seed):
+        system_blocks, a_msgs = self._to_anthropic(messages)
+        body: dict[str, Any] = {"model": endpoint.model, "max_tokens": max_tokens,
+                                "temperature": temperature, "messages": a_msgs}
+        if system_blocks:
+            body["system"] = system_blocks
+        if tools:
+            body["tools"] = [{"name": t.name, "description": t.description,
+                              "input_schema": t.parameters} for t in tools]
+        url = f"{endpoint.url.rstrip('/')}/messages"
+        headers = {"x-api-key": endpoint.api_key, "anthropic-version": "2023-06-01",
+                   "content-type": "application/json"}
+        try:
+            r = requests.post(url, headers=headers, json=body,
+                              timeout=endpoint.timeout_seconds)
+        except requests.RequestException as e:
+            raise InferenceError(f"request to {endpoint.label} (anthropic) failed: {e}") from e
+        if r.status_code != 200:
+            raise InferenceError(f"{endpoint.label} (anthropic) returned {r.status_code}: {r.text[:500]}")
+        try:
+            data = r.json()
+        except json.JSONDecodeError as e:
+            raise InferenceError(f"{endpoint.label} returned non-JSON: {r.text[:500]}") from e
+        text_parts, tool_calls = [], []
+        for block in data.get("content", []):
+            if block.get("type") == "text":
+                text_parts.append(block.get("text", ""))
+            elif block.get("type") == "tool_use":
+                tool_calls.append({"id": block.get("id"), "type": "function",
+                                   "function": {"name": block.get("name"),
+                                                "arguments": json.dumps(block.get("input") or {})}})
+        u = data.get("usage", {}) or {}
+        in_tok, out_tok = u.get("input_tokens", 0), u.get("output_tokens", 0)
+        usage = {"prompt_tokens": in_tok, "completion_tokens": out_tok,
+                 "total_tokens": in_tok + out_tok,
+                 "cache_creation_input_tokens": u.get("cache_creation_input_tokens", 0),
+                 "cache_read_input_tokens": u.get("cache_read_input_tokens", 0)}
+        return ChatResponse(content="".join(text_parts), tool_calls=tool_calls,
+                            finish_reason=data.get("stop_reason") or "stop",
+                            usage=usage, endpoint_used=endpoint.label)
 
     def list_models(self, endpoint: EndpointConfig | None = None) -> list[str]:
         """For health checks."""
