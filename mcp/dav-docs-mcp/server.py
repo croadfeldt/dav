@@ -26,6 +26,7 @@ Either mode can serve to stdio or SSE transports; the in-cluster deployment
 uses SSE on port 8080.
 """
 
+import os
 import re
 import json
 import hashlib
@@ -50,6 +51,17 @@ except ImportError:
 # or namespace is special-cased.
 _MAX_SECTION_CHARS = 32000
 _SECTION_HEAD_CHARS = 6000
+# Doc window size, shared by get_document and get_document_section. A doc this
+# size or smaller is returned WHOLE; a larger doc is streamed in windows of this
+# many chars (get_document_section bundles the requested section + following ones
+# up to this budget, with a resume pointer). The agent crawls large docs (e.g.
+# the 89KB Capabilities Matrix) one small section per turn — 15-28 sequential
+# calls that exhausted the 30-call budget (3/15 UCs hit the cap). Windowing cuts
+# that ~4x while keeping each result small enough for the engine's context
+# manager to evict — returning a whole 22K-token doc in one result is NOT
+# evictable and overflowed the 86K window (7/15 failed at 90000). Env-tunable;
+# keep windows well under the budget (≈14K chars / ~3.5K tok is safe).
+MAX_DOC_CHARS = int(os.environ.get("DAV_MCP_MAX_DOC_CHARS", "14000"))
 
 # Stopwords filtered from queries so phrases like "how does audit work"
 # rank on "audit" rather than matching nearly every document on "how".
@@ -442,8 +454,6 @@ def get_document(handle: str) -> str:
         return f"Document '{handle}' not found. Available (first 20): {available}..."
 
     content = doc["content"]
-    MAX_DOC_CHARS = 8000
-
     if len(content) <= MAX_DOC_CHARS:
         return content
 
@@ -476,6 +486,12 @@ def get_document_section(handle: str, section_title: str) -> str:
     if not doc:
         return f"Document '{handle}' not found."
 
+    # Small docs: return whole (one call, no crawl). Larger docs fall through to
+    # the forward-window logic below, which streams them in MAX_DOC_CHARS-sized
+    # windows — small enough to stay evictable, unlike a single whole-doc result.
+    if len(doc["content"]) <= MAX_DOC_CHARS:
+        return doc["content"]
+
     lines = doc["content"].split("\n")
     section_lower = section_title.lower()
 
@@ -505,13 +521,36 @@ def get_document_section(handle: str, section_title: str) -> str:
             f"Available sections in '{doc['handle']}':\n{sections_list}"
         )
 
+    # Forward WINDOW: bundle the requested section AND the following sections until
+    # we reach ~MAX_DOC_CHARS, then stop and tell the agent where to resume. This
+    # lets the agent read a large doc (e.g. the 89KB Capabilities Matrix) in a few
+    # windows instead of crawling one small section per turn — which exhausted the
+    # 30-call budget (3/15 UCs hit the cap doing exactly this). Each window is kept
+    # small enough that the engine's context manager evicts older windows, the SAME
+    # sliding-window memory dynamics as the original per-section crawl that
+    # validated 15/15 — just ~4x fewer round-trips. (Returning the whole doc in one
+    # result is NOT evictable and overflowed the 86K context window — 7/15 failed.)
     end_line = len(lines)
-    for section in doc["sections"]:
-        if section["line"] - 1 > start_line and section["level"] <= start_level:
-            end_line = section["line"] - 1
+    acc = 0
+    for i in range(start_line, len(lines)):
+        acc += len(lines[i]) + 1
+        if acc >= MAX_DOC_CHARS:
+            end_line = i + 1
             break
 
     body = "\n".join(lines[start_line:end_line])
+
+    # Resume pointer: if the doc continues past this window, name the next section
+    # so the agent can fetch the following window in one move.
+    if end_line < len(lines):
+        nxt = next((s["title"] for s in doc["sections"]
+                    if s["line"] - 1 >= end_line), None)
+        if nxt:
+            body += (
+                f"\n\n[… '{doc['handle']}' continues beyond this window. To read on, "
+                f"call get_document_section(handle='{doc['handle']}', "
+                f"section_title='{nxt}').]"
+            )
 
     if len(body) <= _MAX_SECTION_CHARS:
         return body

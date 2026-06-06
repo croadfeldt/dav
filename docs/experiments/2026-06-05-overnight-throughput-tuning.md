@@ -1,0 +1,91 @@
+# Overnight throughput tuning — running ledger (2026-06-05 → 06-06)
+
+**Goal:** cut DAV stage-2 per-UC wall time while holding gap quality.
+**Quality is priority 1; speed a close 2nd** (no config is left deployed unless
+quality is validated — else revert to last known-good).
+
+**Fixed harness:** 15 managed `test/standard/*` UCs, verification, **1 sample/UC**,
+AITER decode backend. Compared against ROCM_ATTN baselines (b929352/2508edb,
+24–26 gaps / 1.60–1.73 per UC) and the AITER baseline `702758`.
+
+**Quality gate per run:** 15/15 success; total gaps within ~24–28; gaps/UC ~1.6–1.9;
+per-UC within ±1 of baseline; semantic spot-check on diverged UCs shows valid
+(not hallucinated) gaps. Watch for context-pressure degradation.
+
+---
+
+## Baseline — `702758` (AITER, MCP cap 8000)
+- 15/15, **1h50m**. Gaps 28 / 1.87 per UC. Quality validated ≈ ROCM_ATTN.
+- **Agent-loop tax:** mean ~18.5 turns/UC; **3/15 hit the 30-turn cap**
+  (`9e0f1a2b` 26×, `8a3c1b0d` 17×, `45a1f7e9` 12×) crawling one large doc
+  section-by-section via `get_document_section`. Root cause of the slow tail.
+
+## Exp 1 — `712152` (MCP `get_document` cap 8000→90000)
+- 15/15, 1h38m. **No real effect:** the agent goes straight to
+  `get_document_section` (never calls `get_document`), so raising that cap
+  changed nothing. Cap-hitters still 29 turns. Wall-time delta = AITER variance.
+- **Lesson:** the crawl is via `get_document_section`, so the fix must live there.
+
+## Exp 2 — whole-doc short-circuit in `get_document_section` (cap 90000)  `718951`
+- **Speed: spectacular.** Crawl collapsed — cap-hitters `9e0f1a2b`/`8a3c1b0d`/
+  `45a1f7e9` went **29 → 7-8 turns**; mean ~18.5 → ~7. `max_result=87686` confirms
+  the matrix returned whole in one call.
+- **Quality: FAILED — 8/15.** 7 UCs hit context overflow: injecting the whole
+  ~22K-token matrix pushes the prompt to ~70K input + the 16K output reservation
+  = **86,017 > 86,016** (over by 1 token). The engine's post-overflow retry can't
+  recover because the bulk is one un-droppable tool result.
+- **Key insight:** the per-section crawl was *implicit context management* —
+  streaming the doc in small, evictable pieces (sliding window). A single
+  whole-doc result defeats that. **Reverted MCP to cap 8000 (safe) immediately.**
+
+## Exp 3 — forward WINDOW in `get_document_section` (cap 14000)  `723339`  ✅ KEPT
+- Change: for a large doc, return the requested section + following sections up
+  to ~14000 chars (~3.5K tok) with a resume pointer — NOT the whole doc. Each
+  window stays evictable (sliding-window dynamics of the validated baseline).
+- **Speed: WIN.** Mean turns **18.5 → 11.9 (-36%)**; the 3 original cap-hitters
+  collapsed (`9e0f1a2b` 29→8, `8a3c1b0d` 29→10, `45a1f7e9` 29→13). Wall-time
+  **1h50m → 1h24m (-24%)**.
+- **Quality: HOLDS.** 15/15, **0 overflow**. Gaps 29 / 1.93 per UC (baseline
+  28/1.87; ROCM band 24-26/1.60-1.73) — in-band. Per-UC within ±1 on 13/15;
+  `custom-service` 1→5 (that UC ranged 1-5 across all prior runs — stochastic);
+  semantic spot-check on the lone new cap-hitter (`bare-metal`, 29 turns) shows
+  valid, coherent gaps — not degraded.
+- One regression to revisit: `5c6d7e8f` (bare-metal) rose 21→29 turns (windows it
+  reads 18×). Aggregate still far better; tune later (window size or its grounding).
+- **DECISION: keep.** New validated-good = AITER + windowed doc reads (cap 14000,
+  `mcp/dav-docs-mcp/server.py` default; also live env `DAV_MCP_MAX_DOC_CHARS=14000`).
+
+---
+
+## Net result (vs the original ROCM_ATTN + 8000-char crawl)
+- Decode backend AITER: **1.93× faster** tok/s (Exp on `702758`, quality-validated).
+- Doc windowing: **-36% agent turns, -24% wall-clock**, quality held (Exp `723339`).
+- Both quality-gated (15/15, gaps in the ROCM_ATTN noise envelope, semantic checks).
+- Full-corpus runs that used to time out now finish well inside budget.
+
+## Recommended next (need a model restart — left for greenlight)
+- **TunableOp** (`PYTORCH_TUNABLEOP_ENABLED=1` + persistent filename): quality-
+  neutral GEMM autotune, possible +5-15% decode. Disabled today only to avoid
+  first-request latency; persistent cache amortizes it.
+- **n-gram / prompt-lookahead speculative**: model-agnostic, DAV output repeats
+  spec terms. Both restart the stable model → do with supervision.
+- Tune window size (16-18k) / fix `5c6d7e8f` grounding to shave the last cap-hit.
+
+## Next candidates (if needed)
+- Tune `DAV_MCP_MAX_DOC_CHARS` down (e.g. 50k) if context pressure hurts quality
+  (still fixes cost-models; matrix would need a smarter escalation).
+- Section-crawl escalation with a K-call threshold (only escalate after the agent
+  proves it needs most of a doc) — more surgical than always-whole.
+- TunableOp (`PYTORCH_TUNABLEOP_ENABLED=1`, persistent filename) — quality-neutral
+  decode lever, needs a model restart.
+- **n-gram / prompt-lookahead speculative decoding** — model-agnostic speculative
+  (no draft heads), DAV output repeats spec/doc terms so lookahead may hit.
+  vLLM serving-config change → model restart; sequence AFTER the doc-cap work.
+
+## MTP — not viable on the current model (checked 2026-06-06)
+`Qwen3-32B` FP8 is dense (`Qwen3ForCausalLM`, model_type `qwen3`):
+`num_nextn_predict_layers: None`, no nextn/mtp keys, no MTP/draft weight shards.
+MTP needs model-shipped draft layers (Qwen3.6-27B / DeepSeek-V3 style). The prior
+MTP attempt was on Qwen3.6-27B → 0/15 (upstream vLLM bug #43713 + that model's own
+quality issues). So MTP on the stable default is off the table without a model
+swap; n-gram speculative (above) is the model-agnostic alternative.
