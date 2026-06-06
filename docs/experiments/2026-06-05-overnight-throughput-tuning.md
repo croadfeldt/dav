@@ -120,10 +120,21 @@ TunableOp off. Validated-good.
   everything is still in context — the model just loses track. Prevention to
   complement the reactive cross-turn dedup.
 - Baseline = Exp3 `723339` (memo off): mean 11.9 turns, 1h24m, 29 gaps.
-- Hypothesis: fewer turns + lower `cross_turn_dup_count`, quality holds. Result: _pending_.
-- **NOTE: deployed in dav-engine:latest, ON by default.** If the A/B shows a
-  regression, disable with `DAV_RETRIEVAL_MEMO=0` on the run-corpus task (restores
-  Exp3 behavior). Commit held until validated.
+- **RESULT: ✅ PASS — KEPT.** 15/15, 0 failed.
+  - **Turns: 11.9 → 7.9 mean (−34%)**; worst UC 29 → 11 (the Exp3 cap-hitter
+    `5c6d7e8f` dropped to 8). **Wall: 1h24m → 1h05m (−23%).**
+  - **0 cross-turn dedup blocks across the whole run** (prevention worked —
+    baseline runs needed multiple reactive blocks).
+  - Quality: gaps **29 / 1.93 per UC — identical aggregate to baseline**; severity
+    2 major / 22 moderate (envelope 2–8 major); per-UC swings within the
+    established stochasticity (custom-service ranges 1–5 across all runs);
+    semantic spot-check valid (DNS gaps consolidated into one cleaner statement).
+- Confirmation pass `756549` (Exp5b) launched for run-to-run stability.
+- Disable path remains `DAV_RETRIEVAL_MEMO=0` (env, no rebuild).
+
+### Cumulative (vs original ROCM_ATTN + 8k crawl)
+AITER ~2× decode → windowing −36% turns → memo −34% more turns. 15-UC eval:
+*timed out* → 1h50m → 1h24m → **1h05m**, quality held at every step.
 
 ### Adapter validated vs the Claude API reference (`62d747e`)
 - Fixed: `temperature` 400s on Opus 4.7+/4.8 (now omitted there); Anthropic
