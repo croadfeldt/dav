@@ -493,6 +493,17 @@ A few things worth being explicit about so they don't drift into expectation:
 
 ---
 
+## Deferred / future items
+
+- **Mobile version of the review console** *(requested 2026-06-06)* — the current
+  UI is a desktop-density single-file SPA (fixed-width runs panel, side-by-side
+  runs/detail split, dense metrics grid). Future work: a responsive pass
+  (collapsible panels, stacked layouts, touch targets) or a dedicated mobile
+  view. Likely read-mostly first — runs list, run detail/progress, gap review —
+  before any edit flows. Scope with the user before starting. (Task #73.)
+
+---
+
 ## Pickup notes for next session
 
 Whenever you next pick up DAV work:
