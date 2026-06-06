@@ -73,6 +73,22 @@ per-UC within ±1 of baseline; semantic spot-check on diverged UCs shows valid
 - **Reverted** to the maintainer's tested-stable config (TunableOp off); not worth
   the first-request tuning latency + config deviation for ~1%.
 
+## Exp 6 — UC-level concurrency (`--uc-concurrency`)  [BUILT, A/B PENDING]
+- Engine: ThreadPool over UCs in `run_corpus` (mirrors `run_samples`); UCs are
+  independent (per-UC factories for MCP/inference clients; per-UC seeds derive
+  from the UC uuid → order-independent, directly comparable to serial). Results/
+  progress mutated only from the main thread via `as_completed`; halt-on-error
+  cancels not-yet-started UCs (in-flight finish). Effective in-flight requests
+  = uc_concurrency × sample_concurrency (vLLM has 32 slots).
+- Plumbed end-to-end: engine arg → Tekton task `uc-concurrency` param →
+  pipeline pass-through → `RunTriggerIn.uc_concurrency` → `trigger_run`.
+- Why it should win: decode is memory-bandwidth-bound and BATCHED decode reads
+  the weights once per step for the whole batch — concurrent UC streams scale
+  aggregate tok/s nearly free. Projection: 32-UC production run ~2.3h serial →
+  ~50min at concurrency 3.
+- A/B plan: 15-UC harness @ uc_concurrency=3 vs the serial memo runs
+  (1h05m/1h13m). Gate: 15/15, gaps in-band, wall ≪ serial. Result: _pending_.
+
 ## Recommended next (need a model restart / supervision)
 - **n-gram / prompt-lookahead speculative**: model-agnostic; might help decode if
   output repeats context. Lower expected value now that decode is confirmed

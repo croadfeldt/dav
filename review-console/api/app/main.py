@@ -1337,6 +1337,8 @@ class RunTriggerIn(BaseModel):
     # How many of a UC's ensemble samples run in parallel (pure throughput —
     # samples are independent). None = auto (min(sample_count, cap)).
     sample_concurrency: Optional[int] = None
+    # How many UCs run in parallel (independent agent loops — pure wall-clock win).
+    uc_concurrency: Optional[int] = None
     corpus_subpath: Optional[str] = None
     corpus_repo_url: Optional[str] = None
     corpus_repo_branch: Optional[str] = None
@@ -2903,6 +2905,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             mode=payload.mode,
             sample_count=payload.sample_count,
             sample_concurrency=_trig_sample_conc,
+            uc_concurrency=payload.uc_concurrency,
             corpus_subpath=params["corpus_subpath"],
             corpus_repo_url=params["corpus_repo_url"],
             corpus_repo_branch=params["corpus_repo_branch"],

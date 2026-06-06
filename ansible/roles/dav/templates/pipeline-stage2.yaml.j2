@@ -89,6 +89,9 @@ spec:
     - name: sample-concurrency
       type: string
       default: ""
+    - name: uc-concurrency
+      type: string
+      default: ""
     - name: halt-on-error
       type: string
       default: "false"
@@ -270,6 +273,8 @@ spec:
           value: $(params.sample-count)
         - name: sample-concurrency
           value: $(params.sample-concurrency)
+        - name: uc-concurrency
+          value: $(params.uc-concurrency)
         - name: halt-on-error
           value: $(params.halt-on-error)
         - name: uc-handles

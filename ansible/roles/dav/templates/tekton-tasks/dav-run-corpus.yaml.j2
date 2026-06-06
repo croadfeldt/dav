@@ -76,6 +76,16 @@ spec:
         run the whole ensemble at once.
       default: ""
 
+    - name: uc-concurrency
+      type: string
+      description: |
+        How many UCs to analyze in parallel. UCs are independent agent loops
+        (per-UC seeds derive from the UC uuid; per-UC MCP/inference clients) so
+        this is a pure wall-clock win — vLLM batches the concurrent streams.
+        Effective in-flight requests = uc-concurrency × sample-concurrency.
+        Empty / "1" = serial (legacy).
+      default: ""
+
     - name: seed
       type: string
       description: |
@@ -308,6 +318,9 @@ spec:
         fi
         if [ -n "$(params.sample-concurrency)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --sample-concurrency $(params.sample-concurrency)"
+        fi
+        if [ -n "$(params.uc-concurrency)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --uc-concurrency $(params.uc-concurrency)"
         fi
         if [ -n "$(params.seed)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --seed $(params.seed)"

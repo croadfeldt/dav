@@ -152,6 +152,7 @@ def _mk_pipelinerun(
     mode: Optional[str] = None,
     sample_count: Optional[int] = None,
     sample_concurrency: Optional[int] = None,
+    uc_concurrency: Optional[int] = None,
     corpus_subpath: Optional[str] = None,
     corpus_repo_url: Optional[str] = None,
     corpus_repo_branch: Optional[str] = None,
@@ -190,6 +191,8 @@ def _mk_pipelinerun(
         params.append({"name": "sample-count", "value": str(sample_count)})
     if sample_concurrency is not None:
         params.append({"name": "sample-concurrency", "value": str(sample_concurrency)})
+    if uc_concurrency is not None:
+        params.append({"name": "uc-concurrency", "value": str(uc_concurrency)})
     if max_tokens is not None:
         # Per-run output budget override (the Tekton task's max-tokens param,
         # default = dav_stage2_max_tokens). Used by the self-improvement loop's
@@ -282,6 +285,7 @@ def trigger_run(
     mode: Optional[str] = None,
     sample_count: Optional[int] = None,
     sample_concurrency: Optional[int] = None,
+    uc_concurrency: Optional[int] = None,
     corpus_subpath: Optional[str] = None,
     corpus_repo_url: Optional[str] = None,
     corpus_repo_branch: Optional[str] = None,
@@ -316,6 +320,7 @@ def trigger_run(
         mode=mode,
         sample_count=sample_count,
         sample_concurrency=sample_concurrency,
+        uc_concurrency=uc_concurrency,
         corpus_subpath=corpus_subpath,
         corpus_repo_url=corpus_repo_url,
         corpus_repo_branch=corpus_repo_branch,

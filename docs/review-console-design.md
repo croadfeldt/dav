@@ -802,6 +802,13 @@ running=1 / KV 5.8 %**.
    API default `min(sample_count, DAV_MAX_SAMPLE_CONCURRENCY=4)`). The engine
    already supported it (`run_samples` ThreadPoolExecutor; per-sample MCP client,
    shared thread-safe inference client). *A/B (concurrency 1 vs 3) to quantify.*
+   **UC-level concurrency** extends the same idea one level up: `uc_concurrency`
+   on the trigger (`uc-concurrency` Tekton param → engine `--uc-concurrency`)
+   runs whole UCs in parallel — UCs are independent agent loops (per-UC client
+   factories; per-UC seeds derive from the UC uuid, so results are
+   order-independent), and batched decode on the memory-bandwidth-bound R9700s
+   scales aggregate tok/s nearly free. Effective in-flight requests =
+   uc_concurrency × sample_concurrency (vLLM `max-num-seqs=32` is the ceiling).
 2. **Cut the agent-loop tax** — 17 tool calls × a growing transcript drives the
    18 turns of decode. Tighter/fewer MCP queries, smaller tool results, or
    pruning old results between turns reduces turns → less decode. *Affects

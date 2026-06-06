@@ -563,6 +563,14 @@ def _cli():
         help="Parallel samples per UC (default 1, serial).",
     )
     parser.add_argument(
+        "--uc-concurrency", type=int, default=1,
+        help="How many UCs to analyze in parallel (default 1, serial). UCs are "
+             "independent (per-UC seeds derive from the UC uuid, per-UC MCP/"
+             "inference clients come from factories), so this is a pure wall-"
+             "clock win — vLLM batches the streams on the same GPUs. Effective "
+             "in-flight requests = uc_concurrency × sample_concurrency.",
+    )
+    parser.add_argument(
         "--seed", type=int, default=None,
         help="Override the mode's default seed.",
     )
@@ -933,11 +941,9 @@ def _cli():
         except Exception as e:
             log.warning("progress write failed: %s", e)
 
-    _write_progress(current_index=0, current_uc_path=None, phase="running")
-    for i, uc_path in enumerate(corpus_files, 1):
+    def _run_uc(i: int, uc_path):
         log.info("[%d/%d] %s", i, len(corpus_files), uc_path)
-        _write_progress(current_index=i, current_uc_path=str(uc_path), phase="running")
-        result = run_one_uc(
+        return run_one_uc(
             uc_path=uc_path,
             run_dir=run_dir,
             inference_factory=_make_inference,
@@ -950,6 +956,10 @@ def _cli():
             endpoint_url=args.inference_endpoint,
             inference_topology=args.inference_topology,
         )
+
+    def _record(result) -> bool:
+        """Append + log one finished UC; returns True when halt-on-error fires.
+        Called only from the main thread (serial loop or as_completed loop)."""
         results.append(result)
         if not result.success:
             log.warning(
@@ -959,13 +969,54 @@ def _cli():
             write_failure_report(run_dir, result)
             if args.halt_on_error:
                 log.error("--halt-on-error set; stopping after first failure")
-                halted = True
-                break
+                return True
         else:
             log.info(
                 "UC %s done (%.2fs, %d sample(s))",
                 result.uc_uuid, result.wall_time_seconds, result.sample_count,
             )
+        return False
+
+    uc_concurrency = max(1, int(getattr(args, "uc_concurrency", 1) or 1))
+    _write_progress(current_index=0, current_uc_path=None, phase="running")
+    if uc_concurrency == 1:
+        # Serial path — semantics identical to the original loop.
+        for i, uc_path in enumerate(corpus_files, 1):
+            _write_progress(current_index=i, current_uc_path=str(uc_path), phase="running")
+            result = _run_uc(i, uc_path)
+            if _record(result):
+                halted = True
+                break
+    else:
+        # Concurrent path — UCs are independent agent loops (per-UC clients via
+        # the factories; per-UC seeds derive from the UC uuid, so results are
+        # order-independent and comparable to serial runs). vLLM batches the
+        # concurrent streams, so aggregate throughput scales while per-UC
+        # latency stays roughly flat. results/progress are mutated only from
+        # this (main) thread via as_completed. halt-on-error cancels UCs not
+        # yet started; in-flight UCs run to completion.
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        log.info("uc-concurrency=%d: running %d UC(s) with up to %d in flight",
+                 uc_concurrency, len(corpus_files), uc_concurrency)
+        with ThreadPoolExecutor(max_workers=uc_concurrency) as pool:
+            futures = {
+                pool.submit(_run_uc, i, uc_path): (i, uc_path)
+                for i, uc_path in enumerate(corpus_files, 1)
+            }
+            for fut in as_completed(futures):
+                i, uc_path = futures[fut]
+                try:
+                    result = fut.result()
+                except Exception as e:                      # belt-and-suspenders
+                    log.error("UC %s crashed the worker: %s", uc_path, e)
+                    continue
+                _write_progress(current_index=len(results) + 1,
+                                current_uc_path=str(uc_path), phase="running")
+                if _record(result):
+                    halted = True
+                    for pending in futures:
+                        pending.cancel()
+                    break
     runner_total = time.monotonic() - runner_started
     _write_progress(
         current_index=len(results),
