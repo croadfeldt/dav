@@ -361,7 +361,15 @@ class InferenceClient:
     def _chat_anthropic(self, endpoint, messages, tools, temperature, max_tokens, seed):
         system_blocks, a_msgs = self._to_anthropic(messages)
         body: dict[str, Any] = {"model": endpoint.model, "max_tokens": max_tokens,
-                                "temperature": temperature, "messages": a_msgs}
+                                "messages": a_msgs}
+        # Opus 4.7+ removed sampling params entirely — sending temperature
+        # returns a 400. Earlier Claude models (Sonnet 4.6 etc.) still accept it.
+        # (seed is never sent: the Anthropic API has no seed param; ensemble
+        # variance comes from sampling. v1 also omits `thinking` — adaptive
+        # thinking would require round-tripping thinking blocks through the
+        # tool-use loop, which ChatMessage doesn't carry yet; follow-up.)
+        if not endpoint.model.startswith(("claude-opus-4-7", "claude-opus-4-8")):
+            body["temperature"] = temperature
         if system_blocks:
             body["system"] = system_blocks
         if tools:
@@ -390,11 +398,18 @@ class InferenceClient:
                                    "function": {"name": block.get("name"),
                                                 "arguments": json.dumps(block.get("input") or {})}})
         u = data.get("usage", {}) or {}
-        in_tok, out_tok = u.get("input_tokens", 0), u.get("output_tokens", 0)
+        # Anthropic's input_tokens is the UNCACHED remainder only; the true
+        # prompt size = input + cache_creation + cache_read. The agent budgets
+        # max_tokens off prompt_tokens, so report the sum or the context-ceiling
+        # math silently breaks the moment caching starts hitting.
+        cache_w = u.get("cache_creation_input_tokens", 0) or 0
+        cache_r = u.get("cache_read_input_tokens", 0) or 0
+        in_tok = (u.get("input_tokens", 0) or 0) + cache_w + cache_r
+        out_tok = u.get("output_tokens", 0) or 0
         usage = {"prompt_tokens": in_tok, "completion_tokens": out_tok,
                  "total_tokens": in_tok + out_tok,
-                 "cache_creation_input_tokens": u.get("cache_creation_input_tokens", 0),
-                 "cache_read_input_tokens": u.get("cache_read_input_tokens", 0)}
+                 "cache_creation_input_tokens": cache_w,
+                 "cache_read_input_tokens": cache_r}
         return ChatResponse(content="".join(text_parts), tool_calls=tool_calls,
                             finish_reason=data.get("stop_reason") or "stop",
                             usage=usage, endpoint_used=endpoint.label)
