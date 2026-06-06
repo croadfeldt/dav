@@ -94,7 +94,28 @@ per-UC within ±1 of baseline; semantic spot-check on diverged UCs shows valid
 
 ### Cumulative optimization arc (15-UC eval set, quality-gated at every step)
 *timed out* → 1h50m (AITER 1.93× decode) → 1h24m (doc windowing −36% turns)
-→ 1h05m (retrieval memo −34% turns) → **32min (uc-concurrency 3, 2.2×)**.
+→ 1h05m (retrieval memo −34% turns) → 32min (uc-concurrency 3, 2.2×)
+→ **17min (ngram speculative, 1.86×)** — ~6.5× end-to-end vs the first run
+that finished. 32-UC × 3-sample production validation projects ≈ 45–60min.
+
+## Exp 7 — ngram speculative decoding  ✅ VALIDATED, KEPT
+- vLLM `--speculative-config {"method":"ngram","num_speculative_tokens":4,
+  "prompt_lookup_max":4,"prompt_lookup_min":2}` on the qwen3-32b runtime
+  (llm-serving `21a4694`). Lossless by construction (verified sampling):
+  micro-benchmark output hash IDENTICAL to non-spec baseline at temp 0;
+  105.6 tok/s vs 26 on a repetitive prompt (= acceptance ceiling, not the
+  real-workload number).
+- **Exp7 `768376` FAILED instantly (15×400):** vLLM rejects min_p/logit_bias
+  under spec decoding (the startup line only WARNS; requests 400). Fixed via
+  DAV's own capabilities design: `model_configs.capabilities =
+  {"speculative_decoding": true}` (DB row id=1, project 20) → engine drops
+  min_p. First real-world validation of the capabilities path — worked
+  exactly as designed (`dropped={'min_p': 0.05}` in effective_sampling).
+- **Exp7b `768658`: 15/15, wall 17m05s vs Exp6's 31m51s = 1.86× on the real
+  workload.** Gaps 27 / 1.80 per UC — identical totals to Exp6; all 15 UCs
+  covered; 1 major (severity labeling remains the noisiest dimension).
+- NOTE for other clients of qwen3-32b (spamllm etc.): do NOT send min_p /
+  logit_bias while spec decoding is enabled — vLLM 400s them.
 
 ## Recommended next (need a model restart / supervision)
 - **n-gram / prompt-lookahead speculative**: model-agnostic; might help decode if
