@@ -86,8 +86,15 @@ per-UC within ±1 of baseline; semantic spot-check on diverged UCs shows valid
   the weights once per step for the whole batch — concurrent UC streams scale
   aggregate tok/s nearly free. Projection: 32-UC production run ~2.3h serial →
   ~50min at concurrency 3.
-- A/B plan: 15-UC harness @ uc_concurrency=3 vs the serial memo runs
-  (1h05m/1h13m). Gate: 15/15, gaps in-band, wall ≪ serial. Result: _pending_.
+- **RESULT: ✅ PASS — VALIDATED.** Run `765649` (ucc=3): 15/15, 0 failed,
+  **wall 31m51s vs 1h09m memo-serial avg = 2.2× faster**. Gaps 27 / 1.80 per UC
+  / 3 major — squarely in the 22–30 band. Single-variable A/B (memo on in both
+  arms). Production projection confirmed: 32-UC × 3-sample full validation
+  ≈ 1.5–2h (was: impossible — timeouts).
+
+### Cumulative optimization arc (15-UC eval set, quality-gated at every step)
+*timed out* → 1h50m (AITER 1.93× decode) → 1h24m (doc windowing −36% turns)
+→ 1h05m (retrieval memo −34% turns) → **32min (uc-concurrency 3, 2.2×)**.
 
 ## Recommended next (need a model restart / supervision)
 - **n-gram / prompt-lookahead speculative**: model-agnostic; might help decode if
