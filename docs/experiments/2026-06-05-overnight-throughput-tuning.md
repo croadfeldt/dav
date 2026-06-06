@@ -63,13 +63,81 @@ per-UC within ±1 of baseline; semantic spot-check on diverged UCs shows valid
 - Both quality-gated (15/15, gaps in the ROCM_ATTN noise envelope, semantic checks).
 - Full-corpus runs that used to time out now finish well inside budget.
 
-## Recommended next (need a model restart — left for greenlight)
-- **TunableOp** (`PYTORCH_TUNABLEOP_ENABLED=1` + persistent filename): quality-
-  neutral GEMM autotune, possible +5-15% decode. Disabled today only to avoid
-  first-request latency; persistent cache amortizes it.
-- **n-gram / prompt-lookahead speculative**: model-agnostic, DAV output repeats
-  spec terms. Both restart the stable model → do with supervision.
-- Tune window size (16-18k) / fix `5c6d7e8f` grounding to shave the last cap-hit.
+## Exp 4 — TunableOp (`PYTORCH_TUNABLEOP_ENABLED=1`, persistent tune file)  ❌ REVERTED
+- Decode micro-benchmark @ 12.8K ctx: steady-state **26.05 tok/s** (rock-steady
+  26.02) vs AITER baseline **25.74** (noisy 23.86-27.35) → **+1.2%, within noise**.
+  Identical output hash (numerically neutral). Variance much tighter, but throughput
+  unchanged.
+- **Negative result (useful):** decode here is **memory-bandwidth-bound**, so GEMM
+  autotuning can't move it — the throughput lever was already maxed by AITER.
+- **Reverted** to the maintainer's tested-stable config (TunableOp off); not worth
+  the first-request tuning latency + config deviation for ~1%.
+
+## Recommended next (need a model restart / supervision)
+- **n-gram / prompt-lookahead speculative**: model-agnostic; might help decode if
+  output repeats context. Lower expected value now that decode is confirmed
+  bandwidth-bound, but the only remaining decode lever. Restarts the stable model.
+- **Agent-loop, further**: fix `5c6d7e8f` (rose to 29 turns under windowing —
+  reads 18 windows); investigate its grounding. Tune window 14k→16-18k (watch
+  overflow). These are engine/MCP-side, no model restart.
+- Reduce the ~48K base context (system prompt + spec grounding) — would directly
+  raise the ceiling for everything and is the deepest lever; quality-sensitive,
+  best done with you.
+
+---
+
+## MORNING SUMMARY (2026-06-06)
+**Two validated wins shipped, both quality-gated; one negative result; system left
+clean and stable.**
+
+| Lever | Result | Status |
+|---|---|---|
+| AITER decode backend | **1.93× tok/s** (13.3→25.7), quality ≈ ROCM_ATTN | **shipped** (llm-serving, pushed gitlab) |
+| Doc windowing (MCP) | **-36% turns, -24% wall**; 15/15, gaps in-band | **shipped** (dav, pushed github) |
+| TunableOp | +1% (noise); decode is bandwidth-bound | reverted |
+| MTP | not viable — Qwen3-32B has no draft heads | n/a |
+
+**Combined:** a 15-UC verification run went from repeatedly timing out → **1h24m,
+15/15**. Decode ~2× faster; agent loop ~36% shorter.
+
+**Also fixed/shipped tonight:** engine→service-token runs no longer orphan (API
+guard, deployed+verified); 3 orphaned runs backfilled; UI run-name width + turn
+grouping + per-turn "UC N of M / iter N" (deployed). All committed & pushed
+(dav `feat/dcm-uc-prioritization` 298ab8d; llm-serving gitlab).
+
+**System state:** AITER on, MCP windowing (cap 14000, code default, no one-off env),
+TunableOp off. Validated-good.
+
+---
+
+## Session 2 (2026-06-06 daytime) — turn optimization + frontier-model prep
+
+### Exp 5 — retrieval memo (agent.py)  `752348`  [RUNNING]
+- Change: pin an always-current "retrieval ledger" at the message TAIL each turn
+  (gated `DAV_RETRIEVAL_MEMO`, default on) listing what's already been fetched, so
+  the model stops re-requesting docs it already has. DAV never evicts tool results
+  (confirmed: overflow handler only trims output tokens, never drops messages), so
+  everything is still in context — the model just loses track. Prevention to
+  complement the reactive cross-turn dedup.
+- Baseline = Exp3 `723339` (memo off): mean 11.9 turns, 1h24m, 29 gaps.
+- Hypothesis: fewer turns + lower `cross_turn_dup_count`, quality holds. Result: _pending_.
+- **NOTE: deployed in dav-engine:latest, ON by default.** If the A/B shows a
+  regression, disable with `DAV_RETRIEVAL_MEMO=0` on the run-corpus task (restores
+  Exp3 behavior). Commit held until validated.
+
+### Frontier-model adapter — built, committed `b979113`, NEEDS live key
+- `client.py`: native Anthropic Messages-API path with prompt caching
+  (cache_control on the static system prefix + a rolling breakpoint on the latest
+  tool_result → re-sent context bills ~0.1×). Format conversion unit-tested.
+- `run_corpus.py`: api_key from `--inference-api-key-env` (e.g. CLAUDE_API_KEY) or
+  `DAV_INFERENCE_API_KEY`. External OpenAI-compatible models work via the existing
+  path + this key.
+- **Remaining to run Sonnet/Opus (needs the key):** (1) the Secret + vars.local var
+  (user doing); (2) wire the secret→env in the run-corpus task template + pass
+  `--inference-api-key-env`; (3) a `model_config` row → `https://api.anthropic.com/v1`,
+  model `claude-sonnet-4-x` / `claude-opus-4-x`; (4) validation run — confirm cache
+  hits (usage.cache_read_input_tokens), final-JSON reliability (no guided_json on
+  Anthropic), and gap quality vs Qwen3-32B on the 15-UC harness; A/B both Sonnet+Opus.
 
 ## Next candidates (if needed)
 - Tune `DAV_MCP_MAX_DOC_CHARS` down (e.g. 50k) if context pressure hurts quality

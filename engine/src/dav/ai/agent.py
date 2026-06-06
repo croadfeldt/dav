@@ -366,6 +366,40 @@ class Stage2Agent:
                     )
         return result
 
+    def _retrieval_memo_msg(self) -> Optional[ChatMessage]:
+        """A compact, always-current memo of what's already been retrieved this
+        run — pinned at the message TAIL (never the cached system prefix) right
+        before each model call. DAV never evicts tool results, so everything
+        below is still in context; the model just loses track in a long window
+        and re-fetches. This is PREVENTION (the model sees what it has before it
+        acts), complementing the reactive cross-turn dedup. Toggle with
+        DAV_RETRIEVAL_MEMO=0. Sourced from _call_history (only successful calls)."""
+        if os.environ.get("DAV_RETRIEVAL_MEMO", "1") == "0":
+            return None
+        items = []
+        for v in self._call_history.values():
+            tool, a, t = v.get("tool"), v.get("args") or {}, v.get("turn")
+            if tool == "get_document_section":
+                items.append((t, f"{a.get('handle', '?')} § {a.get('section_title', '?')}"))
+            elif tool == "get_document":
+                items.append((t, f"{a.get('handle', '?')} (full document)"))
+            elif tool == "search_docs":
+                items.append((t, f"search_docs(\"{a.get('query', '?')}\")"))
+        if not items:
+            return None
+        items.sort(key=lambda x: (x[0] if x[0] is not None else 0))
+        listed = "\n".join(f"  • {label}   — already retrieved on turn {t}"
+                           for t, label in items)
+        body = (
+            "📓 ENGINE MEMO — RETRIEVAL LEDGER. You have ALREADY retrieved the "
+            "following this session and their results are still in the context "
+            "above. Re-reading them is free; RE-FETCHING any of them wastes your "
+            "tool-call budget and will be blocked. Before calling a tool, check "
+            "this list — only fetch something NEW, or stop fetching and write "
+            "your final JSON analysis:\n" + listed
+        )
+        return ChatMessage(role="system", content=body)
+
     def _check_namespace_scope(self, tool_name: str, args: dict) -> Optional[str]:
         """Hard MCP-call scope guard (M12 "C" pass).
 
@@ -563,6 +597,12 @@ class Stage2Agent:
                 " (budget-hit: tools disabled, forcing final emit)" if at_budget else "",
             )
 
+            # Pin the retrieval ledger at the tail so the model sees what it
+            # already has before deciding what to call. Transient — popped in the
+            # finally so it never accumulates and never touches the cached prefix.
+            _memo = self._retrieval_memo_msg()
+            if _memo is not None:
+                messages.append(_memo)
             try:
                 response = self.inference.chat(
                     messages=messages,
@@ -611,6 +651,10 @@ class Stage2Agent:
                         raise AgentError(f"inference failed at turn {turn}: {e}") from e
                 else:
                     raise AgentError(f"inference failed at turn {turn}: {e}") from e
+            finally:
+                # Drop the transient memo; re-added fresh (and current) next turn.
+                if _memo is not None:
+                    messages.pop()
 
             usage = response.usage or {}
             self._total_tokens += usage.get("total_tokens", 0)
@@ -793,6 +837,8 @@ class Stage2Agent:
                             "turn": turn,
                             "tool_call_id": tc["id"],
                             "result": full_result,
+                            "tool": tool_name,
+                            "args": args,
                         }
 
                     self._tool_trace.append(ToolCall(
