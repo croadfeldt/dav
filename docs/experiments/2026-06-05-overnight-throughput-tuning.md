@@ -124,9 +124,14 @@ that finished. 32-UC × 3-sample production validation projects ≈ 45–60min.
 - **Agent-loop, further**: fix `5c6d7e8f` (rose to 29 turns under windowing —
   reads 18 windows); investigate its grounding. Tune window 14k→16-18k (watch
   overflow). These are engine/MCP-side, no model restart.
-- Reduce the ~48K base context (system prompt + spec grounding) — would directly
-  raise the ceiling for everything and is the deepest lever; quality-sensitive,
-  best done with you.
+- ~~Reduce the ~48K base context~~ **RESOLVED — lever is moot (Exp 8 analysis).**
+  Measured from real turn records: the static prefix is only **~3.1K tokens**
+  (system prompt 8,907 chars ≈ 2.2K tok + UC ≈ 0.3K). The "48K base" inferred
+  from the Exp2 overflow was crawl-era CONVERSATION ACCUMULATION (25 sections
+  piling up by turn 6-8), already eliminated by windowing + memo. Current peak
+  per-turn context: 13–19K typical, 44K worst — 2–4× headroom under the 86K
+  ceiling. No trim warranted; nothing to risk. (For the Claude API the 2.2K
+  system prompt is a negligible, cacheable cost.)
 
 ---
 
