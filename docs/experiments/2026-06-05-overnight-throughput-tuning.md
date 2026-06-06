@@ -125,6 +125,18 @@ TunableOp off. Validated-good.
   regression, disable with `DAV_RETRIEVAL_MEMO=0` on the run-corpus task (restores
   Exp3 behavior). Commit held until validated.
 
+### Adapter validated vs the Claude API reference (`62d747e`)
+- Fixed: `temperature` 400s on Opus 4.7+/4.8 (now omitted there); Anthropic
+  `usage.input_tokens` is the uncached remainder — prompt_tokens now sums
+  input+cache_creation+cache_read so the agent's context budgeting stays right.
+- Confirmed: headers (`anthropic-version: 2023-06-01`, caching GA = no beta),
+  cache_control placement (system + tool_result; ≤4 breakpoints), tool format.
+- Model IDs: `claude-opus-4-8`, `claude-sonnet-4-6`. **Pricing correction:**
+  Opus 4.8 = $5/$25 per M (NOT $15/$75) → 15-UC ≈ $18 uncached / ~$7.5 cached —
+  only ~1.6× Sonnet. Recommendation: A/B both, lean Opus for DCM/UDLM.
+- Follow-ups: adaptive thinking needs thinking-block round-trip (v1 omits
+  `thinking`); set `DAV_MODEL_CONTEXT_LIMIT` high for Claude runs (1M context).
+
 ### Frontier-model adapter — built, committed `b979113`, NEEDS live key
 - `client.py`: native Anthropic Messages-API path with prompt caching
   (cache_control on the static system prefix + a rolling breakpoint on the latest
