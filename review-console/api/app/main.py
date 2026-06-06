@@ -2831,6 +2831,16 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
         raise HTTPException(400, f"invalid category; must be one of {RUN_CATEGORIES}")
     async with pool.acquire() as conn:
         _trigpid = await _active_project_id(request, conn)
+        # No-silent-orphan guard: a run with no resolvable project lands in
+        # run_sessions with project_id=NULL — invisible in the project-scoped
+        # runs list and unattributable. Reject BEFORE launching the PipelineRun
+        # (cheaper than launching then orphaning). The service token now resolves
+        # via the X-DAV-Project header (see _active_project_id), so this only
+        # fires on a genuinely projectless caller.
+        if _trigpid is None:
+            raise HTTPException(
+                400, "no active project for this run; set the X-DAV-Project "
+                "header (or a default project) so the run can be attributed")
         await _require_priv_conn(conn, request, rbac.P_PROJECT_RUNS_EXECUTE, _trigpid)
     params = _resolve_run_params(payload)
     # Per-(model, use) override system (DAV migration 014). Resolve
@@ -9021,7 +9031,15 @@ async def _active_project_id(request: Request, conn) -> Optional[int]:
     if hdr and hdr.isdigit():
         pid = int(hdr)
         ok = await conn.fetchval("SELECT 1 FROM projects WHERE id=$1 AND NOT archived", pid)
-        if ok and (not _multiuser() or await _is_project_member(conn, get_user(request), pid)):
+        # The trusted service token (identity system:engine) is not a member of
+        # any project, but it acts on behalf of the system (e.g. engine-/script-
+        # triggered runs) and must be able to target a project via the header.
+        # Without this bypass its runs resolved to project_id=NULL — invisible in
+        # the project-scoped runs list (orphaned) AND the model_configs override
+        # lookup (scoped by project_id) silently returned nothing. See the
+        # no-orphan guard in trigger_run.
+        if ok and (not _multiuser() or _service_token_ok(request)
+                   or await _is_project_member(conn, get_user(request), pid)):
             return pid
     if not _multiuser():
         return await _default_project_id(conn)
