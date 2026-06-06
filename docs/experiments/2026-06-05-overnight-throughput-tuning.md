@@ -149,12 +149,13 @@ TunableOp off. Validated-good.
   (run 1: 7.9), 1h13m, 1 dup block (caught by the backstop, layered design
   working). Gaps **22 / 1.47 per UC** — below the historical band (24–29) but
   structurally sound: every UC ≥1 gap (8×1, 7×2), 4 majors, no misses.
-- **Exp5c tie-break `761248` launched.** Decision rule: ≥24 gaps (in band) →
-  memo confirmed (2/3 in band); ≤22 again → low-side pattern → flag to user /
-  consider `DAV_RETRIEVAL_MEMO=0`. Run 1 being IDENTICAL to baseline argues the
-  memo doesn't systematically suppress; one low run can be ordinary tail
-  variance (non-memo runs only exact-match ~35% run-to-run).
-- Disable path remains `DAV_RETRIEVAL_MEMO=0` (env, no rebuild).
+- **Exp5c tie-break `761248`: ✅ 30 gaps / 2.00 per UC, 9 major — the highest of
+  ANY run.** 15/15, 1h10m, 1 dup block. Decision rule (≥24) met decisively.
+- **FINAL VERDICT: memo CONFIRMED KEEP.** Three-run memo dataset: gaps 29/22/30
+  (mean 27, non-memo band 24–29 — run 2's 22 was tail variance as hypothesized);
+  turns 7.9/8.0 mean; walls 1h05m/1h13m/1h10m (avg 1h09m vs 1h24m serial
+  baseline). Quality envelope fully held across all three.
+- Disable path remains `DAV_RETRIEVAL_MEMO=0` (env, no rebuild) — not needed.
 
 ### Cumulative (vs original ROCM_ATTN + 8k crawl)
 AITER ~2× decode → windowing −36% turns → memo −34% more turns. 15-UC eval:
