@@ -697,7 +697,7 @@
   /* Runs tab: list-left + detail-right */
   .runs-split { display:flex; width:100%; height:100%; overflow:hidden; }
   .runs-list-panel {
-    width:380px; min-width:240px; flex-shrink:0;
+    width:440px; min-width:260px; flex-shrink:0;
     display:flex; flex-direction:column;
     border-right:1px solid var(--border); background:var(--bg-raised);
     overflow:hidden;
@@ -709,11 +709,20 @@
 
   /* Run list rows (replacing old table) */
   .run-list-item {
+    position:relative;
     display:flex; align-items:center; gap:8px;
     padding:9px 14px; font-size:12px; color:var(--text-dim);
     cursor:pointer; border-left:3px solid transparent;
     border-bottom:1px solid var(--border); transition:background .1s;
   }
+  /* Action buttons (Stop/Rerun/Archive/Delete) overlay on hover/active so the
+     run name gets the full row width by default instead of being squeezed. */
+  .run-list-item .rli-actions {
+    display:none; gap:4px; position:absolute; right:10px; bottom:7px;
+    background:var(--bg-raised); padding:2px 3px; border-radius:3px;
+    box-shadow:-6px 0 8px -4px var(--bg-raised);
+  }
+  .run-list-item:hover .rli-actions, .run-list-item.active .rli-actions { display:flex; }
   .run-list-item:hover { background:var(--accent-bg); }
   .run-list-item.active { background:var(--accent-bg); border-left-color:var(--accent); }
   .run-list-item .rli-main { flex:1; min-width:0; }
@@ -3991,7 +4000,7 @@ function _renderRunItemHtml(r) {
     <div class="rli-right">
       ${phaseHtml(r.phase)}<br>
       <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
-      <div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;">
+      <div class="rli-actions">
         ${!['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase) ? `<button class="btn ghost btn-sm" title="Stop this run (cancel the pipeline)" onclick="event.stopPropagation();stopRunConfirm('${r.name}')">⏹ Stop</button>` : ''}
         <button class="btn ghost btn-sm" title="Re-run with the same Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
         <button class="btn ghost btn-sm" title="${r.archived ? 'Unarchive' : 'Archive (hide from list)'}" onclick="event.stopPropagation();archiveRun('${r.name}',${r.archived ? 'false' : 'true'})">${r.archived ? 'Unarchive' : 'Archive'}</button>
@@ -4199,6 +4208,7 @@ let _rdTokenBaseline  = {gen: null, prompt: null};
 let _rdSparklines     = null;
 let _rdSparkTimer     = null;  // periodic re-fetch for in-flight runs
 let _rdSampleCount    = 1;     // ensemble samples/iterations per UC (run param)
+let _rdUcTotal        = null;  // run's total UC count — for "UC N of M" turn labels
 let _rdLastSnap       = null;  // most recent live snapshot — its values are
                                // appended as each sparkline's latest point so
                                // the graph tip always matches the live number.
@@ -4300,7 +4310,6 @@ function rdRenderPrompts() {
   for (const f of Object.keys(_rdPromptsState.perFile)) {
     all.push(..._rdPromptsState.perFile[f].records);
   }
-  all.sort((a,b) => (a.ts || '').localeCompare(b.ts || ''));
   const el = document.getElementById('rdPrompts');
   document.getElementById('rdPromptsCount').textContent = all.length
     ? `· ${all.length} turn records · default ${_rdPromptsState.defaultMode}` : '';
@@ -4308,14 +4317,68 @@ function rdRenderPrompts() {
     el.innerHTML = '<div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet · written by the engine as it analyzes each UC</div>';
     return;
   }
+  // Group turns by their sample (one agent loop = one UC+seed = one JSONL file)
+  // and keep each sample's turns contiguous, ordered by turn number. Previously
+  // every turn was sorted by a single global timestamp, which INTERLEAVED the
+  // turns of concurrently-running samples — the same iteration's "turn 0,1,2…"
+  // got scattered across the list and read as duplicated turns. Groups are
+  // ordered by when each iteration began (earliest ts in the group).
+  const _groupKey = r => r._file || `${r.uc_uuid || '?'}::${r.sample_seed ?? ''}`;
+  const _groups = new Map();
+  for (const r of all) {
+    const k = _groupKey(r);
+    if (!_groups.has(k)) _groups.set(k, []);
+    _groups.get(k).push(r);
+  }
+  for (const g of _groups.values())
+    g.sort((a,b) => (a.turn ?? 0) - (b.turn ?? 0) || (a.ts||'').localeCompare(b.ts||''));
+  const _groupList = [..._groups.entries()]
+    .sort((a,b) => ((a[1][0]||{}).ts||'').localeCompare((b[1][0]||{}).ts||''));
+  // Iteration number = 1-based index of this sample among its UC's samples in
+  // start order. Computed ONCE over the ordered groups, so it's stable and
+  // correct even under concurrency (the old per-flip increment double-counted).
+  const _ucCount = {};
+  const _groupIter = new Map();   // groupKey → iteration number within its UC
+  for (const [k, g] of _groupList) {
+    const uc = (g[0] && g[0].uc_uuid) || k;
+    _ucCount[uc] = (_ucCount[uc] || 0) + 1;
+    _groupIter.set(k, _ucCount[uc]);
+  }
+  const ordered = _groupList.flatMap(([, g]) => g);
+  // UC ordinal (1-based, first-seen order) → for "UC N of M" labels on the UC
+  // boundary row and every turn row. Total is the run's planned UC count when
+  // known, else the distinct UCs present in the records so far.
+  // Only the 'start' record of each sample carries uc_uuid; response/tool rows
+  // have uc_uuid=null. So derive the UC identity per GROUP (every record has a
+  // _file-based groupKey) and map groupKey → ucNum, so the label resolves on
+  // EVERY row, not just the start row.
+  const _ucOrder = new Map();      // uc identity → 1-based ordinal
+  const _groupUcNum = new Map();   // groupKey → ucNum
+  for (const [k, g] of _groupList) {
+    let ucId = null;
+    for (const rec of g) if (rec.uc_uuid) { ucId = rec.uc_uuid; break; }
+    // Fall back to the file name with the per-sample seed suffix stripped, so
+    // multiple seeds of one UC collapse to the same UC number.
+    if (!ucId) ucId = String(k).replace(/\.seed-\d+\.jsonl$/i, '').replace(/\.jsonl$/i, '');
+    if (!_ucOrder.has(ucId)) _ucOrder.set(ucId, _ucOrder.size + 1);
+    _groupUcNum.set(k, _ucOrder.get(ucId));
+  }
+  const _ucTotal = _rdUcTotal || _ucOrder.size || null;
   // Cap to most recent 400 to keep DOM bounded
-  const visible = all.slice(-400);
+  const visible = ordered.slice(-400);
   let lastBoundaryKey = null;
-  const _ucIterSeen = {};   // uc → ensemble-iterations seen so far (this render)
   const html = visible.map((r, idx) => {
     const kind = r.kind || 'turn';
     let head = `<span class="kind ${esc(kind)}">${esc(kind)}</span>`;
     head += `turn ${r.turn ?? '?'}`;
+    // Per-turn UC tag so every row shows which UC (of how many) it belongs to.
+    const _ucNum = _groupUcNum.get(_groupKey(r));
+    if (_ucNum) head += ` · <span style="color:var(--text-faint)">UC ${_ucNum}${_ucTotal ? ' of '+_ucTotal : ''}</span>`;
+    // Per-turn iteration tag so every turn is tied to the ensemble sample it
+    // belongs to (not just the boundary banner) — disambiguates interleaved
+    // samples at a glance.
+    const _iterTag = _groupIter.get(_groupKey(r));
+    if (_iterTag) head += ` · <span style="color:var(--text-faint)">iter ${_iterTag}${_rdSampleCount ? '/'+_rdSampleCount : ''}</span>`;
     if (r.tool_name) head += ` · ${esc(r.tool_name)}`;
     if (r.tokens_total != null) head += ` · ${r.tokens_total.toLocaleString()} tok`;
     if (r.content_length != null && kind === 'response') head += ` · ${r.content_length.toLocaleString()} chars`;
@@ -4358,11 +4421,11 @@ function rdRenderPrompts() {
       const ucShort = recUuid || (r._file ? r._file.replace(/^.*\//, '').replace(/\.jsonl$/, '') : '?');
       // Which ensemble iteration of THIS UC — count distinct seeds seen for the
       // UC in order; total = the run's sample count.
-      const ucKey = recUuid || ucShort;
-      _ucIterSeen[ucKey] = (_ucIterSeen[ucKey] || 0) + 1;
-      const iter = _ucIterSeen[ucKey];
+      const iter = _groupIter.get(boundaryKey) || 1;
       const total = _rdSampleCount || null;
+      const ucNum = _groupUcNum.get(boundaryKey);
       boundary = `<div class="uc-boundary">▶ Use case <span class="uc-uuid">${esc(ucShort)}</span>`
+        + (ucNum ? `<span class="uc-meta">· UC <b style="color:var(--accent)">${ucNum}</b>${_ucTotal ? ' of ' + _ucTotal : ''}</span>` : '')
         + `<span class="uc-meta">· iteration <b style="color:var(--accent)">${iter}</b>${total ? ' of ' + total : ''}</span>`
         + (seed != null ? `<span class="uc-meta">· seed ${esc(String(seed))}</span>` : '')
         + (ts ? `<span class="uc-meta">· ${esc(ts)}</span>` : '')
@@ -4817,6 +4880,7 @@ function renderRunDrawerDetail(d) {
   // X of N" labels. From the run's param, else the mode default.
   _rdSampleCount = parseInt((d.params || {})['sample-count'])
     || ({verification:3, explore:10, reproduce:1}[(d.params || {}).mode] || 1);
+  _rdUcTotal = ucCount || null;   // for "UC N of M" labels in the prompts pane
   // Live pace: actual seconds/UC observed so far THIS run (elapsed ÷ completed).
   // It overrides the history/default estimate the moment ≥1 UC finishes — the
   // only signal that's accurate for the run actually in flight.
