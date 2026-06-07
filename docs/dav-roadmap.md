@@ -502,6 +502,16 @@ A few things worth being explicit about so they don't drift into expectation:
   view. Likely read-mostly first — runs list, run detail/progress, gap review —
   before any edit flows. Scope with the user before starting. (Task #73.)
 
+- **Login history in Users & Roles** *(requested 2026-06-07)* — record who
+  logged in and when; surface it in the Users & Roles view. RBAC scoping:
+  platform admins see all logins; project members see logins of that project's
+  members only. Implementation sketch (from initial recon): `login_events`
+  table (reviewer, source, ip, user-agent, ts) + idempotent schema migration;
+  insert at every session-establishment point — `/api/auth/login` (internal
+  password, main.py:2526) and `/api/auth/sso` (oauth-proxy OCP/FreeIPA path);
+  `GET /api/login-history` scoped platform-all vs project-members; history
+  panel in view-users. (Task #78.)
+
 ---
 
 ## Pickup notes for next session
