@@ -5397,14 +5397,71 @@ document.getElementById('nrSetSel')?.addEventListener('change', async function()
 async function rerunRun(name) {
   const r = (allRuns || []).find(x => x.name === name);
   if (!r) { toast('Run not found', true); return; }
-  await openNewRun();
-  const setSel = document.getElementById('nrSetSel');
-  if (setSel) {
-    setSel.value = (r.set_id !== null && r.set_id !== undefined) ? String(r.set_id) : '';
-    setSel.dispatchEvent(new Event('change'));   // apply the Set's filter/subpath/banner
+  // The PipelineRun params are the authoritative record of what actually ran —
+  // a rerun restores THAT configuration, not the New Run defaults.
+  const P = r.params || {};
+  let det = null;   // detail carries time-allowed + session description
+  try { det = await api(`/api/runs/${encodeURIComponent(name)}`); } catch(_) {}
+
+  // UC scope: Set-based runs re-apply the Set (its membership may have evolved
+  // — that's the live meaning of a Set); custom selections replay the exact
+  // handles/uuids/managed list that ran.
+  const isSet = (r.selection_mode === 'set') && (r.set_id !== null && r.set_id !== undefined);
+  let filter = null;
+  if (!isSet) {
+    const f = {
+      handles: P['uc-handles']         ? P['uc-handles'].split(',')         : [],
+      uuids:   P['uc-uuids']           ? P['uc-uuids'].split(',')           : [],
+      managed: P['managed-uc-uuids']   ? P['managed-uc-uuids'].split(',')   : [],
+    };
+    if (f.handles.length || f.uuids.length || f.managed.length) filter = f;
   }
+  const lineage = {
+    set_id: isSet ? r.set_id : null,
+    set_name: r.set_name || null,
+    selection_mode: r.selection_mode || (filter ? 'selection' : 'corpus'),
+  };
+  await openNewRun(undefined, isSet ? undefined : (P['corpus-uc-subpath'] || undefined),
+                   filter, undefined, lineage);
+
+  // openNewRun applied the Set + defaults; overlay the original run's config.
+  const setVal = (id, v) => {
+    const el = document.getElementById(id);
+    if (el && v !== undefined && v !== null && v !== '') el.value = v;
+  };
+  if (P.mode) {
+    const m = document.getElementById('nrMode');
+    if (m) { m.value = P.mode; m.dispatchEvent(new Event('change')); }
+  }
+  setVal('nrSampleCount',  P['sample-count']);
+  setVal('nrCorpusSubpath', P['corpus-uc-subpath']);
+  setVal('nrCorpusRepo',   P['consumer-corpus-repo-url']);
+  setVal('nrCorpusBranch', P['consumer-corpus-repo-branch']);
+  setVal('nrSpecRepo',     P['consumer-spec-repo-url']);
+  setVal('nrSpecBranch',   P['consumer-spec-repo-branch']);
+  const halt = document.getElementById('nrHaltOnError');
+  if (halt) halt.checked = (P['halt-on-error'] === 'true');
+  // Model: select the registered model matching what actually ran (falls back
+  // to the default when the original used the engine default / is unregistered).
+  if (P['inference-endpoint'] && P['inference-model']) {
+    const m = (_reviewModels || []).find(x =>
+      x.endpoint_url === P['inference-endpoint'] && x.model_id === P['inference-model']);
+    const sel = document.getElementById('nrModelSel');
+    if (m && sel && [...sel.options].some(o => o.value === String(m.id))) sel.value = String(m.id);
+  }
+  // Source-namespace narrowing: absent param = all sources (leave defaults).
+  const restoreNs = (param, selector) => {
+    if (!P[param]) return;
+    const want = new Set(P[param].split(','));
+    document.querySelectorAll(selector).forEach(b => { b.checked = want.has(b.value); });
+  };
+  restoreNs('corpus-namespaces', '#nrCorpusSources .nr-corpus-ns');
+  restoreNs('spec-namespaces',   '#nrSpecSources .nr-spec-ns');
+  // Failsafe time-allowed + session metadata.
+  if (det?.timeout_seconds) setVal('nrTimeAllowed', String(+(det.timeout_seconds / 3600).toFixed(2)));
   const nameEl = document.getElementById('nrSessionName');
   if (nameEl) nameEl.value = `Rerun: ${r.session_name || r.name}`;
+  setVal('nrDescription', det?.session?.description);
   if (r.category) {
     const cat = document.getElementById('nrCategory');
     if (cat && [...cat.options].some(o => o.value === r.category)) cat.value = r.category;

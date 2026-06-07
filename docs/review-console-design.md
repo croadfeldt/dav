@@ -104,6 +104,13 @@ reads as "everything failed". `/api/analysis/runs` and
 panes never surface the raw PipelineRun name.
 
 **Run management (v0.10.0):** the Runs list supports lifecycle management of runs.
+- **Rerun** — opens New Run pre-loaded with the original run's **actual
+  configuration** (PipelineRun params are the authoritative record): mode,
+  sample count, model, corpus/spec repos+branches+subpath, halt-on-error,
+  source-namespace narrowing, time allowed, category/description. UC scope:
+  Set-based runs re-apply the Set (live membership — Sets may evolve); custom
+  selections replay the exact handles/uuids/managed list that ran. Only the
+  session name changes (`Rerun: <original>`).
 - **Archive** — soft-hide via `run_sessions.archived`. Archived runs drop out of the default list but are retained.
 - **Delete** — hard purge: DB rows + the workspace result directory + the Tekton PipelineRun. The role's RBAC grants `pipelineruns` `delete` for this.
 - **Bulk operations** — multi-select with select-all / deselect-all; text + phase filters (the phase set includes Cancelled and TimedOut).
