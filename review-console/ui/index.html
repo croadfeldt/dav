@@ -12024,7 +12024,7 @@ function renderImproveList() {
           ${_statusBadge(p.status)}
         </div>
         <div style="font-size:10px;color:var(--text-faint);margin-top:3px;">
-          ${esc(p.signature_class || '')} · ${esc(p.source)} · ${esc((p.run_name || p.run_id || '').slice(0, 28))}
+          ${esc(p.signature_class || '')} · ${esc(p.source)} · ${esc((p.session_name || p.run_name || p.run_id || '').slice(0, 28))}
         </div>
       </div>`;
   }).join('');
@@ -12058,7 +12058,7 @@ async function selectProposal(id) {
       ${_detailBlock('Rationale', p.rationale)}
       ${_detailBlock('Predicted effect', p.predicted_effect)}
       <div style="font-size:10px;color:var(--text-faint);">
-        From run <span style="color:var(--text-dim);">${esc(p.run_name || p.run_id || '')}</span>
+        From run <span style="color:var(--text-dim);">${esc(p.session_name || p.run_name || p.run_id || '')}</span>
         ${p.reviewed_by ? ` · reviewed by ${esc(p.reviewed_by)}` : ''}
         ${p.review_note ? `<div style="margin-top:4px;font-style:italic;">“${esc(p.review_note)}”</div>` : ''}
       </div>

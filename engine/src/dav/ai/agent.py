@@ -874,7 +874,43 @@ class Stage2Agent:
                     # pass 2 to consume. No Analysis validation here —
                     # pass 1's emit doesn't conform to the Analysis schema.
                     return response.content or ""
-                return self._parse_final(response.content, use_case, run_id)
+                # Early finals are UNGUIDED (guided_json only attaches on the
+                # budget-hit turn — it can't coexist with tool definitions).
+                # If the freehand JSON fails schema validation, re-ask once
+                # with the guided schema attached rather than discarding the
+                # whole analysis over a stray label or missing field.
+                try:
+                    return self._parse_final(response.content, use_case, run_id)
+                except (AgentError, ValueError) as e:
+                    if not self.config.use_guided_json:
+                        raise
+                    log.warning(
+                        "turn %d: early final failed validation (%s); "
+                        "re-emitting once with guided schema", turn, e,
+                    )
+                    messages.append(ChatMessage(
+                        role="assistant", content=response.content or ""))
+                    messages.append(ChatMessage(
+                        role="user",
+                        content=(
+                            "Your final analysis JSON failed schema validation: "
+                            f"{e}\nRe-emit the complete final analysis JSON now, "
+                            "conforming exactly to the required schema. Do not "
+                            "change your findings — only fix the format."
+                        ),
+                    ))
+                    retry = self.inference.chat(
+                        messages=messages,
+                        tools=None,
+                        temperature=self.config.temperature,
+                        max_tokens=requested_max,
+                        guided_json_schema=build_analysis_json_schema(
+                            self.consumer_profile),
+                        seed=self._sample_seed if self._sample_seed is not None
+                             else self.config.seed,
+                    )
+                    self._total_tokens += retry.usage.get("total_tokens", 0)
+                    return self._parse_final(retry.content, use_case, run_id)
 
             # Hit the budget limit on this turn — it should be emitting final
             self._emit_run_summary(final_turn=turn)

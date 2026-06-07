@@ -92,6 +92,17 @@ For both, all-checked ≡ null sent (no filter applied; full set used) — the d
 
 **Runs tab note:** Only runs triggered through the console appear here (they have `run_sessions` rows). CLI-triggered runs (`tkn pipeline start`) do not appear; their turns files are written but unreachable from the UI.
 
+**Run identity & per-UC counts:** every surface that names a run leads with the
+user-given session name (`run_sessions.name`), falling back to the Tekton
+PipelineRun name and finally the workspace `run_id`. The runs list shows per-UC
+`succeeded/total` counts sourced from `run_sessions.uc_*` when set, else from the
+ingested `analysis_runs` row (`total_ucs/successful/failed`) — the authoritative
+fallback matters because a partial failure (e.g. 31/32 ok) still marks the
+PipelineRun **Failed** (engine exits 1 if *any* UC fails); without counts the row
+reads as "everything failed". `/api/analysis/runs` and
+`/api/improvement-proposals` join `run_sessions` for `session_name` so analysis
+panes never surface the raw PipelineRun name.
+
 **Run management (v0.10.0):** the Runs list supports lifecycle management of runs.
 - **Archive** — soft-hide via `run_sessions.archived`. Archived runs drop out of the default list but are retained.
 - **Delete** — hard purge: DB rows + the workspace result directory + the Tekton PipelineRun. The role's RBAC grants `pipelineruns` `delete` for this.
@@ -822,6 +833,17 @@ Methodology principle: **results first, speed close behind** — a correct answe
 that arrives too late to act on has little value. Throughput changes that don't
 alter results (lever 1) ship first; anything that touches the analysis (lever 2)
 is A/B'd for quality before adoption.
+
+**Final-emit resilience:** early finals (the model emitting its analysis before
+the budget-hit turn) are *unguided* — `guided_json` can't coexist with tool
+definitions, so nothing constrains enums on that path (and Anthropic endpoints
+never have guided decoding). Two layers keep a stray label from discarding a
+complete analysis: (1) `normalize_confidence` maps the severity-axis vocabulary
+the model sometimes reuses (`minor/moderate/major` → `low/medium/high`);
+(2) if final-JSON validation still fails, the agent re-asks **once** with the
+guided schema attached ("fix the format, don't change the findings") before
+failing the UC. Added after run `2026-06-06T23-04-55Z-5fae105`, where
+`confidence: "moderate"` killed an otherwise-complete 358 s analysis.
 
 ---
 

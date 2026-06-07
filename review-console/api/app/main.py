@@ -2626,18 +2626,20 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
                     names,
                 )
                 rid_rows = await conn.fetch(
-                    "SELECT DISTINCT ON (run_name) run_name, run_id FROM analysis_runs "
+                    "SELECT DISTINCT ON (run_name) run_name, run_id, "
+                    "total_ucs, successful, failed FROM analysis_runs "
                     "WHERE run_name = ANY($1::text[]) ORDER BY run_name, ingested_at DESC",
                     names,
                 )
             for row in rows:
                 sessions_by_name[row["run_name"]] = dict(row)
             for row in rid_rows:
-                runid_by_name[row["run_name"]] = row["run_id"]
+                runid_by_name[row["run_name"]] = dict(row)
         except Exception as e:
             log.warning("list_runs session join failed: %s", e)
     for r in runs:
-        r["run_id"] = runid_by_name.get(r.get("name"))   # null until analysis is ingested
+        ar = runid_by_name.get(r.get("name")) or {}
+        r["run_id"] = ar.get("run_id")   # null until analysis is ingested
         s = sessions_by_name.get(r.get("name"))
         if s:
             r["session_name"] = s.get("name") or None
@@ -2648,13 +2650,21 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
             r["set_id"]        = s.get("set_id")
             r["set_name"]      = s.get("set_name") or None
             r["selection_mode"] = s.get("selection_mode") or None
-            r["uc_total"]      = s.get("uc_total")
-            r["uc_succeeded"]  = s.get("uc_succeeded")
-            r["uc_failed"]     = s.get("uc_failed")
+            # run_sessions' uc_* columns are unpopulated today (the finalizer
+            # defers them); the ingested analysis row is the authoritative
+            # source — without this fallback a 31/32 run shows a bare red
+            # "Failed" with no counts and reads as "all UCs failed"
+            # (observed: dav-stage2-console-787069, 2026-06-07).
+            r["uc_total"]      = s.get("uc_total")     if s.get("uc_total")     is not None else ar.get("total_ucs")
+            r["uc_succeeded"]  = s.get("uc_succeeded") if s.get("uc_succeeded") is not None else ar.get("successful")
+            r["uc_failed"]     = s.get("uc_failed")    if s.get("uc_failed")    is not None else ar.get("failed")
             r["archived"]      = bool(s.get("archived"))
             r["project_id"]    = s.get("project_id")
         else:
             r["project_id"] = None
+            r["uc_total"]     = ar.get("total_ucs")
+            r["uc_succeeded"] = ar.get("successful")
+            r["uc_failed"]    = ar.get("failed")
     if not show_archived:
         runs = [r for r in runs if not r.get("archived")]
     # Scope to the active project. A sessioned run shows under its project; an
@@ -6551,16 +6561,20 @@ async def list_improvement_proposals(
     for col, val in (("status", status), ("kind", kind), ("run_id", run_id)):
         if val:
             args.append(val)
-            clauses.append(f"{col} = ${len(args)}")
+            clauses.append(f"ip.{col} = ${len(args)}")
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     args.append(limit)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            f"""SELECT id, run_id, run_name, signature_class, kind, target, rationale,
-                       proposed_change, predicted_effect, confidence, source, status,
-                       created_at, reviewed_by, reviewed_at, review_note, change_spec
-                  FROM improvement_proposals{where}
-                 ORDER BY created_at DESC LIMIT ${len(args)}""",
+            f"""SELECT ip.id, ip.run_id, ip.run_name, ip.signature_class, ip.kind,
+                       ip.target, ip.rationale, ip.proposed_change,
+                       ip.predicted_effect, ip.confidence, ip.source, ip.status,
+                       ip.created_at, ip.reviewed_by, ip.reviewed_at,
+                       ip.review_note, ip.change_spec,
+                       rs.name AS session_name
+                  FROM improvement_proposals ip
+                  LEFT JOIN run_sessions rs ON rs.run_name = ip.run_name{where}
+                 ORDER BY ip.created_at DESC LIMIT ${len(args)}""",
             *args,
         )
     out = []
@@ -7029,9 +7043,13 @@ async def list_ingested_runs(limit: int = Query(50, ge=1, le=500)):
     """List all runs that have been ingested into Postgres, newest first."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT run_id, mode, started_at, finished_at, total_ucs,
-                      successful, failed, total_samples, ingested_at
-               FROM analysis_runs ORDER BY started_at DESC NULLS LAST LIMIT $1""",
+            """SELECT ar.run_id, ar.mode, ar.started_at, ar.finished_at,
+                      ar.total_ucs, ar.successful, ar.failed, ar.total_samples,
+                      ar.ingested_at, ar.run_name,
+                      rs.name AS session_name
+               FROM analysis_runs ar
+               LEFT JOIN run_sessions rs ON rs.run_name = ar.run_name
+               ORDER BY ar.started_at DESC NULLS LAST LIMIT $1""",
             limit,
         )
     return {
