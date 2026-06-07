@@ -21,7 +21,7 @@ import unicodedata
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import asyncpg
 import httpx
@@ -1360,7 +1360,7 @@ class RunTriggerIn(BaseModel):
     managed_uc_uuids: Optional[list[str]] = None
     # R2 — lineage: which Set (if any) the run was triggered for, and how
     # the user selected the UCs. Stored on run_sessions for provenance.
-    set_id:         Optional[int] = None
+    set_id:         Optional[Union[int, str]] = None  # int id or '__all__' sentinel
     set_name:       Optional[str] = None
     selection_mode: Optional[str] = None  # 'set' | 'selection' | 'individual' | 'corpus'
     # Optional "time allowed" (failsafe pipeline timeout) in seconds. Blank =
@@ -3000,7 +3000,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                 # use_case_sets.id) — the lineage is carried by set_name. Sending
                 # 0 here would violate the FK and drop the whole session row,
                 # making the run invisible in the list.
-                (None if _is_all_set(payload.set_id) else payload.set_id),
+                (None if (payload.set_id is None or _is_all_set(payload.set_id)) else int(payload.set_id)),
                 payload.set_name, payload.selection_mode,
                 json.dumps(uc_state_snapshot) if uc_state_snapshot else None,
                 payload.spec_namespaces, payload.corpus_namespaces, _run_pid,
@@ -4595,7 +4595,7 @@ async def get_run_infra_confidence_aggregate(run_name: str):
 
 @app.get("/api/runs/preflight-hint")
 async def runs_preflight_hint(
-    set_id: Optional[int] = Query(None, description="UC set the operator is about to run"),
+    set_id: Optional[str] = Query(None, description="UC set the operator is about to run (int id or '__all__')"),
     lookback_runs: int = Query(5, ge=1, le=20),
 ):
     """Pre-flight hint for the New Run modal — Phase C of the
@@ -4607,6 +4607,12 @@ async def runs_preflight_hint(
     when the threshold is crossed. The UI renders this as an inline
     banner suggesting a long-context model or per-UC spec_namespaces.
     """
+    # '__all__' (synthetic set) runs are stored with set_id NULL — treat the
+    # sentinel as a global lookback rather than failing int coercion.
+    if set_id is not None and _is_all_set(set_id):
+        set_id = None
+    elif set_id is not None:
+        set_id = _real_set_id(set_id)
     if set_id is None:
         return {"hint": None}
     async with pool.acquire() as conn:
@@ -4876,15 +4882,23 @@ async def get_use_case_lifecycle(uuid: str):
 # Surfaced in /api/sets under a reserved id so it rides the standard set machinery
 # (run / arch-review / export, etc.) everywhere, but it can't be edited or deleted
 # and is the project default selection for "run against everything".
-ALL_SET_ID = 0
+ALL_SET_ID = "__all__"
 ALL_SET_NAME = "All Use Cases"
 
 
 def _is_all_set(set_id) -> bool:
+    # Canonical sentinel is "__all__"; legacy 0/"0" accepted for back-compat
+    # (the old numeric id was falsy in JS and kept causing silent breakage).
+    return str(set_id) in (ALL_SET_ID, "0")
+
+
+def _real_set_id(set_id) -> int:
+    """set_id path params are str so the synthetic '__all__' sentinel can flow;
+    anything that reaches SQL must be a real (int) use_case_sets id."""
     try:
-        return int(set_id) == ALL_SET_ID
+        return int(set_id)
     except (TypeError, ValueError):
-        return False
+        raise HTTPException(400, f"invalid set id {set_id!r}")
 
 
 async def _all_set_members(conn, pid) -> list:
@@ -4977,7 +4991,8 @@ async def create_set(payload: SetIn, request: Request):
 
 
 @app.get("/api/sets/{set_id}")
-async def get_set(set_id: int, request: Request):
+async def get_set(set_id: str, request: Request):
+    set_id = set_id if _is_all_set(set_id) else _real_set_id(set_id)
     async with pool.acquire() as conn:
         # The synthetic All set: members are every managed UC in the active
         # project (computed live), so a run/arch-review over it is "everything".
@@ -5011,7 +5026,8 @@ async def get_set(set_id: int, request: Request):
 
 
 @app.put("/api/sets/{set_id}")
-async def update_set(set_id: int, payload: SetIn, request: Request):
+async def update_set(set_id: str, payload: SetIn, request: Request):
+    set_id = set_id if _is_all_set(set_id) else _real_set_id(set_id)
     user = get_user(request)  # noqa: F841 — auth check
     _reject_all_set_edit(set_id)
     async with pool.acquire() as conn:
@@ -5030,7 +5046,8 @@ async def update_set(set_id: int, payload: SetIn, request: Request):
 
 
 @app.delete("/api/sets/{set_id}")
-async def delete_set(set_id: int, request: Request):
+async def delete_set(set_id: str, request: Request):
+    set_id = set_id if _is_all_set(set_id) else _real_set_id(set_id)
     user = get_user(request)  # noqa: F841 — auth check
     _reject_all_set_edit(set_id)
     async with pool.acquire() as conn:
@@ -5043,7 +5060,8 @@ async def delete_set(set_id: int, request: Request):
 
 
 @app.put("/api/sets/{set_id}/default")
-async def set_default_set(set_id: int, request: Request):
+async def set_default_set(set_id: str, request: Request):
+    set_id = set_id if _is_all_set(set_id) else _real_set_id(set_id)
     """Mark this Set as the project default. Clears the previous default.
 
     Used by the New Run modal to pre-populate UC selection and (later) by
@@ -5067,7 +5085,8 @@ async def set_default_set(set_id: int, request: Request):
 
 
 @app.delete("/api/sets/{set_id}/default")
-async def clear_default_set(set_id: int, request: Request):
+async def clear_default_set(set_id: str, request: Request):
+    set_id = set_id if _is_all_set(set_id) else _real_set_id(set_id)
     """Unmark this Set as the project default, leaving no default."""
     get_user(request)
     _reject_all_set_edit(set_id)
@@ -5084,7 +5103,8 @@ async def clear_default_set(set_id: int, request: Request):
 
 
 @app.post("/api/sets/{set_id}/members")
-async def add_set_member(set_id: int, payload: SetMemberIn, request: Request):
+async def add_set_member(set_id: str, payload: SetMemberIn, request: Request):
+    set_id = set_id if _is_all_set(set_id) else _real_set_id(set_id)
     user = get_user(request)
     _reject_all_set_edit(set_id)
     if payload.uc_source not in ("managed", "corpus"):
@@ -5106,7 +5126,8 @@ async def add_set_member(set_id: int, payload: SetMemberIn, request: Request):
 
 
 @app.delete("/api/sets/{set_id}/members/{uc_uuid:path}")
-async def remove_set_member(set_id: int, uc_uuid: str, request: Request):
+async def remove_set_member(set_id: str, uc_uuid: str, request: Request):
+    set_id = set_id if _is_all_set(set_id) else _real_set_id(set_id)
     user = get_user(request)  # noqa: F841
     _reject_all_set_edit(set_id)
     async with pool.acquire() as conn:
@@ -5122,7 +5143,8 @@ async def remove_set_member(set_id: int, uc_uuid: str, request: Request):
 
 
 @app.get("/api/sets/{set_id}/corpus-subpath")
-async def set_corpus_subpath(set_id: int, request: Request):
+async def set_corpus_subpath(set_id: str, request: Request):
+    set_id = set_id if _is_all_set(set_id) else _real_set_id(set_id)
     """Return the common corpus path prefix for corpus UCs in this set.
     Used by the UI to pre-fill corpus_subpath when triggering a set run."""
     # The All set spans managed + corpus — compute both counts + the corpus subpath.
@@ -5177,7 +5199,8 @@ async def set_corpus_subpath(set_id: int, request: Request):
 
 
 @app.post("/api/sets/{set_id}/promote")
-async def promote_set_members(set_id: int, payload: SetPromoteIn, request: Request):
+async def promote_set_members(set_id: str, payload: SetPromoteIn, request: Request):
+    set_id = set_id if _is_all_set(set_id) else _real_set_id(set_id)
     """Bulk-transition all managed UC members of a set from from_state → to_state."""
     user = get_user(request)
     if payload.from_state not in UC_STATES:
@@ -5227,7 +5250,8 @@ async def promote_set_members(set_id: int, payload: SetPromoteIn, request: Reque
 
 
 @app.get("/api/sets/{set_id}/readiness")
-async def set_readiness(set_id: int, request: Request):
+async def set_readiness(set_id: str, request: Request):
+    set_id = set_id if _is_all_set(set_id) else _real_set_id(set_id)
     """Readiness scorecard for a Set's managed UCs (DCM feature #4).
 
     The "batch check on a Set before triggering a run" from the meeting: score

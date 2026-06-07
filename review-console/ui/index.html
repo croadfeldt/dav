@@ -2959,6 +2959,7 @@ const _selectedRuns = new Set(); // run names checked for batch archive/delete
 let allResults = [];
 let allUCs = [];
 let allSets = [];
+const ALL_SET_ID = '__all__';  // synthetic "All Use Cases" set — string sentinel, never 0 (falsy-0 kept causing silent breakage)
 
 let activeRunResultId = null;
 let activeRunSummary  = null;
@@ -5347,7 +5348,7 @@ async function _applySetToNewRun(setId) {
     const setData = await api(`/api/sets/${setId}`);
     const subpathInfo = await api(`/api/sets/${setId}/corpus-subpath`);
     _pendingRunFilter = _filterFromSetMembers(setData.members || []);
-    _pendingRunLineage = { set_id: Number(setId), set_name: set?.name, selection_mode: 'set' };
+    _pendingRunLineage = { set_id: setId, set_name: set?.name, selection_mode: 'set' };  // raw id — Number('__all__') would be NaN
     // Both kinds run: corpus UCs are engine-filtered in the corpus; managed UCs
     // are fetched from the console API at run start (no push/promote needed).
     const c = subpathInfo.corpus_count || 0, m = subpathInfo.managed_count || 0;
@@ -5381,8 +5382,8 @@ function _populateNrSetSel(selectedId) {
     (allSets || []).map(s =>
       `<option value="${s.id}"${String(s.id)===String(selectedId)?' selected':''}>${esc(s.name)}${s.is_default?' (default)':''}${s.member_count!=null?` — ${s.member_count} UC${s.member_count===1?'':'s'}`:''}</option>`
     ).join('');
-  // 0-aware: the "All Use Cases" synthetic set has id 0, which is falsy — a
-  // plain truthiness test would silently fail to preselect it.
+  // Null-safe ('' = Full corpus); the synthetic set's id is the truthy
+  // '__all__' sentinel, so no falsy-0 special-casing is needed anymore.
   sel.value = (selectedId !== null && selectedId !== undefined && selectedId !== '') ? String(selectedId) : '';
 }
 document.getElementById('nrSetSel')?.addEventListener('change', async function() {
@@ -5403,21 +5404,20 @@ async function rerunRun(name) {
   let det = null;   // detail carries time-allowed + session description
   try { det = await api(`/api/runs/${encodeURIComponent(name)}`); } catch(_) {}
 
-  // UC scope: Set-based runs re-apply the Set (its membership may have evolved
-  // — that's the live meaning of a Set); custom selections replay the exact
-  // handles/uuids/managed list that ran.
-  // The synthetic "All Use Cases" set is stored with set_id NULL (id 0 has no
-  // use_case_sets row for the FK) — resolve name-only set lineage back to the
-  // live set by name so it re-selects instead of falling back to Full corpus.
+  // UC scope: EXACT replay. The original's uc-handles/uuids/managed list and
+  // corpus subpath are replayed verbatim — re-deriving from the live Set was
+  // tried and diverged (set-normalized handles, '.' subpath, recomputed
+  // timeout → 672723 timed out before its managed UCs ran). The Set is still
+  // resolved for lineage/display, including the synthetic "All Use Cases"
+  // set, which is stored as set_id NULL (id 0 has no use_case_sets FK row).
   let rerunSetId = (r.selection_mode === 'set') ? (r.set_id ?? null) : null;
   if (r.selection_mode === 'set' && rerunSetId == null && r.set_name) {
     if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
     const byName = (allSets || []).find(s => s.name === r.set_name);
     if (byName) rerunSetId = byName.id;   // "All Use Cases" → 0 (0-aware below)
   }
-  const isSet = rerunSetId != null;
   let filter = null;
-  if (!isSet) {
+  {
     const f = {
       handles: P['uc-handles']         ? P['uc-handles'].split(',')         : [],
       uuids:   P['uc-uuids']           ? P['uc-uuids'].split(',')           : [],
@@ -5426,12 +5426,13 @@ async function rerunRun(name) {
     if (f.handles.length || f.uuids.length || f.managed.length) filter = f;
   }
   const lineage = {
-    set_id: isSet ? rerunSetId : null,
+    set_id: rerunSetId,
     set_name: r.set_name || null,
     selection_mode: r.selection_mode || (filter ? 'selection' : 'corpus'),
   };
-  await openNewRun(undefined, isSet ? undefined : (P['corpus-uc-subpath'] || undefined),
-                   filter, undefined, lineage);
+  // Passing an explicit subpath suppresses openNewRun's set re-application
+  // (the divergence source); _populateNrSetSel still shows the Set for context.
+  await openNewRun(undefined, P['corpus-uc-subpath'] || undefined, filter, undefined, lineage);
 
   // openNewRun applied the Set + defaults; overlay the original run's config.
   const setVal = (id, v) => {
@@ -5496,8 +5497,8 @@ async function openNewRun(banner, subpath, ucFilter, branchOverride, lineage) {
   if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
   let effectiveSubpath = subpath;
   let effectiveBanner = banner;
-  // ?? / == null (not ||) so the "All Use Cases" set (id 0) survives — it's a
-  // valid, falsy set id and must not be mistaken for "no set selected".
+  // ?? / == null (not ||): only true absence means "no set selected" — the
+  // synthetic set's id is the '__all__' string sentinel (always truthy).
   let setForSel = lineage?.set_id ?? null;
   if (subpath === undefined && !banner && !ucFilter && setForSel == null) {
     const def = _getDefaultSet();
@@ -6680,7 +6681,7 @@ async function _openBatchAddSetPopover(anchor) {
     return;
   }
   let h = '<div style="padding:4px 0;font-size:12px;">';
-  allSets.filter(s => s.id !== 0).forEach(s => {
+  allSets.filter(s => s.id !== ALL_SET_ID).forEach(s => {
     h += `<div style="padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;"
              onmouseover="this.style.background='var(--bg-raised)'" onmouseout="this.style.background=''"
              onclick="_batchAddSelectedToSet(${s.id}, ${attrJson(s.name)})">
@@ -7774,7 +7775,7 @@ async function biPrepStep3() {
   try { await loadSets(); } catch(_) {}
   const sel = document.getElementById('biSetExistingSel');
   sel.innerHTML = '<option value="">— pick a set —</option>' +
-    (allSets || []).filter(s => s.id !== 0).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
+    (allSets || []).filter(s => s.id !== ALL_SET_ID).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
   // Individual-pickers grid
   const grid = document.getElementById('biIndividualPickers');
   grid.innerHTML = '';
@@ -7782,7 +7783,7 @@ async function biPrepStep3() {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex; align-items:center; gap:6px; font-size:11px;';
     const opts = '<option value="">— none —</option>' +
-      (allSets || []).filter(s => s.id !== 0).map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+      (allSets || []).filter(s => s.id !== ALL_SET_ID).map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
     row.innerHTML = `<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(uc.title)}</span>
       <select data-ucuuid="${esc(uc.uuid)}" class="bi-indiv-sel" style="flex:0 0 200px;">${opts}</select>`;
     grid.appendChild(row);
@@ -8165,7 +8166,7 @@ async function wzEnterStep4() {
   if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
   const sel = document.getElementById('wzSetExistingSel');
   sel.innerHTML = '<option value="">— pick a set —</option>' +
-    (allSets || []).filter(s => s.id !== 0).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
+    (allSets || []).filter(s => s.id !== ALL_SET_ID).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
 }
 
 // ── Step 5: summary + save ────────────────────────────────────────────────────
@@ -8272,9 +8273,9 @@ function renderSetFilterRail() {
   const items = [];
   items.push({key: '__all__',   label: 'All Use Cases', count: totalUCs, isAll: true});
   items.push({key: '__none__',  label: '(No set)', count: noSetUCs});
-  // The synthetic "All Use Cases" set (id 0) is represented by the __all__ item
+  // The synthetic "All Use Cases" set (id '__all__') is represented by the __all__ item
   // above in the rail — skip the duplicate from /api/sets here.
-  (allSets || []).filter(s => s.id !== 0).forEach(s => items.push({
+  (allSets || []).filter(s => s.id !== ALL_SET_ID).forEach(s => items.push({
     key: s.id, label: s.name, count: s.member_count, isDefault: s.is_default,
   }));
 
@@ -8429,7 +8430,7 @@ function _openAddSetPicker(ucUuid, ucSource, ucHandle, ucPath, anchorEl) {
   const uc = (allUCs || []).find(u => u.uuid === ucUuid);
   const memberOf = new Set((uc && uc.set_ids) || []);
   let h = '<div style="padding:4px 0;">';
-  allSets.filter(s => s.id !== 0).forEach(s => {
+  allSets.filter(s => s.id !== ALL_SET_ID).forEach(s => {
     const isMember = memberOf.has(s.id);
     h += `<div style="padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:12px;${isMember ? 'background:var(--accent-bg);' : ''}"
              onmouseover="this.style.background='var(--bg-raised)'" onmouseout="this.style.background='${isMember ? 'var(--accent-bg)' : ''}'"
@@ -8582,7 +8583,7 @@ function renderManageSetsList() {
     return;
   }
   let h = '';
-  allSets.filter(s => s.id !== 0).forEach(s => {
+  allSets.filter(s => s.id !== ALL_SET_ID).forEach(s => {
     const defBadge = s.is_default
       ? '<span style="font-size:9px;color:var(--accent);border:1px solid var(--accent-soft);padding:1px 5px;border-radius:2px;margin-left:8px;">DEFAULT</span>'
       : '';
