@@ -5406,7 +5406,16 @@ async function rerunRun(name) {
   // UC scope: Set-based runs re-apply the Set (its membership may have evolved
   // — that's the live meaning of a Set); custom selections replay the exact
   // handles/uuids/managed list that ran.
-  const isSet = (r.selection_mode === 'set') && (r.set_id !== null && r.set_id !== undefined);
+  // The synthetic "All Use Cases" set is stored with set_id NULL (id 0 has no
+  // use_case_sets row for the FK) — resolve name-only set lineage back to the
+  // live set by name so it re-selects instead of falling back to Full corpus.
+  let rerunSetId = (r.selection_mode === 'set') ? (r.set_id ?? null) : null;
+  if (r.selection_mode === 'set' && rerunSetId == null && r.set_name) {
+    if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
+    const byName = (allSets || []).find(s => s.name === r.set_name);
+    if (byName) rerunSetId = byName.id;   // "All Use Cases" → 0 (0-aware below)
+  }
+  const isSet = rerunSetId != null;
   let filter = null;
   if (!isSet) {
     const f = {
@@ -5417,7 +5426,7 @@ async function rerunRun(name) {
     if (f.handles.length || f.uuids.length || f.managed.length) filter = f;
   }
   const lineage = {
-    set_id: isSet ? r.set_id : null,
+    set_id: isSet ? rerunSetId : null,
     set_name: r.set_name || null,
     selection_mode: r.selection_mode || (filter ? 'selection' : 'corpus'),
   };
