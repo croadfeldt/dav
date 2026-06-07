@@ -838,11 +838,15 @@ is A/B'd for quality before adoption.
 the budget-hit turn) are *unguided* — `guided_json` can't coexist with tool
 definitions, so nothing constrains enums on that path (and Anthropic endpoints
 never have guided decoding). Two layers keep a stray label from discarding a
-complete analysis: (1) `normalize_confidence` maps the severity-axis vocabulary
-the model sometimes reuses (`minor/moderate/major` → `low/medium/high`);
-(2) if final-JSON validation still fails, the agent re-asks **once** with the
-guided schema attached ("fix the format, don't change the findings") before
-failing the UC. Added after run `2026-06-06T23-04-55Z-5fae105`, where
+complete analysis: (1) the prompt explicitly separates the axes' vocabularies
+(severity = 5-word scale, confidence = exactly high/medium/low — "moderate is
+not a confidence value"); (2) if final-JSON validation fails anyway, the agent
+re-asks **once** with the guided schema attached ("fix the format, don't change
+the findings") — on vLLM the schema's `enum` makes an illegal label
+unrepresentable, so the **model** picks which legal label fits its own analysis.
+Deliberately *not* done: silently aliasing `moderate→medium` in the validator —
+a synonym guess by the engine could mislabel; the re-ask keeps the choice with
+the model. Added after run `2026-06-06T23-04-55Z-5fae105`, where
 `confidence: "moderate"` killed an otherwise-complete 358 s analysis.
 
 ---

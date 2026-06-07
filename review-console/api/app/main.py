@@ -3267,6 +3267,21 @@ async def get_run_detail(name: str):
     if session is not None:
         detail["session"] = session
 
+    # Per-UC outcome counts from the ingested analysis (authoritative once the
+    # run completes; run_sessions.uc_* stay NULL — the finalizer defers them).
+    # Lets the header show "31/32 ok · 1 fail" instead of just a red Failed.
+    try:
+        async with pool.acquire() as conn:
+            ar = await conn.fetchrow(
+                "SELECT run_id, total_ucs, successful, failed FROM analysis_runs "
+                "WHERE run_name=$1 ORDER BY ingested_at DESC LIMIT 1", name)
+        if ar:
+            detail["uc_total"]     = ar["total_ucs"]
+            detail["uc_succeeded"] = ar["successful"]
+            detail["uc_failed"]    = ar["failed"]
+    except Exception as e:
+        log.info("analysis counts lookup failed for %s: %s", name, e)
+
     # Per-UC progress: find the matching workspace run-dir's run-progress.yaml
     # by timestamp correlation. Only useful while the run is in flight.
     if detail.get("phase") not in TERMINAL_PHASES:

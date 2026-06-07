@@ -4874,7 +4874,7 @@ function renderRunDrawerDetail(d) {
   const _start = d.started_at || d.created_at;
   const _startMs = _start ? Date.parse(_start) : null;
   const _terminal = ['Succeeded','Failed','Cancelled','TimedOut'].includes(d.phase);
-  const ucCount = (d.progress && d.progress.total_ucs) || (s && s.uc_total) || null;
+  const ucCount = (d.progress && d.progress.total_ucs) || d.uc_total || (s && s.uc_total) || null;
   const p = d.progress || {};
   // Sample count (ensemble iterations per UC) — for the turn-record "iteration
   // X of N" labels. From the run's param, else the mode default.
@@ -4909,7 +4909,18 @@ function renderRunDrawerDetail(d) {
   document.getElementById('rdSub').innerHTML = timeBits;
   // Row 3 — scope / estimate
   const hs = [];
-  if (ucCount != null) hs.push(`<span class="rd-hstat"><span class="l" style="text-transform:none">UCs</span><b>${ucCount}</b></span>`);
+  if (ucCount != null) {
+    // Outcome split from the ingested analysis — a partial failure (e.g. 31/32)
+    // must read as exactly that, not as a blanket "Failed".
+    if (typeof d.uc_succeeded === 'number' && typeof d.uc_total === 'number') {
+      const failed = d.uc_failed || 0;
+      hs.push(`<span class="rd-hstat"><span class="l" style="text-transform:none">UCs</span>` +
+        `<b style="color:${failed > 0 ? 'var(--accent)' : 'var(--green)'}">${d.uc_succeeded}/${d.uc_total} ok</b>` +
+        (failed > 0 ? ` <b style="color:var(--red)">${failed} fail</b>` : '') + `</span>`);
+    } else {
+      hs.push(`<span class="rd-hstat"><span class="l" style="text-transform:none">UCs</span><b>${ucCount}</b></span>`);
+    }
+  }
   if (!_terminal && ucCount != null) {
     const tag = perUcLive
       ? `<span style="color:var(--blue);font-size:9px;margin-left:3px" title="Live — actual pace observed this run (${liveDone}/${ucCount} done)">live</span>`

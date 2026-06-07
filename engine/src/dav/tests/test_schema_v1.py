@@ -205,27 +205,6 @@ def test_normalize_confidence_rejects_out_of_band():
         ValueError, "high score=65 out of band (expected 81-100)"
     )
 
-def test_normalize_confidence_severity_vocabulary_aliases():
-    # Mirror of _SEVERITY_ALIASES: the model reuses the severity axis's
-    # middle three words for confidence (run 5fae105, 2026-06-06: an
-    # unguided early-final emitted confidence 'moderate' and killed a
-    # complete finops analysis). Aliased labels resolve to canonical
-    # labels with default scores; advisory/critical still raise.
-    expected = {"minor": ("low", 30), "moderate": ("medium", 50), "major": ("high", 85)}
-    for alias, (label, score) in expected.items():
-        conf = normalize_confidence(alias)
-        assert_eq(conf.label, label, f"{alias} aliased label")
-        assert_eq(conf.score, score, f"{alias} canonical default score")
-    # Dict path: aliased label discards the untrusted score
-    conf = normalize_confidence({"label": "moderate", "score": 75})
-    assert_eq(conf.label, "medium", "dict alias label")
-    assert_eq(conf.score, 50, "dict alias ignores off-scale score")
-    for still_invalid in ("advisory", "critical"):
-        assert_raises(
-            lambda v=still_invalid: normalize_confidence(v),
-            ValueError, "invalid confidence label"
-        )
-
 # --- Dataclass from_dict / to_dict round-trip ---
 
 def test_component_required_roundtrip_from_shorthand():

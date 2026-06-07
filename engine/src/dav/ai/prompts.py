@@ -128,6 +128,7 @@ Rules for the final output:
 - Every rationale field must be non-empty if its list has entries.
 - spec_refs values should look like "doc-handle" or "doc-handle/section-name".
 - spec_refs_missing entries must use "doc-handle" or "doc-handle/section-title" format — not prose.
+- severity and confidence use DIFFERENT vocabularies. severity is the 5-word scale (critical|major|moderate|minor|advisory); confidence is EXACTLY high, medium, or low — never a severity word. "moderate" is not a confidence value.
 - capabilities_invoked[].depends_on is OPTIONAL: list ids of OTHER capabilities (preferably ones also in this capabilities_invoked list) that this capability requires to function. Use [] if none or unsure — do not guess. This surfaces foundational building blocks; only assert a dependency the spec actually implies.
 """
 

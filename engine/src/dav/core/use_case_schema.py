@@ -132,21 +132,6 @@ _CONFIDENCE_DEFAULTS: dict[str, int] = {
     "high": 85,
 }
 
-# Mirror image of _SEVERITY_ALIASES: the LLM reuses the severity axis's
-# 5-bucket vocabulary for confidence (observed 2026-06-06, run
-# 2026-06-06T23-04-55Z-5fae105: `confidence: "moderate"` in a FedRAMP-
-# Moderate-saturated UC killed an otherwise-complete 358s analysis — the
-# unguided early-final path has no enum enforcement, and Anthropic
-# endpoints never will). Mapping the three middle severity words covers
-# the alternate scale with ordering preserved: minor<moderate<major →
-# low<medium<high. `advisory`/`critical` stay unmapped — they aren't
-# confidence words in any vocabulary, so they still raise.
-_CONFIDENCE_ALIASES: dict[str, str] = {
-    "minor": "low",
-    "moderate": "medium",
-    "major": "high",
-}
-
 # Valid score range per label. Score must fall within these bounds (spec 05 §9.4).
 _SEVERITY_BAND_RANGES: dict[str, tuple[int, int]] = {
     "advisory": (0, 20),
@@ -337,7 +322,6 @@ def normalize_confidence(value: Any) -> ConfidenceDescriptor:
 
     if isinstance(value, str):
         label = value.strip().lower()
-        label = _CONFIDENCE_ALIASES.get(label, label)
         if label not in _CONFIDENCE_DEFAULTS:
             raise ValueError(
                 f"invalid confidence label '{value}'; expected one of {sorted(_CONFIDENCE_DEFAULTS)}"
@@ -355,27 +339,18 @@ def normalize_confidence(value: Any) -> ConfidenceDescriptor:
         if not isinstance(label_raw, str):
             raise ValueError(f"confidence dict missing 'label' or not a string: {value!r}")
         label = label_raw.strip().lower()
-        aliased = label in _CONFIDENCE_ALIASES
-        label = _CONFIDENCE_ALIASES.get(label, label)
         if label not in _CONFIDENCE_DEFAULTS:
             raise ValueError(
                 f"invalid confidence label '{label_raw}'; expected one of {sorted(_CONFIDENCE_DEFAULTS)}"
             )
-        if aliased:
-            # A synonym label means the model is on the severity scale; its
-            # score can't be trusted against our confidence bands. Use the
-            # canonical default for the resolved label (same rule as
-            # normalize_severity).
-            score = _CONFIDENCE_DEFAULTS[label]
-        else:
-            score = value.get("score", _CONFIDENCE_DEFAULTS[label])
-            if not isinstance(score, int):
-                raise ValueError(f"confidence score must be int, got {type(score).__name__}: {score!r}")
-            lo, hi = _CONFIDENCE_BAND_RANGES[label]
-            if not (lo <= score <= hi):
-                raise ValueError(
-                    f"confidence score {score} outside band for label '{label}' (expected {lo}-{hi})"
-                )
+        score = value.get("score", _CONFIDENCE_DEFAULTS[label])
+        if not isinstance(score, int):
+            raise ValueError(f"confidence score must be int, got {type(score).__name__}: {score!r}")
+        lo, hi = _CONFIDENCE_BAND_RANGES[label]
+        if not (lo <= score <= hi):
+            raise ValueError(
+                f"confidence score {score} outside band for label '{label}' (expected {lo}-{hi})"
+            )
         factors = dict(value.get("factors") or {})
         factors.setdefault("base_from_label", _CONFIDENCE_DEFAULTS[label])
         factors.setdefault("override_rationale", None)
