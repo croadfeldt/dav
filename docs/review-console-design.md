@@ -105,7 +105,13 @@ panes never surface the raw PipelineRun name.
 
 **Run management (v0.10.0):** the Runs list supports lifecycle management of runs.
 - **Rerun** — opens New Run pre-loaded with the original run's **actual
-  configuration** (PipelineRun params are the authoritative record): mode,
+  configuration**, sourced from the **server-stored trigger payload**
+  (`run_sessions.trigger_payload`, persisted at trigger time — durable across
+  Tekton PipelineRun pruning and independent of UI hydration state). The modal
+  does not open until the config has loaded; if neither the stored payload nor
+  live PipelineRun params exist (pre-upgrade run, pruned), the UI says so
+  explicitly instead of silently opening defaults. Restored (legacy fallback =
+  PipelineRun params): mode,
   sample count, model, corpus/spec repos+branches+subpath, halt-on-error,
   source-namespace narrowing, time allowed, category/description. UC scope is
   an **exact replay**: the original `uc-handles`/`uc-uuids`/`managed-uc-uuids`

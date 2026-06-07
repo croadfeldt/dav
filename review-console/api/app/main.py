@@ -2988,9 +2988,11 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                     created_by, started_at,
                     baseline_gen_tokens, baseline_prompt_tokens,
                     set_id, set_name, selection_mode, uc_state_snapshot,
-                    spec_namespaces, corpus_namespaces, project_id)
+                    spec_namespaces, corpus_namespaces, project_id,
+                    trigger_payload)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9,
-                           $10, $11, $12, $13::jsonb, $14, $15, $16)""",
+                           $10, $11, $12, $13::jsonb, $14, $15, $16,
+                           $17::jsonb)""",
                 result["name"], payload.name, payload.description,
                 payload.category or "ad-hoc", payload.tags or [],
                 payload.mode, reviewer,
@@ -3004,11 +3006,44 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                 payload.set_name, payload.selection_mode,
                 json.dumps(uc_state_snapshot) if uc_state_snapshot else None,
                 payload.spec_namespaces, payload.corpus_namespaces, _run_pid,
+                # Durable rerun record — survives Tekton PipelineRun pruning.
+                json.dumps(payload.model_dump()),
             )
     except Exception as e:
         log.warning("run_sessions insert failed for %s: %s", result.get("name"), e)
 
     return {"ok": True, "run": result, "resolved_params": params}
+
+
+@app.get("/api/runs/{name}/rerun-config")
+async def get_rerun_config(name: str):
+    """The configuration Rerun must reproduce. Source order: the stored
+    trigger payload (durable — survives PipelineRun pruning), else the live
+    PipelineRun params (legacy runs from before trigger_payload existed),
+    else nothing — the UI must then say so rather than silently open defaults."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT trigger_payload, name, description, category, set_id, "
+            "set_name, selection_mode FROM run_sessions WHERE run_name=$1", name)
+    if not row:
+        raise HTTPException(404, f"run {name!r} not found")
+    cfg = _parse_jsonb(row["trigger_payload"]) if row["trigger_payload"] else None
+    params = None
+    if cfg is None and validations.ENABLED:
+        try:
+            detail = await asyncio.to_thread(validations.get_run_detail, name)
+            params = detail.get("params")
+        except Exception:
+            params = None   # PipelineRun pruned — nothing to fall back to
+    return {
+        "run_name": name,
+        "config": cfg,                       # RunTriggerIn-shaped, or null
+        "params": params,                    # legacy fallback, or null
+        "session": {"name": row["name"], "description": row["description"],
+                     "category": row["category"], "set_id": row["set_id"],
+                     "set_name": row["set_name"],
+                     "selection_mode": row["selection_mode"]},
+    }
 
 
 @app.get("/api/runs/status")

@@ -529,6 +529,11 @@ ON CONFLICT (slug) DO NOTHING;
 ALTER TABLE managed_use_cases     ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
 ALTER TABLE analysis_runs         ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
 ALTER TABLE run_sessions          ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
+
+-- Rerun fidelity: the exact RunTriggerIn payload that created this run.
+-- Tekton prunes PipelineRuns (their params with them); this column is the
+-- durable record so Rerun reproduces the run regardless of cluster state.
+ALTER TABLE run_sessions ADD COLUMN IF NOT EXISTS trigger_payload JSONB;
 ALTER TABLE use_case_sets         ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
 ALTER TABLE analysis_output_cache ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
 UPDATE managed_use_cases     SET project_id=(SELECT id FROM projects WHERE slug='default') WHERE project_id IS NULL;
