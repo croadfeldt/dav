@@ -120,10 +120,25 @@ machine, field-level provenance, per-field classification, and a **`family` tag*
 entity-type-families §6); the tier/tags scope is an *instance* concern
 (ownership-sharing-allocation), distinct from the universal definitions.
 
-## Build order (fundamentals, OSS-safe, no confidential data)
-1. ✅ **Parse `DCM-Taxonomy.md` → structured {domains, terms, anti_aliases}** —
-   `review-console/api/app/capability_taxonomy.py` (pure, no DB). 42/164/11 verified.
-   Next: project into the `capability_taxonomy_terms` seed (idempotent, re-seedable).
+## Build order — STATUS (keystone COMPLETE 2026-06-08, validated vs Postgres)
+1. ✅ **Parse `DCM-Taxonomy.md`** — `capability_taxonomy.py` (42/164/11).
+2. ✅ **Schema** — `migrate_017` (UDLM Knowledge family), registered in startup.
+3. ✅ **Seed loader** — `capability_catalog.seed_dcm_taxonomy()` (idempotent; 204
+   canonical terms + 11 aliases, global/dcm/CANONICAL) from vendored
+   `app/seed/DCM-Taxonomy.md`; runs on startup. Live-tested: reseed adds 0/0.
+4. ✅ **Normalize + back-fill signal** — `capability_catalog.normalize()` (exact term
+   → alias → `proposed-taxonomy-gap`). Live-tested.
+5. ✅ **Resolver** — `resolve_uc_capabilities()` projects free-form
+   `uc_capabilities` strings → OBSERVED catalog entries, normalized or gap-flagged;
+   idempotent. Live-tested (3 distinct → 2 mapped, 1 gap). The synonym-miscount fix.
+6. ✅ **Endpoints** — `GET /api/capabilities/{stats,taxonomy,catalog,normalize}`,
+   `POST /api/capabilities/{resolve-uc-capabilities,reseed}` (writes platform-admin).
+
+**Remaining (separate, F7):** assessment-output ingestion lands findings on the catalog
+(synthetic fixture here; confidential parsers inside the work env — WORK/PERSONAL
+BOUNDARY in active-work.md). Full UDLM four-DOMAIN storage = later conformance increment.
+
+### (historical) build order
 2. **`capability_catalog` + taxonomy tables** (migration; tenancy + pillar from birth).
 3. **Normalization + back-fill mechanism** (resolve a capability → taxonomy term, or
    flag a gap + propose a term; curation endpoints; hybrid propose/curate UI later).

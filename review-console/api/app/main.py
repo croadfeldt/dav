@@ -39,6 +39,7 @@ from .uc_priority import (
 )
 from . import capability_density as _capability_density
 from . import capability_graph as _capability_graph
+from . import capability_catalog as _capability_catalog
 from . import uc_readiness as _uc_readiness
 from .uc_list import collapse_duplicates as _collapse_uc_duplicates
 from . import validations
@@ -359,6 +360,10 @@ async def lifespan(app: FastAPI):
         await _seed_corpus(conn)
         await _seed_managed_repos(conn)
         await _seed_docs_mcp(conn)
+        try:
+            await _capability_catalog.seed_dcm_taxonomy(conn)
+        except Exception:
+            log.exception("DCM taxonomy seed failed (non-fatal)")
         await _migrate_code_repo_configs(conn)
         await _backfill_uc_projections(conn)
     await _load_ldap_cfg()
@@ -6344,6 +6349,92 @@ async def foundational_capabilities(
         "edge_count": len(edges),
         "capabilities": capabilities,
     }
+
+
+# ---------------------------------------------------------------------------
+# Capability catalog ↔ taxonomy (UDLM Knowledge family — migrate_017).
+# Catalog = independent inventory; taxonomy = normalization authority; the
+# catalog back-fills taxonomy gaps. Seeded from the DCM taxonomy on startup.
+# See capability_catalog.py and docs/capability-catalog-design.md.
+# ---------------------------------------------------------------------------
+@app.get("/api/capabilities/stats")
+async def capabilities_stats():
+    async with pool.acquire() as conn:
+        return await _capability_catalog.stats(conn)
+
+
+@app.get("/api/capabilities/taxonomy")
+async def capabilities_taxonomy(
+    family: str = Query("dcm"),
+    q: Optional[str] = Query(None, description="substring filter on the term"),
+    state: Optional[str] = Query(None, description="lifecycle_state filter"),
+    limit: int = Query(500, ge=1, le=5000),
+):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT id::text AS id, handle, definition, pillar, domain_prefix, domain,
+                      category, lifecycle_state, family, scope_tier
+               FROM capability_taxonomy_terms
+               WHERE is_current AND family=$1
+                 AND ($2::text IS NULL OR handle ILIKE '%'||$2||'%')
+                 AND ($3::text IS NULL OR lifecycle_state=$3)
+               ORDER BY category NULLS LAST, lower(handle)
+               LIMIT $4""",
+            family, q, state, limit,
+        )
+    return {"family": family, "count": len(rows), "terms": [dict(r) for r in rows]}
+
+
+@app.get("/api/capabilities/catalog")
+async def capabilities_catalog(
+    family: str = Query("dcm"),
+    status: Optional[str] = Query(None, description="normalization_status filter"),
+    limit: int = Query(500, ge=1, le=5000),
+):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT c.id::text AS id, c.handle, c.pillar, c.domain_prefix,
+                      c.lifecycle_state, c.normalization_status, c.family, c.scope_tier,
+                      t.handle AS normalized_to
+               FROM capability_catalog c
+               LEFT JOIN capability_taxonomy_terms t ON t.id = c.normalized_to_term_id
+               WHERE c.is_current AND c.family=$1
+                 AND ($2::text IS NULL OR c.normalization_status=$2)
+               ORDER BY lower(c.handle)
+               LIMIT $3""",
+            family, status, limit,
+        )
+    return {"family": family, "count": len(rows), "capabilities": [dict(r) for r in rows]}
+
+
+@app.get("/api/capabilities/normalize")
+async def capabilities_normalize(name: str = Query(...), family: str = Query("dcm")):
+    """Resolve a free-form capability name onto a canonical term, or report a gap."""
+    async with pool.acquire() as conn:
+        res = await _capability_catalog.normalize(conn, name, family=family)
+        term = None
+        if res["term_id"]:
+            term = await conn.fetchval(
+                "SELECT handle FROM capability_taxonomy_terms WHERE id=$1", res["term_id"])
+    return {"name": name, "family": family, "status": res["status"],
+            "term_id": str(res["term_id"]) if res["term_id"] else None, "term": term}
+
+
+@app.post("/api/capabilities/resolve-uc-capabilities")
+async def capabilities_resolve_uc(request: Request, family: str = Query("dcm")):
+    """Project existing free-form uc_capabilities strings into the catalog
+    (OBSERVED, normalized or flagged as gaps). Platform-admin."""
+    await require_priv(request, rbac.P_PLATFORM_ADMIN)
+    async with pool.acquire() as conn:
+        return await _capability_catalog.resolve_uc_capabilities(conn, family=family)
+
+
+@app.post("/api/capabilities/reseed")
+async def capabilities_reseed(request: Request):
+    """Re-run the idempotent DCM-taxonomy seed. Platform-admin."""
+    await require_priv(request, rbac.P_PLATFORM_ADMIN)
+    async with pool.acquire() as conn:
+        return await _capability_catalog.seed_dcm_taxonomy(conn)
 
 
 # ---------------------------------------------------------------------------
