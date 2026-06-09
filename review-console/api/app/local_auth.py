@@ -90,3 +90,23 @@ def read_session(token: str) -> Optional[str]:
         return data.get("email")
     except Exception:
         return None
+
+
+def session_status(token: str):
+    """Classify a session token without enforcing it:
+    ('valid'|'expired'|'invalid'|'none', email_or_None). Lets the audit layer
+    tell an EXPIRED (timed-out) session from a forged or absent one."""
+    if not token or not _SECRET:
+        return ("none", None)
+    try:
+        payload, sig = token.split(".", 1)
+        expect = _b64(hmac.new(_SECRET, payload.encode(), hashlib.sha256).digest())
+        if not hmac.compare_digest(sig, expect):
+            return ("invalid", None)
+        data = json.loads(_unb64(payload))
+        email = data.get("email")
+        if int(data.get("exp", 0)) < int(time.time()):
+            return ("expired", email)
+        return ("valid", email)
+    except Exception:
+        return ("invalid", None)

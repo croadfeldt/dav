@@ -906,6 +906,9 @@
       <a class="pf-nav-item" id="navUsers" data-view="users" href="javascript:void(0)" style="display:none;">
         <span class="nav-icon">👤</span><span class="nav-label">Users &amp; roles</span>
       </a>
+      <a class="pf-nav-item" id="navAudit" data-view="audit" href="javascript:void(0)" style="display:none;" title="Audit log — who did what, plus login / logout / timeout events">
+        <span class="nav-icon">📜</span><span class="nav-label">Audit</span>
+      </a>
       <a class="pf-nav-item" data-view="config" href="javascript:void(0)">
         <span class="nav-icon">⚙</span><span class="nav-label">Config</span>
       </a>
@@ -1480,6 +1483,33 @@
         </div>
         <div class="scrollable" id="cmMatrix" style="flex:1;overflow:auto;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;padding:10px;">
           <div class="empty">Pick a run and click “Load map”.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ AUDIT (who did what + auth events) ══════════════ -->
+    <section class="pf-view" id="view-audit">
+      <div style="display:flex;flex-direction:column;height:calc(100vh - 60px);padding:14px;gap:10px;">
+        <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;padding:12px 14px;">
+          <div class="panel-title">Audit log</div>
+          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 8px;">Who did what — every mutating action — plus login, logout and session-timeout events. Platform-admin only; reads are not recorded.</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input id="auActor" placeholder="actor (email)" style="font-size:11px;width:170px;" />
+            <input id="auAction" placeholder="action (e.g. auth, run, delete)" style="font-size:11px;width:200px;" />
+            <select id="auOutcome" style="font-size:11px;">
+              <option value="">any outcome</option><option value="success">success</option>
+              <option value="denied">denied</option><option value="failure">failure</option><option value="error">error</option>
+            </select>
+            <select id="auHours" style="font-size:11px;">
+              <option value="">all time</option><option value="24">last 24h</option>
+              <option value="168">last 7d</option><option value="720">last 30d</option>
+            </select>
+            <button class="btn primary btn-sm" id="auLoadBtn" onclick="loadAudit()">Apply</button>
+            <span id="auStatus" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+        </div>
+        <div class="scrollable" id="auTable" style="flex:1;overflow:auto;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div class="empty">loading…</div>
         </div>
       </div>
     </section>
@@ -3201,6 +3231,7 @@ function _applyAccessVisibility() {
   const canProjects = projAdmin || can('project.create');
   const navP = document.getElementById('navProjects'); if (navP) navP.style.display = canProjects ? '' : 'none';
   const navU = document.getElementById('navUsers');    if (navU) navU.style.display = platAdmin ? '' : 'none';
+  const navA = document.getElementById('navAudit');    if (navA) navA.style.display = platAdmin ? '' : 'none';
   // Config panels are now project-scoped: gate each on its management privilege,
   // and hide its config-nav link too so scroll-spy doesn't target a hidden panel.
   const cfgGate = [
@@ -3918,6 +3949,7 @@ function switchView(name) {
   if (name === 'engineering') loadEngineeringTab();
   if (name === 'catalog')  loadCatalogTab();
   if (name === 'capmap')   loadCapMap();
+  if (name === 'audit')    loadAudit();
   if (name === 'improve')  loadImproveQueue();
   if (name === 'config')   loadConfig();
   if (name === 'inbox')    loadInbox();
@@ -10551,6 +10583,45 @@ document.getElementById('rpEnhRunBtn')?.addEventListener('click', async () => {
   _rpRefreshChip('enhancement');   // chip only — never hides the just-rendered pane
   if (_ok) toast('✓ Enhancement Plan ready');   // notify even if you navigated away
 });
+
+// ── Audit log (F3): who did what + auth events ───────────────────────────────
+function _auOutcomeColor(o) {
+  return o === 'denied' ? 'var(--amber,gold)'
+    : (o === 'error' || o === 'failure') ? 'var(--red)' : 'var(--green)';
+}
+async function loadAudit() {
+  const box = document.getElementById('auTable');
+  const status = document.getElementById('auStatus');
+  const qs = new URLSearchParams();
+  const v = id => (document.getElementById(id).value || '').trim();
+  if (v('auActor')) qs.set('actor', v('auActor'));
+  if (v('auAction')) qs.set('action', v('auAction'));
+  if (v('auOutcome')) qs.set('outcome', v('auOutcome'));
+  if (v('auHours')) qs.set('hours', v('auHours'));
+  qs.set('limit', '300');
+  box.innerHTML = '<div class="empty">loading…</div>'; status.textContent = '';
+  let data;
+  try { data = await api('/api/audit?' + qs.toString()); }
+  catch (e) { box.innerHTML = `<div style="color:var(--red);font-size:11px;padding:10px;">${esc(e.message)}</div>`; return; }
+  const ev = data.events || [];
+  if (!ev.length) { box.innerHTML = '<div class="empty">No audit events match.</div>'; return; }
+  const th = (t) => `<th style="padding:5px 8px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg-panel);text-align:left;font-weight:600;">${t}</th>`;
+  let h = '<table style="width:100%;border-collapse:collapse;font-size:11px;"><thead><tr>'
+    + th('When') + th('Actor') + th('Action') + th('Outcome') + th('Path') + th('IP') + '</tr></thead><tbody>';
+  for (const e of ev) {
+    const when = e.ts ? new Date(e.ts).toLocaleString() : '';
+    h += '<tr style="border-bottom:1px solid var(--border);">'
+      + `<td style="padding:4px 8px;white-space:nowrap;color:var(--text-dim);" title="${esc(e.ts || '')}">${esc(when)}</td>`
+      + `<td style="padding:4px 8px;white-space:nowrap;font-family:var(--mono,monospace);">${esc(e.actor || '—')}${e.actor_source ? ` <span style="color:var(--text-faint);">(${esc(e.actor_source)})</span>` : ''}</td>`
+      + `<td style="padding:4px 8px;white-space:nowrap;">${esc(e.action || '')}</td>`
+      + `<td style="padding:4px 8px;color:${_auOutcomeColor(e.outcome)};">${esc(e.outcome || '')}${e.status_code ? ` <span style="color:var(--text-faint);">${e.status_code}</span>` : ''}</td>`
+      + `<td style="padding:4px 8px;font-family:var(--mono,monospace);color:var(--text-dim);">${esc(e.path || e.summary || '')}</td>`
+      + `<td style="padding:4px 8px;white-space:nowrap;color:var(--text-faint);">${esc(e.ip || '')}</td></tr>`;
+  }
+  h += '</tbody></table>';
+  box.innerHTML = h;
+  status.textContent = `${ev.length} event${ev.length === 1 ? '' : 's'}`;
+}
 
 // ── Capability Map (F5): bidirectional UC ↔ capability matrix ────────────────
 let _cmSel = null;

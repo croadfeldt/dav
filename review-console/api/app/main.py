@@ -46,6 +46,7 @@ from . import validations
 from . import sources
 from . import metrics
 from . import rbac
+from . import audit
 from . import results as _results
 from . import uc_assist
 from . import corpus_push
@@ -88,6 +89,7 @@ MIGRATE_014_PATH = Path(__file__).parent / "migrate_014_model_capabilities.sql"
 MIGRATE_015_PATH = Path(__file__).parent / "migrate_015_improvement_proposals.sql"
 MIGRATE_016_PATH = Path(__file__).parent / "migrate_016_experiments.sql"
 MIGRATE_017_PATH = Path(__file__).parent / "migrate_017_capability_catalog.sql"
+MIGRATE_018_PATH = Path(__file__).parent / "migrate_018_audit_log.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 # Secured dav-docs-mcp self-registration (its LoadBalancer SSE URL + bearer token).
@@ -355,6 +357,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_016_PATH.read_text())
         log.info("Applying migration 017 (capability catalog — UDLM Knowledge family)...")
         await conn.execute(MIGRATE_017_PATH.read_text())
+        log.info("Applying migration 018 (audit log)...")
+        await conn.execute(MIGRATE_018_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -941,6 +945,80 @@ async def _approval_gate(request: Request, call_next):
             )
     _record_presence(user, request)
     return await call_next(request)
+
+
+# ── Audit (F3): record mutating actions + auth events ────────────────────────
+# Registered AFTER the gate → outermost middleware, so it sees the final response
+# (incl. the gate's 401/403s). Recording is fire-and-forget; auditing never adds
+# request latency or breaks a request. Reads + /api/auth are not auto-captured
+# (auth events are recorded explicitly in the login/logout handlers).
+_audit_seen_expired: set = set()   # dedupe one 'auth.timeout' per expired token
+_audit_tasks: set = set()          # hold refs so fire-and-forget tasks aren't GC'd
+
+
+def _fire(coro) -> None:
+    t = asyncio.create_task(coro)
+    _audit_tasks.add(t)
+    t.add_done_callback(_audit_tasks.discard)
+
+
+def _client_ip(request: Request) -> Optional[str]:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else None
+
+
+def _actor_source(request: Request) -> str:
+    if getattr(request.state, "_svc_ok", False) or _service_token_ok(request):
+        return "service"
+    if local_auth.read_session(request.cookies.get(local_auth.SESSION_COOKIE, "")):
+        return "session"
+    return "proxy"
+
+
+def _maybe_audit_timeout(request: Request) -> None:
+    tok = request.cookies.get(local_auth.SESSION_COOKIE, "")
+    if not tok:
+        return
+    status, email = local_auth.session_status(tok)
+    if status != "expired":
+        return
+    sig = tok.rsplit(".", 1)[-1]
+    if sig in _audit_seen_expired:
+        return
+    if len(_audit_seen_expired) > 5000:
+        _audit_seen_expired.clear()
+    _audit_seen_expired.add(sig)
+    _fire(audit.record(
+        pool, action="auth.timeout", actor=email, actor_source="session",
+        path=request.url.path, ip=_client_ip(request),
+        user_agent=request.headers.get("user-agent"), summary="session expired"))
+
+
+@app.middleware("http")
+async def _audit_mw(request: Request, call_next):
+    response = await call_next(request)
+    try:
+        if request.method == "OPTIONS":
+            return response
+        if response.status_code in (401, 403):
+            _maybe_audit_timeout(request)
+        if audit.should_audit(request.method, request.url.path):
+            try:
+                actor = get_user(request)
+            except Exception:
+                actor = None
+            _fire(audit.record(
+                pool, action=audit.action_label(request.method, request.url.path),
+                actor=actor, actor_source=_actor_source(request),
+                method=request.method, path=request.url.path,
+                outcome=audit.outcome_for(response.status_code),
+                status_code=response.status_code, ip=_client_ip(request),
+                user_agent=request.headers.get("user-agent")))
+    except Exception:
+        log.exception("audit middleware failed (non-fatal)")
+    return response
 
 
 def get_user(request: Request) -> str:
@@ -2532,28 +2610,72 @@ class LoginIn(BaseModel):
 
 
 @app.post("/api/auth/login")
-async def auth_login(payload: LoginIn):
+async def auth_login(payload: LoginIn, request: Request):
     """App-native login for internal users (email + password)."""
     if not local_auth.sessions_enabled():
         raise HTTPException(503, "app sessions not configured")
     email = (payload.email or "").strip().lower()
+
+    async def _audit_login(outcome: str, summary: str) -> None:
+        await audit.record(
+            pool, action="auth.login", actor=email, actor_source="session",
+            method="POST", path="/api/auth/login", outcome=outcome,
+            ip=_client_ip(request), user_agent=request.headers.get("user-agent"),
+            summary=summary)
+
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT password_hash, approved FROM users WHERE lower(reviewer)=$1 OR lower(email)=$1", email)
     if not row or not row["password_hash"] or not local_auth.verify_password(row["password_hash"], payload.password):
+        await _audit_login("denied", "invalid email or password")
         raise HTTPException(401, "invalid email or password")
     if not row["approved"]:
+        await _audit_login("denied", "account not approved")
         raise HTTPException(403, "account not approved")
     resp = JSONResponse({"ok": True, "email": email})
     _set_session_cookie(resp, email)
+    await _audit_login("success", "login")
     return resp
 
 
 @app.post("/api/auth/logout")
-async def auth_logout():
+async def auth_logout(request: Request):
+    email = local_auth.read_session(request.cookies.get(local_auth.SESSION_COOKIE, ""))
+    if not email:
+        try:
+            email = get_user(request)
+        except Exception:
+            email = None
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(local_auth.SESSION_COOKIE, path="/")
+    await audit.record(
+        pool, action="auth.logout", actor=email, actor_source="session",
+        method="POST", path="/api/auth/logout", outcome="success",
+        ip=_client_ip(request), user_agent=request.headers.get("user-agent"),
+        summary="logout")
     return resp
+
+
+@app.get("/api/audit")
+async def get_audit(
+    request: Request,
+    actor: Optional[str] = Query(None, description="substring match on actor"),
+    action: Optional[str] = Query(None, description="substring match on action"),
+    outcome: Optional[str] = Query(None, description="success|denied|error|failure"),
+    hours: Optional[int] = Query(None, ge=1, le=8760, description="last N hours"),
+    limit: int = Query(200, ge=1, le=1000),
+    before_id: Optional[int] = Query(None, description="paginate: id < before_id"),
+):
+    """Audit log — who did what + auth events. Platform-admin (all actors)."""
+    await require_priv(request, rbac.P_PLATFORM_ADMIN)
+    since = None
+    if hours:
+        from datetime import datetime, timedelta, timezone
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    async with pool.acquire() as conn:
+        events = await audit.query(conn, actor=actor, action=action, outcome=outcome,
+                                   since=since, limit=limit, before_id=before_id)
+    return {"events": events}
 
 
 @app.get("/api/auth/sso")
