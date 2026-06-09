@@ -2264,8 +2264,8 @@
           <textarea id="biSourceText" rows="10" spellcheck="false" placeholder="Paste a conversation transcript, meeting notes, or any text containing latent use cases. The LLM will read the whole thing and propose one UC per distinct scenario." style="width:100%; font-family:inherit; resize:vertical; line-height:1.5;"></textarea>
         </div>
         <div class="form-field">
-          <label>Optional context (audience, profile, area of focus)</label>
-          <input id="biContext" placeholder="e.g. customer is a regulated FSI, focus on compliance-gated UCs" />
+          <label>Additional context for extraction (audience, profile, focus, constraints, domain)</label>
+          <textarea id="biContext" rows="4" spellcheck="false" placeholder="Anything the model should weigh when extracting UCs — e.g. customer is a regulated FSI; focus on compliance-gated and platform capabilities; assume a hybrid-cloud target; ignore vendor-specific tooling. Considered for every extracted UC. Up to ~4000 chars." style="width:100%; font-family:inherit; resize:vertical; line-height:1.5;"></textarea>
         </div>
         <div class="form-field">
           <label>Model</label>
