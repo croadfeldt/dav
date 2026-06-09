@@ -6584,7 +6584,7 @@ async def capabilities_catalog(
             """SELECT c.id::text AS id, c.handle, c.pillar, c.domain_prefix,
                       c.lifecycle_state, c.normalization_status, c.family, c.scope_tier,
                       t.handle AS normalized_to
-               FROM capability_catalog c
+               FROM capability_inventory c
                LEFT JOIN capability_taxonomy_terms t ON t.id = c.normalized_to_term_id
                WHERE c.is_current AND c.family=$1
                  AND ($2::text IS NULL OR c.normalization_status=$2)

@@ -26,7 +26,7 @@ from typing import Optional
 
 from . import capability_taxonomy
 
-log = logging.getLogger("dav.capability_catalog")
+log = logging.getLogger("dav.capability_inventory")
 
 # Vendored snapshot; override with DCM_TAXONOMY_PATH for a live source.
 _SEED_PATH = Path(__file__).parent / "seed" / "DCM-Taxonomy.md"
@@ -173,12 +173,12 @@ async def resolve_uc_capabilities(conn, family: str = "dcm") -> dict:
             gaps += 1
         row = await conn.fetchrow(
             """
-            INSERT INTO capability_catalog
+            INSERT INTO capability_inventory
                 (handle, family, pillar, scope_tier, lifecycle_state,
                  normalized_to_term_id, normalization_status, created_via)
             SELECT $1, $2, 'platform', 'global', 'OBSERVED', $3, $4, 'uc-analysis'
             WHERE NOT EXISTS (
-                SELECT 1 FROM capability_catalog
+                SELECT 1 FROM capability_inventory
                 WHERE family=$2 AND scope_tier='global' AND project_id IS NULL
                   AND lower(handle)=lower($1) AND is_current
             )
@@ -204,7 +204,7 @@ async def stats(conn) -> dict:
         "antipatterns": await conn.fetchval(
             "SELECT count(*) FROM capability_antipatterns WHERE is_current"),
         "catalog": await conn.fetchval(
-            "SELECT count(*) FROM capability_catalog WHERE is_current"),
+            "SELECT count(*) FROM capability_inventory WHERE is_current"),
         "catalog_gaps": await conn.fetchval(
-            "SELECT count(*) FROM capability_catalog WHERE is_current AND normalization_status='proposed-taxonomy-gap'"),
+            "SELECT count(*) FROM capability_inventory WHERE is_current AND normalization_status='proposed-taxonomy-gap'"),
     }

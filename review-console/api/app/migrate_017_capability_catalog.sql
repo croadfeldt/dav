@@ -84,7 +84,7 @@ COMMENT ON TABLE capability_taxonomy_terms IS
     'UDLM Knowledge family · TaxonomyTerm. Per-row family = vocabulary disambiguation namespace.';
 
 -- ── Capability — the independent living inventory (keystone) ──────────────────
-CREATE TABLE IF NOT EXISTS capability_catalog (
+CREATE TABLE IF NOT EXISTS capability_inventory (
     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     handle               TEXT NOT NULL,                      -- capability name
     version              INTEGER NOT NULL DEFAULT 1,
@@ -114,16 +114,16 @@ CREATE TABLE IF NOT EXISTS capability_catalog (
     CONSTRAINT chk_cat_norm  CHECK (normalization_status IN ('normalized','proposed-taxonomy-gap','unmapped')),
     CONSTRAINT chk_cat_class CHECK (classification IN ('public','internal','confidential','client-confidential','classified'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_catalog_canonical
-    ON capability_catalog(family, pillar, scope_tier, COALESCE(project_id,0), lower(handle))
+CREATE UNIQUE INDEX IF NOT EXISTS idx_capinv_canonical
+    ON capability_inventory(family, pillar, scope_tier, COALESCE(project_id,0), lower(handle))
     WHERE lifecycle_state = 'CANONICAL' AND is_current;
-CREATE INDEX IF NOT EXISTS idx_catalog_family  ON capability_catalog(family);
-CREATE INDEX IF NOT EXISTS idx_catalog_state   ON capability_catalog(lifecycle_state);
-CREATE INDEX IF NOT EXISTS idx_catalog_term    ON capability_catalog(normalized_to_term_id);
-CREATE INDEX IF NOT EXISTS idx_catalog_norm    ON capability_catalog(normalization_status);
-CREATE INDEX IF NOT EXISTS idx_catalog_project ON capability_catalog(project_id);
-CREATE INDEX IF NOT EXISTS idx_catalog_tags    ON capability_catalog USING GIN(scope_tags);
-COMMENT ON TABLE capability_catalog IS
+CREATE INDEX IF NOT EXISTS idx_capinv_family  ON capability_inventory(family);
+CREATE INDEX IF NOT EXISTS idx_capinv_state   ON capability_inventory(lifecycle_state);
+CREATE INDEX IF NOT EXISTS idx_capinv_term    ON capability_inventory(normalized_to_term_id);
+CREATE INDEX IF NOT EXISTS idx_capinv_norm    ON capability_inventory(normalization_status);
+CREATE INDEX IF NOT EXISTS idx_capinv_project ON capability_inventory(project_id);
+CREATE INDEX IF NOT EXISTS idx_capinv_tags    ON capability_inventory USING GIN(scope_tags);
+COMMENT ON TABLE capability_inventory IS
     'UDLM Knowledge family · Capability. Gap analysis = CANONICAL vs OBSERVED (UDLM drift).';
 
 -- ── Alias — anti-vocabulary + discovered synonyms (normalization rules) ───────
