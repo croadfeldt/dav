@@ -40,6 +40,7 @@ from .uc_priority import (
 from . import capability_density as _capability_density
 from . import capability_graph as _capability_graph
 from . import capability_catalog as _capability_catalog
+from . import assessment_ingest as _assessment_ingest
 from . import uc_readiness as _uc_readiness
 from .uc_list import collapse_duplicates as _collapse_uc_duplicates
 from . import validations
@@ -90,6 +91,8 @@ MIGRATE_015_PATH = Path(__file__).parent / "migrate_015_improvement_proposals.sq
 MIGRATE_016_PATH = Path(__file__).parent / "migrate_016_experiments.sql"
 MIGRATE_017_PATH = Path(__file__).parent / "migrate_017_capability_catalog.sql"
 MIGRATE_018_PATH = Path(__file__).parent / "migrate_018_audit_log.sql"
+MIGRATE_019_PATH = Path(__file__).parent / "migrate_019_assessments.sql"
+MIGRATE_020_PATH = Path(__file__).parent / "migrate_020_reconcile_catalog.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 # Secured dav-docs-mcp self-registration (its LoadBalancer SSE URL + bearer token).
@@ -359,6 +362,10 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_017_PATH.read_text())
         log.info("Applying migration 018 (audit log)...")
         await conn.execute(MIGRATE_018_PATH.read_text())
+        log.info("Applying migration 019 (assessment ingestion — UDLM Knowledge family)...")
+        await conn.execute(MIGRATE_019_PATH.read_text())
+        log.info("Applying migration 020 (reconcile capability catalogs into one)...")
+        await conn.execute(MIGRATE_020_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -6540,9 +6547,10 @@ async def uc_capability_map(
 
 
 # ---------------------------------------------------------------------------
-# Capability catalog ↔ taxonomy (UDLM Knowledge family — migrate_017).
-# Catalog = independent inventory; taxonomy = normalization authority; the
-# catalog back-fills taxonomy gaps. Seeded from the DCM taxonomy on startup.
+# Capability catalog ↔ taxonomy (UDLM Knowledge family).
+# Catalog = the unified capability_catalog (curated + observed, migration 020);
+# taxonomy (capability_taxonomy_terms, migration 017) = normalization authority;
+# the catalog back-fills taxonomy gaps. Seeded from the DCM taxonomy on startup.
 # See capability_catalog.py and docs/capability-catalog-design.md.
 # ---------------------------------------------------------------------------
 @app.get("/api/capabilities/stats")
@@ -6581,14 +6589,15 @@ async def capabilities_catalog(
 ):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT c.id::text AS id, c.handle, c.pillar, c.domain_prefix,
-                      c.lifecycle_state, c.normalization_status, c.family, c.scope_tier,
+            """SELECT c.id::text AS id, c.cap_key AS handle, c.name, c.domain_prefix,
+                      c.status AS lifecycle_state, c.normalization_status, c.family,
+                      c.created_via, c.project_id,
                       t.handle AS normalized_to
-               FROM capability_inventory c
+               FROM capability_catalog c
                LEFT JOIN capability_taxonomy_terms t ON t.id = c.normalized_to_term_id
-               WHERE c.is_current AND c.family=$1
+               WHERE c.family=$1
                  AND ($2::text IS NULL OR c.normalization_status=$2)
-               ORDER BY lower(c.handle)
+               ORDER BY lower(c.cap_key)
                LIMIT $3""",
             family, status, limit,
         )
@@ -6623,6 +6632,51 @@ async def capabilities_reseed(request: Request):
     await require_priv(request, rbac.P_PLATFORM_ADMIN)
     async with pool.acquire() as conn:
         return await _capability_catalog.seed_dcm_taxonomy(conn)
+
+
+# ---------------------------------------------------------------------------
+# Assessment ingestion (F7) — UDLM Knowledge family · Assessment + Finding.
+# Consume the outputs of an existing assessment process (automation strategy,
+# hybrid-cloud, AI, DCM); land each finding on capability_catalog as OBSERVED and
+# normalize onto the taxonomy. Gap = OBSERVED vs CANONICAL = the roadmap signal.
+# Generic mechanism only — confidential per-format parsers live inside work.
+# See assessment_ingest.py and docs/capability-catalog-design.md.
+# ---------------------------------------------------------------------------
+@app.post("/api/assessments/ingest")
+async def assessments_ingest(request: Request):
+    """Ingest an assessment payload (canonical/automation format) as an Assessment
+    + Findings, scoped to the active project. Body may set {"use_fixture": true}
+    to load the synthetic example (no confidential data). Platform-admin."""
+    await require_priv(request, rbac.P_PLATFORM_ADMIN)
+    body = await request.json() if await request.body() else {}
+    if body.get("use_fixture"):
+        payload = _assessment_ingest.synthetic_fixture()
+    else:
+        payload = body.get("assessment") or body
+    actor = get_user(request)
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        return await _assessment_ingest.ingest(conn, payload, actor=actor, project_id=pid)
+
+
+@app.get("/api/assessments")
+async def assessments_list(request: Request):
+    """List assessments in the active project. Platform-admin."""
+    await require_priv(request, rbac.P_PLATFORM_ADMIN)
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        return {"assessments": await _assessment_ingest.list_assessments(conn, project_id=pid)}
+
+
+@app.get("/api/assessments/{assessment_id}")
+async def assessments_get(assessment_id: str, request: Request):
+    """One assessment with findings + gap summary. Platform-admin."""
+    await require_priv(request, rbac.P_PLATFORM_ADMIN)
+    async with pool.acquire() as conn:
+        out = await _assessment_ingest.get_assessment(conn, assessment_id)
+    if out is None:
+        raise HTTPException(404, "assessment not found")
+    return out
 
 
 # ---------------------------------------------------------------------------

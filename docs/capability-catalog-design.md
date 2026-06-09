@@ -5,6 +5,31 @@ are free-form strings today with no controlled vocabulary). Design agreed with C
 2026-06-08. Build to this. See `holistic-vision.md`, `active-work.md` (F7),
 `uc-driven-roadmaps-design.md`._
 
+## SHIPPED STATE (2026-06-09) — one table, collapsed cleanly
+
+The keystone draft created a parallel `capability_inventory` table that duplicated the
+app's pre-existing `capability_catalog`. **Collapsed into ONE table** (migration 020 +
+schema.sql): the Capability entity **is** `capability_catalog`, extended additively into
+the UDLM Knowledge-family Capability — no second table, no second id, no duplicate concept.
+
+| UDLM Capability field | realized as |
+|---|---|
+| identifier / **handle** | existing `id` (BIGINT surrogate) + **`cap_key`** (stable natural handle) |
+| **lifecycle** | existing **`status`** — curated `confirmed`/`suggested`/`rejected` **+ `observed`** (the four-state *Discovered*, from analysis/assessments) |
+| dependencies / spec refs | existing `depends_on` / `spec_refs` (reused) |
+| normalization | `normalized_to_term_id` → `capability_taxonomy_terms`, `normalization_status` |
+| disambiguation | `family` (e.g. `dcm`) |
+| provenance / class. | `created_via` (`curated`/`uc-analysis`/`assessment`), `evidence`, `provenance`, `classification` |
+| scope | `project_id` (now **nullable**: NULL = global *observed*; curated stays project-scoped → the existing Catalog CRUD, which always filters `WHERE project_id`, is untouched) |
+
+Identity is `cap_key` + the BIGINT surrogate — pragmatic whole-system reuse of the
+established, UI-wired table (UUID is the cross-system ideal; relaxed here deliberately).
+The shared vocabulary stays in `capability_taxonomy_terms` (tiered/global). One write path
+for discovered capabilities: `capability_catalog.upsert_observed_capability()` — shared by
+uc-analysis resolution **and** assessment ingestion (F7). Validated on ephemeral Postgres
+reproducing the live schema (drop + extend + nullable + legacy-CRUD compat + seed + resolve
++ ingest). **F7 (assessment ingestion) shipped** on this table — see below.
+
 ## The model: a mutually-reinforcing pair (not a one-way projection)
 
 - **Taxonomy = normalization authority.** Defines *how* to name/classify capabilities

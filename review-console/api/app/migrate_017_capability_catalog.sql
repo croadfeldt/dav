@@ -83,48 +83,13 @@ CREATE INDEX IF NOT EXISTS idx_taxterm_tags    ON capability_taxonomy_terms USIN
 COMMENT ON TABLE capability_taxonomy_terms IS
     'UDLM Knowledge family · TaxonomyTerm. Per-row family = vocabulary disambiguation namespace.';
 
--- ── Capability — the independent living inventory (keystone) ──────────────────
-CREATE TABLE IF NOT EXISTS capability_inventory (
-    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    handle               TEXT NOT NULL,                      -- capability name
-    version              INTEGER NOT NULL DEFAULT 1,
-    is_current           BOOLEAN NOT NULL DEFAULT true,
-    owned_by             TEXT,
-    created_by           TEXT,
-    created_via          TEXT NOT NULL DEFAULT 'manual',     -- assessment | uc-analysis | manual
-    lifecycle_state      TEXT NOT NULL DEFAULT 'PROPOSED',
-    family               TEXT NOT NULL DEFAULT 'dcm',
-    description          TEXT NOT NULL DEFAULT '',
-    pillar               TEXT NOT NULL DEFAULT 'platform',
-    domain_prefix        TEXT,
-    normalized_to_term_id UUID REFERENCES capability_taxonomy_terms(id) ON DELETE SET NULL,
-    normalization_status TEXT NOT NULL DEFAULT 'unmapped',   -- normalized | proposed-taxonomy-gap | unmapped
-    evidence             JSONB NOT NULL DEFAULT '{}'::jsonb,
-    provenance           JSONB NOT NULL DEFAULT '{}'::jsonb,
-    classification       TEXT NOT NULL DEFAULT 'public',
-    field_classification JSONB NOT NULL DEFAULT '{}'::jsonb,
-    scope_tier           TEXT NOT NULL DEFAULT 'project',
-    project_id           BIGINT REFERENCES projects(id) ON DELETE CASCADE,
-    scope_tags           TEXT[] NOT NULL DEFAULT '{}',
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT chk_cat_state CHECK (lifecycle_state IN ('OBSERVED','PROPOSED','UNDER_REVIEW','CANONICAL','DEPRECATED')),
-    CONSTRAINT chk_cat_tier  CHECK (scope_tier IN ('global','shared','domain','project')),
-    CONSTRAINT chk_cat_pillar CHECK (pillar IN ('platform','people-process','enablement')),
-    CONSTRAINT chk_cat_norm  CHECK (normalization_status IN ('normalized','proposed-taxonomy-gap','unmapped')),
-    CONSTRAINT chk_cat_class CHECK (classification IN ('public','internal','confidential','client-confidential','classified'))
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_capinv_canonical
-    ON capability_inventory(family, pillar, scope_tier, COALESCE(project_id,0), lower(handle))
-    WHERE lifecycle_state = 'CANONICAL' AND is_current;
-CREATE INDEX IF NOT EXISTS idx_capinv_family  ON capability_inventory(family);
-CREATE INDEX IF NOT EXISTS idx_capinv_state   ON capability_inventory(lifecycle_state);
-CREATE INDEX IF NOT EXISTS idx_capinv_term    ON capability_inventory(normalized_to_term_id);
-CREATE INDEX IF NOT EXISTS idx_capinv_norm    ON capability_inventory(normalization_status);
-CREATE INDEX IF NOT EXISTS idx_capinv_project ON capability_inventory(project_id);
-CREATE INDEX IF NOT EXISTS idx_capinv_tags    ON capability_inventory USING GIN(scope_tags);
-COMMENT ON TABLE capability_inventory IS
-    'UDLM Knowledge family · Capability. Gap analysis = CANONICAL vs OBSERVED (UDLM drift).';
+-- ── Capability — the living inventory ─────────────────────────────────────────
+-- The Capability entity is NOT a new table: it is the app's existing
+-- `capability_catalog` (schema.sql), extended additively into the UDLM Knowledge
+-- family by migration 020 (cap_key = handle, status = lifecycle, + family/
+-- normalized_to_term_id/etc.). An earlier draft created a parallel
+-- `capability_inventory` here; that duplicated capability_catalog and is retired by
+-- migration 020. Gap analysis = CANONICAL taxonomy vs OBSERVED catalog (UDLM drift).
 
 -- ── Alias — anti-vocabulary + discovered synonyms (normalization rules) ───────
 CREATE TABLE IF NOT EXISTS capability_aliases (

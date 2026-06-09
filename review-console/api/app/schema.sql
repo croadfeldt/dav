@@ -446,6 +446,28 @@ CREATE TABLE IF NOT EXISTS capability_catalog (
 ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS domain TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_capability_catalog_project ON capability_catalog(project_id);
 
+-- UDLM Knowledge-family Capability fields (migration 020 reconciliation). The catalog
+-- IS the UDLM Capability entity: cap_key = handle, status = lifecycle (confirmed/
+-- suggested/rejected curated + 'observed' from assessments/analysis), depends_on/
+-- spec_refs reused. These ADDs are idempotent and run after capability_taxonomy_terms
+-- (migration 017) so the normalization FK binds on both fresh and deployed DBs.
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS family                TEXT NOT NULL DEFAULT 'dcm';
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS domain_prefix         TEXT;
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS normalized_to_term_id UUID REFERENCES capability_taxonomy_terms(id) ON DELETE SET NULL;
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS normalization_status  TEXT NOT NULL DEFAULT 'unmapped';
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS created_via           TEXT NOT NULL DEFAULT 'curated';
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS evidence              JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS provenance            JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS classification        TEXT NOT NULL DEFAULT 'public';
+-- Curated capabilities are project-scoped; OBSERVED capabilities discovered across
+-- runs (uc-analysis) are cross-project, so project_id becomes nullable (NULL = global
+-- observed). The existing Catalog CRUD always filters WHERE project_id=$1, so global
+-- rows stay invisible to it — clean separation of curated vs observed in one table.
+ALTER TABLE capability_catalog ALTER COLUMN project_id DROP NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_capcat_family ON capability_catalog(family);
+CREATE INDEX IF NOT EXISTS idx_capcat_status ON capability_catalog(status);
+CREATE INDEX IF NOT EXISTS idx_capcat_term   ON capability_catalog(normalized_to_term_id);
+
 -- Run management: soft-archive (hide from default lists; reversible). Delete is
 -- a hard purge handled in the API (DB + workspace + Tekton), not a flag.
 ALTER TABLE run_sessions ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT false;

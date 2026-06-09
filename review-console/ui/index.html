@@ -909,6 +909,9 @@
       <a class="pf-nav-item" id="navAudit" data-view="audit" href="javascript:void(0)" style="display:none;" title="Audit log — who did what, plus login / logout / timeout events">
         <span class="nav-icon">📜</span><span class="nav-label">Audit</span>
       </a>
+      <a class="pf-nav-item" id="navAssess" data-view="assess" href="javascript:void(0)" style="display:none;" title="Assessments — capability findings ingested from assessment outputs; gaps drive the roadmap">
+        <span class="nav-icon">📊</span><span class="nav-label">Assessments</span>
+      </a>
       <a class="pf-nav-item" data-view="config" href="javascript:void(0)">
         <span class="nav-icon">⚙</span><span class="nav-label">Config</span>
       </a>
@@ -1510,6 +1513,31 @@
         </div>
         <div class="scrollable" id="auTable" style="flex:1;overflow:auto;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
           <div class="empty">loading…</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ ASSESSMENTS (F7: ingest assessment outputs → capability findings) ══════════════ -->
+    <section class="pf-view" id="view-assess">
+      <div style="display:grid;grid-template-columns:340px 1fr;gap:14px;padding:14px;height:calc(100vh - 60px);">
+        <!-- Left: assessment list + ingest -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);">
+            <div class="panel-title">Assessments</div>
+            <div style="font-size:11px;color:var(--text-dim);margin:2px 0 8px;">Capability findings ingested from assessment outputs (automation, hybrid-cloud, AI, DCM). Each finding lands on the catalog as an <b>observed</b> capability, normalized onto the taxonomy. <b>Gaps</b> (absent / partial) drive the roadmap.</div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <button class="btn primary btn-sm" id="asIngestFixtureBtn" onclick="ingestAssessmentFixture()" title="Ingest a synthetic example (no confidential data) into the active project">Ingest synthetic example</button>
+              <button class="btn ghost btn-icon" onclick="loadAssessments()" title="Refresh">↻</button>
+            </div>
+            <div id="asStatus" style="font-size:11px;color:var(--text-faint);margin-top:6px;"></div>
+          </div>
+          <div class="scrollable" id="asList" style="flex:1;overflow:auto;">
+            <div class="empty">loading…</div>
+          </div>
+        </div>
+        <!-- Right: selected assessment detail -->
+        <div class="scrollable" id="asDetail" style="overflow:auto;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;padding:14px;">
+          <div class="empty">Select an assessment, or ingest the synthetic example to get started.</div>
         </div>
       </div>
     </section>
@@ -3232,6 +3260,7 @@ function _applyAccessVisibility() {
   const navP = document.getElementById('navProjects'); if (navP) navP.style.display = canProjects ? '' : 'none';
   const navU = document.getElementById('navUsers');    if (navU) navU.style.display = platAdmin ? '' : 'none';
   const navA = document.getElementById('navAudit');    if (navA) navA.style.display = platAdmin ? '' : 'none';
+  const navAs = document.getElementById('navAssess');  if (navAs) navAs.style.display = platAdmin ? '' : 'none';
   // Config panels are now project-scoped: gate each on its management privilege,
   // and hide its config-nav link too so scroll-spy doesn't target a hidden panel.
   const cfgGate = [
@@ -3950,6 +3979,7 @@ function switchView(name) {
   if (name === 'catalog')  loadCatalogTab();
   if (name === 'capmap')   loadCapMap();
   if (name === 'audit')    loadAudit();
+  if (name === 'assess')   loadAssessments();
   if (name === 'improve')  loadImproveQueue();
   if (name === 'config')   loadConfig();
   if (name === 'inbox')    loadInbox();
@@ -10621,6 +10651,83 @@ async function loadAudit() {
   h += '</tbody></table>';
   box.innerHTML = h;
   status.textContent = `${ev.length} event${ev.length === 1 ? '' : 's'}`;
+}
+
+// ── Assessments (F7): ingest assessment outputs → capability findings ────────
+let _asSel = null;
+function _asStateColor(s) {
+  return s === 'absent' ? 'var(--red)' : s === 'partial' ? 'var(--amber,gold)' : 'var(--green)';
+}
+async function loadAssessments() {
+  const list = document.getElementById('asList');
+  list.innerHTML = '<div class="empty">loading…</div>';
+  let data;
+  try { data = await api('/api/assessments'); }
+  catch (e) { list.innerHTML = `<div style="color:var(--red);font-size:11px;padding:10px;">${esc(e.message)}</div>`; return; }
+  const items = data.assessments || [];
+  if (!items.length) { list.innerHTML = '<div class="empty">No assessments yet. Ingest the synthetic example to get started.</div>'; return; }
+  let h = '';
+  for (const a of items) {
+    const sel = a.id === _asSel ? 'background:var(--bg-hover,rgba(255,255,255,0.05));' : '';
+    const when = a.created_at ? new Date(a.created_at).toLocaleDateString() : '';
+    h += `<div onclick="renderAssessment('${esc(a.id)}')" style="cursor:pointer;padding:9px 14px;border-bottom:1px solid var(--border);${sel}">`
+      + `<div style="font-size:12px;font-weight:600;">${esc(a.handle)}</div>`
+      + `<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${esc(a.assessment_type)} · ${esc(a.pillar)} · ${when}</div>`
+      + `<div style="font-size:10px;margin-top:3px;"><span style="color:var(--text-faint);">${a.findings} finding${a.findings==1?'':'s'}</span>`
+      + (a.gaps > 0 ? ` · <span style="color:var(--amber,gold);">${a.gaps} gap${a.gaps==1?'':'s'}</span>` : '') + `</div></div>`;
+  }
+  list.innerHTML = h;
+}
+async function ingestAssessmentFixture() {
+  const btn = document.getElementById('asIngestFixtureBtn');
+  const status = document.getElementById('asStatus');
+  btn.disabled = true; status.textContent = 'ingesting synthetic example…';
+  try {
+    const r = await api('/api/assessments/ingest', { method:'POST', body: JSON.stringify({ use_fixture: true }) });
+    status.textContent = `✓ ingested ${r.findings} findings (${r.mapped} mapped, ${r.gaps} gaps)`;
+    toast('✓ Synthetic assessment ingested');
+    await loadAssessments();
+    if (r.assessment_id) renderAssessment(r.assessment_id);
+  } catch (e) { status.textContent = ''; toast('✗ ' + e.message); }
+  finally { btn.disabled = false; }
+}
+async function renderAssessment(id) {
+  _asSel = id;
+  const box = document.getElementById('asDetail');
+  box.innerHTML = '<div class="empty">loading…</div>';
+  let a;
+  try { a = await api('/api/assessments/' + encodeURIComponent(id)); }
+  catch (e) { box.innerHTML = `<div style="color:var(--red);font-size:11px;padding:10px;">${esc(e.message)}</div>`; return; }
+  loadAssessments();   // refresh list highlight
+  const gs = a.gap_summary || { by_state:{}, by_normalization:{}, gaps:[] };
+  const bs = gs.by_state || {}, bn = gs.by_normalization || {};
+  const pill = (label, n, color) => `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:${color};color:#000;font-size:10px;font-weight:600;margin-right:6px;">${esc(label)}: ${n||0}</span>`;
+  let h = `<div style="font-size:15px;font-weight:600;">${esc(a.handle)}</div>`
+    + `<div style="font-size:11px;color:var(--text-dim);margin:3px 0 10px;">${esc(a.assessment_type)} · ${esc(a.pillar)}`
+    + (a.source ? ` · source ${esc(a.source)}` : '') + (a.created_by ? ` · by ${esc(a.created_by)}` : '')
+    + ` · <span title="classification">${esc(a.classification||'')}</span></div>`;
+  if (a.summary) h += `<div style="font-size:12px;margin-bottom:12px;">${esc(a.summary)}</div>`;
+  h += `<div style="background:var(--bg-deep,rgba(0,0,0,0.2));border:1px solid var(--border);border-radius:2px;padding:10px 12px;margin-bottom:12px;">`
+    + `<div class="panel-title" style="margin-bottom:6px;">Gap summary — the roadmap signal</div>`
+    + `<div style="margin-bottom:6px;">${pill('present', bs.present, 'var(--green)')}${pill('partial', bs.partial, 'var(--amber,gold)')}${pill('absent', bs.absent, 'var(--red)')}</div>`
+    + `<div style="font-size:11px;color:var(--text-dim);">Normalization: ${bn.normalized||0} on taxonomy · ${bn['proposed-taxonomy-gap']||0} taxonomy-gap (back-fill) · ${bn.unmapped||0} unmapped</div></div>`;
+  const th = (t) => `<th style="padding:5px 8px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg-panel);text-align:left;font-weight:600;">${t}</th>`;
+  h += `<div class="panel-title" style="margin-bottom:6px;">Findings (${(a.findings||[]).length}) — gaps first</div>`;
+  h += '<table style="width:100%;border-collapse:collapse;font-size:11px;"><thead><tr>'
+    + th('Capability') + th('State') + th('Maturity') + th('Normalized to') + th('Evidence / notes') + '</tr></thead><tbody>';
+  for (const f of (a.findings || [])) {
+    const norm = f.normalized_to
+      ? `<span style="color:var(--green);">${esc(f.normalized_to)}</span>`
+      : `<span style="color:var(--amber,gold);" title="${esc(f.normalization_status)}">— ${esc(f.normalization_status)}</span>`;
+    h += '<tr style="border-bottom:1px solid var(--border);">'
+      + `<td style="padding:4px 8px;font-weight:600;">${esc(f.capability_handle)}${f.domain_prefix?` <span style="color:var(--text-faint);font-weight:400;">[${esc(f.domain_prefix)}]</span>`:''}</td>`
+      + `<td style="padding:4px 8px;color:${_asStateColor(f.state)};font-weight:600;">${esc(f.state)}</td>`
+      + `<td style="padding:4px 8px;color:var(--text-dim);">${f.maturity!=null?esc(String(f.maturity)):'—'}</td>`
+      + `<td style="padding:4px 8px;">${norm}</td>`
+      + `<td style="padding:4px 8px;color:var(--text-dim);">${esc(f.evidence || f.notes || '')}</td></tr>`;
+  }
+  h += '</tbody></table>';
+  box.innerHTML = h;
 }
 
 // ── Capability Map (F5): bidirectional UC ↔ capability matrix ────────────────

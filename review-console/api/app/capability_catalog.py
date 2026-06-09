@@ -1,9 +1,11 @@
 """Capability catalog ↔ taxonomy operations (the keystone).
 
-Realizes the UDLM Knowledge family (migrate_017): the catalog is the independent
-living inventory, the taxonomy is the normalization authority, and the catalog
-back-fills the taxonomy where gaps exist. See docs/capability-catalog-design.md
-and udlm/entities/knowledge-family.md.
+Realizes the UDLM Knowledge family: the catalog (the existing `capability_catalog`,
+extended by migration 020) is the living inventory, `capability_taxonomy_terms`
+(migration 017) is the normalization authority, and the catalog back-fills the
+taxonomy where gaps exist. cap_key = the UDLM handle; status = lifecycle (curated
+confirmed/suggested/rejected + 'observed' from analysis/assessments). See
+docs/capability-catalog-design.md and udlm/entities/knowledge-family.md.
 
 This module:
   • seeds the canonical DCM vocabulary into capability_taxonomy_terms /
@@ -11,22 +13,24 @@ This module:
     lifecycle_state='CANONICAL') from the vendored taxonomy snapshot;
   • normalizes a free-form capability string onto a canonical term (exact match,
     then alias) or flags a taxonomy gap (the back-fill signal);
-  • resolves the existing free-form `uc_capabilities` strings into catalog
-    entries (OBSERVED, source uc-analysis) so cross-UC aggregation stops
-    miscounting synonyms.
+  • lands free-form capability strings (uc-analysis, assessments) on
+    capability_catalog as OBSERVED entries (status='observed') via the shared
+    upsert_observed_capability path, so cross-UC aggregation stops miscounting
+    synonyms.
 
 All DB work uses asyncpg connections from the app pool. No confidential data —
 the seed is the public DCM taxonomy.
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Optional
 
 from . import capability_taxonomy
 
-log = logging.getLogger("dav.capability_inventory")
+log = logging.getLogger("dav.capability_catalog")
 
 # Vendored snapshot; override with DCM_TAXONOMY_PATH for a live source.
 _SEED_PATH = Path(__file__).parent / "seed" / "DCM-Taxonomy.md"
@@ -154,39 +158,90 @@ async def normalize(conn, name: str, family: str = "dcm", pillar: str = "platfor
     return {"term_id": None, "status": "proposed-taxonomy-gap"}
 
 
+def _cap_key(name: str) -> str:
+    """Stable catalog key (the UDLM handle) for an observed capability string."""
+    return " ".join((name or "").strip().split()).lower()[:200]
+
+
+async def upsert_observed_capability(conn, name: str, *, project_id=None,
+                                     created_via: str = "uc-analysis",
+                                     family: str = "dcm", pillar: str = "platform",
+                                     domain_prefix: Optional[str] = None,
+                                     evidence: Optional[str] = None) -> dict:
+    """Land one free-form capability string on capability_catalog as an OBSERVED
+    entry (status='observed'), normalized onto a taxonomy term or flagged as a gap.
+
+    The single write path for discovered capabilities — shared by uc-analysis
+    resolution and assessment ingestion. Idempotent on (family, project_id,
+    lower(cap_key)): re-running refreshes the normalization without duplicating.
+    Returns {id, term_id, normalization_status, created}.
+    """
+    name = (name or "").strip()
+    if not name:
+        return {"id": None, "term_id": None, "normalization_status": "unmapped", "created": False}
+    key = _cap_key(name)
+    norm = await normalize(conn, name, family=family, pillar=pillar)
+    ev = {"summary": evidence} if evidence else {}
+    # Upsert: NULL project_id can't use ON CONFLICT (the unique index treats NULLs as
+    # distinct), so match explicitly. project_id IS NOT DISTINCT FROM handles NULL.
+    row = await conn.fetchrow(
+        """
+        SELECT id FROM capability_catalog
+        WHERE family=$1 AND project_id IS NOT DISTINCT FROM $2 AND lower(cap_key)=lower($3)
+        LIMIT 1
+        """,
+        family, project_id, key,
+    )
+    if row:
+        await conn.execute(
+            """
+            UPDATE capability_catalog
+               SET normalized_to_term_id=$2, normalization_status=$3,
+                   domain_prefix=COALESCE($4, domain_prefix),
+                   evidence = CASE WHEN $5::jsonb <> '{}'::jsonb THEN $5::jsonb ELSE evidence END,
+                   updated_at=now()
+             WHERE id=$1
+            """,
+            row["id"], norm["term_id"], norm["status"], domain_prefix,
+            json.dumps(ev),
+        )
+        return {"id": row["id"], "term_id": norm["term_id"],
+                "normalization_status": norm["status"], "created": False}
+    new_id = await conn.fetchval(
+        """
+        INSERT INTO capability_catalog
+            (project_id, cap_key, name, family, status, created_via,
+             normalized_to_term_id, normalization_status, domain_prefix, evidence)
+        VALUES ($1, $2, $3, $4, 'observed', $5, $6, $7, $8, $9::jsonb)
+        RETURNING id
+        """,
+        project_id, key, name, family, created_via,
+        norm["term_id"], norm["status"], domain_prefix, json.dumps(ev),
+    )
+    return {"id": new_id, "term_id": norm["term_id"],
+            "normalization_status": norm["status"], "created": True}
+
+
 async def resolve_uc_capabilities(conn, family: str = "dcm") -> dict:
     """Project the distinct free-form `uc_capabilities.capability_id` strings into
-    the catalog as OBSERVED Capability entries (source uc-analysis), each
-    normalized onto a taxonomy term or flagged as a gap. Idempotent on
-    (family, global, lower(handle)). This is the synonym-miscount fix.
+    capability_catalog as global OBSERVED entries (source uc-analysis), each
+    normalized onto a taxonomy term or flagged as a gap. This is the
+    synonym-miscount fix. Idempotent on (family, global, lower(cap_key)).
     """
     names = await conn.fetch(
         "SELECT DISTINCT capability_id FROM uc_capabilities WHERE coalesce(capability_id,'') <> ''"
     )
     created = mapped = gaps = 0
     for r in names:
-        name = r["capability_id"]
-        norm = await normalize(conn, name, family=family)
-        if norm["term_id"]:
+        res = await upsert_observed_capability(
+            conn, r["capability_id"], project_id=None,
+            created_via="uc-analysis", family=family,
+        )
+        if res["term_id"]:
             mapped += 1
         else:
             gaps += 1
-        row = await conn.fetchrow(
-            """
-            INSERT INTO capability_inventory
-                (handle, family, pillar, scope_tier, lifecycle_state,
-                 normalized_to_term_id, normalization_status, created_via)
-            SELECT $1, $2, 'platform', 'global', 'OBSERVED', $3, $4, 'uc-analysis'
-            WHERE NOT EXISTS (
-                SELECT 1 FROM capability_inventory
-                WHERE family=$2 AND scope_tier='global' AND project_id IS NULL
-                  AND lower(handle)=lower($1) AND is_current
-            )
-            RETURNING id
-            """,
-            name, family, norm["term_id"], norm["status"],
-        )
-        if row:
+        if res["created"]:
             created += 1
     return {"distinct": len(names), "created": created, "mapped": mapped, "gaps": gaps}
 
@@ -204,7 +259,9 @@ async def stats(conn) -> dict:
         "antipatterns": await conn.fetchval(
             "SELECT count(*) FROM capability_antipatterns WHERE is_current"),
         "catalog": await conn.fetchval(
-            "SELECT count(*) FROM capability_inventory WHERE is_current"),
+            "SELECT count(*) FROM capability_catalog"),
+        "catalog_observed": await conn.fetchval(
+            "SELECT count(*) FROM capability_catalog WHERE status='observed'"),
         "catalog_gaps": await conn.fetchval(
-            "SELECT count(*) FROM capability_inventory WHERE is_current AND normalization_status='proposed-taxonomy-gap'"),
+            "SELECT count(*) FROM capability_catalog WHERE normalization_status='proposed-taxonomy-gap'"),
     }
