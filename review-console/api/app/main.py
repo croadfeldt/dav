@@ -86,6 +86,7 @@ MIGRATE_013_PATH = Path(__file__).parent / "migrate_013_infrastructure_confidenc
 MIGRATE_014_PATH = Path(__file__).parent / "migrate_014_model_capabilities.sql"
 MIGRATE_015_PATH = Path(__file__).parent / "migrate_015_improvement_proposals.sql"
 MIGRATE_016_PATH = Path(__file__).parent / "migrate_016_experiments.sql"
+MIGRATE_017_PATH = Path(__file__).parent / "migrate_017_capability_catalog.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 # Secured dav-docs-mcp self-registration (its LoadBalancer SSE URL + bearer token).
@@ -351,6 +352,8 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_015_PATH.read_text())
         log.info("Applying migration 016 (self-improvement: A/B experiments)...")
         await conn.execute(MIGRATE_016_PATH.read_text())
+        log.info("Applying migration 017 (capability catalog — UDLM Knowledge family)...")
+        await conn.execute(MIGRATE_017_PATH.read_text())
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
