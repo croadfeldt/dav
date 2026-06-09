@@ -894,6 +894,9 @@
       <a class="pf-nav-item" data-view="catalog" href="javascript:void(0)" title="Capability Catalog — canonical capabilities (manual-curated, LLM-suggested)">
         <span class="nav-icon">📒</span><span class="nav-label">Catalog</span>
       </a>
+      <a class="pf-nav-item" data-view="capmap" href="javascript:void(0)" title="Capability Map — bidirectional UC ↔ capability matrix for a run">
+        <span class="nav-icon">🗺</span><span class="nav-label">Cap Map</span>
+      </a>
       <a class="pf-nav-item" data-view="improve" href="javascript:void(0)" title="Self-improvement — diagnose run failures and review proposed fixes">
         <span class="nav-icon">🩺</span><span class="nav-label">Improve <span class="badge" id="badgeImprove" style="font-size:9px;"></span></span>
       </a>
@@ -1443,6 +1446,40 @@
             <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Capabilities the model named across analyses, ranked by how many UCs invoked them. The framework proposes; you confirm into the catalog.</div>
           </div>
           <div class="scrollable" id="catSuggList" style="flex:1;overflow-y:auto;padding:8px 14px;"><div class="empty">loading…</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ CAP MAP (bidirectional UC ↔ capability matrix) ══════════════ -->
+    <section class="pf-view" id="view-capmap">
+      <style>
+        #cmMatrix table.capmap { border-collapse:collapse; font-size:11px; }
+        #cmMatrix table.capmap th, #cmMatrix table.capmap td { border:1px solid var(--border); }
+        #cmMatrix .cm-corner { position:sticky; left:0; top:0; z-index:4; background:var(--bg-panel); padding:4px 8px; font-size:10px; color:var(--text-faint); }
+        #cmMatrix .cm-uc { position:sticky; left:0; z-index:1; background:var(--bg-panel); text-align:left; padding:2px 8px; white-space:nowrap; max-width:300px; overflow:hidden; text-overflow:ellipsis; cursor:pointer; font-family:var(--mono,monospace); }
+        #cmMatrix .cm-caphead { position:sticky; top:0; z-index:2; background:var(--bg-panel); cursor:pointer; vertical-align:bottom; padding:4px 2px; }
+        #cmMatrix .cm-caphead > div { writing-mode:vertical-rl; transform:rotate(180deg); white-space:nowrap; max-height:180px; overflow:hidden; text-overflow:ellipsis; margin:0 auto; }
+        #cmMatrix td.cm-cell { width:16px; min-width:16px; height:16px; text-align:center; }
+        #cmMatrix td.cm-cell.on { background:var(--accent); }
+        #cmMatrix .hl { background:var(--accent-bg) !important; }
+        #cmMatrix td.cm-cell.on.hl { background:var(--green) !important; }
+        #cmMatrix .cm-found { color:var(--amber,gold); }
+      </style>
+      <div style="display:flex;flex-direction:column;height:calc(100vh - 60px);padding:14px;gap:10px;">
+        <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;padding:12px 14px;">
+          <div class="panel-title">Capability Map</div>
+          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 8px;">Bidirectional UC ↔ capability matrix for a run. Rows = use cases, columns = capabilities. Click a UC to highlight its capabilities; click a capability header to highlight the UCs that demand it. Column ★ = foundational (other capabilities depend on it); the count is demand (how many UCs).</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <label style="font-size:11px;color:var(--text-dim);">Run</label>
+            <select id="cmRunSel" style="min-width:280px;font-size:11px;"></select>
+            <label style="font-size:11px;color:var(--text-dim);">Set</label>
+            <select id="cmSetSel" style="min-width:160px;font-size:11px;"><option value="">(all UCs)</option></select>
+            <button class="btn primary btn-sm" id="cmLoadBtn" onclick="renderCapMap()">Load map</button>
+            <span id="cmStatus" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+        </div>
+        <div class="scrollable" id="cmMatrix" style="flex:1;overflow:auto;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;padding:10px;">
+          <div class="empty">Pick a run and click “Load map”.</div>
         </div>
       </div>
     </section>
@@ -3880,6 +3917,7 @@ function switchView(name) {
   if (name === 'review')   loadReviewTab();
   if (name === 'engineering') loadEngineeringTab();
   if (name === 'catalog')  loadCatalogTab();
+  if (name === 'capmap')   loadCapMap();
   if (name === 'improve')  loadImproveQueue();
   if (name === 'config')   loadConfig();
   if (name === 'inbox')    loadInbox();
@@ -10513,6 +10551,99 @@ document.getElementById('rpEnhRunBtn')?.addEventListener('click', async () => {
   _rpRefreshChip('enhancement');   // chip only — never hides the just-rendered pane
   if (_ok) toast('✓ Enhancement Plan ready');   // notify even if you navigated away
 });
+
+// ── Capability Map (F5): bidirectional UC ↔ capability matrix ────────────────
+let _cmSel = null;
+async function loadCapMap() {
+  const runSel = document.getElementById('cmRunSel');
+  try { if (!allResults || !allResults.length) await loadResults(); } catch (_) {}
+  const cur = runSel.value;
+  runSel.innerHTML = (allResults || []).map(r =>
+    `<option value="${esc(r.run_id)}">${esc(r.session_name || r.run_id)}</option>`).join('')
+    || '<option value="">(no analyzed runs)</option>';
+  if (cur) runSel.value = cur;
+  else if (activeRunResultId) runSel.value = activeRunResultId;
+  const setSel = document.getElementById('cmSetSel');
+  try { if (!allSets || !allSets.length) await loadSets(); } catch (_) {}
+  setSel.innerHTML = '<option value="">(all UCs)</option>' +
+    (allSets || []).filter(s => typeof s.id === 'number')
+      .map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+}
+
+async function renderCapMap() {
+  const runId = document.getElementById('cmRunSel').value;
+  const setId = document.getElementById('cmSetSel').value;
+  const box = document.getElementById('cmMatrix');
+  const status = document.getElementById('cmStatus');
+  if (!runId) { toast('Pick a run first'); return; }
+  _cmSel = null;
+  box.innerHTML = '<div class="empty">loading…</div>'; status.textContent = '';
+  let data;
+  try {
+    data = await api(`/api/analysis/uc-capability-map?run_id=${encodeURIComponent(runId)}`
+      + (setId ? `&set_id=${encodeURIComponent(setId)}` : ''));
+  } catch (e) {
+    box.innerHTML = `<div style="color:var(--red);font-size:11px;">${esc(e.message)}</div>`
+      + `<div style="font-size:10px;color:var(--text-faint);margin-top:4px;">If this run predates capability tracking, re-ingest it from the Results tab.</div>`;
+    return;
+  }
+  const ucs = data.ucs || [], caps = data.capabilities || [], edges = data.edges || [];
+  if (!ucs.length || !caps.length) {
+    box.innerHTML = `<div class="empty">No UC ↔ capability edges for this run${setId ? ' (in this Set)' : ''}.</div>`;
+    return;
+  }
+  const capIdx = new Map(caps.map((c, i) => [c.id, i]));
+  const ucIdx = new Map(ucs.map((u, i) => [u.uuid, i]));
+  const cell = new Map();
+  for (const e of edges) {
+    const ui = ucIdx.get(e.uc), ci = capIdx.get(e.cap);
+    if (ui === undefined || ci === undefined) continue;
+    cell.set(ui + ':' + ci, e.weight);
+  }
+  let h = '<table class="capmap"><thead><tr>';
+  h += `<th class="cm-corner" title="${ucs.length} UCs × ${caps.length} capabilities">UC ＼ Cap</th>`;
+  caps.forEach((c, ci) => {
+    const star = c.foundational ? `<span class="cm-found" title="foundational — ${c.transitive_dependents} depend on it">★</span> ` : '';
+    h += `<th class="cm-caphead" data-ci="${ci}" onclick="cmHighlight('cap',${ci})" `
+      + `title="${esc(c.name)} — demanded by ${c.demand} UC${c.demand === 1 ? '' : 's'}`
+      + `${c.foundational ? ` · foundational (${c.transitive_dependents} dependents)` : ''}">`
+      + `<div>${star}${esc(c.name)} (${c.demand})</div></th>`;
+  });
+  h += '</tr></thead><tbody>';
+  ucs.forEach((u, ui) => {
+    h += `<tr data-ui="${ui}"><td class="cm-uc" data-ui="${ui}" onclick="cmHighlight('uc',${ui})" title="${esc(u.label)}">${esc(u.label)}</td>`;
+    caps.forEach((c, ci) => {
+      const w = cell.get(ui + ':' + ci);
+      h += w
+        ? `<td class="cm-cell on" data-ui="${ui}" data-ci="${ci}" title="${esc(u.label)} → ${esc(c.name)} (${w})"></td>`
+        : `<td class="cm-cell" data-ui="${ui}" data-ci="${ci}"></td>`;
+    });
+    h += '</tr>';
+  });
+  h += '</tbody></table>';
+  box.innerHTML = h;
+  status.textContent = `${ucs.length} UCs · ${caps.length} capabilities · ${edges.length} edges`;
+}
+
+function cmHighlight(kind, idx) {
+  const key = kind + idx;
+  document.querySelectorAll('#cmMatrix .hl').forEach(el => el.classList.remove('hl'));
+  if (_cmSel === key) { _cmSel = null; return; }   // toggle off
+  _cmSel = key;
+  if (kind === 'cap') {
+    document.querySelectorAll(`#cmMatrix [data-ci="${idx}"]`).forEach(el => el.classList.add('hl'));
+    document.querySelectorAll(`#cmMatrix td.cm-cell.on[data-ci="${idx}"]`).forEach(td => {
+      const lab = document.querySelector(`#cmMatrix .cm-uc[data-ui="${td.getAttribute('data-ui')}"]`);
+      if (lab) lab.classList.add('hl');
+    });
+  } else {
+    document.querySelectorAll(`#cmMatrix tr[data-ui="${idx}"] > *`).forEach(el => el.classList.add('hl'));
+    document.querySelectorAll(`#cmMatrix td.cm-cell.on[data-ui="${idx}"]`).forEach(td => {
+      const head = document.querySelector(`#cmMatrix .cm-caphead[data-ci="${td.getAttribute('data-ci')}"]`);
+      if (head) head.classList.add('hl');
+    });
+  }
+}
 
 // ── Capability demand density (DCM feature #2) ──────────────────────────────
 // Run-scoped: aggregates which capabilities the most UCs in a run demand.

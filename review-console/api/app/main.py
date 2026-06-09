@@ -6351,6 +6351,72 @@ async def foundational_capabilities(
     }
 
 
+@app.get("/api/analysis/uc-capability-map")
+async def uc_capability_map(
+    run_id: str = Query(..., description="workspace run_id"),
+    set_id: Optional[int] = Query(None, description="restrict to UCs in this Set"),
+):
+    """Bidirectional UC ↔ capability map for a run: the bipartite edges plus
+    per-capability demand + foundational flag and per-UC labels. Drives the
+    matrix view (rows=UCs, cols=capabilities, read either direction). Reads
+    uc_capabilities (edges), uc_capability_deps (foundational), catalog names.
+    """
+    from collections import Counter, defaultdict
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM analysis_runs WHERE run_id=$1", run_id):
+            raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
+        set_uuids: Optional[list] = None
+        if set_id is not None:
+            mrows = await conn.fetch(
+                "SELECT uc_uuid FROM use_case_set_members WHERE set_id=$1", set_id)
+            set_uuids = [r["uc_uuid"] for r in mrows]
+            if not set_uuids:
+                return {"run_id": run_id, "set_id": set_id, "ucs": [], "capabilities": [], "edges": []}
+        if set_uuids is not None:
+            cap_rows = await conn.fetch(
+                "SELECT capability_id, uc_uuid FROM uc_capabilities WHERE run_id=$1 AND uc_uuid = ANY($2)",
+                run_id, set_uuids)
+            dep_rows = await conn.fetch(
+                "SELECT capability_id, depends_on_id FROM uc_capability_deps WHERE run_id=$1 AND uc_uuid = ANY($2)",
+                run_id, set_uuids)
+            label_rows = await conn.fetch(
+                "SELECT uc_uuid, uc_handle FROM uc_analyses WHERE run_id=$1 AND uc_uuid = ANY($2)",
+                run_id, set_uuids)
+        else:
+            cap_rows = await conn.fetch(
+                "SELECT capability_id, uc_uuid FROM uc_capabilities WHERE run_id=$1", run_id)
+            dep_rows = await conn.fetch(
+                "SELECT capability_id, depends_on_id FROM uc_capability_deps WHERE run_id=$1", run_id)
+            label_rows = await conn.fetch(
+                "SELECT uc_uuid, uc_handle FROM uc_analyses WHERE run_id=$1", run_id)
+        name_map = await _catalog_name_map(conn, await _default_project_id(conn))
+
+    edge_w = Counter((r["uc_uuid"], r["capability_id"]) for r in cap_rows)
+    demand: dict = defaultdict(set)
+    for r in cap_rows:
+        demand[r["capability_id"]].add(r["uc_uuid"])
+    found = {c["capability_id"]: c for c in _capability_graph.foundational_ranking(
+        [(r["capability_id"], r["depends_on_id"]) for r in dep_rows],
+        {k: len(v) for k, v in demand.items()})}
+    labels = {r["uc_uuid"]: (r["uc_handle"] or r["uc_uuid"]) for r in label_rows}
+
+    uc_ids = sorted({u for (u, _c) in edge_w})
+    cap_ids = sorted(demand.keys(), key=lambda c: (-len(demand[c]), c))
+    ucs = [{"uuid": u, "label": labels.get(u, u)} for u in uc_ids]
+    capabilities = [{
+        "id": c,
+        "name": name_map.get(c) or c,
+        "demand": len(demand[c]),
+        "transitive_dependents": int((found.get(c) or {}).get("transitive_dependents", 0) or 0),
+        "foundational": bool((found.get(c) or {}).get("transitive_dependents", 0)),
+        "leverage": (found.get(c) or {}).get("leverage"),
+    } for c in cap_ids]
+    edges = [{"uc": u, "cap": c, "weight": w} for ((u, c), w) in edge_w.items()]
+    return {"run_id": run_id, "set_id": set_id,
+            "uc_count": len(ucs), "capability_count": len(capabilities),
+            "ucs": ucs, "capabilities": capabilities, "edges": edges}
+
+
 # ---------------------------------------------------------------------------
 # Capability catalog ↔ taxonomy (UDLM Knowledge family — migrate_017).
 # Catalog = independent inventory; taxonomy = normalization authority; the
