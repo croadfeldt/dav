@@ -440,6 +440,61 @@ CREATE TABLE IF NOT EXISTS output_templates (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_output_templates_scope_name
   ON output_templates(COALESCE(project_id,0), COALESCE(use_category,''), lower(name));
 
+-- ── Scope & bundles (#107) Phase 4: bundles (versioned, immutable, publish-to-snapshot) ──
+-- A bundle is a named, reusable package of config/capability/output items. Its contents live
+-- in immutable VERSIONS; attachments pin a published version at any (project × use-category)
+-- scope; editing creates a new version; consumers upgrade explicitly. Publishing SNAPSHOTS
+-- each item's definition into bundle_items so a version never changes under a live engagement.
+CREATE TABLE IF NOT EXISTS bundles (
+  id                 BIGSERIAL PRIMARY KEY,
+  name               TEXT NOT NULL,
+  slug               TEXT NOT NULL UNIQUE,
+  description        TEXT NOT NULL DEFAULT '',
+  kind               TEXT NOT NULL DEFAULT 'mixed',  -- config | capability | output | mixed
+  current_version_id BIGINT,                         -- latest PUBLISHED version (app-maintained; no FK to avoid a cycle)
+  created_by         TEXT,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS bundle_versions (
+  id           BIGSERIAL PRIMARY KEY,
+  bundle_id    BIGINT NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,
+  version_no   INT NOT NULL,                         -- monotonic per bundle
+  status       TEXT NOT NULL DEFAULT 'draft',        -- draft | published (only published is attachable)
+  note         TEXT NOT NULL DEFAULT '',
+  created_by   TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at TIMESTAMPTZ,
+  UNIQUE (bundle_id, version_no)
+);
+CREATE INDEX IF NOT EXISTS idx_bundle_versions_bundle ON bundle_versions(bundle_id);
+
+CREATE TABLE IF NOT EXISTS bundle_items (
+  id                BIGSERIAL PRIMARY KEY,
+  bundle_version_id BIGINT NOT NULL REFERENCES bundle_versions(id) ON DELETE CASCADE,
+  item_type         TEXT NOT NULL,   -- mcp_server | model_config | managed_repo | model_default | capability_term | capability_entry | output_template
+  item_data         JSONB NOT NULL DEFAULT '{}'::jsonb,  -- snapshot of the item's definition (copied at publish; secrets never snapshotted)
+  source_id         BIGINT,          -- the source row id this was snapshotted from (provenance; NULL for hand-authored)
+  position          INT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_bundle_items_version ON bundle_items(bundle_version_id);
+
+CREATE TABLE IF NOT EXISTS bundle_attachments (
+  id                BIGSERIAL PRIMARY KEY,
+  bundle_id         BIGINT NOT NULL REFERENCES bundles(id) ON DELETE CASCADE,          -- denormalized for the per-scope uniqueness
+  bundle_version_id BIGINT NOT NULL REFERENCES bundle_versions(id) ON DELETE CASCADE,  -- the PINNED published version
+  project_id        BIGINT REFERENCES projects(id) ON DELETE CASCADE,                  -- NULL = platform-wide
+  use_category      TEXT,                                                              -- NULL = all categories
+  attached_by       TEXT,
+  attached_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- One version of a given bundle per scope (NULL-safe via COALESCE). Re-attaching a newer
+-- version replaces the pin (app upserts on conflict).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bundle_attach_bundle_scope
+  ON bundle_attachments(bundle_id, COALESCE(project_id,0), COALESCE(use_category,''));
+CREATE INDEX IF NOT EXISTS idx_bundle_attach_scope ON bundle_attachments(project_id, use_category);
+
 -- MCP servers are no longer statically seeded here. openshift-mcp /
 -- frc-scheduler-mcp are not used by DAV. dav-docs-mcp is self-registered at boot
 -- (_seed_docs_mcp) from DAV_DOCS_MCP_URL/DAV_DOCS_MCP_TOKEN so it carries its
