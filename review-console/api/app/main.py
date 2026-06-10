@@ -8744,9 +8744,13 @@ async def list_mcp_servers(request: Request):
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
+        cat = await _active_use_category(request, conn)
         await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        # Scope-aware (#107): the active project's MCP servers UNION platform-scoped
+        # (project_id NULL) UNION the active use-category's — project items first.
         rows = await conn.fetch(
-            "SELECT * FROM mcp_server_configs WHERE project_id=$1 ORDER BY name", pid
+            f"SELECT * FROM mcp_server_configs WHERE {_scope_where('$1','$2')} "
+            "ORDER BY (project_id IS NULL), name", pid, cat
         )
     return [_mcp_public(r) for r in rows]
 
@@ -8815,10 +8819,13 @@ async def mcp_servers_health(request: Request):
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
+        cat = await _active_use_category(request, conn)
         await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        # Scope-aware (#107): health-check the project's + platform + use-category servers.
         rows = await conn.fetch(
             "SELECT id, name, sse_url, enabled, auth_token_encrypted "
-            "FROM mcp_server_configs WHERE project_id=$1 ORDER BY name", pid
+            f"FROM mcp_server_configs WHERE {_scope_where('$1','$2')} "
+            "ORDER BY (project_id IS NULL), name", pid, cat
         )
 
     async def check(row):
@@ -9679,6 +9686,23 @@ async def _resolve_default_project(conn, user: str, member_ids: list) -> Optiona
             "UPDATE users SET default_project_id=$2 WHERE lower(reviewer)=lower($1)", user, member_ids[0])
         return member_ids[0]
     return None
+
+
+# ── Scope & bundles (#107) Phase 2: scope resolution for config registries ──────
+# Two orthogonal axes: project_id (NULL = platform) × use_category (NULL = any). An item
+# applies to the active (project, use-category) context by UNION semantics. The active
+# use-category is the X-DAV-UseCategory request hint (run-derived resolution lands later);
+# absent → only platform + project items with NO category show (category-scoped items
+# appear only when their category is active). See docs/scope-and-bundles-design.md.
+async def _active_use_category(request: Request, conn=None) -> Optional[str]:
+    hdr = (request.headers.get("X-DAV-UseCategory") or "").strip().lower()
+    return hdr or None
+
+def _scope_where(pid_param: str, cat_param: str) -> str:
+    """WHERE predicate matching a scoped row against the active context (UNION semantics).
+    NULL project_id = platform (all projects); NULL use_category = all categories."""
+    return (f"(project_id IS NULL OR project_id = {pid_param}) "
+            f"AND (use_category IS NULL OR use_category = {cat_param})")
 
 
 async def _active_project_id(request: Request, conn) -> Optional[int]:
