@@ -7142,7 +7142,8 @@ async def improvement_proposal_activity(pid: int, request: Request):
     the audit log so the trail survives status overwrites."""
     async with pool.acquire() as conn:
         prow = await conn.fetchrow(
-            "SELECT created_at, created_by, source, status FROM improvement_proposals WHERE id=$1", pid)
+            "SELECT created_at, created_by, source, status, reviewed_at, reviewed_by, "
+            "review_note FROM improvement_proposals WHERE id=$1", pid)
         if not prow:
             raise HTTPException(404, "proposal not found")
         events = await conn.fetch(
@@ -7161,7 +7162,19 @@ async def improvement_proposal_activity(pid: int, request: Request):
             "at": e["ts"].isoformat() if e["ts"] else None,
             "detail": _parse_jsonb(e["detail"]),
         })
-    return {"id": pid, "status": prow["status"], "activity": timeline}
+    # Backfill the terminal action for proposals reviewed BEFORE audit logging
+    # existed (the row's reviewed_* snapshot) — only if no audit event already
+    # recorded that action, so newly-reviewed proposals aren't double-listed.
+    status = prow["status"]
+    if status in ("accepted", "rejected", "applied") and prow["reviewed_at"]:
+        if not any(e["action"] == f"proposal.{status}" for e in events):
+            timeline.append({
+                "action": f"proposal.{status}",
+                "actor": prow["reviewed_by"],
+                "at": prow["reviewed_at"].isoformat(),
+                "detail": {"note": prow["review_note"]} if prow["review_note"] else {},
+            })
+    return {"id": pid, "status": status, "activity": timeline}
 
 
 # ---------------------------------------------------------------------------
