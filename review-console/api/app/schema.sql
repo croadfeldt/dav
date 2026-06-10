@@ -421,6 +421,10 @@ CREATE TABLE IF NOT EXISTS project_stage_context (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (project_id, stage)
 );
+-- F8: per-section prompt overrides {section_name: replacement_text}. `content` is the
+-- append-context (trailing project section); section_overrides replace named base
+-- sections from the stage registry (prompts_registry.py). Empty = base prompt unchanged.
+ALTER TABLE project_stage_context ADD COLUMN IF NOT EXISTS section_overrides JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 -- ── Capability catalog (Phase 1 keystone — manual-curated, LLM-suggested) ────
 -- Project-scoped canonical capabilities. The architect curates; suggestions are
@@ -675,7 +679,10 @@ INSERT INTO rbac_privileges (key, name, description, scope) VALUES
   -- Config-registry privileges (project-owned, strict isolation).
   ('project.models',             'Manage models',          'Manage a project''s AI model registrations', 'project'),
   ('project.integrations',       'Manage integrations',    'Manage a project''s MCP server registrations', 'project'),
-  ('project.repos',              'Manage repos',           'Manage a project''s managed repositories', 'project')
+  ('project.repos',              'Manage repos',           'Manage a project''s managed repositories', 'project'),
+  -- F8: per-project prompt management (append context + section overrides, all stages).
+  -- Supersedes project.archreview.context (kept as an alias for back-compat in rbac.py).
+  ('prompt.manage',              'Manage prompts',         'Edit per-project prompt customizations (additional context + section overrides) for all DAV stages', 'project')
 ON CONFLICT (key) DO NOTHING;
 -- Reclassify project.create from its original 'platform' scope to 'cross-project'
 -- (project-related but not tied to a specific project). Idempotent.
@@ -697,12 +704,12 @@ INSERT INTO rbac_role_privileges (role_id, privilege_key)
      OR (r.key='project-admin'  AND p.key IN (
             'project.settings','project.members','project.delete','project.data.read',
             'project.usecases','project.runs.manage','project.runs.execute',
-            'project.archreview.execute','project.archreview.context',
+            'project.archreview.execute','project.archreview.context','prompt.manage',
             'project.enhancement.execute','project.enhancement.pr','project.catalog',
             'project.models','project.integrations','project.repos'))
      OR (r.key='project-edit'   AND p.key IN (
             'project.data.read','project.usecases','project.runs.manage','project.runs.execute',
-            'project.archreview.execute','project.archreview.context',
+            'project.archreview.execute','project.archreview.context','prompt.manage',
             'project.enhancement.execute','project.catalog'))
      OR (r.key='project-viewer' AND p.key = 'project.data.read')
 ON CONFLICT DO NOTHING;
@@ -723,7 +730,7 @@ INSERT INTO rbac_role_privileges (role_id, privilege_key)
   CROSS JOIN (VALUES
     ('project.members'),('project.delete'),('project.data.read'),
     ('project.usecases'),('project.runs.manage'),('project.runs.execute'),
-    ('project.archreview.execute'),('project.archreview.context'),
+    ('project.archreview.execute'),('project.archreview.context'),('prompt.manage'),
     ('project.enhancement.execute'),('project.enhancement.pr'),('project.catalog'),
     ('project.models'),('project.integrations'),('project.repos')
   ) AS np(key)

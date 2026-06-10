@@ -34,6 +34,7 @@ P_PROJECT_CATALOG = "project.catalog"
 P_PROJECT_MODELS = "project.models"
 P_PROJECT_INTEGRATIONS = "project.integrations"
 P_PROJECT_REPOS = "project.repos"
+P_PROMPT_MANAGE = "prompt.manage"  # F8: per-project prompt customization (all stages)
 
 ROLE_PLATFORM_ADMIN = "platform-admin"
 ROLE_PROJECT_ADMIN = "project-admin"
@@ -59,7 +60,12 @@ async def privileges_for(conn, reviewer: str, project_id: Optional[int] = None) 
         """,
         reviewer, project_id,
     )
-    return {r["privilege_key"] for r in rows}
+    privs = {r["privilege_key"] for r in rows}
+    # F8: prompt.manage supersedes project.archreview.context. Existing grants of the
+    # legacy privilege keep working — treat it as an alias that confers prompt.manage.
+    if P_PROJECT_ARCHREVIEW_CONTEXT in privs:
+        privs.add(P_PROMPT_MANAGE)
+    return privs
 
 
 async def has_privilege(conn, reviewer: str, privilege: str,

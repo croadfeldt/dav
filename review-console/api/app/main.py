@@ -41,6 +41,7 @@ from . import capability_density as _capability_density
 from . import capability_graph as _capability_graph
 from . import capability_catalog as _capability_catalog
 from . import assessment_ingest as _assessment_ingest
+from . import prompts_registry as _prompts_registry
 from . import uc_readiness as _uc_readiness
 from .uc_list import collapse_duplicates as _collapse_uc_duplicates
 from . import validations
@@ -9481,6 +9482,24 @@ async def _active_project_id(request: Request, conn) -> Optional[int]:
 class StageContextIn(BaseModel):
     content: str = ""
     project_id: Optional[int] = None
+    section_overrides: Optional[dict] = None  # F8: {section_name: replacement_text}
+
+
+async def _stage_customization(conn, stage: str, project_id: Optional[int]) -> dict:
+    """A project's full customization for a stage: append content + section overrides."""
+    if project_id is None:
+        return {"content": "", "section_overrides": {}}
+    row = await conn.fetchrow(
+        "SELECT content, section_overrides FROM project_stage_context WHERE project_id=$1 AND stage=$2",
+        project_id, stage,
+    )
+    if not row:
+        return {"content": "", "section_overrides": {}}
+    so = row["section_overrides"]
+    if isinstance(so, str):
+        try: so = json.loads(so)
+        except Exception: so = {}
+    return {"content": (row["content"] or "").strip(), "section_overrides": so or {}}
 
 
 @app.get("/api/stage-context/{stage}")
@@ -9496,18 +9515,61 @@ async def get_stage_context(stage: str, request: Request):
 async def put_stage_context(stage: str, payload: StageContextIn, request: Request):
     user = get_user(request)
     async with pool.acquire() as conn:
-        pid = payload.project_id if payload.project_id is not None else await _default_project_id(conn)
+        pid = payload.project_id if payload.project_id is not None else await _active_project_id(request, conn)
         if pid is None:
             raise HTTPException(404, "no project to attach stage context to")
-        await _require_priv_conn(conn, request, rbac.P_PROJECT_ARCHREVIEW_CONTEXT, pid)
-        await conn.execute(
-            """INSERT INTO project_stage_context (project_id, stage, content, updated_by, updated_at)
-               VALUES ($1,$2,$3,$4, now())
-               ON CONFLICT (project_id, stage) DO UPDATE
-               SET content=EXCLUDED.content, updated_by=EXCLUDED.updated_by, updated_at=now()""",
-            pid, stage, payload.content or "", user,
-        )
+        # F8: prompt.manage supersedes archreview.context (old grants alias to it in rbac).
+        await _require_priv_conn(conn, request, rbac.P_PROMPT_MANAGE, pid)
+        so = payload.section_overrides if payload.section_overrides is not None else None
+        if so is None:
+            await conn.execute(
+                """INSERT INTO project_stage_context (project_id, stage, content, updated_by, updated_at)
+                   VALUES ($1,$2,$3,$4, now())
+                   ON CONFLICT (project_id, stage) DO UPDATE
+                   SET content=EXCLUDED.content, updated_by=EXCLUDED.updated_by, updated_at=now()""",
+                pid, stage, payload.content or "", user,
+            )
+        else:
+            await conn.execute(
+                """INSERT INTO project_stage_context (project_id, stage, content, section_overrides, updated_by, updated_at)
+                   VALUES ($1,$2,$3,$4::jsonb,$5, now())
+                   ON CONFLICT (project_id, stage) DO UPDATE
+                   SET content=EXCLUDED.content, section_overrides=EXCLUDED.section_overrides,
+                       updated_by=EXCLUDED.updated_by, updated_at=now()""",
+                pid, stage, payload.content or "", json.dumps(so), user,
+            )
     return {"ok": True, "stage": stage, "project_id": pid}
+
+
+# ---------------------------------------------------------------------------
+# Prompt management (F8) — per-project, per-stage prompt customization.
+# Registry (prompts_registry.py) = stages + base sections; project customization =
+# append content + section overrides (stored in project_stage_context). Console stages
+# inject context at runtime today; the stage-2 engine prompt is stored-held (A/B first).
+# See docs/prompt-management-design.md.
+# ---------------------------------------------------------------------------
+@app.get("/api/prompts/stages")
+async def prompts_stages(request: Request):
+    """The stage/section registry (read-only) for the editor. Members can read."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+    return {"stages": _prompts_registry.registry()}
+
+
+@app.get("/api/prompts/project/{stage}")
+async def prompts_project_get(stage: str, request: Request):
+    """A project's customization for a stage + the assembled preview. Members can read."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        cust = await _stage_customization(conn, stage, pid)
+    assembled = _prompts_registry.assemble(
+        stage, content=cust["content"], section_overrides=cust["section_overrides"])
+    meta = _prompts_registry.stage(stage)
+    return {"stage": stage, "project_id": pid, "meta": meta,
+            "content": cust["content"], "section_overrides": cust["section_overrides"],
+            "assembled": assembled}
 
 
 # ── Capability catalog (manual-curated, LLM-suggested) ───────────────────────

@@ -897,8 +897,8 @@
       <a class="pf-nav-item" data-view="capmap" href="javascript:void(0)" title="Capability Map — bidirectional UC ↔ capability matrix for a run">
         <span class="nav-icon">🗺</span><span class="nav-label">Cap Map</span>
       </a>
-      <a class="pf-nav-item" data-view="improve" href="javascript:void(0)" title="Self-improvement — diagnose run failures and review proposed fixes">
-        <span class="nav-icon">🩺</span><span class="nav-label">Improve <span class="badge" id="badgeImprove" style="font-size:9px;"></span></span>
+      <a class="pf-nav-item" data-view="improve" href="javascript:void(0)" title="Prompt management (per-project, per-stage) + self-improvement (diagnose failures, review proposed fixes)">
+        <span class="nav-icon">📝</span><span class="nav-label">Prompts &amp; Improvement <span class="badge" id="badgeImprove" style="font-size:9px;"></span></span>
       </a>
       <a class="pf-nav-item" id="navProjects" data-view="projects" href="javascript:void(0)" style="display:none;">
         <span class="nav-icon">▦</span><span class="nav-label">Projects</span>
@@ -1544,7 +1544,28 @@
 
     <!-- ══════════════ IMPROVE (self-improvement: diagnose & propose) ══════════════ -->
     <section class="pf-view" id="view-improve">
-      <div style="display:grid;grid-template-columns:1fr 1.5fr;gap:14px;padding:14px;height:calc(100vh - 60px);">
+      <!-- F8: merged Prompts & Improvement — top tabs -->
+      <div style="display:flex;gap:4px;padding:8px 14px 0;border-bottom:1px solid var(--border);">
+        <button class="btn ghost btn-sm pi-tab active" data-pi="prompts" onclick="switchPiTab('prompts')">📝 Prompt management</button>
+        <button class="btn ghost btn-sm pi-tab" data-pi="improve" onclick="switchPiTab('improve')">🩺 Improvement</button>
+      </div>
+      <!-- Prompt management pane -->
+      <div id="promptPane" style="padding:14px;height:calc(100vh - 104px);overflow:auto;">
+        <div style="max-width:1100px;">
+          <div class="panel-title">Prompt management</div>
+          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 12px;">Per-project customization of the prompt used at each DAV stage — add grounding context and/or override named sections of the base prompt. Requires the <b>prompt.manage</b> privilege to save.</div>
+          <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+            <label style="font-size:11px;color:var(--text-dim);">Stage</label>
+            <select id="pmStage" onchange="pmLoadStage()" style="font-size:12px;min-width:300px;"></select>
+            <span id="pmStageStatus" style="font-size:10px;"></span>
+            <span id="pmSaveStatus" style="font-size:11px;color:var(--text-faint);margin-left:auto;"></span>
+          </div>
+          <div id="pmBody"><div class="empty">loading…</div></div>
+        </div>
+      </div>
+      <!-- Improvement pane (existing diagnose/propose/experiments) -->
+      <div id="improvePane" style="display:none;">
+      <div style="display:grid;grid-template-columns:1fr 1.5fr;gap:14px;padding:14px;height:calc(100vh - 104px);">
         <!-- Left: proposal queue + diagnose control -->
         <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
           <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">
@@ -1584,6 +1605,7 @@
           <div id="improveDetailBody" style="display:none;flex:1;overflow-y:auto;min-height:0;padding:16px;"></div>
         </div>
       </div>
+      </div><!-- /improvePane -->
     </section>
 
     <!-- ══════════════ USERS & ROLES (RBAC console) ══════════════ -->
@@ -3980,7 +4002,7 @@ function switchView(name) {
   if (name === 'capmap')   loadCapMap();
   if (name === 'audit')    loadAudit();
   if (name === 'assess')   loadAssessments();
-  if (name === 'improve')  loadImproveQueue();
+  if (name === 'improve')  { pmInit(); loadImproveQueue(); }
   if (name === 'config')   loadConfig();
   if (name === 'inbox')    loadInbox();
   if (name === 'users')    { loadAccounts(); loadRolesMatrix(); loadRoleBindings(); loadLdapStatus(); loadLdapSettings(); loadSmtpSettings(); }
@@ -10728,6 +10750,102 @@ async function renderAssessment(id) {
   }
   h += '</tbody></table>';
   box.innerHTML = h;
+}
+
+// ── Prompts & Improvement (F8): per-project, per-stage prompt management ──────
+let _pmMeta = null;          // registry meta for the selected stage
+function switchPiTab(which) {
+  document.querySelectorAll('.pi-tab').forEach(b => b.classList.toggle('active', b.dataset.pi === which));
+  document.getElementById('promptPane').style.display = which === 'prompts' ? '' : 'none';
+  document.getElementById('improvePane').style.display = which === 'improve' ? '' : 'none';
+  if (which === 'prompts' && !_pmMeta) pmInit();
+}
+async function pmInit() {
+  const sel = document.getElementById('pmStage');
+  let data;
+  try { data = await api('/api/prompts/stages'); }
+  catch (e) { document.getElementById('pmBody').innerHTML = `<div style="color:var(--red);font-size:11px;">${esc(e.message)}</div>`; return; }
+  const stages = data.stages || [];
+  sel.innerHTML = stages.map(s => `<option value="${esc(s.key)}">${esc(s.label)}</option>`).join('');
+  if (stages.length) pmLoadStage();
+}
+function _pmStatusBadge(status) {
+  const map = {
+    'append-live': ['live', 'var(--green)', 'Additional context is applied at runtime now.'],
+    'stored-held': ['stored — held', 'var(--amber,gold)', 'Stored & previewable, but NOT yet applied at runtime (A/B required before enabling — eval-sensitive).'],
+  };
+  const [t, c, tip] = map[status] || [status, 'var(--text-faint)', ''];
+  return `<span title="${esc(tip)}" style="display:inline-block;padding:2px 8px;border-radius:10px;background:${c};color:#000;font-size:10px;font-weight:600;">${esc(t)}</span>`;
+}
+async function pmLoadStage() {
+  const stage = document.getElementById('pmStage').value;
+  const body = document.getElementById('pmBody');
+  document.getElementById('pmSaveStatus').textContent = '';
+  body.innerHTML = '<div class="empty">loading…</div>';
+  let d;
+  try { d = await api('/api/prompts/project/' + encodeURIComponent(stage)); }
+  catch (e) { body.innerHTML = `<div style="color:var(--red);font-size:11px;">${esc(e.message)}</div>`; return; }
+  _pmMeta = d.meta || { sections: [], append: {} };
+  document.getElementById('pmStageStatus').innerHTML = _pmStatusBadge(_pmMeta.status);
+  const ov = d.section_overrides || {};
+  const appendLabel = (_pmMeta.append && _pmMeta.append.label) || 'Additional context';
+  const appendLive = !!(_pmMeta.append && _pmMeta.append.live);
+  let h = `<div style="font-size:11px;color:var(--text-dim);margin-bottom:14px;">${esc(_pmMeta.description || '')}</div>`;
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;">';
+  // Left column — editors
+  h += '<div>';
+  h += `<div style="font-weight:600;font-size:12px;margin-bottom:4px;">${esc(appendLabel)}`
+     + (appendLive ? '' : ` <span style="color:var(--amber,gold);font-weight:400;font-size:10px;">(stored; applied once this stage is enabled)</span>`) + '</div>';
+  h += `<textarea id="pmAppend" oninput="pmRefreshPreview()" style="width:100%;min-height:90px;font-size:12px;font-family:var(--mono,monospace);" placeholder="Project-specific grounding context, conventions, glossary, constraints…">${esc(d.content || '')}</textarea>`;
+  for (const sec of (_pmMeta.sections || [])) {
+    h += `<div style="margin-top:14px;font-weight:600;font-size:12px;">Override section: ${esc(sec.label)}</div>`;
+    h += `<div style="font-size:10px;color:var(--text-faint);margin-bottom:4px;">${esc(sec.description || '')}</div>`;
+    h += `<details style="margin-bottom:4px;"><summary style="font-size:10px;color:var(--text-dim);cursor:pointer;">show base text</summary><pre style="white-space:pre-wrap;font-size:10px;color:var(--text-faint);background:var(--bg-deep,rgba(0,0,0,0.2));padding:8px;border-radius:2px;max-height:160px;overflow:auto;">${esc(sec.base || '')}</pre></details>`;
+    h += `<textarea id="pmSecOv" data-sec="${esc(sec.name)}" oninput="pmRefreshPreview()" style="width:100%;min-height:80px;font-size:12px;font-family:var(--mono,monospace);" placeholder="Leave blank to use the base section unchanged.">${esc(ov[sec.name] || '')}</textarea>`;
+  }
+  h += `<div style="margin-top:12px;"><button class="btn primary btn-sm" onclick="pmSave()">Save</button></div>`;
+  h += '</div>';
+  // Right column — live preview
+  h += '<div><div style="font-weight:600;font-size:12px;margin-bottom:4px;">Assembled prompt (preview)</div>'
+     + '<pre id="pmPreview" style="white-space:pre-wrap;font-size:11px;font-family:var(--mono,monospace);background:var(--bg-deep,rgba(0,0,0,0.2));border:1px solid var(--border);padding:10px;border-radius:2px;max-height:60vh;overflow:auto;"></pre></div>';
+  h += '</div>';
+  body.innerHTML = h;
+  pmRefreshPreview();
+}
+function _pmGather() {
+  const append = (document.getElementById('pmAppend')?.value || '');
+  const overrides = {};
+  document.querySelectorAll('#pmBody textarea[data-sec]').forEach(t => {
+    if ((t.value || '').trim() !== '') overrides[t.dataset.sec] = t.value;
+  });
+  return { append, overrides };
+}
+function pmRefreshPreview() {
+  if (!_pmMeta) return;
+  const { append, overrides } = _pmGather();
+  const parts = [];
+  for (const sec of (_pmMeta.sections || [])) {
+    const ov = overrides[sec.name];
+    const text = (ov && ov.trim() !== '') ? ov : (sec.base || '');
+    if (text) parts.push(text);
+  }
+  if (append.trim() !== '') parts.push('## Project context & instructions (set by the architect — honor these)\n' + append.trim());
+  const pre = document.getElementById('pmPreview');
+  if (pre) pre.textContent = parts.join('\n\n').trim() || '(empty)';
+}
+async function pmSave() {
+  const stage = document.getElementById('pmStage').value;
+  const { append, overrides } = _pmGather();
+  const st = document.getElementById('pmSaveStatus');
+  st.textContent = 'saving…';
+  try {
+    await api('/api/stage-context/' + encodeURIComponent(stage), {
+      method: 'PUT',
+      body: JSON.stringify({ content: append, section_overrides: overrides }),
+    });
+    st.textContent = '✓ saved';
+    toast('✓ Prompt customization saved');
+  } catch (e) { st.textContent = ''; toast('✗ ' + e.message); }
 }
 
 // ── Capability Map (F5): bidirectional UC ↔ capability matrix ────────────────
