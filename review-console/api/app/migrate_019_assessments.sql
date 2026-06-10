@@ -47,8 +47,9 @@ CREATE TABLE IF NOT EXISTS assessment_findings (
     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     assessment_id        UUID NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
     capability_handle    TEXT NOT NULL,                   -- the capability the finding is about
-    state                TEXT NOT NULL DEFAULT 'absent',  -- present | partial | absent
-    maturity             INTEGER,                         -- optional 0..5
+    category             TEXT,                            -- grouping of capabilities (anchors the UI columns)
+    state                TEXT NOT NULL DEFAULT 'absent',  -- present | partial | absent | n/a (not asked/applicable)
+    maturity             INTEGER,                         -- pure maturity 1..5 (NULL = none; see state for disposition)
     evidence             TEXT,
     notes                TEXT,
     pillar               TEXT NOT NULL DEFAULT 'platform',
@@ -63,13 +64,19 @@ CREATE TABLE IF NOT EXISTS assessment_findings (
     normalization_status TEXT NOT NULL DEFAULT 'unmapped', -- normalized | proposed-taxonomy-gap | unmapped
     classification       TEXT NOT NULL DEFAULT 'client-confidential',
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT chk_finding_state CHECK (state IN ('present','partial','absent')),
+    CONSTRAINT chk_finding_state CHECK (state IN ('present','partial','absent','n/a')),
     CONSTRAINT chk_finding_norm  CHECK (normalization_status IN ('normalized','proposed-taxonomy-gap','unmapped'))
 );
+-- Reconcile already-deployed assessment_findings (F7 shipped before these fields):
+-- add `category`, and widen the state CHECK to include 'n/a'. Idempotent on every boot.
+ALTER TABLE assessment_findings ADD COLUMN IF NOT EXISTS category TEXT;
+ALTER TABLE assessment_findings DROP CONSTRAINT IF EXISTS chk_finding_state;
+ALTER TABLE assessment_findings ADD CONSTRAINT chk_finding_state CHECK (state IN ('present','partial','absent','n/a'));
 CREATE INDEX IF NOT EXISTS idx_finding_assessment ON assessment_findings(assessment_id);
 CREATE INDEX IF NOT EXISTS idx_finding_capability ON assessment_findings(lower(capability_handle));
 CREATE INDEX IF NOT EXISTS idx_finding_state      ON assessment_findings(state);
 CREATE INDEX IF NOT EXISTS idx_finding_term       ON assessment_findings(normalized_to_term_id);
+CREATE INDEX IF NOT EXISTS idx_finding_category   ON assessment_findings(category);
 COMMENT ON TABLE assessments IS 'UDLM Knowledge family · Assessment (OBSERVED). Generic mechanism; confidential data inside work env.';
 COMMENT ON TABLE assessment_findings IS 'UDLM Knowledge family · Finding. state=present|partial|absent; gaps drive the roadmap.';
 

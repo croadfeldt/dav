@@ -10678,7 +10678,46 @@ async function loadAudit() {
 // ── Assessments (F7): ingest assessment outputs → capability findings ────────
 let _asSel = null;
 function _asStateColor(s) {
-  return s === 'absent' ? 'var(--red)' : s === 'partial' ? 'var(--amber,gold)' : 'var(--green)';
+  return s === 'absent' ? 'var(--red)' : s === 'partial' ? 'var(--amber,gold)'
+    : s === 'n/a' ? 'var(--text-faint)' : 'var(--green)';
+}
+// Pure maturity 1–5 + N/A. Deliberately darkened palette (esp. the 2 "gold") with white
+// text + a subtle dark outline so every bubble reads on light OR dark panels; the target
+// (3) gets a green ring. 1 red → 2 dark-gold → 3 green (target) → 5 deep green; N/A neutral.
+const _MAT_COLORS = { 1:'#c0392b', 2:'#b8860b', 3:'#3fae4a', 4:'#2e8b3d', 5:'#1d6e2e' };
+function _matBubble(m, target) {
+  if (m === null || m === undefined)
+    return `<span title="N/A — not asked / not applicable" style="display:inline-block;min-width:28px;text-align:center;padding:1px 7px;border-radius:9px;border:1px dashed var(--text-faint);color:var(--text-faint);font-size:10px;">N/A</span>`;
+  const bg = _MAT_COLORS[m] || 'var(--text-faint)';
+  const isTarget = (target !== null && target !== undefined && m === target);
+  const ring = isTarget ? 'box-shadow:0 0 0 2px rgba(63,174,74,0.5);' : '';
+  return `<span title="maturity ${m}${isTarget ? ' (engagement target)' : ''}" style="display:inline-block;min-width:18px;text-align:center;padding:1px 7px;border-radius:9px;background:${bg};color:#fff;border:1px solid rgba(0,0,0,0.35);font-weight:700;font-size:10px;${ring}">${m}</span>`;
+}
+function _matLegend(scale, target) {
+  if (!scale || !scale.length) return '';
+  return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:9px;color:var(--text-faint);margin-top:6px;"><span>maturity:</span>`
+    + scale.map(s => `<span title="${esc(s.desc || '')}" style="display:inline-flex;align-items:center;gap:3px;">${_matBubble(s.value, target)} ${esc(s.label)}${s.target ? ' ◄target' : ''}</span>`).join('')
+    + `<span style="display:inline-flex;align-items:center;gap:3px;">${_matBubble(null)} no maturity (absent / N/A)</span></div>`;
+}
+// A capability "pill": name colored by maturity heat; falls back to state color when there's
+// no maturity (absent = muted red; n/a = neutral dashed; the target maturity gets a ring).
+function _capPill(f, target) {
+  const m = f.maturity;
+  let bg, txt = '#fff', border = '1px solid rgba(0,0,0,0.3)', extra = '';
+  if (m !== null && m !== undefined) {
+    bg = _MAT_COLORS[m] || 'var(--text-faint)';
+    if (target !== null && target !== undefined && m === target) extra = 'box-shadow:0 0 0 2px rgba(63,174,74,0.5);';
+  } else if (f.state === 'n/a') { bg = 'transparent'; txt = 'var(--text-faint)'; border = '1px dashed var(--text-faint)'; }
+  else if (f.state === 'absent') { bg = '#8a3a32'; }       // asked, no capability
+  else if (f.state === 'partial') { bg = '#b8860b'; }
+  else { bg = '#2e8b3d'; }
+  const badge = (m !== null && m !== undefined) ? ('m' + m) : (f.state === 'n/a' ? 'N/A' : esc(f.state));
+  const gapMark = (!f.normalized_to) ? ` <span title="taxonomy gap (back-fill candidate)" style="opacity:0.85;">°</span>` : '';
+  const tip = [f.state.toUpperCase(), f.evidence || f.notes || '',
+               f.normalized_to ? ('→ ' + f.normalized_to) : (f.normalization_status || '')].filter(Boolean).join(' · ');
+  return `<div title="${esc(tip)}" style="display:flex;align-items:center;gap:8px;padding:4px 10px;border-radius:12px;background:${bg};color:${txt};border:${border};${extra}margin:3px 0;font-size:11px;">`
+    + `<span style="font-weight:600;">${esc(f.capability_handle)}${gapMark}</span>`
+    + `<span style="margin-left:auto;font-size:9px;opacity:0.92;text-transform:uppercase;letter-spacing:0.04em;">${badge}</span></div>`;
 }
 async function loadAssessments() {
   const list = document.getElementById('asList');
@@ -10731,24 +10770,26 @@ async function renderAssessment(id) {
   if (a.summary) h += `<div style="font-size:12px;margin-bottom:12px;">${esc(a.summary)}</div>`;
   h += `<div style="background:var(--bg-deep,rgba(0,0,0,0.2));border:1px solid var(--border);border-radius:2px;padding:10px 12px;margin-bottom:12px;">`
     + `<div class="panel-title" style="margin-bottom:6px;">Gap summary — the roadmap signal</div>`
-    + `<div style="margin-bottom:6px;">${pill('present', bs.present, 'var(--green)')}${pill('partial', bs.partial, 'var(--amber,gold)')}${pill('absent', bs.absent, 'var(--red)')}</div>`
-    + `<div style="font-size:11px;color:var(--text-dim);">Normalization: ${bn.normalized||0} on taxonomy · ${bn['proposed-taxonomy-gap']||0} taxonomy-gap (back-fill) · ${bn.unmapped||0} unmapped</div></div>`;
-  const th = (t) => `<th style="padding:5px 8px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg-panel);text-align:left;font-weight:600;">${t}</th>`;
-  h += `<div class="panel-title" style="margin-bottom:6px;">Findings (${(a.findings||[]).length}) — gaps first</div>`;
-  h += '<table style="width:100%;border-collapse:collapse;font-size:11px;"><thead><tr>'
-    + th('Capability') + th('State') + th('Maturity') + th('Normalized to') + th('Evidence / notes') + '</tr></thead><tbody>';
-  for (const f of (a.findings || [])) {
-    const norm = f.normalized_to
-      ? `<span style="color:var(--green);">${esc(f.normalized_to)}</span>`
-      : `<span style="color:var(--amber,gold);" title="${esc(f.normalization_status)}">— ${esc(f.normalization_status)}</span>`;
-    h += '<tr style="border-bottom:1px solid var(--border);">'
-      + `<td style="padding:4px 8px;font-weight:600;">${esc(f.capability_handle)}${f.domain_prefix?` <span style="color:var(--text-faint);font-weight:400;">[${esc(f.domain_prefix)}]</span>`:''}</td>`
-      + `<td style="padding:4px 8px;color:${_asStateColor(f.state)};font-weight:600;">${esc(f.state)}</td>`
-      + `<td style="padding:4px 8px;color:var(--text-dim);">${f.maturity!=null?esc(String(f.maturity)):'—'}</td>`
-      + `<td style="padding:4px 8px;">${norm}</td>`
-      + `<td style="padding:4px 8px;color:var(--text-dim);">${esc(f.evidence || f.notes || '')}</td></tr>`;
+    + `<div style="margin-bottom:6px;">${pill('present', bs.present, 'var(--green)')}${pill('partial', bs.partial, 'var(--amber,gold)')}${pill('absent', bs.absent, 'var(--red)')}${bs['n/a'] ? pill('n/a', bs['n/a'], 'var(--text-faint)') : ''}</div>`
+    + `<div style="font-size:11px;color:var(--text-dim);">Normalization: ${bn.normalized||0} on taxonomy · ${bn['proposed-taxonomy-gap']||0} taxonomy-gap (back-fill) · ${bn.unmapped||0} unmapped</div>`
+    + (gs.maturity ? `<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">Maturity vs target ${gs.maturity.target}: `
+        + `<b style="color:var(--green);">${gs.maturity.at_or_above_target||0}</b> at/above · `
+        + `<b style="color:var(--amber,gold);">${gs.maturity.below_target||0}</b> below · `
+        + `${gs.maturity.na||0} N/A</div>` + _matLegend(a.maturity_scale, a.maturity_target) : '')
+    + `</div>`;
+  // Group capabilities by category; each category anchors a vertical list of colored pills.
+  const byCat = {};
+  for (const f of (a.findings || [])) { const k = f.category || 'Uncategorized'; (byCat[k] = byCat[k] || []).push(f); }
+  const cats = Object.keys(byCat).sort((x, y) => x === 'Uncategorized' ? 1 : y === 'Uncategorized' ? -1 : x.localeCompare(y));
+  h += `<div class="panel-title" style="margin-bottom:6px;">Capabilities by category (${(a.findings||[]).length}) <span style="color:var(--text-faint);font-weight:400;font-size:10px;">° = taxonomy gap · hover a pill for detail</span></div>`;
+  h += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;align-items:start;">`;
+  for (const cat of cats) {
+    h += `<div style="background:var(--bg-deep,rgba(0,0,0,0.18));border:1px solid var(--border);border-radius:4px;padding:8px 10px;">`
+      + `<div style="font-size:11px;font-weight:700;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:4px;">${esc(cat)} <span style="color:var(--text-faint);font-weight:400;">(${byCat[cat].length})</span></div>`;
+    for (const f of byCat[cat]) h += _capPill(f, a.maturity_target);
+    h += `</div>`;
   }
-  h += '</tbody></table>';
+  h += `</div>`;
   box.innerHTML = h;
 }
 

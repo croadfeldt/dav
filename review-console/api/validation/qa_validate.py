@@ -124,9 +124,18 @@ async def main():
         ck("F7: ingest synthetic fixture",
            summ["findings"] == 6 and summ["mapped"] >= 4 and summ["gaps"] >= 1, f"{summ}")
         det = await AI.get_assessment(c, summ["assessment_id"])
-        ck("F7: get_assessment + gap_summary",
-           bool(det) and len(det["findings"]) == 6 and det["gap_summary"]["by_state"]["absent"] >= 2,
+        ck("F7: get_assessment + gap_summary (state n/a + maturity target)",
+           bool(det) and len(det["findings"]) == 6
+           and det["gap_summary"]["by_state"].get("n/a", 0) >= 1
+           and det["gap_summary"]["by_state"]["absent"] >= 1
+           and det["gap_summary"]["maturity"]["target"] == 3,
            f"by_state={det['gap_summary']['by_state'] if det else None}")
+        ck("F7: findings carry categories",
+           bool(det) and len({f.get("category") for f in det["findings"] if f.get("category")}) >= 3,
+           f"cats={ {f.get('category') for f in det['findings']} if det else None}")
+        ck("F7: maturity is pure 1..5 (no 0)",
+           bool(det) and all((f.get("maturity") is None) or (1 <= f["maturity"] <= 5) for f in det["findings"]),
+           f"maturities={[f.get('maturity') for f in det['findings']] if det else None}")
         ck("F7: findings landed on catalog (observed)",
            await c.fetchval("SELECT count(*) FROM capability_catalog WHERE status='observed' AND project_id=$1", test_pid) == 6)
         ck("F7: observed caps normalized to taxonomy",
