@@ -3843,6 +3843,7 @@ async def list_uc_assist_models(request: Request):
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
+        cat = await _active_use_category(request, conn)
         await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
         rows = await conn.fetch(
             """SELECT id, name, provider, endpoint_url, model_id,
@@ -3850,8 +3851,8 @@ async def list_uc_assist_models(request: Request):
                       enabled, is_local, use_arch_review, use_uc_assist,
                       created_by, created_at, updated_at
                FROM model_configs
-               WHERE enabled AND project_id=$1
-               ORDER BY name""", pid
+               WHERE enabled AND (project_id IS NULL OR project_id=$1) AND (use_category IS NULL OR use_category=$2)
+               ORDER BY (project_id IS NULL), name""", pid, cat
         )
     return [dict(r) for r in rows]
 
@@ -3876,7 +3877,7 @@ async def uc_assist_chat(payload: UCAssistIn, request: Request):
         await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)
         if payload.model_config_id is not None:
             row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                "SELECT * FROM model_configs WHERE id=$1 AND (project_id IS NULL OR project_id=$2) AND enabled",  # scope-aware (#107 2b): platform models too
                 payload.model_config_id, pid,
             )
             if not row:
@@ -3884,7 +3885,7 @@ async def uc_assist_chat(payload: UCAssistIn, request: Request):
             cfg = dict(row)
         elif payload.endpoint_url and payload.model_id:
             base = await conn.fetchrow(
-                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND project_id=$2 AND enabled ORDER BY id LIMIT 1",
+                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND (project_id IS NULL OR project_id=$2) AND enabled ORDER BY (project_id IS NULL), id LIMIT 1",  # scope-aware (#107 2b): project key preferred, platform fallback
                 payload.endpoint_url, pid,
             )
             cfg = {
@@ -3926,7 +3927,7 @@ async def uc_bulk_extract(payload: UCBulkExtractIn, request: Request):
         await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)
         if payload.model_config_id is not None:
             row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                "SELECT * FROM model_configs WHERE id=$1 AND (project_id IS NULL OR project_id=$2) AND enabled",  # scope-aware (#107 2b): platform models too
                 payload.model_config_id, pid,
             )
             if not row:
@@ -3934,7 +3935,7 @@ async def uc_bulk_extract(payload: UCBulkExtractIn, request: Request):
             cfg = dict(row)
         elif payload.endpoint_url and payload.model_id:
             base = await conn.fetchrow(
-                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND project_id=$2 AND enabled ORDER BY id LIMIT 1",
+                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND (project_id IS NULL OR project_id=$2) AND enabled ORDER BY (project_id IS NULL), id LIMIT 1",  # scope-aware (#107 2b): project key preferred, platform fallback
                 payload.endpoint_url, pid,
             )
             cfg = {
@@ -4101,7 +4102,7 @@ async def draft_uc_from_comment_api(uuid: str, payload: InboxDraftUCIn, request:
     async with pool.acquire() as conn:
         if payload.model_config_id is not None:
             row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                "SELECT * FROM model_configs WHERE id=$1 AND (project_id IS NULL OR project_id=$2) AND enabled",  # scope-aware (#107 2b): platform models too
                 payload.model_config_id, pid,
             )
             if not row:
@@ -4110,7 +4111,8 @@ async def draft_uc_from_comment_api(uuid: str, payload: InboxDraftUCIn, request:
         elif payload.endpoint_url and payload.model_id:
             base = await conn.fetchrow(
                 "SELECT provider, api_key FROM model_configs "
-                "WHERE endpoint_url=$1 AND project_id=$2 AND enabled ORDER BY id LIMIT 1",
+                "WHERE endpoint_url=$1 AND (project_id IS NULL OR project_id=$2) AND enabled "
+                "ORDER BY (project_id IS NULL), id LIMIT 1",  # scope-aware (#107 2b)
                 payload.endpoint_url, pid,
             )
             cfg = {
@@ -6827,7 +6829,9 @@ async def _resolve_diagnosis_model(conn, project_id: int) -> Optional[dict]:
     )
     if not row:
         row = await conn.fetchrow(
-            "SELECT * FROM model_configs WHERE enabled AND use_arch_review AND project_id=$1 ORDER BY id LIMIT 1",
+            "SELECT * FROM model_configs WHERE enabled AND use_arch_review "
+            "AND (project_id IS NULL OR project_id=$1) AND use_category IS NULL "
+            "ORDER BY (project_id IS NULL), id LIMIT 1",  # scope-aware (#107 2b): project default first, platform fallback
             project_id,
         )
     return dict(row) if row else None
@@ -8870,6 +8874,7 @@ async def list_review_models(request: Request):
     """List the active project's configured model endpoints; api_key is masked."""
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
+        cat = await _active_use_category(request, conn)
         await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
         rows = await conn.fetch(
             """SELECT id, name, provider, endpoint_url, model_id,
@@ -8877,7 +8882,9 @@ async def list_review_models(request: Request):
                       enabled, is_local, use_arch_review, use_uc_assist,
                       capabilities,
                       created_by, created_at, updated_at
-               FROM model_configs WHERE project_id=$1 ORDER BY created_at""", pid
+               FROM model_configs
+               WHERE (project_id IS NULL OR project_id=$1) AND (use_category IS NULL OR use_category=$2)
+               ORDER BY (project_id IS NULL), created_at""", pid, cat
         )
     out = []
     for r in rows:
@@ -9078,7 +9085,7 @@ async def _model_default_row(conn, *default_keys, project_id: int) -> Optional[d
         )
         if did is not None:
             row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                "SELECT * FROM model_configs WHERE id=$1 AND (project_id IS NULL OR project_id=$2) AND enabled",  # scope-aware (#107 2b): platform models too
                 did, project_id,
             )
             if row:
@@ -10027,7 +10034,7 @@ async def catalog_suggest_meta(payload: SuggestMetaIn, request: Request):
         await _require_priv_conn(conn, request, rbac.P_PROJECT_CATALOG, pid)
         if payload.model_config_id is not None:
             model_row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                "SELECT * FROM model_configs WHERE id=$1 AND (project_id IS NULL OR project_id=$2) AND enabled",  # scope-aware (#107 2b): platform models too
                 payload.model_config_id, pid)
         else:
             model_row = await _model_default_row(conn, "arch-review", project_id=pid)
@@ -10098,7 +10105,7 @@ async def arch_review(payload: ArchReviewIn, request: Request):
         await _require_priv_conn(conn, request, rbac.P_PROJECT_ARCHREVIEW_EXECUTE, arpid)
         if payload.model_config_id is not None:
             model_row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                "SELECT * FROM model_configs WHERE id=$1 AND (project_id IS NULL OR project_id=$2) AND enabled",  # scope-aware (#107 2b): platform models too
                 payload.model_config_id, arpid,
             )
             if not model_row:
@@ -10108,7 +10115,7 @@ async def arch_review(payload: ArchReviewIn, request: Request):
             # Custom endpoint+model: inherit provider/api_key from a registered
             # row (in this project) at the same endpoint, falling back to openai/no-key.
             base = await conn.fetchrow(
-                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND project_id=$2 AND enabled ORDER BY id LIMIT 1",
+                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND (project_id IS NULL OR project_id=$2) AND enabled ORDER BY (project_id IS NULL), id LIMIT 1",  # scope-aware (#107 2b): project key preferred, platform fallback
                 payload.endpoint_url, arpid,
             )
             model_row = {
@@ -10294,7 +10301,7 @@ async def enhancements(payload: EnhancementIn, request: Request):
         await _require_priv_conn(conn, request, rbac.P_PROJECT_ENH_EXECUTE, enpid)
         if payload.model_config_id is not None:
             model_row = await conn.fetchrow(
-                "SELECT * FROM model_configs WHERE id=$1 AND project_id=$2 AND enabled",
+                "SELECT * FROM model_configs WHERE id=$1 AND (project_id IS NULL OR project_id=$2) AND enabled",  # scope-aware (#107 2b): platform models too
                 payload.model_config_id, enpid,
             )
             if not model_row:
@@ -10302,7 +10309,7 @@ async def enhancements(payload: EnhancementIn, request: Request):
             model_row = dict(model_row)
         elif payload.endpoint_url and payload.model_id:
             base = await conn.fetchrow(
-                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND project_id=$2 AND enabled ORDER BY id LIMIT 1",
+                "SELECT provider, api_key FROM model_configs WHERE endpoint_url=$1 AND (project_id IS NULL OR project_id=$2) AND enabled ORDER BY (project_id IS NULL), id LIMIT 1",  # scope-aware (#107 2b): project key preferred, platform fallback
                 payload.endpoint_url, enpid,
             )
             model_row = {
