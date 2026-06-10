@@ -3306,8 +3306,11 @@ function _applyAccessVisibility() {
   const navP = document.getElementById('navProjects'); if (navP) navP.style.display = canProjects ? '' : 'none';
   const navU = document.getElementById('navUsers');    if (navU) navU.style.display = platAdmin ? '' : 'none';
   const navA = document.getElementById('navAudit');    if (navA) navA.style.display = platAdmin ? '' : 'none';
-  const navAs = document.getElementById('navAssess');  if (navAs) navAs.style.display = hasPriv('assessment.view') ? '' : 'none';
-  loadAssessmentSelector(); loadBlueprintSelector();   // masthead quick selectors
+  // Presence gauge — platform admins only. Run it HERE (early) and guarded, so a failure
+  // in any later block can never strip the admin status bar (it used to be the last line).
+  try { _startPresence(platAdmin); } catch (e) { console.warn('presence init failed', e); }
+  const navAs = document.getElementById('navAssess');  if (navAs) navAs.style.display = can('assessment.view') ? '' : 'none';
+  try { loadAssessmentSelector(); loadBlueprintSelector(); } catch (e) { console.warn('masthead selector init failed', e); }
   // Config panels are now project-scoped: gate each on its management privilege,
   // and hide its config-nav link too so scroll-spy doesn't target a hidden panel.
   const cfgGate = [
@@ -10757,7 +10760,7 @@ async function loadAssessmentSelector() {
   const chip = document.getElementById('assessmentChip');
   const sel = document.getElementById('globalAssessmentSel');
   if (!chip || !sel) return;
-  if (!hasPriv('assessment.view')) { chip.style.display = 'none'; return; }
+  if (!can('assessment.view')) { chip.style.display = 'none'; return; }
   try {
     const data = await api('/api/assessments');
     const items = data.assessments || [];
