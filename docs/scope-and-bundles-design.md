@@ -7,7 +7,8 @@ assessment scoped config or UC gap analysis scoped config." + "I like the concep
 creating bundles for this. Having the ability to bundle different configs / capabilities /
 output, etc is powerful."_
 
-Status: **DESIGN — review before build.** Task #107. Schema-level + security-sensitive
+Status: **DESIGN — all four open questions resolved with Chris 2026-06-10; ready to plan
+the build.** Task #107. Schema-level + security-sensitive
 (platform/use-category resources are usable across *all* projects). Reconciles with
 `blueprint-projects-design.md` (#95), `capability-catalog-design.md` (#104), and the UDLM
 contract (#106). Decisions locked with Chris are marked **[DECIDED]**.
@@ -80,54 +81,94 @@ A **bundle** is a named, reusable package that groups heterogeneous items — co
 (models/MCP/repos), capabilities (taxonomy terms, catalog entries), and outputs
 (report/template artifacts) — so a methodology can be assembled once and attached anywhere.
 
+**Versioned & immutable (pinned).  [DECIDED]** A bundle's contents live in immutable
+**versions**; attachments pin a specific version; editing a bundle creates a new version;
+consumers upgrade explicitly. This keeps engagements stable across confidentiality
+boundaries — editing a methodology never silently mutates a live engagement.
+
 ```
-bundles            (id, name, slug, description, kind, created_by, created_at, updated_at)
+bundles            (id, name, slug, description, kind, created_by, created_at,
+                    current_version_id)          -- pointer to the latest version
                     kind ∈ {config, capability, output, mixed}
-bundle_items       (bundle_id, item_type, item_id, position)
-                    item_type ∈ {mcp_server, model_config, managed_repo, model_default,
-                                 capability_term, capability_entry, output_template, …}
-bundle_attachments (bundle_id, project_id NULL, use_category NULL)
-                    -- attach a bundle at any scope, same two-axis model as items
+bundle_versions    (id, bundle_id, version_no, status, note, created_by, created_at)
+                    -- IMMUTABLE snapshot. status ∈ {draft, published}; only published
+                    --   versions are attachable. version_no monotonic per bundle.
+bundle_items       (bundle_version_id, item_type, item_ref_or_snapshot, position)
+                    -- belongs to a VERSION, not the bundle. item_type ∈ {mcp_server,
+                    --   model_config, managed_repo, model_default, capability_term,
+                    --   capability_entry, output_template, …}. See snapshot note below.
+bundle_attachments (bundle_version_id, project_id NULL, use_category NULL, attached_by, attached_at)
+                    -- pins a specific published version at any (project × use-category) scope
 ```
+
+**Snapshot vs reference (the key impl detail):** to make a version truly immutable, a
+published version **snapshots** its items' definitions (the config/capability/output content
+is copied into `bundle_items` at publish time) rather than referencing live rows that could
+later change. Attaching a version materializes those snapshotted items into the effective
+set. (Standalone directly-scoped rows still exist independently — see resolution below.)
 
 **Effective set** for `(project P, use-category C)` =
-`items matching (P,C) directly`  ∪  `items contributed by bundles attached to (P,C)`,
-then resolved by the union/cascade rules above. Bundles are the *substrate*
-`blueprint-projects-design.md` (#95) builds on: a **blueprint** = a curated set of bundles
-(+ project `kind`/inheritance) applied to spin up isolated engagement projects. We keep the
-names distinct — *bundle* = atomic reusable grouping; *blueprint* = project template that
-references bundles — and implement bundles first so blueprints compose them.
+`directly-scoped items matching (P,C)`  ∪  `items from bundle versions attached to (P,C)`,
+then resolved by the union/cascade rules above (a directly-scoped, more-specific singular
+setting still wins over a bundle-contributed broader one). Bundles are the *substrate*
+`blueprint-projects-design.md` (#95) builds on: a **blueprint** = a curated set of bundle
+versions (+ project `kind`/inheritance) applied to spin up isolated engagement projects.
+Names stay distinct — *bundle* = atomic reusable grouping; *blueprint* = project template
+that references bundle versions — and bundles ship first so blueprints compose them.
+
+### Use-category source of truth  **[DECIDED — hybrid]**
+- **At run time:** derived from the run's **pipeline family** (an arch-review run →
+  `arch-review`, the assessment-ingest path → `assessment`). Unambiguous; no user input.
+- **In config/consumption views** (authoring "this MCP belongs to assessments", with no run
+  in flight): an explicit **use-category selector**, carried as an `X-DAV-UseCategory`
+  request hint — mirrors the `X-DAV-Project` header + `_active_project_id` pattern. A new
+  `_active_use_category(request, run?)` resolver: run-derived first, else the header, else
+  NULL (= all categories).
 
 ## Entities in scope
-Add the two axes to: `mcp_server_configs`, `model_configs`, `managed_repos`,
-`model_defaults`, `capability_catalog`, `capability_taxonomy_terms`, `project_stage_context`.
-(`project_id` already exists and is NOT NULL on these — the migration relaxes it to NULL-able
-and adds `use_category`.) Data — UC sets, assessments, findings, runs — is **never**
-platform/use-category scoped; it stays strictly project-isolated (confidentiality boundary).
+Add the two axes (`project_id` relaxed to NULL-able + new `use_category`) to:
+`mcp_server_configs`, `model_configs`, `managed_repos`, `model_defaults`,
+`capability_catalog`, `capability_taxonomy_terms`, `project_stage_context`, **and
+`output_templates`** (outputs get the axes directly too — **[DECIDED]** — for a uniform
+scope model, not bundle-membership-only). Data — UC sets, assessments, findings, runs — is
+**never** platform/use-category scoped; it stays strictly project-isolated (confidentiality
+boundary).
 
 ## RBAC
-- **platform** items (both axes NULL) and **use-category** items (cross-project) → managed
-  by **platform.admin**, or a new cross-project `usecat.manage` privilege.
-- **project** items → `project.integrations` (unchanged).
+- New privilege **`usecat.manage`** (cross-project) — **[DECIDED]**: defined as a real,
+  delegatable privilege and **seeded onto Platform Admin only** in v1. All gating references
+  it from day one, so later delegation (a "methodology owner" role that curates use-category
+  / platform config without full platform admin) is just a **role-binding**, no gating
+  rewrite or migration.
+- **platform** items (both axes NULL) and **use-category** items (cross-project) → require
+  `usecat.manage` (⇒ platform admins in v1) to create/edit. Bundles + bundle versions +
+  attachments at platform/use-category scope likewise require `usecat.manage`.
+- **project** items → `project.integrations` (unchanged); a bundle attached *only* to a
+  project is managed by that project's admin.
 - Reads resolve the **union** the caller is entitled to: project items require
   `project.data.read` in that project; platform/use-category items are readable by any
   authenticated member (they're shared infra), but **never expose secrets** (tokens stay
   masked, as `_mcp_public` already does).
 - Write/execute on a platform or use-category item that a project user does not own → 403.
+- Every bundle publish / attach / detach is **audited** (object_type `bundle`/
+  `bundle_attachment`), reusing the audit log (#103 substrate).
 
 ## Migration & rollout (phased — each its own change + deploy + verify)
 1. **Schema:** idempotent `ALTER … ADD COLUMN use_category TEXT`, relax `project_id` to
-   NULL-able on the seven entities; seed the use-category vocabulary. No data moves yet.
-2. **Resolver:** central `resolve_scoped(entity, project_id, use_category)` implementing
-   union/cascade; rewire the config consumption + list endpoints through it. Keep current
-   behaviour when `use_category` is absent (project-only) for backward compat.
+   NULL-able on the **eight** entities (incl. `output_templates`); seed the use-category
+   vocabulary + the `usecat.manage` privilege (bound to Platform Admin). No data moves yet.
+2. **Resolver:** central `resolve_scoped(entity, project_id, use_category)` (union/cascade)
+   + `_active_use_category(request, run?)`; rewire config consumption + list endpoints
+   through it. Backward-compatible when `use_category` is absent (project-only).
 3. **Promote platform infra:** move `dav-docs-mcp` + GitHub-style source MCPs to platform
    (`project_id = NULL`). Add the egress allow for any platform MCP LB IP (ties to #59).
-4. **Bundles:** the three tables, CRUD endpoints (RBAC as above), attach/detach, and the
-   effective-set join. UI: a Bundles manager + per-project "attached bundles".
-5. **Blueprints (#95) recompose** onto bundles.
+4. **Bundles (versioned):** `bundles` + `bundle_versions` (immutable, publish-to-snapshot) +
+   `bundle_items` + `bundle_attachments` (pin a published version); CRUD + publish + attach/
+   detach endpoints (gated `usecat.manage` / `project.integrations`); effective-set join.
+   UI: a Bundles manager (versions + publish) + per-project/-category "attached bundles".
+5. **Blueprints (#95) recompose** onto pinned bundle versions.
 6. **Docs:** fold into `review-console-design.md` (config-tenancy section), update
-   `blueprint-projects-design.md` to reference bundles, bump versions.
+   `blueprint-projects-design.md` to reference bundle versions, bump versions.
 
 ## Security considerations
 - A platform/use-category resource is reachable from **every** project's run context — so
@@ -145,12 +186,20 @@ Scope axes + bundles are part of the UDLM contract: every Knowledge/Config entit
 `{project_id?, use_category?}` and may be packaged into a `Bundle` aggregate. Version the
 contract when these land.
 
-## Open questions
-1. Use-category source of truth — request hint (`X-DAV-UseCategory`) per view, or derived
-   strictly from the run's pipeline family? (Leaning: derived where a run exists, hint for
-   config-management views.)
-2. Do **outputs** (reports/templates) need the same two axes now, or is bundle-membership
-   enough initially?
-3. `usecat.manage` as a distinct privilege vs. folding into `platform.admin` for v1.
-4. Bundle versioning/immutability — do attachments pin a bundle version, or always track
-   latest? (Matters once blueprints depend on them.)
+## Resolved decisions (Chris, 2026-06-10)
+1. **Use-category source — hybrid.** Run-derived at execution; explicit `X-DAV-UseCategory`
+   selector in config/consumption views. `_active_use_category(request, run?)`.
+2. **Outputs get the two axes directly** (not bundle-membership-only) — uniform scope model
+   across configs, capabilities, and outputs.
+3. **`usecat.manage` is a real privilege**, seeded onto Platform Admin only in v1; later
+   delegation is a role-binding, no gating change.
+4. **Bundles are versioned & immutable** — attachments pin a published version; editing
+   creates a new version; consumers upgrade explicitly (publish-to-snapshot model).
+
+## Remaining open (smaller, can settle during build)
+- Use-category **vocabulary** final list + whether it's a fixed seed or admin-editable
+  (lean: seed now, make editable under `usecat.manage` later).
+- Whether a bundle version's **snapshot** stores full item content or a content-hash +
+  copy-on-publish of the source rows (perf/storage detail; doesn't change the contract).
+- Bundle-attachment **upgrade UX** — manual "upgrade to v4" per attachment vs. a bulk
+  "upgrade all consumers" action for a bundle owner.
