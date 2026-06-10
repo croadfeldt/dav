@@ -1539,9 +1539,22 @@
           <div style="padding:12px 14px;border-bottom:1px solid var(--border);">
             <div class="panel-title">Assessments</div>
             <div style="font-size:11px;color:var(--text-dim);margin:2px 0 8px;">Capability findings ingested from assessment outputs (automation, hybrid-cloud, AI, DCM). Each finding lands on the catalog as an <b>observed</b> capability, normalized onto the taxonomy. <b>Gaps</b> (absent / partial) drive the roadmap.</div>
-            <div style="display:flex;gap:8px;align-items:center;">
-              <button class="btn primary btn-sm" id="asIngestFixtureBtn" onclick="ingestAssessmentFixture()" title="Ingest a synthetic example (no confidential data) into the active project">Ingest synthetic example</button>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <button class="btn primary btn-sm" id="asIngestBtn" onclick="toggleAssessmentIngest()" title="Ingest a real assessment (paste or upload a canonical/automation JSON)">Ingest assessment…</button>
+              <button class="btn ghost btn-sm" id="asIngestFixtureBtn" onclick="ingestAssessmentFixture()" title="Ingest a synthetic example (no confidential data) into the active project">Synthetic example</button>
               <button class="btn ghost btn-icon" onclick="loadAssessments()" title="Refresh">↻</button>
+            </div>
+            <!-- Ingest a real assessment: paste/upload a canonical or automation-format JSON. -->
+            <div id="asIngestForm" style="display:none;margin-top:8px;border:1px solid var(--border);border-radius:3px;padding:8px;background:var(--bg-deep,rgba(0,0,0,0.18));">
+              <div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;">Paste a <b>canonical</b> assessment JSON (or upload a file). Shape:
+                <code style="font-size:9px;">{handle, assessment_type, pillar, findings:[{capability, category, state:present|partial|absent|n/a, maturity:1-5, evidence, notes}]}</code></div>
+              <textarea id="asIngestJson" spellcheck="false" placeholder='{"handle":"…","assessment_type":"automation","findings":[…]}' style="width:100%;min-height:120px;font-size:11px;font-family:var(--mono,monospace);"></textarea>
+              <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap;">
+                <input type="file" id="asIngestFile" accept=".json,application/json" style="font-size:10px;" onchange="_asLoadIngestFile(this)">
+                <button class="btn primary btn-sm" onclick="ingestAssessment()">Ingest</button>
+                <button class="btn ghost btn-sm" onclick="toggleAssessmentIngest()">Cancel</button>
+                <span style="font-size:9px;color:var(--text-faint);">scoped to the active project</span>
+              </div>
             </div>
             <div id="asStatus" style="font-size:11px;color:var(--text-faint);margin-top:6px;"></div>
           </div>
@@ -10840,6 +10853,37 @@ async function ingestAssessmentFixture() {
     if (r.assessment_id) renderAssessment(r.assessment_id);
   } catch (e) { status.textContent = ''; toast('✗ ' + e.message); }
   finally { btn.disabled = false; }
+}
+// Ingest a real assessment from a pasted/uploaded canonical-format JSON payload.
+function toggleAssessmentIngest() {
+  const f = document.getElementById('asIngestForm');
+  if (f) f.style.display = f.style.display === 'none' ? '' : 'none';
+}
+function _asLoadIngestFile(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { const ta = document.getElementById('asIngestJson'); if (ta) ta.value = reader.result; };
+  reader.readAsText(file);
+}
+async function ingestAssessment() {
+  const status = document.getElementById('asStatus');
+  const raw = (document.getElementById('asIngestJson').value || '').trim();
+  if (!raw) { toast('Paste or upload an assessment JSON', true); return; }
+  let payload;
+  try { payload = JSON.parse(raw); }
+  catch (e) { toast('Invalid JSON: ' + e.message, true); status.textContent = '✗ invalid JSON'; return; }
+  status.textContent = 'ingesting…';
+  try {
+    const r = await api('/api/assessments/ingest', { method:'POST', body: JSON.stringify({ assessment: payload }) });
+    status.textContent = `✓ ingested ${r.findings} findings (${r.mapped} mapped, ${r.gaps} gaps)`;
+    toast('✓ Assessment ingested');
+    toggleAssessmentIngest();
+    document.getElementById('asIngestJson').value = '';
+    await loadAssessments();
+    loadAssessmentSelector();
+    if (r.assessment_id) renderAssessment(r.assessment_id);
+  } catch (e) { status.textContent = ''; toast('✗ ' + e.message); }
 }
 async function renderAssessment(id) {
   _asSel = id;
