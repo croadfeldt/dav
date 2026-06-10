@@ -447,32 +447,31 @@ async def _upsert_file(conn: asyncpg.Connection, path: str, content: str) -> Non
 
 
 async def _seed_docs_mcp(conn: asyncpg.Connection) -> None:
-    """Self-register the secured dav-docs-mcp server in the DCM project from env:
-    its LoadBalancer SSE URL (DAV_DOCS_MCP_URL) + Fernet-encrypted bearer token
-    (DAV_DOCS_MCP_TOKEN). Idempotent upsert so URL/token track the deployment.
-    No-op when the env is unset (e.g. dev / before the secured LB is rolled)."""
+    """Self-register the secured dav-docs-mcp server at PLATFORM scope (project_id NULL, so
+    the scope resolver surfaces it in every project — #107 Phase 3) from env: its
+    LoadBalancer SSE URL (DAV_DOCS_MCP_URL) + Fernet-encrypted bearer token
+    (DAV_DOCS_MCP_TOKEN). Idempotent: updates the existing dav-docs-mcp row (migrating it to
+    platform) or inserts one. No-op when the env is unset (dev / before the secured LB)."""
     if not DAV_DOCS_MCP_URL:
         return
-    pid = await conn.fetchval(
-        "SELECT COALESCE((SELECT id FROM projects WHERE id=20),"
-        " (SELECT id FROM projects WHERE slug='default'))")
-    if pid is None:
-        return
     token_enc = crypto.encrypt(DAV_DOCS_MCP_TOKEN) if DAV_DOCS_MCP_TOKEN else ""
-    await conn.execute(
-        """INSERT INTO mcp_server_configs
-             (name, description, sse_url, enabled, use_uc_assist,
-              auth_token_encrypted, created_by, project_id)
-           VALUES ('dav-docs-mcp', $1, $2, true, false, $3, 'system', $4)
-           ON CONFLICT (project_id, lower(name)) DO UPDATE
-             SET sse_url = EXCLUDED.sse_url,
-                 auth_token_encrypted = EXCLUDED.auth_token_encrypted,
-                 description = EXCLUDED.description,
-                 updated_at = now()""",
-        "DCM architecture spec — served via MCP (secured)",
-        DAV_DOCS_MCP_URL, token_enc, pid,
-    )
-    log.info("dav-docs-mcp self-registered (secured LB URL, token %s)",
+    desc = "DCM architecture spec — served via MCP (secured)"
+    # Explicit upsert by name (the scope-aware unique index is on COALESCE expressions, so a
+    # plain ON CONFLICT target no longer matches). Any existing row is migrated to platform.
+    existing = await conn.fetchval(
+        "SELECT id FROM mcp_server_configs WHERE lower(name)='dav-docs-mcp' ORDER BY id LIMIT 1")
+    if existing is not None:
+        await conn.execute(
+            "UPDATE mcp_server_configs SET sse_url=$1, auth_token_encrypted=$2, description=$3, "
+            "project_id=NULL, use_category=NULL, updated_at=now() WHERE id=$4",
+            DAV_DOCS_MCP_URL, token_enc, desc, existing)
+    else:
+        await conn.execute(
+            "INSERT INTO mcp_server_configs (name, description, sse_url, enabled, use_uc_assist, "
+            " auth_token_encrypted, created_by, project_id, use_category) "
+            "VALUES ('dav-docs-mcp', $1, $2, true, false, $3, 'system', NULL, NULL)",
+            desc, DAV_DOCS_MCP_URL, token_enc)
+    log.info("dav-docs-mcp self-registered (platform scope, token %s)",
              "set" if token_enc else "none")
 
 

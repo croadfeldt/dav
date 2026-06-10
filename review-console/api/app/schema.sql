@@ -444,6 +444,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_output_templates_scope_name
 -- frc-scheduler-mcp are not used by DAV. dav-docs-mcp is self-registered at boot
 -- (_seed_docs_mcp) from DAV_DOCS_MCP_URL/DAV_DOCS_MCP_TOKEN so it carries its
 -- secured LoadBalancer URL + Fernet-encrypted bearer token.
+--
+-- Scope & bundles (#107) Phase 3: dav-docs-mcp is a PLATFORM resource — the DCM spec is
+-- relevant to every project — so promote it to platform scope (project_id NULL) here,
+-- idempotently, so the scope resolver surfaces it in all projects. (Done in schema, not a
+-- one-off DB edit, so it's reproducible.)
+UPDATE mcp_server_configs SET project_id = NULL
+  WHERE lower(name) = 'dav-docs-mcp' AND project_id IS NOT NULL;
 
 -- Many-to-many users↔projects with a per-project role.
 CREATE TABLE IF NOT EXISTS project_members (
