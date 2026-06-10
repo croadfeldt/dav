@@ -9,3 +9,4 @@ python-multipart==0.0.20
 cryptography==43.0.3
 ldap3==2.9.1
 argon2-cffi==23.1.0
+pypdf==5.1.0

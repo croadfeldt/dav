@@ -26,7 +26,7 @@ from typing import Optional, Union
 import asyncpg
 import httpx
 import yaml as _yaml
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -6730,33 +6730,65 @@ class AssessmentModelIngestIn(BaseModel):
     assessment_type: Optional[str] = None
     pillar: Optional[str] = None
     source: Optional[str] = None
+    model_config_id: Optional[int] = None  # #105: override the project assessment-ingest default per ingest
 
 
-@app.post("/api/assessments/ingest-model")
-async def assessments_ingest_model(payload: AssessmentModelIngestIn, request: Request):
-    """Model-based assessment ingestion: an extractor model reads the artifact and emits
-    STRUCTURED OUTPUT conforming to the UDLM Knowledge-family Assessment/Finding contract,
-    which is then stored via the normal ingest pipeline (normalize → catalog → gap
-    summary). Uses the project's `assessment-ingest` model default (→ uc-authoring →
-    arch-review → evaluation fallback). Requires assessment.edit."""
-    if not (payload.content or "").strip():
+def _extract_assessment_text(filename: str, data: bytes) -> str:
+    """Turn an uploaded assessment artifact into text for the extractor model (#105).
+    Text/structured (txt/md/csv/json/yaml/log) is decoded as-is; PDF is text-extracted via
+    pypdf; images aren't supported yet (need a vision model — a #105 follow-up)."""
+    name = (filename or "").lower()
+    if name.endswith(".pdf"):
+        try:
+            import pypdf
+        except ImportError:
+            raise HTTPException(400, "PDF ingestion requires the pypdf library (not installed)")
+        try:
+            reader = pypdf.PdfReader(io.BytesIO(data))
+            text = "\n\n".join((page.extract_text() or "") for page in reader.pages)
+        except Exception as e:
+            raise HTTPException(422, f"could not read the PDF: {e}")
+        if not text.strip():
+            raise HTTPException(422, "no extractable text in the PDF (a scanned image? image ingestion is a #105 follow-up)")
+        return text
+    if name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff")):
+        raise HTTPException(400, "image ingestion isn't supported yet (needs a vision model — #105 follow-up); use text / structured / PDF")
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
+
+
+async def _extract_and_ingest_assessment(request: Request, content: str, *, model_config_id=None,
+                                         handle=None, assessment_type=None, pillar=None, source=None):
+    """Shared core for model-based assessment ingestion (#105): resolve the extractor model
+    (the per-ingest override if given, else the project's assessment-ingest default —
+    scope-aware), emit UDLM-conformant structured output, and store via the normal pipeline."""
+    content = (content or "").strip()
+    if not content:
         raise HTTPException(400, "content (the assessment artifact text) is required")
     actor = get_user(request)
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
         await _require_priv_conn(conn, request, rbac.P_ASSESSMENT_EDIT, pid)
-        cfg = await _model_default_row(
-            conn, "assessment-ingest", "uc-authoring", "arch-review", "evaluation", project_id=pid)
+        if model_config_id:
+            row = await conn.fetchrow(
+                "SELECT * FROM model_configs WHERE id=$1 AND (project_id IS NULL OR project_id=$2) AND enabled",
+                model_config_id, pid)
+            cfg = dict(row) if row else None
+        else:
+            cfg = await _model_default_row(
+                conn, "assessment-ingest", "uc-authoring", "arch-review", "evaluation", project_id=pid)
     if not cfg:
-        raise HTTPException(400, "no assessment-ingest / authoring / evaluation model configured for this project")
+        raise HTTPException(400, "the selected extractor model is unavailable, and no assessment-ingest / authoring / evaluation model default is configured for this project")
     schema = _assessment_ingest.structured_output_schema()
     system = ("You are an assessment-extraction engine. Read the assessment artifact and emit "
               "ONLY a single JSON object conforming to the UDLM Knowledge-family Assessment "
               "contract below — no prose, no markdown code fences, no surrounding text.\n\n"
               "UDLM Assessment contract:\n" + json.dumps(schema, indent=2))
-    user = (f"Assessment artifact:\n\n{payload.content.strip()}\n\n"
-            + (f"assessment_type hint: {payload.assessment_type}\n" if payload.assessment_type else "")
-            + (f"handle hint: {payload.handle}\n" if payload.handle else "")
+    user = (f"Assessment artifact:\n\n{content}\n\n"
+            + (f"assessment_type hint: {assessment_type}\n" if assessment_type else "")
+            + (f"handle hint: {handle}\n" if handle else "")
             + "Extract every capability that was assessed into a finding. Use state 'n/a' for "
               "not-asked / not-applicable, maturity 1-5 (3 = target; null when there is no "
               "capability), and carry any notes/evidence. Output the JSON object only.")
@@ -6771,18 +6803,51 @@ async def assessments_ingest_model(payload: AssessmentModelIngestIn, request: Re
             raise ValueError("not a JSON object")
     except Exception as e:
         raise HTTPException(422, f"extractor did not return valid UDLM-assessment JSON: {e}")
-    # Apply caller hints + provenance the model omitted.
-    for k in ("handle", "assessment_type", "pillar", "source"):
-        v = getattr(payload, k, None)
+    for k, v in (("handle", handle), ("assessment_type", assessment_type), ("pillar", pillar), ("source", source)):
         if v and not extracted.get(k):
             extracted[k] = v
-    extracted.setdefault("source", payload.source or f"model-extract:{cfg.get('model_id')}")
+    extracted.setdefault("source", source or f"model-extract:{cfg.get('model_id')}")
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
         result = await _assessment_ingest.ingest(conn, extracted, actor=actor, project_id=pid)
     result["model"] = cfg.get("model_id")
     result["udlm_version"] = schema["udlm_version"]
     return result
+
+
+@app.post("/api/assessments/ingest-model")
+async def assessments_ingest_model(payload: AssessmentModelIngestIn, request: Request):
+    """Model-based assessment ingestion from pasted text: an extractor model emits STRUCTURED
+    OUTPUT conforming to the UDLM Assessment/Finding contract, stored via the normal pipeline.
+    Uses the per-ingest model override (model_config_id) or the project's assessment-ingest
+    default (→ uc-authoring → arch-review → evaluation). Requires assessment.edit."""
+    return await _extract_and_ingest_assessment(
+        request, payload.content, model_config_id=payload.model_config_id,
+        handle=payload.handle, assessment_type=payload.assessment_type,
+        pillar=payload.pillar, source=payload.source)
+
+
+@app.post("/api/assessments/ingest-file")
+async def assessments_ingest_file(
+    request: Request,
+    file: UploadFile = File(...),
+    model_config_id: Optional[int] = Form(None),
+    assessment_type: Optional[str] = Form(None),
+    handle: Optional[str] = Form(None),
+    pillar: Optional[str] = Form(None),
+    source: Optional[str] = Form(None),
+):
+    """#105: multi-format model ingestion — upload a PDF or text/structured (txt/md/csv/json/
+    yaml/log) assessment artifact; its text is extracted and run through the same model
+    pipeline as /ingest-model. Images aren't supported yet (vision model — follow-up)."""
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty file")
+    text = _extract_assessment_text(file.filename or "", data)
+    return await _extract_and_ingest_assessment(
+        request, text, model_config_id=model_config_id, handle=handle,
+        assessment_type=assessment_type, pillar=pillar,
+        source=source or f"file:{file.filename}")
 
 
 # ---------------------------------------------------------------------------

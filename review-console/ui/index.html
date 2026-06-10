@@ -1566,14 +1566,20 @@
                 <label style="font-size:10px;color:var(--text-dim);">Mode</label>
                 <select id="asIngestMode" onchange="_asIngestModeChanged()" style="font-size:10px;">
                   <option value="json">Structured JSON</option>
-                  <option value="model">Extract with model (text → UDLM)</option>
+                  <option value="model">Extract with model (text/PDF → UDLM)</option>
                 </select>
+                <span id="asIngestModelRow" style="display:none;gap:6px;align-items:center;">
+                  <label style="font-size:10px;color:var(--text-dim);">model</label>
+                  <select id="asIngestModelSel" style="font-size:10px;min-width:190px;" title="Extractor model for this ingest (overrides the project assessment-ingest default)">
+                    <option value="">— project default —</option>
+                  </select>
+                </span>
               </div>
               <div id="asIngestHint" style="font-size:10px;color:var(--text-dim);margin-bottom:4px;">Paste a <b>canonical</b> assessment JSON (or upload a file). Shape:
                 <code style="font-size:9px;">{handle, assessment_type, pillar, findings:[{capability, category, state:present|partial|absent|n/a, maturity:1-5, evidence, notes}]}</code></div>
               <textarea id="asIngestJson" spellcheck="false" placeholder='{"handle":"…","assessment_type":"automation","findings":[…]}' style="width:100%;min-height:120px;font-size:11px;font-family:var(--mono,monospace);"></textarea>
               <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap;">
-                <input type="file" id="asIngestFile" accept=".json,application/json" style="font-size:10px;" onchange="_asLoadIngestFile(this)">
+                <input type="file" id="asIngestFile" accept=".json,.txt,.md,.csv,.tsv,.yaml,.yml,.log,.pdf,application/json,application/pdf,text/plain" style="font-size:10px;" onchange="_asLoadIngestFile(this)">
                 <button class="btn primary btn-sm" onclick="ingestAssessment()">Ingest</button>
                 <button class="btn ghost btn-sm" onclick="toggleAssessmentIngest()">Cancel</button>
                 <span style="font-size:9px;color:var(--text-faint);">scoped to the active project</span>
@@ -10998,13 +11004,28 @@ function toggleAssessmentIngest() {
   const f = document.getElementById('asIngestForm');
   if (f) f.style.display = f.style.display === 'none' ? '' : 'none';
 }
+let _asIngestFile = null;   // #105: a staged binary (PDF) file for server-side extraction
+async function _asPopulateIngestModels() {
+  const sel = document.getElementById('asIngestModelSel');
+  if (!sel) return;
+  try {
+    const models = await api('/api/models');               // scope-aware (project ∪ platform)
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— project default —</option>' +
+      (models || []).filter(m => m.enabled !== false).map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
+    sel.value = cur;
+  } catch (e) { /* keep the default option */ }
+}
 function _asIngestModeChanged() {
   const mode = document.getElementById('asIngestMode')?.value || 'json';
   const hint = document.getElementById('asIngestHint');
   const ta = document.getElementById('asIngestJson');
+  const modelRow = document.getElementById('asIngestModelRow');
+  if (modelRow) modelRow.style.display = (mode === 'model') ? 'inline-flex' : 'none';
   if (mode === 'model') {
-    if (hint) hint.innerHTML = 'Paste (or upload) the raw assessment <b>text/notes</b>. The project\'s <code>assessment-ingest</code> model extracts it into the UDLM Assessment contract before storing. (PDF/image/structured is a larger build — #105.)';
-    if (ta) ta.placeholder = 'Paste the assessment artifact text — notes, tables, capability write-ups…';
+    _asPopulateIngestModels();
+    if (hint) hint.innerHTML = 'Paste the assessment <b>text/notes</b>, or upload a <b>PDF</b> or text/structured file (txt, md, csv, json, yaml). The selected model (or the project <code>assessment-ingest</code> default) extracts it into the UDLM Assessment contract. <span style="color:var(--text-faint);">Images aren\'t supported yet.</span>';
+    if (ta) ta.placeholder = 'Paste the assessment artifact text — or upload a PDF / file below…';
   } else {
     if (hint) hint.innerHTML = 'Paste a <b>canonical</b> assessment JSON (or upload a file). Shape: <code style="font-size:9px;">{handle, assessment_type, pillar, findings:[{capability, category, state:present|partial|absent|n/a, maturity:1-5, evidence, notes}]}</code>';
     if (ta) ta.placeholder = '{"handle":"…","assessment_type":"automation","findings":[…]}';
@@ -11012,34 +11033,78 @@ function _asIngestModeChanged() {
 }
 function _asLoadIngestFile(input) {
   const file = input.files && input.files[0];
+  _asIngestFile = null;
   if (!file) return;
+  const name = (file.name || '').toLowerCase();
+  // PDF (binary) → stage for server-side extraction; force model mode (the extractor reads it).
+  if (name.endsWith('.pdf')) {
+    _asIngestFile = file;
+    const ta = document.getElementById('asIngestJson');
+    if (ta) ta.value = `[PDF staged: ${file.name} — extracted server-side on Ingest]`;
+    const modeSel = document.getElementById('asIngestMode');
+    if (modeSel && modeSel.value !== 'model') { modeSel.value = 'model'; _asIngestModeChanged(); }
+    return;
+  }
+  // text / structured → read into the textarea
   const reader = new FileReader();
   reader.onload = () => { const ta = document.getElementById('asIngestJson'); if (ta) ta.value = reader.result; };
   reader.readAsText(file);
 }
+// Multipart POST (FormData) — like api() but without a JSON content-type so the browser
+// sets the multipart boundary; carries the active-project header.
+async function _apiForm(url, formData) {
+  const headers = {};
+  if (typeof _activeProject !== 'undefined' && _activeProject) headers['X-DAV-Project'] = _activeProject;
+  const res = await fetch(url, { method: 'POST', headers, body: formData, credentials: 'same-origin' });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { const j = await res.json(); const d = j.detail; msg = (typeof d === 'string' ? d : (d ? JSON.stringify(d) : msg)); } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+function _asIngestDone(r, status) {
+  if (status) status.textContent = `✓ ingested ${r.findings} findings (${r.mapped} mapped, ${r.gaps} gaps)${r.model ? ' · ' + r.model : ''}`;
+  toast('✓ Assessment ingested');
+  toggleAssessmentIngest();
+  document.getElementById('asIngestJson').value = '';
+  _asIngestFile = null;
+  const fi = document.getElementById('asIngestFile'); if (fi) fi.value = '';
+  loadAssessments();
+  loadAssessmentSelector();
+  if (r.assessment_id) renderAssessment(r.assessment_id);
+}
 async function ingestAssessment() {
   const mode = document.getElementById('asIngestMode')?.value || 'json';
   const status = document.getElementById('asStatus');
+  const modelId = parseInt(document.getElementById('asIngestModelSel')?.value || '', 10);
+  // PDF (staged file) → multipart server-side extraction (model mode only).
+  if (mode === 'model' && _asIngestFile) {
+    status.textContent = 'extracting via model (PDF)…';
+    try {
+      const fd = new FormData();
+      fd.append('file', _asIngestFile);
+      if (modelId) fd.append('model_config_id', String(modelId));
+      _asIngestDone(await _apiForm('/api/assessments/ingest-file', fd), status);
+    } catch (e) { status.textContent = ''; toast('✗ ' + e.message); }
+    return;
+  }
   const raw = (document.getElementById('asIngestJson').value || '').trim();
   if (!raw) { toast('Paste or upload assessment content', true); return; }
   status.textContent = (mode === 'model') ? 'extracting via model…' : 'ingesting…';
   try {
     let r;
     if (mode === 'model') {
-      r = await api('/api/assessments/ingest-model', { method:'POST', body: JSON.stringify({ content: raw }) });
+      const body = { content: raw };
+      if (modelId) body.model_config_id = modelId;
+      r = await api('/api/assessments/ingest-model', { method:'POST', body: JSON.stringify(body) });
     } else {
       let payload;
       try { payload = JSON.parse(raw); }
       catch (e) { toast('Invalid JSON: ' + e.message, true); status.textContent = '✗ invalid JSON'; return; }
       r = await api('/api/assessments/ingest', { method:'POST', body: JSON.stringify({ assessment: payload }) });
     }
-    status.textContent = `✓ ingested ${r.findings} findings (${r.mapped} mapped, ${r.gaps} gaps)${r.model ? ' · ' + r.model : ''}`;
-    toast('✓ Assessment ingested');
-    toggleAssessmentIngest();
-    document.getElementById('asIngestJson').value = '';
-    await loadAssessments();
-    loadAssessmentSelector();
-    if (r.assessment_id) renderAssessment(r.assessment_id);
+    _asIngestDone(r, status);
   } catch (e) { status.textContent = ''; toast('✗ ' + e.message); }
 }
 async function renderAssessment(id) {
