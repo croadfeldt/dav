@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-06-10  
-**Current version:** v0.19.1  
+**Current version:** v0.19.2  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -735,7 +735,13 @@ The legacy umbrella `project.data.write` is **retired** (removed from built-in r
 
 **Endpoints:** `/api/accounts` (GET list-with-roles, POST create+invite, PATCH enable/disable+password, DELETE — self-delete blocked, default→deactivate), `POST /api/accounts/{x}/invite`; `/api/rbac/roles` + `/api/rbac/privileges` (GET), `POST/PUT/DELETE /api/rbac/roles`; `POST/DELETE /api/accounts/{x}/roles` (assign/revoke, escalation-guarded); `GET/POST/DELETE /api/projects/{id}/members` (RBAC project bindings — replaces the legacy `project_members` writes); `PUT /api/me/default-project`.
 
-**UI:** Config → **Users & roles** (platform-admin) — add-account form, account list with enabled toggle + role chips (removable) + assign-role dropdown (platform & per-project), and a **Roles × Privileges matrix** (per-role privilege chips, scope-aware; create/delete custom roles). **Left-nav shortcuts** (privilege-gated): **Users & roles** (platform admin) and **Projects** (project admin / `project.create`). Account menu (top-right): self-service logout / change-password / appearance.
+**UI (v0.19.2 — consolidated Config → Platform):** the former standalone left-nav **Users & roles** and **Projects** views are **retired**; their panels now live under a single **Platform** section inside **Config**, each panel gated to the role that can use it:
+- **Projects** — *project admin* (or `project.create`): create (if permitted), archive, move-data/delete, and per-project **Members** (RBAC bindings + **email-invite with a project role**). A project admin sees only the projects they administer.
+- **Email (SMTP)**, **LDAP / approval**, **Users & roles** (add-account form, account list + role chips + assign-role dropdown, **Roles × Privileges matrix**) — *platform admin* only.
+
+`_applyAccessVisibility()` shows the Platform section to anyone holding ≥1 platform panel (`platform OR project admin`) and gates **each nav link to its panel** (project admin → Projects only; platform admin → all four); `switchView('config')` loads each panel's data behind the same gate. This is defense-in-depth over the server guards, not a substitute. The boundary is covered by the jsdom e2e (`e2e.mjs`) across platform-admin / project-admin / project-viewer roles.
+
+**Invite vs email-server boundary (explicit RBAC contract):** *sending an email invite* is a **project-admin** ability — a project admin invites users **into a project** via the project **Members** panel → `POST /api/invites` (`project_id` set → `require_project_admin`; escalation-bounded: cannot grant a global role above their own). *Managing the email server itself* (SMTP host/credentials/TLS) is **platform-admin only** — `GET/PUT/POST /api/settings/smtp` are all `require_role("platform-admin")`. Creating a **global account** (`POST /api/accounts`) and re-sending an account activation (`POST /api/accounts/{x}/invite`) remain platform-admin (they mint/operate on platform-level identities, not project membership). Account menu (top-right): self-service logout / change-password / appearance.
 
 > **Next slice (in progress): a proper OpenShift-style RBAC management UI/UX** — no model change, just the interface: a **Roles** tab (catalog grouped by scope, per-role privilege matrix, create/clone/edit/delete) and a **Role bindings** tab (subject × role × scope/project, incl. the LDAP group mapper). The Projects section is the per-project lens on the same bindings.
 
@@ -1492,6 +1498,22 @@ change is A/B-validated (the static comparator is the measurement tool) before r
 trust. See `docs/prompt-management-design.md`.
 
 ---
+
+## v0.19.2 — Config consolidation + invite/SMTP RBAC boundary (2026-06-10)
+
+- **Config → Platform section:** the standalone left-nav **Users & roles** and **Projects**
+  views are retired; their panels (**Projects**, **Email/SMTP**, **LDAP**, **Users & roles**)
+  consolidate under one **Platform** section in **Config**, each gated to its role.
+  `_applyAccessVisibility()` shows the section for `platform OR project admin` and gates each
+  nav link to its panel (project admin → Projects only; platform admin → all four);
+  `switchView('config')` loads each panel's data behind the same gate.
+- **Invite vs email-server boundary (explicit):** *sending an email invite* is a
+  **project-admin** ability (project Members → `POST /api/invites`, escalation-bounded);
+  *managing the email server* (SMTP host/creds/TLS, `…/settings/smtp`) is **platform-admin
+  only**. Creating a global account / re-sending account activation stays platform-admin.
+- **e2e:** added a **project-admin** role to `e2e.mjs` with per-link assertions (Platform
+  section + Projects link visible; SMTP/LDAP/Users hidden) — the exact case the new gating
+  introduces. **24/24 PASS.**
 
 ## v0.19.1 — masthead selectors, maturity model, QA lint, fixes (2026-06-10)
 
