@@ -2345,7 +2345,7 @@ async def test_smtp_settings(payload: SmtpTestIn, request: Request):
         import smtplib
         msg = _smtp_message(cfg.get("from", "dav@localhost"), to, "DAV SMTP test",
                             "This is a test message from DAV. If you received it, SMTP is configured correctly.")
-        with smtplib.SMTP(cfg["host"], int(cfg.get("port", 587)), timeout=10) as s:
+        with smtplib.SMTP(cfg["host"], int(cfg.get("port", 587)), timeout=30) as s:
             if cfg.get("tls"):
                 s.starttls()
             if cfg.get("user"):
@@ -2404,7 +2404,10 @@ def _send_email(to: str, subject: str, body: str) -> bool:
         return False
     import smtplib
     msg = _smtp_message(cfg.get("from", "dav@localhost"), to, subject, body)
-    with smtplib.SMTP(cfg["host"], int(cfg.get("port", 587)), timeout=10) as s:
+    # Generous timeout: some hardened relays (e.g. Postfix postscreen pre-greet) delay
+    # the 220 banner ~10-15s to deter spambots; a short timeout aborts before EHLO and
+    # the mail never sends (logs only a connect/disconnect on the server).
+    with smtplib.SMTP(cfg["host"], int(cfg.get("port", 587)), timeout=30) as s:
         if cfg.get("tls"):
             s.starttls()
         if cfg.get("user"):
