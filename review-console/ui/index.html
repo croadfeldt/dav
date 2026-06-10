@@ -573,6 +573,15 @@
   .panel-card-header .pc-title { font-size:13px; color:var(--text); }
   .panel-card-header .pc-sub   { font-size:10px; color:var(--text-faint); }
   .panel-card-body { padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
+  /* Canonical section-switcher tabs (see docs/ui-style-guide.md). Use for sibling
+     sections within a view (Config, Prompts & Improvements). Toggle .active on the
+     matching .tab + .tabpanel — wireTabs(container) does this automatically. */
+  .tabs { display:flex; gap:2px; flex-wrap:wrap; border-bottom:1px solid var(--border); margin-bottom:14px; }
+  .tab { padding:7px 14px; font-size:11px; color:var(--text-dim); background:transparent; border:0; border-bottom:2px solid transparent; margin-bottom:-1px; cursor:pointer; text-transform:uppercase; letter-spacing:.06em; white-space:nowrap; transition:color .15s, border-color .15s; }
+  .tab:hover { color:var(--text); }
+  .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
+  .tabpanel { display:none; }
+  .tabpanel.active { display:block; }
   .mcp-row { display:flex; align-items:center; gap:10px; padding:9px 16px; border-bottom:1px solid var(--border); font-size:12px; }
   .mcp-row:last-child { border-bottom:none; }
   .mcp-row .mcp-name { font-weight:500; min-width:140px; }
@@ -2970,6 +2979,22 @@ function toast(msg, isError) {
 
 // ── Utilities ────────────────────────────────────────────────
 function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// Canonical tab wiring (docs/ui-style-guide.md). Within `container`, clicking a
+// .tab[data-tab=X] activates it + the .tabpanel[data-tabpanel=X] sibling, hiding the
+// rest. Idempotent; call after rendering the tab strip. `onChange(key)` is optional.
+function wireTabs(container, onChange) {
+  if (!container) return;
+  const tabs = Array.from(container.querySelectorAll('.tab'));
+  const panels = Array.from(container.querySelectorAll('.tabpanel'));
+  const show = (key) => {
+    tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === key));
+    panels.forEach(p => p.classList.toggle('active', p.dataset.tabpanel === key));
+    if (typeof onChange === 'function') { try { onChange(key); } catch (e) { console.warn('tab onChange', e); } }
+  };
+  tabs.forEach(t => t.addEventListener('click', () => show(t.dataset.tab)));
+  const cur = tabs.find(t => t.classList.contains('active')) || tabs.find(t => t.style.display !== 'none') || tabs[0];
+  if (cur) show(cur.dataset.tab);
+}
 // Embed JSON.stringify output safely inside a double-quoted HTML attribute
 // (e.g. onclick="..."). Without &quot;-escaping, an inner `"` would terminate
 // the attribute and silently kill the handler — this was a real bug (v0.9.31).
