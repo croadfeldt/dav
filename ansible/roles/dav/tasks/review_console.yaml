@@ -34,11 +34,20 @@
     state: absent
   when: review_console_build_images | bool
 
-- name: Copy review console source to provisioner
-  ansible.builtin.copy:
-    src: "{{ playbook_dir }}/../review-console/"
-    dest: "/tmp/dav-review-build/"
-    mode: preserve
+# rsync (not ansible.builtin.copy) so we can EXCLUDE node_modules — the UI's
+# lint/e2e harness (ui/lint.sh) runs `npm install`, leaving a 17MB / ~1400-file
+# gitignored ui/node_modules tree. copy walks it file-by-file (20+ min) and would
+# bloat the image; the build only needs the static index.html + nginx conf. --delete
+# keeps the staging dir clean across runs (the _vendor dir is recreated just below).
+- name: Stage review console source into the build context (exclude dev cruft)
+  ansible.builtin.command:
+    cmd: >-
+      rsync -a --delete
+      --exclude=node_modules/ --exclude=.git/
+      --exclude=__pycache__/ --exclude='*.pyc'
+      {{ playbook_dir }}/../review-console/ /tmp/dav-review-build/
+  register: _rc_rsync
+  changed_when: _rc_rsync.rc == 0
   when: review_console_build_images | bool
 
 # Vendor the engine's pure semantic-analysis comparator into the API image at build
