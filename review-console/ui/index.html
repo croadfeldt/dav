@@ -649,6 +649,14 @@
   .pf-masthead-brand .brand-mark { font-family:var(--serif); font-size:18px; font-weight:400; letter-spacing:0.01em; }
   .pf-masthead-brand .brand-mark em { color:var(--accent); font-style:italic; font-weight:300; }
   .pf-masthead-right { margin-left:auto; display:flex; align-items:center; gap:12px; font-size:11px; }
+  /* Workspace focus switcher (Architecture | Assessment) + read-only View-mode toggle. */
+  .focus-switch { display:inline-flex; border:1px solid var(--border); border-radius:3px; overflow:hidden; }
+  .focus-btn { padding:3px 11px; font-size:11px; background:transparent; color:var(--text-dim); border:0; cursor:pointer; font-family:inherit; white-space:nowrap; transition:background .12s,color .12s; }
+  .focus-btn:hover { color:var(--text); background:var(--bg-raised); }
+  .focus-btn.active { background:var(--accent); color:#1a1305; font-weight:500; }
+  .viewmode-chip { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:var(--text-dim); background:transparent; border:1px solid var(--border); border-radius:3px; padding:3px 9px; cursor:pointer; font-family:inherit; white-space:nowrap; transition:color .12s,border-color .12s,background .12s; }
+  .viewmode-chip:hover { color:var(--text); }
+  .viewmode-chip.on { color:var(--accent); border-color:var(--accent-soft); background:var(--accent-bg); }
 
   /* Active run chip in masthead (OpenShift project-selector pattern) */
   .run-context-chip {
@@ -853,6 +861,11 @@
     </select>
   </div>
   <div class="pf-masthead-right">
+    <div class="focus-switch" id="focusSwitch" role="tablist" title="Workspace focus">
+      <button class="focus-btn" data-focus="architecture" title="Architecture — the UC-driven architecture & capability pipeline">Architecture</button>
+      <button class="focus-btn" data-focus="assessment" title="Assessment — ingest assessment data, gap analysis, maturity">Assessment</button>
+    </div>
+    <button class="viewmode-chip" id="viewModeToggle" title="View mode — browse read-only (hide edit actions)"><span aria-hidden="true">✎</span> <span id="viewModeLabel">Editing</span></button>
     <span id="triggerStatus" style="color:var(--text-faint);font-size:10px;"></span>
     <span style="position:relative;display:none;" id="presenceWrap">
       <button id="presenceChip" title="Who's online — click for details (online ≤2 min · active ≤5 min)"
@@ -890,46 +903,46 @@
   <!-- ── Left sidebar nav ── -->
   <nav class="pf-nav" id="pfNav">
     <div class="pf-nav-items">
-      <a class="pf-nav-item active" data-view="usecases" href="javascript:void(0)">
+      <a class="pf-nav-item active" data-view="usecases" data-focus="architecture" href="javascript:void(0)">
         <span class="nav-icon">✎</span><span class="nav-label">Use Cases <span class="badge" id="badgeUC" style="font-size:9px;"></span></span>
       </a>
-      <a class="pf-nav-item" data-view="runs" href="javascript:void(0)">
+      <a class="pf-nav-item" data-view="runs" data-focus="architecture" href="javascript:void(0)">
         <span class="nav-icon">▶</span><span class="nav-label">Runs <span class="badge" id="badgeRuns" style="font-size:9px;"></span></span>
       </a>
-      <a class="pf-nav-item" data-view="results" href="javascript:void(0)">
+      <a class="pf-nav-item" data-view="results" data-focus="architecture" href="javascript:void(0)">
         <span class="nav-icon">≡</span><span class="nav-label">Results <span class="badge" id="badgeResults" style="font-size:9px;"></span></span>
       </a>
-      <a class="pf-nav-item" data-view="inbox" href="javascript:void(0)" title="PR-comment Inbox — draft UCs from ingested comments">
+      <a class="pf-nav-item" data-view="inbox" data-focus="architecture" href="javascript:void(0)" title="PR-comment Inbox — draft UCs from ingested comments">
         <span class="nav-icon">📬</span><span class="nav-label">Inbox <span class="badge" id="badgeInbox" style="font-size:9px;"></span></span>
       </a>
-      <a class="pf-nav-item" data-view="review" href="javascript:void(0)" title="Track 1 · Architecture &amp; Capability — gap analysis → spec changes">
+      <a class="pf-nav-item" data-view="review" data-focus="architecture" href="javascript:void(0)" title="Track 1 · Architecture &amp; Capability — gap analysis → spec changes">
         <span class="nav-icon">✦</span><span class="nav-label">Architecture</span>
       </a>
-      <a class="pf-nav-item" data-view="engineering" href="javascript:void(0)" title="Track 2 · Engineering Roadmap — what to build, in what order, to satisfy the UCs">
+      <a class="pf-nav-item" data-view="engineering" data-focus="architecture" href="javascript:void(0)" title="Track 2 · Engineering Roadmap — what to build, in what order, to satisfy the UCs">
         <span class="nav-icon">🛠</span><span class="nav-label">Engineering</span>
       </a>
-      <a class="pf-nav-item" data-view="catalog" href="javascript:void(0)" title="Capability Catalog — canonical capabilities (manual-curated, LLM-suggested)">
-        <span class="nav-icon">📒</span><span class="nav-label">Catalog</span>
-      </a>
-      <a class="pf-nav-item" data-view="capmap" href="javascript:void(0)" title="Capability Map — bidirectional UC ↔ capability matrix for a run">
-        <span class="nav-icon">🗺</span><span class="nav-label">Cap Map</span>
-      </a>
-      <a class="pf-nav-item" data-view="improve" href="javascript:void(0)" title="Prompt management (per-project, per-stage) + self-improvement (diagnose failures, review proposed fixes)">
-        <span class="nav-icon">📝</span><span class="nav-label">Prompts &amp; Improvement <span class="badge" id="badgeImprove" style="font-size:9px;"></span></span>
-      </a>
-      <a class="pf-nav-item" id="navProjects" data-view="projects" href="javascript:void(0)" style="display:none;">
-        <span class="nav-icon">▦</span><span class="nav-label">Projects</span>
-      </a>
-      <a class="pf-nav-item" id="navUsers" data-view="users" href="javascript:void(0)" style="display:none;">
-        <span class="nav-icon">👤</span><span class="nav-label">Users &amp; roles</span>
-      </a>
-      <a class="pf-nav-item" id="navAudit" data-view="audit" href="javascript:void(0)" style="display:none;" title="Audit log — who did what, plus login / logout / timeout events">
-        <span class="nav-icon">📜</span><span class="nav-label">Audit</span>
-      </a>
-      <a class="pf-nav-item" id="navAssess" data-view="assess" href="javascript:void(0)" style="display:none;" title="Assessments — capability findings ingested from assessment outputs; gaps drive the roadmap">
+      <a class="pf-nav-item" data-view="assess" data-focus="assessment" id="navAssess" href="javascript:void(0)" style="display:none;" title="Assessments — capability findings ingested from assessment outputs; gaps drive the roadmap">
         <span class="nav-icon">📊</span><span class="nav-label">Assessments</span>
       </a>
-      <a class="pf-nav-item" data-view="config" href="javascript:void(0)">
+      <a class="pf-nav-item" data-view="catalog" data-focus="both" href="javascript:void(0)" title="Capability Catalog — canonical capabilities (shared by architecture + assessment)">
+        <span class="nav-icon">📒</span><span class="nav-label">Catalog</span>
+      </a>
+      <a class="pf-nav-item" data-view="capmap" data-focus="both" href="javascript:void(0)" title="Capability Map — bidirectional UC ↔ capability matrix for a run">
+        <span class="nav-icon">🗺</span><span class="nav-label">Cap Map</span>
+      </a>
+      <a class="pf-nav-item" data-view="improve" data-focus="architecture" href="javascript:void(0)" title="Prompt management (per-project, per-stage) + self-improvement (diagnose failures, review proposed fixes)">
+        <span class="nav-icon">📝</span><span class="nav-label">Prompts &amp; Improvement <span class="badge" id="badgeImprove" style="font-size:9px;"></span></span>
+      </a>
+      <a class="pf-nav-item" id="navProjects" data-view="projects" data-focus="both" href="javascript:void(0)" style="display:none;">
+        <span class="nav-icon">▦</span><span class="nav-label">Projects</span>
+      </a>
+      <a class="pf-nav-item" id="navUsers" data-view="users" data-focus="both" href="javascript:void(0)" style="display:none;">
+        <span class="nav-icon">👤</span><span class="nav-label">Users &amp; roles</span>
+      </a>
+      <a class="pf-nav-item" id="navAudit" data-view="audit" data-focus="both" href="javascript:void(0)" style="display:none;" title="Audit log — who did what, plus login / logout / timeout events">
+        <span class="nav-icon">📜</span><span class="nav-label">Audit</span>
+      </a>
+      <a class="pf-nav-item" data-view="config" data-focus="both" href="javascript:void(0)">
         <span class="nav-icon">⚙</span><span class="nav-label">Config</span>
       </a>
     </div>
@@ -3337,6 +3350,61 @@ function can(priv) {
   return !!(me && (me.is_platform_admin || (me.privileges || []).includes(priv)));
 }
 
+// ── Workspace focus (Architecture ⇄ Assessment) + read-only View mode ──────────
+// Focus filters the left nav to an intent's views (+ 'both' shared ones); View mode
+// hides edit affordances even for users who can edit. Both persist per-user.
+let _focus = (() => { try { return localStorage.getItem('davFocus') || ''; } catch { return ''; } })();
+let _viewMode = (() => { try { return localStorage.getItem('davViewMode') === '1'; } catch { return false; } })();
+let _navRbac = {};  // {navId: allowed} — RBAC baseline computed by _applyAccessVisibility
+
+// Default focus from privileges: assessment-oriented users (assessment access but not
+// the UC/arch pipeline, and not a platform admin) land in Assessment; everyone else Architecture.
+function _defaultFocus() {
+  if (can('assessment.view') && !can('project.usecases') && !can('project.runs.execute')
+      && !(me && me.is_platform_admin)) return 'assessment';
+  return 'architecture';
+}
+// canEdit = can(priv) AND not browsing in read-only View mode.
+function canEdit(priv) { return can(priv) && !_viewMode; }
+
+// Show a nav item iff its RBAC baseline allows AND it belongs to the current focus.
+function _applyFocus() {
+  if (!_focus) _focus = _defaultFocus();
+  document.querySelectorAll('.pf-nav-item[data-focus]').forEach(el => {
+    const f = el.getAttribute('data-focus');
+    const inFocus = (f === 'both' || f === _focus);
+    const rbacOk = (el.id && _navRbac[el.id] !== undefined) ? _navRbac[el.id] : true;
+    el.style.display = (rbacOk && inFocus) ? '' : 'none';
+  });
+  document.querySelectorAll('#focusSwitch .focus-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.focus === _focus));
+  // If the active view was filtered out by the focus, land on the focus's home view
+  // (Assessments for assessment focus, Use Cases for architecture).
+  const active = document.querySelector('.pf-nav-item.active');
+  if (active && active.style.display === 'none') {
+    try { switchView(_focus === 'assessment' ? 'assess' : 'usecases'); } catch (e) { console.warn('focus home switch failed', e); }
+  }
+}
+function setFocus(f) {
+  if (f !== 'architecture' && f !== 'assessment' || f === _focus) return;
+  _focus = f;
+  try { localStorage.setItem('davFocus', f); } catch {}
+  _applyFocus();
+}
+function _applyViewMode() {
+  document.body.dataset.viewMode = _viewMode ? '1' : '';
+  const chip = document.getElementById('viewModeToggle');
+  const lbl = document.getElementById('viewModeLabel');
+  if (chip) chip.classList.toggle('on', _viewMode);
+  if (lbl) lbl.textContent = _viewMode ? 'View only' : 'Editing';
+}
+function toggleViewMode() {
+  _viewMode = !_viewMode;
+  try { localStorage.setItem('davViewMode', _viewMode ? '1' : '0'); } catch {}
+  _applyViewMode();
+  try { _applyAccessVisibility(); } catch (e) { console.warn('view-mode reapply failed', e); }
+}
+
 function _applyAccessVisibility() {
   const projAdmin = !!(me && me.is_admin);            // project admin or above
   const platAdmin = !!(me && me.is_platform_admin);   // platform admin only
@@ -3349,14 +3417,19 @@ function _applyAccessVisibility() {
   // The Config "Platform" section-tab shows iff one of its panels is visible (projAdmin
   // → Projects; platAdmin → Email/LDAP/Users) — derived by _syncConfigTabs() below from
   // the per-panel gating already applied above. No separate nav-link gating needed.
-  // The separate Projects / Users & roles left-nav views are retired — consolidated into Config → Platform.
-  const navP = document.getElementById('navProjects'); if (navP) navP.style.display = 'none';
-  const navU = document.getElementById('navUsers');    if (navU) navU.style.display = 'none';
-  const navA = document.getElementById('navAudit');    if (navA) navA.style.display = platAdmin ? '' : 'none';
+  // Nav RBAC baseline (which items the user may see at all). The focus switcher then
+  // filters these to the active workspace focus — see _applyFocus(). Projects/Users
+  // left-nav views are retired (consolidated into Config → Platform).
+  _navRbac = {
+    navProjects: false,
+    navUsers: false,
+    navAudit: platAdmin,
+    navAssess: can('assessment.view'),
+  };
+  try { _applyFocus(); } catch (e) { console.warn('focus apply failed', e); }
   // Presence gauge — platform admins only. Run it HERE (early) and guarded, so a failure
   // in any later block can never strip the admin status bar (it used to be the last line).
   try { _startPresence(platAdmin); } catch (e) { console.warn('presence init failed', e); }
-  const navAs = document.getElementById('navAssess');  if (navAs) navAs.style.display = can('assessment.view') ? '' : 'none';
   try { loadAssessmentSelector(); loadBlueprintSelector(); } catch (e) { console.warn('masthead selector init failed', e); }
   // Config panels are project-scoped: gate each on its management privilege.
   const cfgGate = [
@@ -3371,15 +3444,17 @@ function _applyAccessVisibility() {
   try { _syncConfigTabs(); } catch (e) { console.warn('config tab sync failed', e); }
   // Workflow action affordances (server enforces regardless; this is UX). Toggle
   // body data-* flags that CSS can hang off, and hide tagged controls directly.
+  // canEdit() = the privilege AND not browsing in read-only View mode, so toggling
+  // View mode hides every edit/execute affordance hung off these data-can-* flags.
   const flags = {
-    'data-can-usecases':    can('project.usecases'),
-    'data-can-runs-exec':   can('project.runs.execute'),
-    'data-can-runs-manage': can('project.runs.manage'),
-    'data-can-archreview':  can('project.archreview.execute'),
-    'data-can-archctx':     can('project.archreview.context'),
-    'data-can-enh':         can('project.enhancement.execute'),
-    'data-can-enh-pr':      can('project.enhancement.pr'),
-    'data-can-catalog':     can('project.catalog'),
+    'data-can-usecases':    canEdit('project.usecases'),
+    'data-can-runs-exec':   canEdit('project.runs.execute'),
+    'data-can-runs-manage': canEdit('project.runs.manage'),
+    'data-can-archreview':  canEdit('project.archreview.execute'),
+    'data-can-archctx':     canEdit('project.archreview.context'),
+    'data-can-enh':         canEdit('project.enhancement.execute'),
+    'data-can-enh-pr':      canEdit('project.enhancement.pr'),
+    'data-can-catalog':     canEdit('project.catalog'),
   };
   for (const [attr, ok] of Object.entries(flags)) {
     if (ok) document.body.setAttribute(attr, '1'); else document.body.removeAttribute(attr);
@@ -9515,6 +9590,12 @@ document.querySelectorAll('.pf-nav-item').forEach(b =>
     switchView(b.dataset.view);
     if (b.dataset.cfg) setTimeout(() => { const t = document.getElementById(b.dataset.cfg); if (t) t.scrollIntoView({ behavior:'smooth', block:'start' }); }, 60);
   }));
+
+// Workspace focus switcher (Architecture ⇄ Assessment) + read-only View-mode toggle.
+document.querySelectorAll('#focusSwitch .focus-btn').forEach(b =>
+  b.addEventListener('click', () => setFocus(b.dataset.focus)));
+document.getElementById('viewModeToggle')?.addEventListener('click', toggleViewMode);
+try { _applyViewMode(); } catch (e) { console.warn('view-mode init failed', e); }
 
 // Masthead hamburger toggle
 document.getElementById('navToggleBtn').addEventListener('click', toggleNav);

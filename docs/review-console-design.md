@@ -2,7 +2,7 @@
 
 **Status:** Living document  
 **Last updated:** 2026-06-10  
-**Current version:** v0.19.2  
+**Current version:** v0.20.0  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -1498,6 +1498,26 @@ change is A/B-validated (the static comparator is the measurement tool) before r
 trust. See `docs/prompt-management-design.md`.
 
 ---
+
+## v0.20.0 — Workspace focus (Architecture ⇄ Assessment) + View mode (2026-06-10)
+
+- **Focus switcher (#101):** a masthead toggle splits the console by intent. Each left-nav
+  item is tagged `data-focus` (`architecture` / `assessment` / `both`); `_applyFocus()` shows
+  an item iff its RBAC baseline (`_navRbac`) allows **and** it's in the active focus.
+  - **Architecture:** Use Cases · Runs · Results · Inbox · Architecture · Engineering ·
+    Prompts & Improvement. **Assessment:** Assessments. **Both:** Catalog · Cap Map · Config
+    (+ admin Projects/Users/Audit).
+  - Default is **role-derived** (`_defaultFocus()`): assessment-only users (assessment access,
+    no UC/run pipeline, not platform admin) land in Assessment; everyone else Architecture.
+    Persisted per-user (`localStorage davFocus`). Switching lands on the focus's home view if
+    the active one was filtered out. Aligns with the scope `use_category` axis (#107) — a
+    later hook can have the focus also set config/capability resolution context.
+- **View mode:** a read-only browse toggle (`localStorage davViewMode`). `canEdit(priv)` =
+  `can(priv) && !_viewMode`; the `data-can-*` edit/execute affordance flags use it, so an
+  editor can browse without edit actions (server RBAC still authoritative). Inline-`can()`
+  affordances are migrated to `canEdit()` iteratively.
+- **e2e:** focus switcher + view-mode toggle presence, and per-role nav filtering
+  (platform-admin → Architecture; assessment users → Assessment; Catalog shared). **37/37 PASS.**
 
 ## v0.19.2 — Config consolidation + invite/SMTP RBAC boundary (2026-06-10)
 

@@ -92,11 +92,25 @@ async function runRole(role) {
   await new Promise((r) => setTimeout(r, 700)); // let loadMe()/boot settle
   const { document } = dom.window;
   const disp = (id) => { const el = document.getElementById(id); return el ? (el.style.display) : '(missing)'; };
+  const navView = (v) => { const el = document.querySelector(`.pf-nav-item[data-view="${v}"]`); return el ? el.style.display : '(missing)'; };
 
   const checks = [];
   const ck = (name, cond, detail = '') => checks.push([cond ? 'PASS' : 'FAIL', `[${role}] ${name}`, detail]);
 
   ck('no uncaught errors at boot', errors.length === 0, errors.slice(0, 4).join('  |  '));
+  // Workspace focus (#101): switcher present; nav filters to the active focus. Default is
+  // role-derived — platform-admin → Architecture; assessment-only users → Assessment.
+  ck('focus switcher present', !!document.getElementById('focusSwitch'));
+  ck('view-mode toggle present', !!document.getElementById('viewModeToggle'));
+  if (role === 'platform-admin') {
+    ck('Architecture focus: Use Cases nav shown', navView('usecases') !== 'none', 'display=' + navView('usecases'));
+    ck('Architecture focus: Assessments nav hidden', disp('navAssess') === 'none', 'display=' + disp('navAssess'));
+  } else {
+    // project-admin + project-viewer have assessment.view but no UC/run pipeline → Assessment focus.
+    ck('Assessment focus: Assessments nav shown', disp('navAssess') !== 'none', 'display=' + disp('navAssess'));
+    ck('Assessment focus: Use Cases nav hidden', navView('usecases') === 'none', 'display=' + navView('usecases'));
+    ck('Catalog (shared) nav shown in either focus', navView('catalog') !== 'none', 'display=' + navView('catalog'));
+  }
   // The separate Projects / Users & roles left-nav views are retired for everyone (→ Config → Platform).
   ck('separate Users/Projects nav views retired', disp('navUsers') === 'none' && disp('navProjects') === 'none', `users=${disp('navUsers')} projects=${disp('navProjects')}`);
   // Config is now tabbed: the Platform section-tab gates on the per-panel visibility; the
