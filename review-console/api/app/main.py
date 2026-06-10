@@ -6648,8 +6648,7 @@ async def capabilities_reseed(request: Request):
 async def assessments_ingest(request: Request):
     """Ingest an assessment payload (canonical/automation format) as an Assessment
     + Findings, scoped to the active project. Body may set {"use_fixture": true}
-    to load the synthetic example (no confidential data). Platform-admin."""
-    await require_priv(request, rbac.P_PLATFORM_ADMIN)
+    to load the synthetic example (no confidential data). Requires assessment.edit."""
     body = await request.json() if await request.body() else {}
     if body.get("use_fixture"):
         payload = _assessment_ingest.synthetic_fixture()
@@ -6658,23 +6657,25 @@ async def assessments_ingest(request: Request):
     actor = get_user(request)
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_ASSESSMENT_EDIT, pid)
         return await _assessment_ingest.ingest(conn, payload, actor=actor, project_id=pid)
 
 
 @app.get("/api/assessments")
 async def assessments_list(request: Request):
-    """List assessments in the active project. Platform-admin."""
-    await require_priv(request, rbac.P_PLATFORM_ADMIN)
+    """List assessments in the active project. Requires assessment.view."""
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_ASSESSMENT_VIEW, pid)
         return {"assessments": await _assessment_ingest.list_assessments(conn, project_id=pid)}
 
 
 @app.get("/api/assessments/{assessment_id}")
 async def assessments_get(assessment_id: str, request: Request):
-    """One assessment with findings + gap summary. Platform-admin."""
-    await require_priv(request, rbac.P_PLATFORM_ADMIN)
+    """One assessment with findings + gap summary. Requires assessment.view."""
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_ASSESSMENT_VIEW, pid)
         out = await _assessment_ingest.get_assessment(conn, assessment_id)
     if out is None:
         raise HTTPException(404, "assessment not found")

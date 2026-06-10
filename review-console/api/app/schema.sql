@@ -690,7 +690,12 @@ INSERT INTO rbac_privileges (key, name, description, scope) VALUES
   ('project.repos',              'Manage repos',           'Manage a project''s managed repositories', 'project'),
   -- F8: per-project prompt management (append context + section overrides, all stages).
   -- Supersedes project.archreview.context (kept as an alias for back-compat in rbac.py).
-  ('prompt.manage',              'Manage prompts',         'Edit per-project prompt customizations (additional context + section overrides) for all DAV stages', 'project')
+  ('prompt.manage',              'Manage prompts',         'Edit per-project prompt customizations (additional context + section overrides) for all DAV stages', 'project'),
+  -- F7 assessments + blueprints (task #95; blueprint privileges inert until built).
+  ('assessment.view',            'View assessments',       'View assessments and their capability findings', 'project'),
+  ('assessment.edit',            'Edit assessments',       'Ingest and edit assessments', 'project'),
+  ('blueprint.view',             'View blueprints',        'View blueprint/template projects and their setup', 'project'),
+  ('blueprint.edit',             'Edit blueprints',        'Create, clone and manage blueprint/template projects', 'project')
 ON CONFLICT (key) DO NOTHING;
 -- Reclassify project.create from its original 'platform' scope to 'cross-project'
 -- (project-related but not tied to a specific project). Idempotent.
@@ -714,12 +719,14 @@ INSERT INTO rbac_role_privileges (role_id, privilege_key)
             'project.usecases','project.runs.manage','project.runs.execute',
             'project.archreview.execute','project.archreview.context','prompt.manage',
             'project.enhancement.execute','project.enhancement.pr','project.catalog',
-            'project.models','project.integrations','project.repos'))
+            'project.models','project.integrations','project.repos',
+            'assessment.view','assessment.edit','blueprint.view','blueprint.edit'))
      OR (r.key='project-edit'   AND p.key IN (
             'project.data.read','project.usecases','project.runs.manage','project.runs.execute',
             'project.archreview.execute','project.archreview.context','prompt.manage',
-            'project.enhancement.execute','project.catalog'))
-     OR (r.key='project-viewer' AND p.key = 'project.data.read')
+            'project.enhancement.execute','project.catalog',
+            'assessment.view','assessment.edit','blueprint.view'))
+     OR (r.key='project-viewer' AND p.key IN ('project.data.read','assessment.view','blueprint.view'))
 ON CONFLICT DO NOTHING;
 
 -- Retire the legacy umbrella `project.data.write` from the BUILT-IN roles (custom
@@ -740,7 +747,8 @@ INSERT INTO rbac_role_privileges (role_id, privilege_key)
     ('project.usecases'),('project.runs.manage'),('project.runs.execute'),
     ('project.archreview.execute'),('project.archreview.context'),('prompt.manage'),
     ('project.enhancement.execute'),('project.enhancement.pr'),('project.catalog'),
-    ('project.models'),('project.integrations'),('project.repos')
+    ('project.models'),('project.integrations'),('project.repos'),
+    ('assessment.view'),('assessment.edit'),('blueprint.view'),('blueprint.edit')
   ) AS np(key)
   WHERE rp.privilege_key = 'project.settings'
 ON CONFLICT DO NOTHING;

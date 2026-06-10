@@ -35,6 +35,10 @@ P_PROJECT_MODELS = "project.models"
 P_PROJECT_INTEGRATIONS = "project.integrations"
 P_PROJECT_REPOS = "project.repos"
 P_PROMPT_MANAGE = "prompt.manage"  # F8: per-project prompt customization (all stages)
+P_ASSESSMENT_VIEW = "assessment.view"   # F7: view assessments + findings
+P_ASSESSMENT_EDIT = "assessment.edit"   # F7: ingest / edit assessments
+P_BLUEPRINT_VIEW = "blueprint.view"     # blueprints (task #95) — inert until built
+P_BLUEPRINT_EDIT = "blueprint.edit"     # blueprints (task #95) — inert until built
 
 ROLE_PLATFORM_ADMIN = "platform-admin"
 ROLE_PROJECT_ADMIN = "project-admin"

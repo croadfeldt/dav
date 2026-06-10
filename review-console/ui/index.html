@@ -835,6 +835,19 @@
       <option value="">— select run —</option>
     </select>
   </div>
+  <!-- Quick selectors: jump to an assessment / blueprint (mirrors project + run). -->
+  <div class="run-context-chip" id="assessmentChip" title="Assessment — jump to one" style="cursor:default;display:none;">
+    <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Assessment</span>
+    <select id="globalAssessmentSel" title="Assessment in the active project" style="font-size:11px;max-width:220px;background:transparent;border:none;color:inherit;cursor:pointer;">
+      <option value="">— select —</option>
+    </select>
+  </div>
+  <div class="run-context-chip" id="blueprintChip" title="Blueprint — reuse a setup (task #95)" style="cursor:default;display:none;">
+    <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Blueprint</span>
+    <select id="globalBlueprintSel" title="Blueprint / template project" style="font-size:11px;max-width:200px;background:transparent;border:none;color:inherit;cursor:pointer;">
+      <option value="">— select —</option>
+    </select>
+  </div>
   <div class="pf-masthead-right">
     <span id="triggerStatus" style="color:var(--text-faint);font-size:10px;"></span>
     <span style="position:relative;display:none;" id="presenceWrap">
@@ -3282,7 +3295,8 @@ function _applyAccessVisibility() {
   const navP = document.getElementById('navProjects'); if (navP) navP.style.display = canProjects ? '' : 'none';
   const navU = document.getElementById('navUsers');    if (navU) navU.style.display = platAdmin ? '' : 'none';
   const navA = document.getElementById('navAudit');    if (navA) navA.style.display = platAdmin ? '' : 'none';
-  const navAs = document.getElementById('navAssess');  if (navAs) navAs.style.display = platAdmin ? '' : 'none';
+  const navAs = document.getElementById('navAssess');  if (navAs) navAs.style.display = hasPriv('assessment.view') ? '' : 'none';
+  loadAssessmentSelector(); loadBlueprintSelector();   // masthead quick selectors
   // Config panels are now project-scoped: gate each on its management privilege,
   // and hide its config-nav link too so scroll-spy doesn't target a hidden panel.
   const cfgGate = [
@@ -10719,6 +10733,33 @@ function _capPill(f, target) {
     + `<span style="font-weight:600;">${esc(f.capability_handle)}${gapMark}</span>`
     + `<span style="margin-left:auto;font-size:9px;opacity:0.92;text-transform:uppercase;letter-spacing:0.04em;">${badge}</span></div>`;
 }
+// Masthead quick selector — jump to an assessment in the active project (mirrors the
+// project + run selectors). Hidden unless the user can view assessments and some exist.
+async function loadAssessmentSelector() {
+  const chip = document.getElementById('assessmentChip');
+  const sel = document.getElementById('globalAssessmentSel');
+  if (!chip || !sel) return;
+  if (!hasPriv('assessment.view')) { chip.style.display = 'none'; return; }
+  try {
+    const data = await api('/api/assessments');
+    const items = data.assessments || [];
+    sel.innerHTML = '<option value="">— select —</option>' +
+      items.map(a => `<option value="${esc(a.id)}">${esc(a.handle)}${a.gaps ? ` (${a.gaps} gaps)` : ''}</option>`).join('');
+    chip.style.display = items.length ? '' : 'none';
+  } catch (e) { chip.style.display = 'none'; }
+}
+// Blueprint quick selector — populated once blueprints (task #95) exist; hidden until then.
+async function loadBlueprintSelector() {
+  const chip = document.getElementById('blueprintChip');
+  if (chip) chip.style.display = 'none';   // no blueprint projects yet
+}
+document.getElementById('globalAssessmentSel')?.addEventListener('change', function () {
+  const id = this.value;
+  if (!id) return;
+  switchView('assess');
+  renderAssessment(id);
+});
+
 async function loadAssessments() {
   const list = document.getElementById('asList');
   list.innerHTML = '<div class="empty">loading…</div>';
@@ -10748,6 +10789,7 @@ async function ingestAssessmentFixture() {
     status.textContent = `✓ ingested ${r.findings} findings (${r.mapped} mapped, ${r.gaps} gaps)`;
     toast('✓ Synthetic assessment ingested');
     await loadAssessments();
+    loadAssessmentSelector();
     if (r.assessment_id) renderAssessment(r.assessment_id);
   } catch (e) { status.textContent = ''; toast('✗ ' + e.message); }
   finally { btn.disabled = false; }

@@ -67,6 +67,16 @@ async def main():
                WHERE rp.privilege_key='prompt.manage' ORDER BY ro.key""")]
         ck("F8: prompt.manage on admin+edit roles",
            "project-admin" in pmroles and "project-edit" in pmroles, f"roles={pmroles}")
+        # New privileges: assessment.view/edit + blueprint.view/edit seeded (Chris 2026-06-10)
+        newp = set(r["key"] for r in await c.fetch(
+            "SELECT key FROM rbac_privileges WHERE key IN ('assessment.view','assessment.edit','blueprint.view','blueprint.edit')"))
+        ck("RBAC: assessment/blueprint privileges seeded",
+           newp == {"assessment.view", "assessment.edit", "blueprint.view", "blueprint.edit"}, f"have={newp}")
+        viewer = set(r["privilege_key"] for r in await c.fetch(
+            """SELECT rp.privilege_key FROM rbac_role_privileges rp JOIN rbac_roles r ON r.id=rp.role_id
+               WHERE r.key='project-viewer'"""))
+        ck("RBAC: viewer gets assessment.view + blueprint.view (not edit)",
+           {"assessment.view", "blueprint.view"} <= viewer and "assessment.edit" not in viewer, f"viewer={sorted(viewer)}")
 
         # ── Capability taxonomy (read) ──────────────────────────────────────
         st = await CC.stats(c)
