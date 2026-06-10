@@ -154,12 +154,20 @@ boundary).
   `bundle_attachment`), reusing the audit log (#103 substrate).
 
 ## Migration & rollout (phased — each its own change + deploy + verify)
-1. **Schema:** idempotent `ALTER … ADD COLUMN use_category TEXT`, relax `project_id` to
-   NULL-able on the **eight** entities (incl. `output_templates`); seed the use-category
-   vocabulary + the `usecat.manage` privilege (bound to Platform Admin). No data moves yet.
-2. **Resolver:** central `resolve_scoped(entity, project_id, use_category)` (union/cascade)
-   + `_active_use_category(request, run?)`; rewire config consumption + list endpoints
-   through it. Backward-compatible when `use_category` is absent (project-only).
+**Delivery status (2026-06-10):** Phase 1 ✅ + Phase 2 ✅ shipped + verified live (DCM).
+Phase 1b (model_defaults PK + capability/stage-context axes) and Phase 2b (models/repos
+lists + run-time model/MCP consumption resolution) remain; Phases 3–6 pending.
+
+1. **Schema:** ✅ **DONE** (in `schema.sql` tenancy block, not a pre-schema migration —
+   it must run after the tables exist). `use_category` + NULL-able `project_id` on the
+   config registries (mcp/models/repos); retired the NULL→DCM backfill; scope-aware NULL-safe
+   name uniqueness; `use_categories` vocab + `output_templates`; `usecat.manage` → Platform
+   Admin. _Deferred (1b): model_defaults (PK on project_id), capability_catalog/
+   capability_taxonomy_terms/project_stage_context (keying)._
+2. **Resolver:** ✅ **DONE (read path).** `_active_use_category(request)` (X-DAV-UseCategory
+   hint; run-derived later) + `_scope_where(pid,cat)` UNION predicate; MCP list + health
+   rewired. Backward-compatible. _Deferred (2b): models/repos lists + run-time consumption
+   (model resolution by id/name, MCP tool calls)._
 3. **Promote platform infra:** move `dav-docs-mcp` + GitHub-style source MCPs to platform
    (`project_id = NULL`). Add the egress allow for any platform MCP LB IP (ties to #59).
 4. **Bundles (versioned):** `bundles` + `bundle_versions` (immutable, publish-to-snapshot) +
