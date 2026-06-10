@@ -44,6 +44,13 @@
 # Vendor the engine's pure semantic-analysis comparator into the API image at build
 # time (single source of truth in engine/; never a hand-maintained fork). The API
 # reuses it server-side for static + dynamic prompt A/B. See app/analysis_compare.py.
+- name: Ensure the API _vendor dir exists in the build context
+  ansible.builtin.file:
+    path: /tmp/dav-review-build/api/app/_vendor
+    state: directory
+    mode: "0755"
+  when: review_console_build_images | bool
+
 - name: Vendor the engine analysis comparator into the API build context
   ansible.builtin.copy:
     src: "{{ playbook_dir }}/../engine/src/dav/evaluator/compare.py"
