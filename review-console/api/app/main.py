@@ -10020,8 +10020,9 @@ async def enhancements(payload: EnhancementIn, request: Request):
         user_prompt, system_prompt = await _enhancement_prompts(
             payload.scope, payload.run_id, payload.uc_uuid, conn
         )
-        # Inject the architect's project/stage context (shared Track-1 stage).
-        _ctx = await _stage_context(conn, "arch_review", enpid)
+        # Inject the architect's project/stage context (F8: enhancement is now its own
+        # stage, independent of review; existing arch_review content was migrated over).
+        _ctx = await _stage_context(conn, "enhancement", enpid)
         user_prompt = _inject_context(user_prompt, _ctx, "enhancement planning")
 
     model = model_row

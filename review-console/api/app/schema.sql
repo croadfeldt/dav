@@ -425,6 +425,14 @@ CREATE TABLE IF NOT EXISTS project_stage_context (
 -- append-context (trailing project section); section_overrides replace named base
 -- sections from the stage registry (prompts_registry.py). Empty = base prompt unchanged.
 ALTER TABLE project_stage_context ADD COLUMN IF NOT EXISTS section_overrides JSONB NOT NULL DEFAULT '{}'::jsonb;
+-- F8: Review and Enhancement are now independent stages (were a shared 'arch_review'
+-- context). One-time, idempotent copy of existing shared context into 'enhancement' so
+-- current enhancement behavior carries over as an independent starting point. ON CONFLICT
+-- preserves any enhancement-specific edits made later.
+INSERT INTO project_stage_context (project_id, stage, content, section_overrides, updated_by, updated_at)
+  SELECT project_id, 'enhancement', content, section_overrides, updated_by, updated_at
+  FROM project_stage_context WHERE stage='arch_review'
+ON CONFLICT (project_id, stage) DO NOTHING;
 
 -- ── Capability catalog (Phase 1 keystone — manual-curated, LLM-suggested) ────
 -- Project-scoped canonical capabilities. The architect curates; suggestions are

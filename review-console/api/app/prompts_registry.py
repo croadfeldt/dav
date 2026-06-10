@@ -55,12 +55,22 @@ STAGES = [
     },
     {
         "key": "arch_review",
-        "label": "Architecture review & enhancement",
+        "label": "Architecture review",
         "surface": "console",
         "status": "append-live",
-        "description": "Narrative architecture review and enhancement planning (post-eval). "
-                       "Additional context is injected at runtime today.",
-        "append": {"live": True, "label": "Additional context & instructions for review/enhancement"},
+        "description": "Narrative architecture review (post-eval). Additional context is "
+                       "injected at runtime today.",
+        "append": {"live": True, "label": "Additional context & instructions for architecture review"},
+        "sections": [],
+    },
+    {
+        "key": "enhancement",
+        "label": "Enhancement planning",
+        "surface": "console",
+        "status": "append-live",
+        "description": "Enhancement planning (post-eval) — now independent of architecture "
+                       "review. Additional context is injected at runtime today.",
+        "append": {"live": True, "label": "Additional context & instructions for enhancement planning"},
         "sections": [],
     },
 ]
