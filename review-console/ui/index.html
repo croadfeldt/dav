@@ -2163,6 +2163,7 @@
             <label>From address<input id="sm-from_addr" placeholder="dav@example.com" style="width:100%;"></label>
             <label>Base URL (for invite links)<input id="sm-base_url" placeholder="https://dav-review.apps…" style="width:100%;"></label>
             <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="sm-tls" style="width:auto;"> Use STARTTLS</label>
+            <label style="display:flex;align-items:center;gap:6px;" title="Verify the relay's TLS certificate. Uncheck only for internal relays with a self-signed / untrusted cert."><input type="checkbox" id="sm-verify_cert" style="width:auto;"> Validate certificate</label>
           </div>
           <div style="display:flex;gap:8px;margin-top:8px;align-items:center;"><button class="btn primary btn-sm" id="sm-save">Save SMTP settings</button><button class="btn ghost btn-sm" id="sm-test">Send test email…</button><span id="sm-msg" style="font-size:11px;color:var(--text-faint);"></span></div>
         </div>
@@ -3464,13 +3465,15 @@ async function loadSmtpSettings() {
     const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ''; };
     set('sm-host', s.host); set('sm-port', s.port); set('sm-user', s.user); set('sm-from_addr', s.from_addr); set('sm-base_url', s.base_url);
     document.getElementById('sm-tls').checked = s.tls !== false;
+    document.getElementById('sm-verify_cert').checked = s.verify_cert !== false;
     document.getElementById('sm-password').placeholder = s.password_set ? '•••• (set — leave blank to keep)' : '(optional)';
   } catch(e) {}
 }
 document.getElementById('sm-save')?.addEventListener('click', async () => {
   const v = id => (document.getElementById(id)?.value || '').trim();
   const body = { host:v('sm-host'), port:parseInt(v('sm-port')||'587',10), user:v('sm-user'),
-    from_addr:v('sm-from_addr'), base_url:v('sm-base_url'), tls:document.getElementById('sm-tls').checked };
+    from_addr:v('sm-from_addr'), base_url:v('sm-base_url'), tls:document.getElementById('sm-tls').checked,
+    verify_cert:document.getElementById('sm-verify_cert').checked };
   const pw = v('sm-password'); if (pw) body.password = pw;
   const msg = document.getElementById('sm-msg'); msg.textContent='saving…'; msg.style.color='var(--text-faint)';
   try { await api('/api/settings/smtp', { method:'PUT', body: JSON.stringify(body) }); msg.textContent='saved'; msg.style.color='var(--green)'; document.getElementById('sm-password').value=''; }
@@ -3483,7 +3486,8 @@ document.getElementById('sm-test')?.addEventListener('click', async () => {
   const msg = document.getElementById('sm-msg'); const btn = document.getElementById('sm-test');
   btn.disabled = true; msg.textContent = 'sending…'; msg.style.color = 'var(--text-faint)';
   const body = { host:v('sm-host'), port:parseInt(v('sm-port')||'587',10), user:v('sm-user'),
-    from_addr:v('sm-from_addr'), base_url:v('sm-base_url'), tls:document.getElementById('sm-tls').checked, test_to: to };
+    from_addr:v('sm-from_addr'), base_url:v('sm-base_url'), tls:document.getElementById('sm-tls').checked,
+    verify_cert:document.getElementById('sm-verify_cert').checked, test_to: to };
   const pw = v('sm-password'); if (pw) body.password = pw;
   try {
     const r = await api('/api/settings/smtp/test', { method:'POST', body: JSON.stringify(body) });

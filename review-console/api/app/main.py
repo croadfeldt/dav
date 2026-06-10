@@ -1114,7 +1114,7 @@ async def _load_smtp_cfg() -> None:
     global _smtp_cfg
     cfg = {"host": DAV_SMTP_HOST, "port": DAV_SMTP_PORT, "user": DAV_SMTP_USER,
            "password": DAV_SMTP_PASSWORD, "from": DAV_SMTP_FROM, "tls": DAV_SMTP_TLS,
-           "base_url": DAV_BASE_URL}
+           "verify_cert": DAV_SMTP_VERIFY, "base_url": DAV_BASE_URL}
     data = await _load_setting("smtp")
     if data:
         for k in ("host", "user", "from", "base_url"):
@@ -1124,6 +1124,8 @@ async def _load_smtp_cfg() -> None:
             cfg["port"] = int(data["port"])
         if data.get("tls") is not None:
             cfg["tls"] = bool(data["tls"])
+        if data.get("verify_cert") is not None:
+            cfg["verify_cert"] = bool(data["verify_cert"])
         if data.get("password_enc"):
             try:
                 cfg["password"] = crypto.decrypt(data["password_enc"]) or cfg["password"]
@@ -2244,6 +2246,7 @@ class SmtpSettingsIn(BaseModel):
     password: Optional[str] = None
     from_addr: str = ""
     tls: bool = True
+    verify_cert: bool = True   # verify the STARTTLS server cert (off for internal/self-signed relays)
     base_url: str = ""
 
 
@@ -2256,6 +2259,7 @@ async def get_smtp_settings(request: Request):
         "host": d.get("host", e.get("host", "")), "port": int(d.get("port", e.get("port", 587))),
         "user": d.get("user", e.get("user", "")), "from_addr": d.get("from", e.get("from", "")),
         "tls": bool(d.get("tls", e.get("tls", True))),
+        "verify_cert": bool(d.get("verify_cert", e.get("verify_cert", True))),
         "base_url": d.get("base_url", e.get("base_url", "")),
         "password_set": bool(d.get("password_enc") or e.get("password")),
         "from_env": not d,
@@ -2267,7 +2271,8 @@ async def put_smtp_settings(payload: SmtpSettingsIn, request: Request):
     user = await require_role(request, "platform-admin")
     cur = await _load_setting("smtp")
     val = {"host": payload.host.strip(), "port": int(payload.port), "user": payload.user.strip(),
-           "from": payload.from_addr.strip(), "tls": bool(payload.tls), "base_url": payload.base_url.strip()}
+           "from": payload.from_addr.strip(), "tls": bool(payload.tls),
+           "verify_cert": bool(payload.verify_cert), "base_url": payload.base_url.strip()}
     if payload.password:
         if not crypto.is_available():
             raise HTTPException(503, "encryption key not configured (DAV_FERNET_KEY)")
@@ -2325,7 +2330,7 @@ async def test_smtp_settings(payload: SmtpTestIn, request: Request):
     """Send a test email using the supplied SMTP settings (form values)."""
     await require_role(request, "platform-admin")
     cfg = {"host": payload.host.strip(), "port": int(payload.port), "user": payload.user.strip(),
-           "from": payload.from_addr.strip(), "tls": bool(payload.tls)}
+           "from": payload.from_addr.strip(), "tls": bool(payload.tls), "verify_cert": bool(payload.verify_cert)}
     if payload.password:
         cfg["password"] = payload.password
     else:
@@ -2342,12 +2347,15 @@ async def test_smtp_settings(payload: SmtpTestIn, request: Request):
         raise HTTPException(400, "a test recipient (or a valid From address) is required")
 
     def _send():
-        import smtplib
+        import smtplib, ssl
         msg = _smtp_message(cfg.get("from", "dav@localhost"), to, "DAV SMTP test",
                             "This is a test message from DAV. If you received it, SMTP is configured correctly.")
         with smtplib.SMTP(cfg["host"], int(cfg.get("port", 587)), timeout=30) as s:
             if cfg.get("tls"):
-                s.starttls()
+                if cfg.get("verify_cert", True):
+                    s.starttls()
+                else:
+                    s.starttls(context=ssl._create_unverified_context())
             if cfg.get("user"):
                 s.login(cfg["user"], cfg.get("password", ""))
             s.send_message(msg)
@@ -2392,6 +2400,7 @@ DAV_SMTP_USER = os.environ.get("DAV_SMTP_USER", "")
 DAV_SMTP_PASSWORD = os.environ.get("DAV_SMTP_PASSWORD", "")
 DAV_SMTP_FROM = os.environ.get("DAV_SMTP_FROM", "dav@localhost")
 DAV_SMTP_TLS = os.environ.get("DAV_SMTP_TLS", "true").lower() == "true"
+DAV_SMTP_VERIFY = os.environ.get("DAV_SMTP_VERIFY", "true").lower() == "true"
 DAV_BASE_URL = os.environ.get("DAV_BASE_URL", "").rstrip("/")
 
 
@@ -2409,7 +2418,11 @@ def _send_email(to: str, subject: str, body: str) -> bool:
     # the mail never sends (logs only a connect/disconnect on the server).
     with smtplib.SMTP(cfg["host"], int(cfg.get("port", 587)), timeout=30) as s:
         if cfg.get("tls"):
-            s.starttls()
+            if cfg.get("verify_cert", True):
+                s.starttls()
+            else:
+                import ssl
+                s.starttls(context=ssl._create_unverified_context())
         if cfg.get("user"):
             s.login(cfg["user"], cfg.get("password", ""))
         s.send_message(msg)
