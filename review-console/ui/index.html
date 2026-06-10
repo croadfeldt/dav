@@ -12764,6 +12764,28 @@ async function loadImproveQueue() {
 }
 
 function _confColor(c) { return c === 'high' ? 'var(--green)' : (c === 'medium' ? 'var(--accent)' : 'var(--text-faint)'); }
+// Compact relative time (e.g. "3d ago", "just now") from an ISO string.
+function _ago(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime(); if (!t) return '';
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return 'just now';
+  const m = s / 60; if (m < 60) return `${Math.floor(m)}m ago`;
+  const h = m / 60; if (h < 24) return `${Math.floor(h)}h ago`;
+  const d = h / 24; if (d < 30) return `${Math.floor(d)}d ago`;
+  const mo = d / 30; if (mo < 12) return `${Math.floor(mo)}mo ago`;
+  return `${Math.floor(d / 365)}y ago`;
+}
+// Proposal lifecycle action → display label + dot colour (Activity timeline).
+function _propActionLabel(a) {
+  return ({ proposed: 'Proposed', 'proposal.accepted': 'Accepted', 'proposal.rejected': 'Rejected',
+            'proposal.applied': 'Applied' })[a] || a;
+}
+function _propActionColor(a) {
+  return a === 'proposal.accepted' ? 'var(--green)'
+    : a === 'proposal.rejected' ? 'var(--red)'
+    : a === 'proposal.applied' ? 'var(--blue,#4a90c9)' : 'var(--text-faint)';
+}
 function _statusBadge(s) {
   const col = s === 'accepted' ? 'var(--green)' : (s === 'rejected' ? 'var(--red)' : (s === 'applied' ? 'var(--blue,#4a90c9)' : 'var(--text-faint)'));
   const bg = s === 'accepted' ? 'rgba(123,168,79,0.12)' : (s === 'rejected' ? 'rgba(217,101,58,0.12)' : 'transparent');
@@ -12793,6 +12815,9 @@ function renderImproveList() {
         </div>
         <div style="font-size:10px;color:var(--text-faint);margin-top:3px;">
           ${esc(p.signature_class || '')} · ${esc(p.source)} · ${esc((p.session_name || p.run_name || p.run_id || '').slice(0, 28))}
+        </div>
+        <div style="font-size:9px;color:var(--text-faint);margin-top:2px;" title="${esc(p.created_at ? new Date(p.created_at).toLocaleString() : '')}">
+          proposed ${esc(_ago(p.created_at))}${p.reviewed_at && p.status !== 'proposed' ? ` · ${esc(p.status)} ${esc(_ago(p.reviewed_at))}` : ''}
         </div>
       </div>`;
   }).join('');
@@ -12827,8 +12852,10 @@ async function selectProposal(id) {
       ${_detailBlock('Predicted effect', p.predicted_effect)}
       <div style="font-size:10px;color:var(--text-faint);">
         From run <span style="color:var(--text-dim);">${esc(p.session_name || p.run_name || p.run_id || '')}</span>
-        ${p.reviewed_by ? ` · reviewed by ${esc(p.reviewed_by)}` : ''}
-        ${p.review_note ? `<div style="margin-top:4px;font-style:italic;">“${esc(p.review_note)}”</div>` : ''}
+      </div>
+      <div>
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;">Activity</div>
+        <div id="improveActivity"><div style="font-size:10px;color:var(--text-faint);">loading…</div></div>
       </div>
     </div>
     ${reviewable ? `
@@ -12852,6 +12879,33 @@ async function selectProposal(id) {
         <div style="font-size:9px;color:var(--text-faint);margin-top:4px;">Runs baseline (current config) + candidate (this max_tokens) on the eval set; the gate auto-reverts a regression OR a new failure mode. Candidate is a per-run override — production + spamllm untouched.</div>
       </div>` : ''}`;
   if (p.change_spec && p.change_spec.type === 'max_tokens') _populateAbSets();
+  _loadProposalActivity(p.id);
+}
+
+// Load + render the proposal's lifecycle timeline (proposed → accept/reject → applied).
+async function _loadProposalActivity(pid) {
+  const box = document.getElementById('improveActivity');
+  if (!box) return;
+  try {
+    const data = await api(`/api/improvement-proposals/${pid}/activity`);
+    const items = data.activity || [];
+    box.innerHTML = items.map(ev => {
+      const when = ev.at ? new Date(ev.at).toLocaleString() : '';
+      const d = ev.detail || {};
+      const note = d.note ? ` — “${esc(d.note)}”` : '';
+      const via = d.via ? ` (via ${esc(d.via)}${d.experiment_id ? ` #${esc(String(d.experiment_id))}` : ''})` : '';
+      return `<div style="display:flex;gap:8px;align-items:baseline;font-size:11px;padding:3px 0;">
+        <span style="width:8px;height:8px;border-radius:50%;background:${_propActionColor(ev.action)};flex-shrink:0;position:relative;top:2px;"></span>
+        <div style="min-width:0;line-height:1.4;">
+          <span style="color:var(--text);font-weight:600;">${esc(_propActionLabel(ev.action))}</span>${ev.actor ? `<span style="color:var(--text-faint);"> by ${esc(ev.actor)}</span>` : ''}<span style="color:var(--text-faint);">${via}</span>
+          <span style="color:var(--text-faint);" title="${esc(ev.at || '')}"> · ${esc(_ago(ev.at))}</span>
+          <span style="color:var(--text-faint);font-size:9px;"> (${esc(when)})</span>${note ? `<span style="font-style:italic;color:var(--text-dim);">${note}</span>` : ''}
+        </div>
+      </div>`;
+    }).join('') || '<div style="font-size:10px;color:var(--text-faint);">No activity recorded.</div>';
+  } catch (e) {
+    box.innerHTML = '<div style="font-size:10px;color:var(--text-faint);">activity unavailable</div>';
+  }
 }
 
 async function _populateAbSets() {

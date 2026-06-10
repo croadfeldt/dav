@@ -7084,7 +7084,7 @@ async def list_improvement_proposals(
             f"""SELECT ip.id, ip.run_id, ip.run_name, ip.signature_class, ip.kind,
                        ip.target, ip.rationale, ip.proposed_change,
                        ip.predicted_effect, ip.confidence, ip.source, ip.status,
-                       ip.created_at, ip.reviewed_by, ip.reviewed_at,
+                       ip.created_at, ip.created_by, ip.reviewed_by, ip.reviewed_at,
                        ip.review_note, ip.change_spec,
                        rs.name AS session_name
                   FROM improvement_proposals ip
@@ -7103,6 +7103,17 @@ async def list_improvement_proposals(
     return {"proposals": out, "count": len(out)}
 
 
+async def _audit_proposal_action(action: str, pid: int, actor: str, *,
+                                 detail: Optional[dict] = None) -> None:
+    """Record a proposal lifecycle action (accept/reject/apply) to the audit log
+    as object_type='improvement_proposal'. This is what powers the proposal's
+    Activity timeline — every action, by whom, and when. Fire-and-forget."""
+    await audit.record(
+        pool, action=action, actor=actor, actor_source="session",
+        object_type="improvement_proposal", object_id=str(pid),
+        detail=detail or {}, summary=f"{action.split('.')[-1]} proposal {pid}")
+
+
 @app.post("/api/improvement-proposals/{pid}/review")
 async def review_improvement_proposal(pid: int, payload: ProposalReviewIn, request: Request):
     """Accept or reject a proposal (Phase 1 review only — does NOT apply it)."""
@@ -7119,7 +7130,38 @@ async def review_improvement_proposal(pid: int, payload: ProposalReviewIn, reque
         )
     if not row:
         raise HTTPException(404, "proposal not found")
+    await _audit_proposal_action(f"proposal.{status}", pid, user,
+                                 detail={"note": payload.note} if payload.note else {})
     return {"ok": True, "id": pid, "status": status, "reviewed_by": user}
+
+
+@app.get("/api/improvement-proposals/{pid}/activity")
+async def improvement_proposal_activity(pid: int, request: Request):
+    """The proposal's full lifecycle: when it was proposed (and by which source)
+    plus every action taken since (accept/reject/apply), oldest first. Backed by
+    the audit log so the trail survives status overwrites."""
+    async with pool.acquire() as conn:
+        prow = await conn.fetchrow(
+            "SELECT created_at, created_by, source, status FROM improvement_proposals WHERE id=$1", pid)
+        if not prow:
+            raise HTTPException(404, "proposal not found")
+        events = await conn.fetch(
+            "SELECT ts, actor, action, detail FROM audit_log "
+            "WHERE object_type='improvement_proposal' AND object_id=$1 ORDER BY ts ASC, id ASC",
+            str(pid))
+    timeline = [{
+        "action": "proposed",
+        "actor": prow["created_by"] or (f"diagnosis ({prow['source']})" if prow["source"] else "diagnosis"),
+        "at": prow["created_at"].isoformat() if prow["created_at"] else None,
+        "detail": {},
+    }]
+    for e in events:
+        timeline.append({
+            "action": e["action"], "actor": e["actor"],
+            "at": e["ts"].isoformat() if e["ts"] else None,
+            "detail": _parse_jsonb(e["detail"]),
+        })
+    return {"id": pid, "status": prow["status"], "activity": timeline}
 
 
 # ---------------------------------------------------------------------------
@@ -7261,6 +7303,8 @@ async def _apply_sampling_promotion(conn, exp: dict, user: str) -> dict:
         await conn.execute(
             "UPDATE improvement_proposals SET status='applied', reviewed_by=$1, reviewed_at=now() WHERE id=$2",
             user, exp["proposal_id"])
+        await _audit_proposal_action("proposal.applied", exp["proposal_id"], user,
+                                     detail={"via": "experiment", "experiment_id": exp["id"]})
     log.info("experiment %d: promoted sampling %s→%s to production profile", exp["id"], param, value)
     return spec
 
@@ -7593,6 +7637,8 @@ async def promote_experiment(exp_id: int, request: Request):
             await conn.execute(
                 "UPDATE improvement_proposals SET status='applied', reviewed_by=$1, "
                 "reviewed_at=now() WHERE id=$2", user, exp["proposal_id"])
+            await _audit_proposal_action("proposal.applied", exp["proposal_id"], user,
+                                         detail={"via": "experiment", "experiment_id": exp_id})
     return {"ok": True, "id": exp_id, "apply_method": "human-gated (deploy var)",
             "instructions": instructions}
 
