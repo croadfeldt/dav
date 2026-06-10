@@ -89,10 +89,67 @@ sections, served read-only to the UI so editors see what they're overriding.
   live **Preview** of the assembled prompt; Save (gated on `prompt.manage`).
 
 ## Build order (risk-ascending)
-1. Registry + data model + RBAC privilege + API + UI (merge nav, editor, preview).
+1. Registry + data model + RBAC privilege + API + UI (merge nav, editor, preview). ✅
 2. Wire **console stages** (Review/Enhancement) through the section-aware assembler —
-   safe, immediate value, reuses `_inject_context`.
+   safe, immediate value, reuses `_inject_context`. ✅ (append-live; split 2026-06-09)
 3. Wire **engine stage-2**: section the base template (inert), thread the customization
    param/env, assemble in `build_stage2_system_prompt`. **Byte-identical-by-default**;
    any actual stage-2 override is A/B'd with Chris before use.
+
+## A/B testing — SHIPPED 2026-06-09 (backport the static comparator, no duplication)
+Chris: "don't duplicate functionality, backport the static A/B test into this framework."
+The "static A/B test" = the engine's semantic Analysis comparator
+(`engine/src/dav/evaluator/compare.py`, CLI `scripts/compare_analyses.py`):
+equivalent/changed + per-finding severity. Backported into the experiments framework,
+**server-side** (analyses reside on the run-workspace PVC; only the diff crosses to the
+browser — raw, possibly-confidential analyses never leave the cluster; an in-browser JS
+port would have duplicated the comparator AND shipped both full analyses to the client).
+
+- **Reuse, no fork:** the API image **vendors `compare.py` from the engine at build
+  time** (`ansible/.../review_console.yaml` → `app/_vendor/compare.py`, gitignored) —
+  single source in `engine/`. `app/analysis_compare.py` wraps it: `compare_runs(run_a,
+  run_b, uuids)` reads both arms' analyses via `results.get_analysis` → per-UC
+  equivalent/changed + severity + aggregate. Import is guarded (`available()`), so a
+  missing vendor never crashes the app.
+- **Static mode:** `POST /api/experiments/static-compare {run_a, run_b, set_id}` compares
+  two EXISTING runs (no new runs) and records the result in the `experiments` table
+  (`change_spec.type='static_compare'`, status `scored`) — reuses the Experiments list/
+  detail UI. Form: "+ Static A/B (compare two existing runs)".
+- **Dynamic dimension:** `_maybe_score_experiment` now also attaches the semantic diff
+  (`candidate_score.semantic_diff`) over the eval UUIDs when both arms of a launched
+  experiment finish — alongside the existing success-rate gate.
+- **UI:** `_renderSemanticDiff` shows changed/equivalent/missing + max severity + per-UC
+  findings, in both static and dynamic experiment detail.
+
+### (Superseded sketch) prompt-content A/B via a new engine seam
+DAV already A/B tests config deltas (sampling, max_tokens, grounding_nudge) over an eval
+set with scoring + a promote/revert/inconclusive **gate** (`experiment_eval.py`,
+`migrate_016_experiments.sql`, `/api/experiments`, Experiments tab). Prompt A/B reuses ALL
+of it — trigger two runs, score, gate, render — adding one new `change_spec.type`.
+
+**Key finding (2026-06-09):** `DAV_GROUNDING_NUDGE` is a **boolean flag** that injects
+*fixed* text (`prompts.py` ~178) — it cannot carry an arbitrary context string. So prompt
+A/B needs a **new append-only engine seam**:
+
+- **Engine:** new env `DAV_STAGE2_EXTRA_CONTEXT`; `build_stage2_system_prompt` appends it
+  as a `## Project context` section when set. **Append-only, byte-identical when empty** —
+  the SAME risk class as the shipped grounding nudge (not the risky full section override).
+- **Plumbing (mirror grounding-nudge exactly):** `validations.trigger_run` +
+  `_mk_pipelinerun` param `stage2-extra-context` → pipeline-stage2 passthrough →
+  `dav-run-corpus` task param → env `DAV_STAGE2_EXTRA_CONTEXT`. Requires an **engine image
+  rebuild + Tekton apply** (bigger deploy than `--tags review-console`).
+- **Experiment type `stage2_context`:** candidate = a context string; baseline arm
+  `extra_context=''` (or a baseline string), candidate arm `extra_context=candidate`.
+  Reuse scoring/gate/UI. Touches the eval path ONLY inside an explicitly-launched
+  experiment — **normal runs stay byte-identical** (the stage-2 hold is respected).
+- **Promotion:** a winning `stage2_context` experiment writes the candidate into the
+  project's stage-2 additional context (`project_stage_context`, stage `stage2-analysis`).
+  *Enabling it on normal runs* (passing that context as `DAV_STAGE2_EXTRA_CONTEXT` every
+  run) is a separate, now-evidence-backed toggle — the moment the stage-2 hold lifts.
+- **UI:** "A/B test this context" in the Prompt management tab (prefill candidate = the
+  stage's current additional context, pick an eval set, launch) → result + verdict in the
+  Experiments tab; extend the ad-hoc experiment form with the `stage2_context` type.
+
+Net: A/B becomes the safe, gated path by which a stage-2 customization earns its way into
+normal runs — exactly the "A/B before trusting it" requirement.
 ```

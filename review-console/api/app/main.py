@@ -42,6 +42,7 @@ from . import capability_graph as _capability_graph
 from . import capability_catalog as _capability_catalog
 from . import assessment_ingest as _assessment_ingest
 from . import prompts_registry as _prompts_registry
+from . import analysis_compare as _analysis_compare
 from . import uc_readiness as _uc_readiness
 from .uc_list import collapse_duplicates as _collapse_uc_duplicates
 from . import validations
@@ -7048,6 +7049,15 @@ class ExperimentIn(BaseModel):
     auto_promote: bool = False
 
 
+class StaticCompareIn(BaseModel):
+    """Static A/B: semantically compare two EXISTING runs' analyses (no new runs)."""
+    run_a: str
+    run_b: str
+    set_id: Optional[int] = None
+    managed_uc_uuids: Optional[list[str]] = None
+    title: Optional[str] = None
+
+
 async def _eval_model_config(conn, project_id: int):
     """The (id, model_id, endpoint, use_key) for the project's evaluation default."""
     m = await conn.fetchrow(
@@ -7203,6 +7213,17 @@ async def _maybe_score_experiment(conn, exp: dict) -> dict:
             exp = dict(exp); exp.update(status="error", verdict_reason=reason)
         return exp
     g = _expeval.gate(b_score, c_score)
+    # Backport: attach the static comparator's semantic diff over both arms' analyses
+    # as a result dimension (what actually changed in the output, severity-ranked).
+    _spec0 = _parse_jsonb(exp.get("change_spec")) or {}
+    _uuids = _spec0.get("eval_uuids") or []
+    if _uuids and _analysis_compare.available():
+        try:
+            c_score = dict(c_score)
+            c_score["semantic_diff"] = (await asyncio.to_thread(
+                _analysis_compare.compare_runs, exp["baseline_run"], exp["candidate_run"], _uuids))["summary"]
+        except Exception:
+            log.exception("semantic diff failed for experiment %d", exp["id"])
     await conn.execute(
         """UPDATE experiments SET baseline_score=$1::jsonb, candidate_score=$2::jsonb,
                verdict=$3, verdict_reason=$4, status='scored', updated_at=now() WHERE id=$5""",
@@ -7287,6 +7308,7 @@ async def create_experiment(payload: ExperimentIn, request: Request):
             set_name = sr["name"] if sr else None
         if not uuids:
             raise HTTPException(400, "provide set_id or managed_uc_uuids")
+        spec["eval_uuids"] = uuids  # for the backported semantic-diff dimension
 
         mc = await _eval_model_config(conn, exp_pid)
         if not mc:
@@ -7357,6 +7379,48 @@ async def list_experiments(limit: int = Query(50, ge=1, le=200)):
         for r in rows:
             out.append(_exp_out(await _maybe_score_experiment(conn, dict(r))))
     return {"experiments": out, "count": len(out)}
+
+
+@app.post("/api/experiments/static-compare", status_code=201)
+async def static_compare(payload: StaticCompareIn, request: Request):
+    """Static A/B (backport of compare_analyses): semantically compare two existing
+    runs' Stage-2 analyses and record it in the experiments framework — no new runs.
+    Server-side: raw analyses stay on the cluster PVC; only the diff is returned."""
+    user = get_user(request)
+    if not _analysis_compare.available():
+        raise HTTPException(503, "analysis comparator unavailable in this build")
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        uuids = list(payload.managed_uc_uuids or [])
+        set_name = None
+        if payload.set_id and not uuids:
+            rows = await conn.fetch(
+                "SELECT uc_uuid FROM use_case_set_members WHERE set_id=$1", payload.set_id)
+            uuids = [r["uc_uuid"] for r in rows]
+            sr = await conn.fetchrow("SELECT name FROM use_case_sets WHERE id=$1", payload.set_id)
+            set_name = sr["name"] if sr else None
+        if not uuids:
+            raise HTTPException(400, "provide set_id or managed_uc_uuids")
+        result = await asyncio.to_thread(
+            _analysis_compare.compare_runs, payload.run_a, payload.run_b, uuids)
+        s = result["summary"]
+        title = payload.title or f"static compare: {payload.run_a} ↔ {payload.run_b}"
+        reason = (f"{s['changed']} changed / {s['equivalent']} equivalent"
+                  + (f" (max {s['max_severity']})" if s.get('max_severity') else "")
+                  + (f"; {s['missing']} missing" if s.get('missing') else ""))
+        spec = {"type": "static_compare", "eval_uuids": uuids,
+                "run_a": payload.run_a, "run_b": payload.run_b}
+        row = await conn.fetchrow(
+            """INSERT INTO experiments
+                 (title, change_spec, eval_set_id, eval_set_name, sample_count,
+                  baseline_run, candidate_run, candidate_score, verdict, verdict_reason,
+                  status, created_by)
+               VALUES ($1,$2::jsonb,$3,$4,0,$5,$6,$7::jsonb,$8,$9,'scored',$10) RETURNING *""",
+            title, json.dumps(spec), payload.set_id, set_name, payload.run_a, payload.run_b,
+            json.dumps(result), s["verdict"], reason, user,
+        )
+    return _exp_out(row)
 
 
 @app.get("/api/experiments/{exp_id}")

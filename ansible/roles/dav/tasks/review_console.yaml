@@ -41,6 +41,23 @@
     mode: preserve
   when: review_console_build_images | bool
 
+# Vendor the engine's pure semantic-analysis comparator into the API image at build
+# time (single source of truth in engine/; never a hand-maintained fork). The API
+# reuses it server-side for static + dynamic prompt A/B. See app/analysis_compare.py.
+- name: Vendor the engine analysis comparator into the API build context
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../engine/src/dav/evaluator/compare.py"
+    dest: "/tmp/dav-review-build/api/app/_vendor/compare.py"
+    mode: preserve
+  when: review_console_build_images | bool
+
+- name: Mark the API _vendor dir as a package
+  ansible.builtin.copy:
+    content: "# Build-time vendored modules (single source in engine/). Do not edit.\n"
+    dest: "/tmp/dav-review-build/api/app/_vendor/__init__.py"
+    mode: "0644"
+  when: review_console_build_images | bool
+
 - name: Check if review console API ImageStream exists
   kubernetes.core.k8s_info:
     kind: ImageStream

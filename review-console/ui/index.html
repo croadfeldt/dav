@@ -12690,7 +12690,37 @@ async function loadExperiments() {
 }
 
 function _expVerdictColor(v) {
-  return v === 'promote' ? 'var(--green)' : (v === 'revert' ? 'var(--red)' : (v === 'inconclusive' ? 'var(--accent)' : 'var(--text-faint)'));
+  if (v === 'promote' || v === 'equivalent') return 'var(--green)';
+  if (v === 'revert') return 'var(--red)';
+  if (v === 'changed') return 'var(--amber,gold)';
+  if (v === 'inconclusive') return 'var(--accent)';
+  return 'var(--text-faint)';
+}
+function _sevColor(s) {
+  return s === 'critical' ? 'var(--red)' : s === 'major' ? 'var(--amber,gold)'
+    : s === 'minor' ? 'var(--accent)' : 'var(--text-faint)';
+}
+// Backported static-comparator diff. `diff` = {summary, pairs?}. pairs present for a
+// static compare; dynamic experiments carry summary only.
+function _renderSemanticDiff(diff) {
+  if (!diff || !diff.summary) return '';
+  const s = diff.summary;
+  const chip = (label, n, color) => `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:${color};color:#000;font-size:10px;font-weight:600;margin-right:6px;">${esc(label)}: ${n||0}</span>`;
+  let h = `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">`
+    + `<div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--text-dim);margin-bottom:6px;">Semantic diff (analysis A ↔ B)</div>`
+    + `<div style="margin-bottom:8px;">${chip('changed', s.changed, 'var(--amber,gold)')}${chip('equivalent', s.equivalent, 'var(--green)')}`
+    + (s.missing ? chip('missing', s.missing, 'var(--text-faint)') : '')
+    + (s.max_severity ? `<span style="font-size:10px;color:${_sevColor(s.max_severity)};font-weight:600;">max severity: ${esc(s.max_severity)}</span>` : '') + `</div>`;
+  if (Array.isArray(diff.pairs) && diff.pairs.length) {
+    const changed = diff.pairs.filter(p => p.verdict === 'changed');
+    h += `<div style="font-size:10px;color:var(--text-faint);margin-bottom:4px;">${changed.length} of ${diff.pairs.length} UCs changed — details:</div>`;
+    for (const p of changed) {
+      h += `<details style="margin-bottom:4px;"><summary style="cursor:pointer;font-size:11px;"><span style="color:${_sevColor(p.max_severity)};font-weight:600;">[${esc(p.max_severity||'?')}]</span> ${esc(p.uc_uuid)}</summary>`
+        + `<div style="padding:4px 0 4px 14px;">` + (p.findings||[]).map(f =>
+            `<div style="font-size:10px;color:var(--text-dim);"><span style="color:${_sevColor(f.severity)};">${esc(f.severity)}</span> · <b>${esc(f.field)}</b>: ${esc(f.description)}</div>`).join('') + `</div></details>`;
+    }
+  }
+  return h + `</div>`;
 }
 
 function _adhocForm() {
@@ -12717,12 +12747,45 @@ function _adhocForm() {
     </details>`;
 }
 
+function _staticCompareForm() {
+  return `
+    <details style="border-bottom:1px solid var(--border);padding:8px 14px;">
+      <summary style="cursor:pointer;font-size:11px;color:var(--accent);user-select:none;">+ Static A/B (compare two existing runs)</summary>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+        <input id="scRunA" placeholder="run A (id)" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);font-family:var(--mono,monospace);">
+        <input id="scRunB" placeholder="run B (id)" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);font-family:var(--mono,monospace);">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <select id="scSet" style="font-size:11px;padding:3px 5px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);"><option value="">eval set…</option></select>
+          <button class="btn primary btn-sm" onclick="launchStaticCompare()">⚖ Compare</button>
+        </div>
+        <div style="font-size:9px;color:var(--text-faint);">Semantically diffs the two runs' analyses (equivalent/changed + severity). No new runs; server-side — raw analyses stay on the cluster.</div>
+      </div>
+    </details>`;
+}
+
+async function launchStaticCompare() {
+  const a = (document.getElementById('scRunA').value || '').trim();
+  const b = (document.getElementById('scRunB').value || '').trim();
+  const setId = parseInt(document.getElementById('scSet').value) || null;
+  if (!a || !b) { toast('Enter both run ids', true); return; }
+  if (!setId) { toast('Pick an eval set', true); return; }
+  try {
+    const r = await api('/api/experiments/static-compare', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_a: a, run_b: b, set_id: setId }) });
+    toast(`Static compare #${r.id} done`, false);
+    await loadExperiments();
+    selectExperiment(r.id);
+  } catch (e) { toast(`Compare failed: ${e.message}`, true); }
+}
+
 async function _populateAdhocSets() {
   try {
     const data = await api('/api/sets');
-    const sel = document.getElementById('adhocSet');
-    if (sel) sel.innerHTML = '<option value="">eval set…</option>' +
+    const opts = '<option value="">eval set…</option>' +
       (data.sets || []).map(s => `<option value="${s.id}">${esc(s.name)} (${s.member_count})</option>`).join('');
+    const a = document.getElementById('adhocSet'); if (a) a.innerHTML = opts;
+    const c = document.getElementById('scSet'); if (c) c.innerHTML = opts;
   } catch (e) {}
 }
 
@@ -12748,11 +12811,11 @@ async function launchAdhocExperiment() {
 function renderExperimentsList() {
   const el = document.getElementById('improveList');
   if (!_improveState.experiments.length) {
-    el.innerHTML = _adhocForm() + `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);font-size:12px;">No experiments yet.</div>`;
+    el.innerHTML = _adhocForm() + _staticCompareForm() + `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);font-size:12px;">No experiments yet.</div>`;
     _populateAdhocSets();
     return;
   }
-  el.innerHTML = _adhocForm() + _improveState.experiments.map(x => {
+  el.innerHTML = _adhocForm() + _staticCompareForm() + _improveState.experiments.map(x => {
     const active = x.id === _improveState.selectedExpId;
     const v = x.verdict || (x.status === 'running' ? 'running' : '—');
     return `
@@ -12781,14 +12844,30 @@ async function selectExperiment(id) {
   try { x = await api(`/api/experiments/${id}`); }
   catch (e) { body.innerHTML = `<div style="color:var(--red);">${esc(e.message)}</div>`; return; }
   const bs = x.baseline_score, cs = x.candidate_score;
+  const isStatic = x.change_spec?.type === 'static_compare';
+  // Static compare stores the full diff in candidate_score; dynamic stores summary under .semantic_diff.
+  const semDiff = isStatic ? cs : (cs && cs.semantic_diff ? { summary: cs.semantic_diff } : null);
   const scoreCell = (s) => s ? `${(s.success_rate*100).toFixed(0)}% (${s.succeeded}/${s.total})${s.high_sev_classes?.length ? ` · ⚠ ${esc(s.high_sev_classes.join(','))}` : ''}` : '—';
   const phaseLine = (arm) => `<span style="color:var(--text-faint);">${esc(x.arm_phases?.[arm] || '?')}</span>`;
+  const candLabel = x.change_spec?.type === 'max_tokens' ? ` (max_tokens ${esc(String(x.change_spec?.candidate ?? ''))})`
+    : x.change_spec?.type === 'sampling' ? ` (${esc(x.change_spec?.param||'')} ${esc(String(x.change_spec?.candidate ?? ''))})` : '';
   body.innerHTML = `
     <div style="border-bottom:1px solid var(--border);padding-bottom:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
       <div><div style="font-size:14px;font-weight:600;">${esc(x.title || ('Experiment #' + x.id))}</div>
         <div style="font-size:10px;color:var(--text-faint);margin-top:3px;">${esc(x.status)} · eval ${esc(x.eval_set_name || x.eval_set_id || 'ad-hoc')} · ${x.sample_count} sample(s)</div></div>
       ${x.verdict ? `<span style="font-size:11px;text-transform:uppercase;font-weight:600;color:${_expVerdictColor(x.verdict)};">${esc(x.verdict)}</span>` : ''}
     </div>
+    ${isStatic ? `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
+      <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Run A</div>
+        <div style="font-size:11px;font-family:var(--mono,monospace);margin-top:4px;word-break:break-all;">${esc(x.baseline_run || '')}</div>
+      </div>
+      <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Run B</div>
+        <div style="font-size:11px;font-family:var(--mono,monospace);margin-top:4px;word-break:break-all;">${esc(x.candidate_run || '')}</div>
+      </div>
+    </div>` : `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
       <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
         <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Baseline ${phaseLine('baseline_run')}</div>
@@ -12796,12 +12875,13 @@ async function selectExperiment(id) {
         <div style="font-size:9px;color:var(--text-faint);margin-top:4px;">${esc(x.baseline_run || '')}</div>
       </div>
       <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
-        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Candidate (max_tokens ${esc(String(x.change_spec?.candidate ?? ''))}) ${phaseLine('candidate_run')}</div>
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Candidate${candLabel} ${phaseLine('candidate_run')}</div>
         <div style="font-size:16px;font-weight:600;margin-top:4px;">${scoreCell(cs)}</div>
         <div style="font-size:9px;color:var(--text-faint);margin-top:4px;">${esc(x.candidate_run || '')}</div>
       </div>
-    </div>
+    </div>`}
     ${x.verdict_reason ? `<div style="margin-top:12px;font-size:12px;line-height:1.5;padding:10px;background:var(--bg-raised);border-left:2px solid ${_expVerdictColor(x.verdict)};border-radius:2px;">${esc(x.verdict_reason)}</div>` : ''}
+    ${_renderSemanticDiff(semDiff)}
     ${x.status === 'running' ? `<div style="margin-top:12px;font-size:11px;color:var(--text-faint);">⏳ Runs in flight — refresh to update. (Candidate is a per-run override; production + spamllm untouched.)</div>` : ''}
     ${x.auto_promote ? `<div style="margin-top:8px;font-size:10px;color:var(--accent);">⚡ auto-promote on (a winning sampling verdict applies automatically, reversibly)</div>` : ''}
     ${x.verdict === 'promote' && x.status !== 'promoted' ? `
