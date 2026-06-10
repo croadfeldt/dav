@@ -2049,6 +2049,27 @@
         </div>
       </div>
 
+      <div class="cfg-card panel-card" id="configAssessIngestDefaultPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Assessment ingest model</div>
+            <div class="pc-sub">Model used to parse assessment input into UDLM findings (Assessments → ingest via model). Falls back to UC Authoring → Arch Review → Evaluation when unset. Can be overridden per ingest.</div>
+          </div>
+          <span id="assessIngestDefaultStatus" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <select id="assessIngestDefaultModelSel" style="min-width:260px;">
+              <option value="">— no default set —</option>
+            </select>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('assessIngestDefaultModelSel','assessIngestDefaultModel')">Browse…</button>
+            <button class="btn primary btn-sm" id="saveAssessIngestDefaultBtn">Save</button>
+            <span id="assessIngestDefaultMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div class="form-hint" style="margin-top:8px;">Stored server-side. Leave unset to share the UC Authoring / Arch Review default.</div>
+        </div>
+      </div>
+
       </div><!-- /tabpanel aimodels -->
       <div class="tabpanel" data-tabpanel="integrations">
       <div class="cfg-sec-hdr" id="cfgSec-integrations">
@@ -10065,6 +10086,7 @@ async function loadArchDefault() {
   _populateArchDefaultSel(_archDefaultModelId);
   _populateDefaultSel('enhDefaultModelSel', _modelDefaults['enhancement'] || null);
   _populateDefaultSel('ucAssistModelSel',   _modelDefaults['uc-authoring'] || null);
+  _populateDefaultSel('assessIngestDefaultModelSel', _modelDefaults['assessment-ingest'] || null);
   _updateArchModelInfo();
 }
 
@@ -10184,6 +10206,8 @@ document.getElementById('saveArchDefaultBtn').addEventListener('click',
   () => _saveModelDefault('arch-review', 'archDefaultModelSel', 'archDefaultMsg', 'saveArchDefaultBtn'));
 document.getElementById('saveEnhDefaultBtn')?.addEventListener('click',
   () => _saveModelDefault('enhancement', 'enhDefaultModelSel', 'enhDefaultMsg', 'saveEnhDefaultBtn'));
+document.getElementById('saveAssessIngestDefaultBtn')?.addEventListener('click',
+  () => _saveModelDefault('assessment-ingest', 'assessIngestDefaultModelSel', 'assessIngestDefaultMsg', 'saveAssessIngestDefaultBtn'));
 
 // ── MCP refresh (Config panel: Pipeline Sources → MCP refresh) ────────────────
 
