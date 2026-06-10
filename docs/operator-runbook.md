@@ -849,3 +849,24 @@ tkn pipeline start dav-stage2 -n dav \
     --pipeline-timeout 24h \
     --serviceaccount dav-pipeline-sa --use-param-defaults --showlog
 ```
+
+---
+
+## Post-deploy validation (v0.19.0+)
+
+After a `--tags review-console` deploy, run the in-pod smoke harness — it exercises the
+real code against the live DB + run-workspace PVC; all write tests run in a throwaway
+project that is deleted (CASCADE) so production data is untouched:
+
+```sh
+POD=$(oc get pods -n dav -o name | grep review-api | grep -v build | head -1 | cut -d/ -f2)
+oc cp review-console/api/validation/qa_validate.py "dav/$POD:/tmp/qa_validate.py"
+oc exec -n dav "$POD" -- python3 /tmp/qa_validate.py   # expect "N PASS / 0 FAIL"
+```
+
+**Build dependency (v0.19.0):** the API image **vendors the engine's analysis comparator**
+(`engine/src/dav/evaluator/compare.py`) at build time into `app/_vendor/compare.py` (an
+Ansible step in `roles/dav/tasks/review_console.yaml`, single source in `engine/`). The
+monorepo always has `engine/` alongside `review-console/`, so no extra action is needed —
+but a deploy from a partial checkout missing `engine/` would skip the comparator (the
+static-A/B endpoint then returns 503; the app still boots — the import is guarded).

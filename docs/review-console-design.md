@@ -1,8 +1,8 @@
 # DAV Review Console — Design & Feature Inventory
 
 **Status:** Living document  
-**Last updated:** 2026-06-05  
-**Current version:** v0.18.0  
+**Last updated:** 2026-06-09  
+**Current version:** v0.19.0  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -1408,6 +1408,68 @@ Existing managed UCs are all currently in `draft` (or whatever lifecycle was las
 - **DCM / data model rework (planned)** — next major design effort. Scope to be defined in the next session (2026-05-26). Will revisit the underlying DAV domain capability model and the schemas / contracts it implies between engine, console, and consumer corpora.
 - **UC review pipeline (planned, 2026-05-25 / 2026-05-26)** — full design captured above in **Planned design: UC review pipeline**. Bundles five previously per-feature requests into one coherent lifecycle: (1) human-readable Name field, (2) Run test evaluation from UC editor/detail with inline results, (3) multi-select UC list → batch test run, (4) Default Set + `is_default` flag for partitioning, (5) Push to corpus as commit/PR gated on `approved` state with a passing run attached. Replaces the need for private UC repos — Sets do the partitioning, lifecycle state does the gating.
 - ~~**Reorder top-level tabs: Use Cases + Sets first**~~ — done in v0.9.16; default landing tab is now Use Cases. New order: Use Cases / Sets / Runs / Results / Review & Plan / Config.
+
+---
+
+## v0.19.0 — Capability catalog, assessments, prompt management, A/B (2026-06-09)
+
+Five features shipped + deployed 2026-06-09. Validated post-deploy by the in-pod harness
+`api/validation/qa_validate.py` (**25/25 PASS**). Detailed designs:
+`docs/capability-catalog-design.md`, `docs/prompt-management-design.md`,
+`docs/blueprint-projects-design.md`, `udlm/`.
+
+**1. Capability catalog — one UDLM table.** The keystone draft created a parallel
+`capability_inventory`; it duplicated the app's existing `capability_catalog`. Collapsed
+into ONE table (migration 020 + schema.sql): the Capability entity **is**
+`capability_catalog`, extended additively into the UDLM Knowledge family — `cap_key` =
+handle, `status` = lifecycle (`confirmed`/`suggested`/`rejected` curated **+ `observed`**),
+`depends_on`/`spec_refs` reused, plus `family`, `normalized_to_term_id` (→
+`capability_taxonomy_terms`), `normalization_status`, `created_via`, `evidence`,
+`provenance`, `classification`, `domain_prefix`. `project_id` relaxed to **nullable** (NULL
+= global observed; curated stays project-scoped, existing Catalog CRUD untouched). Shared
+write path `capability_catalog.upsert_observed_capability()`. Endpoints
+`GET /api/capabilities/{stats,taxonomy,catalog,normalize}`, `POST .../{resolve-uc-capabilities,reseed}`.
+
+**2. Assessment ingestion (F7).** UDLM Knowledge family Assessment + Finding (migration
+019). `assessment_ingest.py`: parser registry (generic + automation adapter), ingest →
+findings land on `capability_catalog` as OBSERVED (normalized onto the taxonomy or flagged
+as a gap) + gap summary; **synthetic fixture, no confidential data** (real parsers/data
+live inside the work env). Endpoints `POST /api/assessments/ingest` (`{use_fixture:true}`),
+`GET /api/assessments[/{id}]`. **Assessments** nav tab (platform-admin).
+
+**3. Prompt management (F8).** Per-project, per-stage prompt customization (additional
+context + section overrides). `project_stage_context.section_overrides JSONB` added;
+`prompts_registry.py` = stage/section registry + `assemble()`. **New `prompt.manage`
+privilege** (seeded to project-admin/edit; **supersedes** `project.archreview.context` —
+`rbac.privileges_for` aliases the old grant → new). The **Improve** nav became **Prompts &
+Improvement** (tabs: Prompt management + diagnose/propose/experiments); editor = stage
+picker → additional-context box + per-section override + live assembled preview. Stages:
+`stage2-analysis` (engine, **stored-held** — overrides stored/previewable but NOT applied
+at runtime pending A/B), `arch_review`, `enhancement`. Endpoints `GET /api/prompts/stages`,
+`GET /api/prompts/project/{stage}`, `PUT /api/stage-context/{stage}` (now
+`prompt.manage`-gated + **active-project** scoped — fixed a prior default-project bug).
+
+**4. Review/Enhancement split.** Enhancement reads its own `enhancement` stage context
+(was the shared `arch_review`); schema.sql one-time idempotent copy of existing
+`arch_review` content into `enhancement`. Independently customizable.
+
+**5. Static A/B backported into the experiments framework.** Reuses the engine's semantic
+Analysis comparator (`engine/src/dav/evaluator/compare.py`) — **no fork**: it is **vendored
+into the API image at build time** (`ansible/.../review_console.yaml` → `app/_vendor/`,
+gitignored). `analysis_compare.py` runs it **server-side** (analyses stay on the
+run-workspace PVC; only the diff crosses to the browser). `POST
+/api/experiments/static-compare` compares two existing runs (equivalent/changed + per-UC
+severity, recorded in the `experiments` table); `_maybe_score_experiment` also attaches a
+`semantic_diff` dimension to launched (dynamic) experiments. UI: "+ Static A/B" form +
+`_renderSemanticDiff` in experiment detail. Verified on real runs.
+
+**RBAC note (extends v0.14.0 privileges):** add `prompt.manage` (project-scoped) — edit
+per-project prompt customizations for all stages; supersedes `project.archreview.context`.
+
+**HELD:** wiring the **stage-2 engine** prompt to per-project overrides (an append-only
+`DAV_STAGE2_EXTRA_CONTEXT` engine seam) — byte-identical by default; any real stage-2
+change is A/B-validated (the static comparator is the measurement tool) before runtime
+trust. See `docs/prompt-management-design.md`.
 
 ---
 

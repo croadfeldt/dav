@@ -56,6 +56,22 @@ Both patterns must coexist: **some projects hold multiple sets** (within-project
 **others share a template/prompts but with isolated data** (blueprint-linked engagements).
 Isolation between like projects is required — the blueprint shares *setup*, never *data*.
 
+## Template management (Chris 2026-06-09 — required)
+The feature must include first-class **template/blueprint management operations**:
+- **Copy / clone a project:** deep (config + data) or **config-only** (the setup: prompts,
+  taxonomy, catalog defaults, assessment pipeline, model/eval config — NOT the data). The
+  common path for a new engagement is config-only clone.
+- **Create from template/blueprint:** instantiate a fresh engagement project that inherits
+  a blueprint (sets `blueprint_project_id`), optionally seeding initial config from it.
+- **Manage templates:** mark a project as a blueprint/template (`kind='blueprint'`), list
+  templates, edit/retire them, see which engagements link to each (the link graph).
+- **Sync/drift:** show where an engagement has overridden the blueprint, and a "pull from
+  blueprint" / "push up to blueprint" affordance (see Open questions for promotion).
+Implemented as a `copy_project(src, mode)` service + endpoints (`POST /api/projects/{id}/
+clone`, `POST /api/projects/from-blueprint`) reusing the per-table project-scoped copy
+logic already present for project merge/clone where it exists. Gate with `blueprint.manage`
+(or platform-admin). Task #95.
+
 ## Open questions
 - Blueprint nesting (v1: no). Partial override granularity for taxonomy (whole vs term).
 - Promotion: edit in an engagement → "push up to blueprint" affordance?
