@@ -1504,9 +1504,10 @@ trust. See `docs/prompt-management-design.md`.
 - **Focus switcher (#101):** a masthead toggle splits the console by intent. Each left-nav
   item is tagged `data-focus` (`architecture` / `assessment` / `both`); `_applyFocus()` shows
   an item iff its RBAC baseline (`_navRbac`) allows **and** it's in the active focus.
-  - **Architecture:** Use Cases · Runs · Results · Inbox · Architecture · Engineering ·
-    Prompts & Improvement. **Assessment:** Assessments. **Both:** Catalog · Cap Map · Config
-    (+ admin Projects/Users/Audit).
+  - **Architecture:** Use Cases · Runs · Results · Inbox · Architecture · Engineering.
+    **Assessment:** Assessments. **Both:** Prompts & Improvement · Catalog · Cap Map · Config
+    (+ admin Projects/Users/Audit). _(Prompts & Improvement is `both` so assessors can tune
+    assessment-stage prompts too.)_
   - Default is **role-derived** (`_defaultFocus()`): assessment-only users (assessment access,
     no UC/run pipeline, not platform admin) land in Assessment; everyone else Architecture.
     Persisted per-user (`localStorage davFocus`). Switching lands on the focus's home view if
