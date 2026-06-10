@@ -121,6 +121,25 @@ port would have duplicated the comparator AND shipped both full analyses to the 
 - **UI:** `_renderSemanticDiff` shows changed/equivalent/missing + max severity + per-UC
   findings, in both static and dynamic experiment detail.
 
+## Prompt assistant (Chris 2026-06-09) — AI-assisted prompt authoring/refinement
+Describe the intent for a stage; the AI drafts/refines that stage's prompt (additional
+context and/or a section override). Completes the arc: **assistant drafts → F8 editor
+refines → static A/B validates** (the comparator measures whether the change moved the
+analysis). Capture → roadmap → build.
+
+- **Reuse the existing LLM-call path** (the UC authoring assistant `uc_bulk_extract`,
+  main.py ~3881, already makes a project-model LLM call) — do NOT add a new inference seam.
+- **Endpoint:** `POST /api/prompts/assist {stage, target: 'append'|'section:<name>',
+  intent, current}` → meta-prompt (the stage's base sections from prompts_registry +
+  the architect's intent + current draft) → returns a suggested text + a short rationale.
+  Gated by `prompt.manage`. Stateless; the human reviews/edits/saves (never auto-applies).
+- **UI:** an "✨ Assist" affordance beside the additional-context box and each section
+  override in the F8 Prompt management editor → intent input → fills the textarea with the
+  suggestion (editable). Then Save + (optionally) A/B test it.
+- **Safety:** suggestions are drafts only; for the stage-2 engine prompt the same hold
+  applies (any actual stage-2 change is A/B'd before runtime trust). No confidential data
+  in meta-prompts beyond what the project already holds.
+
 ### (Superseded sketch) prompt-content A/B via a new engine seam
 DAV already A/B tests config deltas (sampling, max_tokens, grounding_nudge) over an eval
 set with scoring + a promote/revert/inconclusive **gate** (`experiment_eval.py`,

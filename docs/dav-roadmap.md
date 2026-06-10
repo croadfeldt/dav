@@ -528,3 +528,25 @@ Whenever you next pick up DAV work:
 ---
 
 *Document maintained by the DAV project. Edit as the roadmap evolves.*
+
+---
+
+## 2026-06-09 — Prompts, A/B, blueprints (shipped + captured)
+**Shipped + deployed:** capability-catalog collapse (one UDLM table); F7 assessment
+ingestion (Assessment+Finding, synthetic fixture); F8 prompt management (per-stage
+section overrides + additional context, `prompt.manage` priv, merged **Prompts &
+Improvement** nav + editor w/ live preview); Review/Enhancement split into independent
+stages; **static A/B backport** — reused the engine semantic comparator (`compare.py`,
+vendored into the API image at build) inside the experiments framework (compare two
+existing runs + dynamic semantic-diff dimension), server-side.
+
+**Captured (design + roadmap, build next):**
+- **Prompt assistant** (`docs/prompt-management-design.md`, task #96) — describe intent →
+  AI drafts/refines a stage's prompt; arc = assistant drafts → F8 editor refines →
+  static A/B validates.
+- **Blueprint + linked projects** (`docs/blueprint-projects-design.md`, task #95) — reuse
+  a setup (prompts/taxonomy/pipeline/config) across **isolated** engagement datasets;
+  hybrid model (within-project multi-set AND blueprint-linked isolated engagements).
+
+**Held (needs Chris):** stage-2 engine prompt wiring (task #93) — A/B any real override
+before runtime trust (eval-sensitive).
