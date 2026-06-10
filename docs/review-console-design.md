@@ -1476,6 +1476,15 @@ severity, recorded in the `experiments` table); `_maybe_score_experiment` also a
 
 **RBAC note (extends v0.14.0 privileges):** add `prompt.manage` (project-scoped) — edit
 per-project prompt customizations for all stages; supersedes `project.archreview.context`.
+Also (2026-06-10) `assessment.view` / `assessment.edit` (gate the assessment endpoints —
+list/get vs ingest; off platform-admin now) and `blueprint.view` / `blueprint.edit`
+(project-scoped; inert until the blueprint feature, task #95). Built-in role seeding:
+admin = all four; edit = assessment view/edit + blueprint view; viewer = both views.
+
+**Masthead quick selectors (2026-06-10):** alongside the Project + Run selectors, an
+**Assessment** selector (jump to an assessment in the active project; shown when the user
+has `assessment.view` and assessments exist) and a **Blueprint** selector (hidden
+placeholder until task #95). `navAssess` is gated on `assessment.view` (was platform-admin).
 
 **HELD:** wiring the **stage-2 engine** prompt to per-project overrides (an append-only
 `DAV_STAGE2_EXTRA_CONTEXT` engine seam) — byte-identical by default; any real stage-2
