@@ -547,6 +547,11 @@ existing runs + dynamic semantic-diff dimension), server-side.
 - **Blueprint + linked projects** (`docs/blueprint-projects-design.md`, task #95) — reuse
   a setup (prompts/taxonomy/pipeline/config) across **isolated** engagement datasets;
   hybrid model (within-project multi-set AND blueprint-linked isolated engagements).
+- **Scope & bundles** (`docs/scope-and-bundles-design.md`, task #107) — two orthogonal
+  scope axes (`project_id` × `use_category`, NULL = any) so config/capabilities can be
+  platform / project / use-category / project×category scoped, plus **bundles** (named
+  reusable groupings of configs/capabilities/outputs, attachable at any scope). Bundles are
+  the substrate blueprints (#95) compose. Schema-level + security-sensitive — design first.
 
 **Held (needs Chris):** stage-2 engine prompt wiring (task #93) — A/B any real override
 before runtime trust (eval-sensitive).
