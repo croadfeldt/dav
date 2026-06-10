@@ -1516,6 +1516,17 @@ trust. See `docs/prompt-management-design.md`.
   (the `hasPriv` ReferenceError had silently broken the presence chip + config gating).
   `/api/me` admin status self-heals on tab focus after a transient deploy-rollover blip.
 
+- **Model-based assessment ingestion + UDLM seam:** `POST /api/assessments/ingest-model`
+  — an extractor model reads a raw assessment artifact (text) and emits **structured
+  output conforming to the UDLM Knowledge-family Assessment/Finding contract**
+  (`assessment_ingest.structured_output_schema()`), then stores it via the normal pipeline
+  (normalize → catalog → gap summary). Uses the new `assessment-ingest` model default
+  (→ uc-authoring → arch-review → evaluation fallback). UI: the ingest dialog has a
+  **Structured JSON | Extract with model** mode. New `app/udlm.py` holds **`UDLM_VERSION`**
+  (0.1.0-draft) — the single seam for "all of DAV operates via UDLM"; the structured output
+  + responses are stamped with it. Versioned contract = task #106. Multi-format
+  (PDF/image/structured) + the ingest-model *selector* in Config = #105.
+
 **Captured directions (not yet built):** Config Platform/Project tabs + Users-split +
 add-user role selector with escalation bounds (#100); user-class/intent views — Architecture
 vs Assessment focus, with view/edit perspectives (#101); assessment notes import +

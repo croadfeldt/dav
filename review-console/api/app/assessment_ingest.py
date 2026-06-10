@@ -21,8 +21,34 @@ import logging
 from typing import Callable, Optional
 
 from . import capability_catalog as _catalog
+from .udlm import UDLM_VERSION
 
 log = logging.getLogger("dav.assessment_ingest")
+
+
+def structured_output_schema() -> dict:
+    """The UDLM Knowledge-family Assessment + Finding projection that a model-based
+    extractor must emit (and the canonical format parse_generic accepts). Stamped with
+    the UDLM version so the structured output is a UDLM-conformant contract."""
+    return {
+        "udlm_version": UDLM_VERSION,
+        "entity": "Assessment",
+        "fields": {
+            "handle": "string — assessment title",
+            "assessment_type": "automation | hybrid-cloud | ai | dcm | generic",
+            "pillar": "platform | people-process | enablement",
+            "source": "string — where it came from (optional)",
+            "summary": "string — one-line summary (optional)",
+            "findings": [{
+                "capability": "string — the capability assessed (required)",
+                "category": "string — grouping (e.g. Identity, Governance) (optional)",
+                "state": "present | partial | absent | n/a  (n/a = not asked / not applicable)",
+                "maturity": "integer 1..5 (3 = engagement target) or null when no capability",
+                "evidence": "string — what was observed (optional)",
+                "notes": "string — target / rationale (optional)",
+            }],
+        },
+    }
 
 # State carries the disposition: present/partial/absent = asked (capability presence);
 # 'n/a' = not asked or not applicable. Maturity (1..5) is the separate, pure rating.

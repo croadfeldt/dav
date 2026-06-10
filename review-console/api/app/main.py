@@ -6713,6 +6713,77 @@ async def assessments_get(assessment_id: str, request: Request):
     return out
 
 
+def _strip_code_fences(s: str) -> str:
+    """Strip a ```...``` (optionally ```json) wrapper a model may add despite instructions."""
+    s = (s or "").strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[-1] if "\n" in s else s[3:]
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3].rstrip()
+    return s.strip()
+
+
+class AssessmentModelIngestIn(BaseModel):
+    content: str                       # the raw assessment artifact (text)
+    handle: Optional[str] = None
+    assessment_type: Optional[str] = None
+    pillar: Optional[str] = None
+    source: Optional[str] = None
+
+
+@app.post("/api/assessments/ingest-model")
+async def assessments_ingest_model(payload: AssessmentModelIngestIn, request: Request):
+    """Model-based assessment ingestion: an extractor model reads the artifact and emits
+    STRUCTURED OUTPUT conforming to the UDLM Knowledge-family Assessment/Finding contract,
+    which is then stored via the normal ingest pipeline (normalize → catalog → gap
+    summary). Uses the project's `assessment-ingest` model default (→ uc-authoring →
+    arch-review → evaluation fallback). Requires assessment.edit."""
+    if not (payload.content or "").strip():
+        raise HTTPException(400, "content (the assessment artifact text) is required")
+    actor = get_user(request)
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_ASSESSMENT_EDIT, pid)
+        cfg = await _model_default_row(
+            conn, "assessment-ingest", "uc-authoring", "arch-review", "evaluation", project_id=pid)
+    if not cfg:
+        raise HTTPException(400, "no assessment-ingest / authoring / evaluation model configured for this project")
+    schema = _assessment_ingest.structured_output_schema()
+    system = ("You are an assessment-extraction engine. Read the assessment artifact and emit "
+              "ONLY a single JSON object conforming to the UDLM Knowledge-family Assessment "
+              "contract below — no prose, no markdown code fences, no surrounding text.\n\n"
+              "UDLM Assessment contract:\n" + json.dumps(schema, indent=2))
+    user = (f"Assessment artifact:\n\n{payload.content.strip()}\n\n"
+            + (f"assessment_type hint: {payload.assessment_type}\n" if payload.assessment_type else "")
+            + (f"handle hint: {payload.handle}\n" if payload.handle else "")
+            + "Extract every capability that was assessed into a finding. Use state 'n/a' for "
+              "not-asked / not-applicable, maturity 1-5 (3 = target; null when there is no "
+              "capability), and carry any notes/evidence. Output the JSON object only.")
+    call_fn = _make_diagnosis_call_fn(cfg)
+    try:
+        raw = await call_fn(system, user)
+    except Exception as e:
+        raise HTTPException(502, f"extraction model call failed: {e}")
+    try:
+        extracted = json.loads(_strip_code_fences(raw))
+        if not isinstance(extracted, dict):
+            raise ValueError("not a JSON object")
+    except Exception as e:
+        raise HTTPException(422, f"extractor did not return valid UDLM-assessment JSON: {e}")
+    # Apply caller hints + provenance the model omitted.
+    for k in ("handle", "assessment_type", "pillar", "source"):
+        v = getattr(payload, k, None)
+        if v and not extracted.get(k):
+            extracted[k] = v
+    extracted.setdefault("source", payload.source or f"model-extract:{cfg.get('model_id')}")
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        result = await _assessment_ingest.ingest(conn, extracted, actor=actor, project_id=pid)
+    result["model"] = cfg.get("model_id")
+    result["udlm_version"] = schema["udlm_version"]
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Self-improvement loop — Phase 1: diagnose & propose.
 # failure_taxonomy.py classifies a run's failures into typed signatures;
@@ -8923,7 +8994,7 @@ async def delete_model_use_profile(mid: int, use_key: str, request: Request):
 #                  bulk-from-text extraction (one default, per-view overrides)
 # The new-run engine default is NOT here — it lives in the inference source
 # ConfigMap (Config → Pipeline Sources → Inference), which the pipeline reads.
-_VALID_DEFAULT_KEYS = {"evaluation", "arch-review", "enhancement", "uc-authoring"}
+_VALID_DEFAULT_KEYS = {"evaluation", "arch-review", "enhancement", "uc-authoring", "assessment-ingest"}
 
 
 class ModelDefaultIn(BaseModel):

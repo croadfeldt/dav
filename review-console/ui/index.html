@@ -1546,7 +1546,14 @@
             </div>
             <!-- Ingest a real assessment: paste/upload a canonical or automation-format JSON. -->
             <div id="asIngestForm" style="display:none;margin-top:8px;border:1px solid var(--border);border-radius:3px;padding:8px;background:var(--bg-deep,rgba(0,0,0,0.18));">
-              <div style="font-size:10px;color:var(--text-dim);margin-bottom:4px;">Paste a <b>canonical</b> assessment JSON (or upload a file). Shape:
+              <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
+                <label style="font-size:10px;color:var(--text-dim);">Mode</label>
+                <select id="asIngestMode" onchange="_asIngestModeChanged()" style="font-size:10px;">
+                  <option value="json">Structured JSON</option>
+                  <option value="model">Extract with model (text → UDLM)</option>
+                </select>
+              </div>
+              <div id="asIngestHint" style="font-size:10px;color:var(--text-dim);margin-bottom:4px;">Paste a <b>canonical</b> assessment JSON (or upload a file). Shape:
                 <code style="font-size:9px;">{handle, assessment_type, pillar, findings:[{capability, category, state:present|partial|absent|n/a, maturity:1-5, evidence, notes}]}</code></div>
               <textarea id="asIngestJson" spellcheck="false" placeholder='{"handle":"…","assessment_type":"automation","findings":[…]}' style="width:100%;min-height:120px;font-size:11px;font-family:var(--mono,monospace);"></textarea>
               <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap;">
@@ -10859,6 +10866,18 @@ function toggleAssessmentIngest() {
   const f = document.getElementById('asIngestForm');
   if (f) f.style.display = f.style.display === 'none' ? '' : 'none';
 }
+function _asIngestModeChanged() {
+  const mode = document.getElementById('asIngestMode')?.value || 'json';
+  const hint = document.getElementById('asIngestHint');
+  const ta = document.getElementById('asIngestJson');
+  if (mode === 'model') {
+    if (hint) hint.innerHTML = 'Paste (or upload) the raw assessment <b>text/notes</b>. The project\'s <code>assessment-ingest</code> model extracts it into the UDLM Assessment contract before storing. (PDF/image/structured is a larger build — #105.)';
+    if (ta) ta.placeholder = 'Paste the assessment artifact text — notes, tables, capability write-ups…';
+  } else {
+    if (hint) hint.innerHTML = 'Paste a <b>canonical</b> assessment JSON (or upload a file). Shape: <code style="font-size:9px;">{handle, assessment_type, pillar, findings:[{capability, category, state:present|partial|absent|n/a, maturity:1-5, evidence, notes}]}</code>';
+    if (ta) ta.placeholder = '{"handle":"…","assessment_type":"automation","findings":[…]}';
+  }
+}
 function _asLoadIngestFile(input) {
   const file = input.files && input.files[0];
   if (!file) return;
@@ -10867,16 +10886,22 @@ function _asLoadIngestFile(input) {
   reader.readAsText(file);
 }
 async function ingestAssessment() {
+  const mode = document.getElementById('asIngestMode')?.value || 'json';
   const status = document.getElementById('asStatus');
   const raw = (document.getElementById('asIngestJson').value || '').trim();
-  if (!raw) { toast('Paste or upload an assessment JSON', true); return; }
-  let payload;
-  try { payload = JSON.parse(raw); }
-  catch (e) { toast('Invalid JSON: ' + e.message, true); status.textContent = '✗ invalid JSON'; return; }
-  status.textContent = 'ingesting…';
+  if (!raw) { toast('Paste or upload assessment content', true); return; }
+  status.textContent = (mode === 'model') ? 'extracting via model…' : 'ingesting…';
   try {
-    const r = await api('/api/assessments/ingest', { method:'POST', body: JSON.stringify({ assessment: payload }) });
-    status.textContent = `✓ ingested ${r.findings} findings (${r.mapped} mapped, ${r.gaps} gaps)`;
+    let r;
+    if (mode === 'model') {
+      r = await api('/api/assessments/ingest-model', { method:'POST', body: JSON.stringify({ content: raw }) });
+    } else {
+      let payload;
+      try { payload = JSON.parse(raw); }
+      catch (e) { toast('Invalid JSON: ' + e.message, true); status.textContent = '✗ invalid JSON'; return; }
+      r = await api('/api/assessments/ingest', { method:'POST', body: JSON.stringify({ assessment: payload }) });
+    }
+    status.textContent = `✓ ingested ${r.findings} findings (${r.mapped} mapped, ${r.gaps} gaps)${r.model ? ' · ' + r.model : ''}`;
     toast('✓ Assessment ingested');
     toggleAssessmentIngest();
     document.getElementById('asIngestJson').value = '';
