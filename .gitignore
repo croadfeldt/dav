@@ -40,3 +40,6 @@ docs/2026-05-28-pnc-exec-summary.md
 
 # Build-time vendored modules (materialized from engine/ at image build)
 review-console/api/app/_vendor/
+
+# UI test deps (jsdom for e2e boot-smoke)
+review-console/ui/node_modules/

@@ -1,0 +1,7 @@
+{
+  "name": "dav-review-ui-tests",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node e2e.mjs" },
+  "devDependencies": { "jsdom": "^24.1.0" }
+}

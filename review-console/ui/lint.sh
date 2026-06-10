@@ -38,4 +38,12 @@ npx --yes eslint@8 --no-eslintrc \
   --global openNewUC --global newUC \
   --rule '{"no-undef":"error"}' "$TMP"
 
+# Boot-smoke e2e (jsdom): load the real index.html per role, assert no boot errors +
+# correct role-gated rendering. Catches runtime/gating regressions the static checks miss.
+if [ "${SKIP_E2E:-0}" != "1" ]; then
+  echo "→ e2e boot-smoke (jsdom, per role)"
+  [ -d node_modules ] || npm install --silent >/dev/null 2>&1
+  node e2e.mjs
+fi
+
 echo "✓ UI lint OK"

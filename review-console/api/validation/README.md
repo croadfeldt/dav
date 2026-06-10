@@ -6,17 +6,21 @@ The QA validation pipeline (task #99). Three layers:
    - Python: `python3 -c "compile(open(f).read(), f, 'exec')"` on changed modules
      (catches `await`-outside-`async` that `ast.parse` misses).
    - **UI: `review-console/ui/lint.sh`** — `node --check` (syntax) **+ ESLint `no-undef`**
-     on the inline JS. The `no-undef` step catches the class `node --check` misses: a
-     handler calling a function that doesn't exist (e.g. `hasPriv(...)` instead of `can`,
-     or `log_warn?.(...)`) → a runtime `ReferenceError` that can abort a whole init path.
-     Both of those real bugs were found the day the lint was added. **Run before every UI
-     deploy.**
+     on the inline JS **+ the jsdom boot-smoke e2e** (layer 2). The `no-undef` step catches
+     the class `node --check` misses: a handler calling a function that doesn't exist (e.g.
+     `hasPriv(...)` instead of `can`, or `log_warn?.(...)`), a runtime `ReferenceError` that
+     can abort a whole init path. Both of those real bugs were found the day the lint was
+     added. **Run before every UI deploy.**
    - Schema/migrations: ephemeral-Postgres harness (spin `postgres:16` via podman, apply
      migrations + schema.sql, assert) — currently ad-hoc; formalize here.
-2. **Output / integration (post-deploy):** the in-pod smoke harness below.
-3. **UI/UX (planned):** headless-browser e2e — assert key elements render per role, smoke
-   each nav view, fail on console errors at boot (would have caught the presence-chip /
-   `hasPriv` regression).
+2. **UI/UX boot-smoke (`review-console/ui/e2e.mjs`, run by `lint.sh`):** loads the REAL
+   `index.html` in **jsdom**, stubs the API **per role** (platform-admin, project-viewer),
+   runs boot, and asserts (a) **no uncaught errors at boot** and (b) **role-gated elements
+   render correctly** (admin sees the presence chip + Users/Audit nav + Email panel; viewer
+   does not). The layer that would have caught the presence-chip / `hasPriv` regression. Add
+   a check whenever a feature is role-gated. `SKIP_E2E=1` to skip; `npm install` in `ui/`
+   pulls jsdom (node_modules is gitignored).
+3. **Output / integration (post-deploy):** the in-pod smoke harness below.
 
 ## In-pod smoke harnesses
 
