@@ -1437,6 +1437,17 @@ as a gap) + gap summary; **synthetic fixture, no confidential data** (real parse
 live inside the work env). Endpoints `POST /api/assessments/ingest` (`{use_fixture:true}`),
 `GET /api/assessments[/{id}]`. **Assessments** nav tab (platform-admin).
 
+  *Finding model (Chris 2026-06-10):* two independent dimensions — **state** = disposition
+  (`present` | `partial` | `absent` = asked/no capability | `n/a` = not asked / not
+  applicable), and **maturity** = pure rating **1..5** (NULL = none): 1 Minimal, 2 Basic,
+  **3 Capable = engagement target** (satisfies the technical requirements), 4 Above, 5 Best
+  (4/5 are more process than technical, lower ROI). Findings carry a **`category`**; the
+  detail view groups capabilities by category, each anchoring a vertical list of colored
+  capability pills. Maturity color: 1 red → 2 dark-gold → 3 green (target, ringed) → 5 deep
+  green, white text + dark outline for contrast on any background; N/A neutral/dashed. Gap
+  summary adds a maturity-vs-target rollup. `assessment_findings.category` + the `n/a` state
+  are added by idempotent ALTERs in migration 019.
+
 **3. Prompt management (F8).** Per-project, per-stage prompt customization (additional
 context + section overrides). `project_stage_context.section_overrides JSONB` added;
 `prompts_registry.py` = stage/section registry + `assemble()`. **New `prompt.manage`
