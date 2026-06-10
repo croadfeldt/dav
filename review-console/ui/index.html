@@ -1688,8 +1688,9 @@
         <a class="config-nav-link" data-target="configMCPPanel">MCP servers</a>
       </div>
       <div class="config-nav-group" id="configNavAccess" style="display:none;">
-        <div class="config-nav-cat" data-target="cfgSec-access">Users &amp; Access</div>
+        <div class="config-nav-cat" data-target="cfgSec-access">Platform</div>
         <a class="config-nav-link" data-target="configProjectsPanel">Projects</a>
+        <a class="config-nav-link" data-target="configSmtpPanel">Email (SMTP)</a>
         <a class="config-nav-link" data-target="configLdapPanel">LDAP / approval</a>
         <a class="config-nav-link" data-target="configUsersPanel">Users &amp; roles</a>
       </div>
@@ -2118,8 +2119,8 @@
 
       <!-- ── Users & Access (admin only) ── -->
       <div class="cfg-sec-hdr" id="cfgSec-access" style="display:none;">
-        <span class="cfg-sec-title">Users &amp; Access</span>
-        <span class="cfg-sec-sub">LDAP-approved users and their roles (admin/editor/viewer)</span>
+        <span class="cfg-sec-title">Platform</span>
+        <span class="cfg-sec-sub">Platform-wide settings — projects, email/SMTP, LDAP approval, and accounts &amp; roles</span>
       </div>
       <div class="cfg-card panel-card" id="configProjectsPanel" style="display:none;">
         <div class="panel-card-header">
@@ -3320,12 +3321,16 @@ function _applyAccessVisibility() {
   ['configUsersPanel','configLdapPanel','configSmtpPanel'].forEach(id => {
     const el = document.getElementById(id); if (el) el.style.display = platAdmin ? '' : 'none';
   });
-  // The old Config "Users & Access" nav group + header are retired (panels moved to views).
-  ['configNavAccess','cfgSec-access'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
-  // Left-nav views: Projects (project admin or project.create), Users (platform admin).
-  const canProjects = projAdmin || can('project.create');
-  const navP = document.getElementById('navProjects'); if (navP) navP.style.display = canProjects ? '' : 'none';
-  const navU = document.getElementById('navUsers');    if (navU) navU.style.display = platAdmin ? '' : 'none';
+  // Platform settings live in the Config view's "Platform" section. Show its nav group +
+  // header to anyone who can see at least one platform panel; gate each link to its panel.
+  const showPlatformCfg = platAdmin || projAdmin;
+  ['configNavAccess','cfgSec-access'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = showPlatformCfg ? '' : 'none'; });
+  [['configProjectsPanel', projAdmin], ['configSmtpPanel', platAdmin], ['configLdapPanel', platAdmin], ['configUsersPanel', platAdmin]].forEach(([pid, ok]) => {
+    const link = document.querySelector(`.config-nav-link[data-target="${pid}"]`); if (link) link.style.display = ok ? '' : 'none';
+  });
+  // The separate Projects / Users & roles left-nav views are retired — consolidated into Config → Platform.
+  const navP = document.getElementById('navProjects'); if (navP) navP.style.display = 'none';
+  const navU = document.getElementById('navUsers');    if (navU) navU.style.display = 'none';
   const navA = document.getElementById('navAudit');    if (navA) navA.style.display = platAdmin ? '' : 'none';
   // Presence gauge — platform admins only. Run it HERE (early) and guarded, so a failure
   // in any later block can never strip the admin status bar (it used to be the last line).
@@ -4059,7 +4064,13 @@ function switchView(name) {
   if (name === 'audit')    loadAudit();
   if (name === 'assess')   loadAssessments();
   if (name === 'improve')  { pmInit(); loadImproveQueue(); }
-  if (name === 'config')   loadConfig();
+  if (name === 'config') {
+    loadConfig();
+    // Platform settings now live in Config → Platform (the separate Users/Projects views
+    // are retired) — load their data here, gated like the panels.
+    if (me && me.is_admin) { loadProjectsAdmin(); loadProjectSwitcher(); }
+    if (me && me.is_platform_admin) { loadAccounts(); loadRolesMatrix(); loadRoleBindings(); loadLdapStatus(); loadLdapSettings(); loadSmtpSettings(); }
+  }
   if (name === 'inbox')    loadInbox();
   if (name === 'users')    { loadAccounts(); loadRolesMatrix(); loadRoleBindings(); loadLdapStatus(); loadLdapSettings(); loadSmtpSettings(); }
   if (name === 'projects') { loadProjectsAdmin(); loadProjectSwitcher(); }
@@ -4069,12 +4080,9 @@ function switchView(name) {
 // full-page views (built once at boot). Far safer than duplicating the markup;
 // the panels keep their ids so all the existing loaders keep working.
 function _setupRbacViews() {
-  const uBody = document.getElementById('usersViewBody');
-  const pBody = document.getElementById('projectsViewBody');
-  if (uBody) ['configUsersPanel','configLdapPanel','configSmtpPanel'].forEach(id => {
-    const el = document.getElementById(id); if (el) uBody.appendChild(el);
-  });
-  if (pBody) { const el = document.getElementById('configProjectsPanel'); if (el) pBody.appendChild(el); }
+  // Platform settings (Projects, Email/SMTP, LDAP, Users & roles) now live in the Config
+  // view's "Platform" section — no longer relocated into separate Users/Projects views
+  // (whose nav items are retired). Kept as a no-op stub so existing callers don't break.
 }
 
 // ── Active run chip (masthead) ───────────────────────────────

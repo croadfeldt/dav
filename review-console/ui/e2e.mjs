@@ -22,11 +22,22 @@ const ROLES = {
                  'prompt.manage', 'project.models', 'project.integrations', 'project.repos',
                  'project.catalog', 'blueprint.view', 'blueprint.edit'],
   },
+  'project-admin': {
+    is_platform_admin: false, is_admin: true, is_project_admin: true,
+    privileges: ['project.data.read', 'project.create', 'assessment.view', 'assessment.edit',
+                 'prompt.manage', 'project.models', 'project.integrations', 'blueprint.view'],
+  },
   'project-viewer': {
     is_platform_admin: false, is_admin: false, is_project_admin: false,
     privileges: ['project.data.read', 'assessment.view', 'blueprint.view'],
   },
 };
+
+// data-target → display for a Config Platform-section nav link.
+function linkDisp(document, target) {
+  const el = document.querySelector(`.config-nav-link[data-target="${target}"]`);
+  return el ? el.style.display : '(missing)';
+}
 
 function meFor(role) {
   return {
@@ -86,15 +97,32 @@ async function runRole(role) {
   const ck = (name, cond, detail = '') => checks.push([cond ? 'PASS' : 'FAIL', `[${role}] ${name}`, detail]);
 
   ck('no uncaught errors at boot', errors.length === 0, errors.slice(0, 4).join('  |  '));
+  const lnk = (t) => linkDisp(document, t);
+  // The separate Projects / Users & roles left-nav views are retired for everyone (→ Config → Platform).
+  ck('separate Users/Projects nav views retired', disp('navUsers') === 'none' && disp('navProjects') === 'none', `users=${disp('navUsers')} projects=${disp('navProjects')}`);
   if (role === 'platform-admin') {
     ck('presence chip rendered', disp('presenceWrap') !== 'none', 'display=' + disp('presenceWrap'));
-    ck('Users nav visible', disp('navUsers') !== 'none', 'display=' + disp('navUsers'));
     ck('Audit nav visible', disp('navAudit') !== 'none', 'display=' + disp('navAudit'));
-    ck('Email (SMTP) panel present', !!document.getElementById('configSmtpPanel'));
+    ck('Platform config section visible', disp('cfgSec-access') !== 'none', 'display=' + disp('cfgSec-access'));
+    ck('Platform nav group visible', disp('configNavAccess') !== 'none', 'display=' + disp('configNavAccess'));
+    // platform admin: every Platform link present.
+    ck('Projects link visible', lnk('configProjectsPanel') !== 'none', 'display=' + lnk('configProjectsPanel'));
+    ck('Email (SMTP) link visible', lnk('configSmtpPanel') !== 'none', 'display=' + lnk('configSmtpPanel'));
+    ck('LDAP link visible', lnk('configLdapPanel') !== 'none', 'display=' + lnk('configLdapPanel'));
+    ck('Users & roles link visible', lnk('configUsersPanel') !== 'none', 'display=' + lnk('configUsersPanel'));
+  } else if (role === 'project-admin') {
+    // project admin: sees the Platform section + Projects link ONLY — not SMTP/LDAP/Users (platform-only).
+    ck('presence chip hidden', disp('presenceWrap') === 'none', 'display=' + disp('presenceWrap'));
+    ck('Audit nav hidden', disp('navAudit') === 'none', 'display=' + disp('navAudit'));
+    ck('Platform config section visible', disp('cfgSec-access') !== 'none', 'display=' + disp('cfgSec-access'));
+    ck('Projects link visible', lnk('configProjectsPanel') !== 'none', 'display=' + lnk('configProjectsPanel'));
+    ck('Email (SMTP) link hidden', lnk('configSmtpPanel') === 'none', 'display=' + lnk('configSmtpPanel'));
+    ck('LDAP link hidden', lnk('configLdapPanel') === 'none', 'display=' + lnk('configLdapPanel'));
+    ck('Users & roles link hidden', lnk('configUsersPanel') === 'none', 'display=' + lnk('configUsersPanel'));
   } else {
     ck('presence chip hidden', disp('presenceWrap') === 'none', 'display=' + disp('presenceWrap'));
-    ck('Users nav hidden', disp('navUsers') === 'none', 'display=' + disp('navUsers'));
     ck('Audit nav hidden', disp('navAudit') === 'none', 'display=' + disp('navAudit'));
+    ck('Platform config section hidden', disp('cfgSec-access') === 'none', 'display=' + disp('cfgSec-access'));
   }
   dom.window.close();
   return checks;
