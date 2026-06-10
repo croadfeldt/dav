@@ -361,20 +361,26 @@ BEGIN
   SELECT COALESCE((SELECT id FROM projects WHERE id=20),
                   (SELECT id FROM projects WHERE slug='default')) INTO _pid;
 
+  -- Scope & bundles (#107): the config registries gain two orthogonal scope axes —
+  -- project_id is relaxed to NULL-able (NULL = platform-scoped, all projects) and a new
+  -- use_category (NULL = all categories). The one-time pre-tenancy backfill is RETIRED
+  -- for these three: a NULL project_id is now intentional (platform), so re-running it
+  -- would clobber platform-scoped rows. _pid is still used by model_defaults below.
+
   -- model_configs
   ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
-  EXECUTE format('UPDATE model_configs SET project_id=%s WHERE project_id IS NULL', _pid);
-  ALTER TABLE model_configs ALTER COLUMN project_id SET NOT NULL;
+  ALTER TABLE model_configs ADD COLUMN IF NOT EXISTS use_category TEXT;
+  ALTER TABLE model_configs ALTER COLUMN project_id DROP NOT NULL;
 
   -- mcp_server_configs
   ALTER TABLE mcp_server_configs ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
-  EXECUTE format('UPDATE mcp_server_configs SET project_id=%s WHERE project_id IS NULL', _pid);
-  ALTER TABLE mcp_server_configs ALTER COLUMN project_id SET NOT NULL;
+  ALTER TABLE mcp_server_configs ADD COLUMN IF NOT EXISTS use_category TEXT;
+  ALTER TABLE mcp_server_configs ALTER COLUMN project_id DROP NOT NULL;
 
   -- managed_repos (keep tenant_id; project_id is the scoping key)
   ALTER TABLE managed_repos ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
-  EXECUTE format('UPDATE managed_repos SET project_id=%s WHERE project_id IS NULL', _pid);
-  ALTER TABLE managed_repos ALTER COLUMN project_id SET NOT NULL;
+  ALTER TABLE managed_repos ADD COLUMN IF NOT EXISTS use_category TEXT;
+  ALTER TABLE managed_repos ALTER COLUMN project_id DROP NOT NULL;
 
   -- model_defaults: per-use default-model pointers become per-project
   ALTER TABLE model_defaults ADD COLUMN IF NOT EXISTS project_id BIGINT REFERENCES projects(id);
@@ -388,14 +394,51 @@ BEGIN
     ALTER TABLE model_defaults ADD PRIMARY KEY (project_id, key);
   END IF;
 END $$;
--- Per-project name uniqueness (retire any old GLOBAL unique on lower(name)).
+-- Name uniqueness within a SCOPE (project_id × use_category), NULL-safe via COALESCE so
+-- platform-scoped (NULL project_id) rows still dedupe. Retires the global + per-project uniques.
 DROP INDEX IF EXISTS idx_model_configs_name;
 DROP INDEX IF EXISTS idx_mcp_servers_name;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_model_configs_proj_name ON model_configs(project_id, lower(name));
-CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_proj_name   ON mcp_server_configs(project_id, lower(name));
+DROP INDEX IF EXISTS idx_model_configs_proj_name;
+DROP INDEX IF EXISTS idx_mcp_servers_proj_name;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_model_configs_scope_name ON model_configs(COALESCE(project_id,0), COALESCE(use_category,''), lower(name));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_scope_name   ON mcp_server_configs(COALESCE(project_id,0), COALESCE(use_category,''), lower(name));
 CREATE INDEX IF NOT EXISTS idx_model_configs_project ON model_configs(project_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_project   ON mcp_server_configs(project_id);
 CREATE INDEX IF NOT EXISTS idx_managed_repos_project ON managed_repos(project_id);
+
+-- ── Scope & bundles (#107): use-category vocabulary + output templates ───────────
+-- Controlled vocabulary for the use_category axis (admin-extensible later under
+-- usecat.manage; the app validates use_category values against this).
+CREATE TABLE IF NOT EXISTS use_categories (
+  key      TEXT PRIMARY KEY,
+  label    TEXT NOT NULL,
+  position INT  NOT NULL DEFAULT 100
+);
+INSERT INTO use_categories (key, label, position) VALUES
+  ('arch-review',     'Architecture review', 10),
+  ('enhancement',     'Enhancement',          20),
+  ('assessment',      'Assessment',           30),
+  ('uc-gap-analysis', 'UC gap analysis',      40),
+  ('uc-authoring',    'UC authoring',         50),
+  ('evaluation',      'Evaluation',           60)
+ON CONFLICT (key) DO NOTHING;
+
+-- Output templates (reports / artifacts) — outputs get the two scope axes directly too,
+-- so a bundle can package them and they resolve like configs. project_id NULL = platform.
+CREATE TABLE IF NOT EXISTS output_templates (
+  id           BIGSERIAL PRIMARY KEY,
+  name         TEXT NOT NULL,
+  kind         TEXT NOT NULL DEFAULT 'report',   -- report | template | artifact
+  description  TEXT NOT NULL DEFAULT '',
+  content      TEXT NOT NULL DEFAULT '',
+  project_id   BIGINT REFERENCES projects(id) ON DELETE CASCADE,   -- NULL = platform
+  use_category TEXT,                                               -- NULL = all categories
+  created_by   TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_output_templates_scope_name
+  ON output_templates(COALESCE(project_id,0), COALESCE(use_category,''), lower(name));
 
 -- MCP servers are no longer statically seeded here. openshift-mcp /
 -- frc-scheduler-mcp are not used by DAV. dav-docs-mcp is self-registered at boot
@@ -695,7 +738,9 @@ INSERT INTO rbac_privileges (key, name, description, scope) VALUES
   ('assessment.view',            'View assessments',       'View assessments and their capability findings', 'project'),
   ('assessment.edit',            'Edit assessments',       'Ingest and edit assessments', 'project'),
   ('blueprint.view',             'View blueprints',        'View blueprint/template projects and their setup', 'project'),
-  ('blueprint.edit',             'Edit blueprints',        'Create, clone and manage blueprint/template projects', 'project')
+  ('blueprint.edit',             'Edit blueprints',        'Create, clone and manage blueprint/template projects', 'project'),
+  -- Scope & bundles (#107): manage platform- and use-category-scoped config + bundles (cross-project; seeded to Platform Admin).
+  ('usecat.manage',              'Manage shared config',   'Manage platform- and use-category-scoped config, capabilities and bundles (cross-project)', 'cross-project')
 ON CONFLICT (key) DO NOTHING;
 -- Reclassify project.create from its original 'platform' scope to 'cross-project'
 -- (project-related but not tied to a specific project). Idempotent.
@@ -713,7 +758,7 @@ ON CONFLICT (key) DO NOTHING;
 -- with ON CONFLICT DO NOTHING, so adding keys here backfills existing roles.
 INSERT INTO rbac_role_privileges (role_id, privilege_key)
   SELECT r.id, p.key FROM rbac_roles r CROSS JOIN rbac_privileges p
-  WHERE (r.key='platform-admin' AND p.key IN ('platform.admin','project.create'))
+  WHERE (r.key='platform-admin' AND p.key IN ('platform.admin','project.create','usecat.manage'))
      OR (r.key='project-admin'  AND p.key IN (
             'project.settings','project.members','project.delete','project.data.read',
             'project.usecases','project.runs.manage','project.runs.execute',

@@ -39,6 +39,7 @@ P_ASSESSMENT_VIEW = "assessment.view"   # F7: view assessments + findings
 P_ASSESSMENT_EDIT = "assessment.edit"   # F7: ingest / edit assessments
 P_BLUEPRINT_VIEW = "blueprint.view"     # blueprints (task #95) — inert until built
 P_BLUEPRINT_EDIT = "blueprint.edit"     # blueprints (task #95) — inert until built
+P_USECAT_MANAGE = "usecat.manage"       # scope & bundles (#107): manage platform / use-category-scoped config + bundles (cross-project; seeded to Platform Admin)
 
 ROLE_PLATFORM_ADMIN = "platform-admin"
 ROLE_PROJECT_ADMIN = "project-admin"
