@@ -9637,6 +9637,63 @@ async def prompts_project_get(stage: str, request: Request):
             "assembled": assembled}
 
 
+class PromptAssistIn(BaseModel):
+    stage: str
+    target: str = "append"          # 'append' | 'section:<name>'
+    intent: str
+    current: str = ""               # optional draft to refine
+
+
+@app.post("/api/prompts/assist")
+async def prompts_assist(payload: PromptAssistIn, request: Request):
+    """AI-assisted prompt authoring (F8): describe the intent → a drafted/refined prompt
+    text for the stage's additional context or a named section. Reuses the project's
+    authoring model (uc-authoring → arch-review → evaluation fallback). Stateless — the
+    human reviews/edits/saves; nothing is applied. Requires prompt.manage."""
+    if not (payload.intent or "").strip():
+        raise HTTPException(400, "intent is required")
+    meta = _prompts_registry.stage(payload.stage)
+    if not meta:
+        raise HTTPException(404, "unknown stage")
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROMPT_MANAGE, pid)
+        cfg = await _model_default_row(conn, "uc-authoring", "arch-review", "evaluation", project_id=pid)
+    if not cfg:
+        raise HTTPException(400, "no authoring/arch-review/evaluation model configured for this project")
+    if payload.target.startswith("section:"):
+        what = f"a replacement for the base prompt section '{payload.target.split(':', 1)[1]}'"
+    else:
+        what = "an additional-context block appended to the stage prompt (it must NOT restate the base prompt)"
+    sections_txt = "\n\n".join(
+        f"### {s['label']} ({s['name']})\n{s.get('base', '')}" for s in meta.get("sections", []))
+    system = ("You are an expert prompt engineer helping an architect author the prompt for the "
+              f"DAV pipeline stage '{meta['label']}'. DAV evaluates whether an architecture "
+              "specification supports a use case. Write clear, concise, instruction-style prompt "
+              "text. Output ONLY the prompt text — no preamble, no markdown code fences, no "
+              "explanation, no surrounding quotes.")
+    user = (f"Stage: {meta['label']} — {meta.get('description', '')}\n\n"
+            f"Base prompt sections (for context; do not repeat verbatim):\n{sections_txt or '(none)'}\n\n"
+            f"You are writing {what}.\n\n"
+            f"Architect's intent:\n{payload.intent.strip()}\n\n"
+            + (f"Current draft to refine (improve it, keep what works):\n{payload.current.strip()}\n\n"
+               if payload.current.strip() else "")
+            + "Return the improved prompt text only.")
+    call_fn = _make_diagnosis_call_fn(cfg)
+    try:
+        suggestion = await call_fn(system, user)
+    except Exception as e:
+        raise HTTPException(502, f"assist model call failed: {e}")
+    suggestion = (suggestion or "").strip()
+    # Strip accidental code fences the model may add despite instructions.
+    if suggestion.startswith("```"):
+        suggestion = suggestion.split("\n", 1)[-1]
+        if suggestion.rstrip().endswith("```"):
+            suggestion = suggestion.rstrip()[:-3].rstrip()
+    return {"stage": payload.stage, "target": payload.target,
+            "suggestion": suggestion, "model": cfg.get("model_id")}
+
+
 # ── Capability catalog (manual-curated, LLM-suggested) ───────────────────────
 class CatalogIn(BaseModel):
     cap_key: str = ""

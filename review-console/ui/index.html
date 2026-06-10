@@ -10877,14 +10877,17 @@ async function pmLoadStage() {
   h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;">';
   // Left column — editors
   h += '<div>';
-  h += `<div style="font-weight:600;font-size:12px;margin-bottom:4px;">${esc(appendLabel)}`
-     + (appendLive ? '' : ` <span style="color:var(--amber,gold);font-weight:400;font-size:10px;">(stored; applied once this stage is enabled)</span>`) + '</div>';
+  h += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><span style="font-weight:600;font-size:12px;">${esc(appendLabel)}`
+     + (appendLive ? '' : ` <span style="color:var(--amber,gold);font-weight:400;font-size:10px;">(stored; applied once this stage is enabled)</span>`) + `</span>`
+     + `<button class="btn ghost btn-sm" style="margin-left:auto;" onclick="pmAssist('append','pmAppend')" title="AI-assisted draft / refine from a described intent">✨ Assist</button></div>`;
   h += `<textarea id="pmAppend" oninput="pmRefreshPreview()" style="width:100%;min-height:90px;font-size:12px;font-family:var(--mono,monospace);" placeholder="Project-specific grounding context, conventions, glossary, constraints…">${esc(d.content || '')}</textarea>`;
   for (const sec of (_pmMeta.sections || [])) {
-    h += `<div style="margin-top:14px;font-weight:600;font-size:12px;">Override section: ${esc(sec.label)}</div>`;
+    const secId = 'pmSec_' + String(sec.name).replace(/[^a-zA-Z0-9]/g, '_');
+    h += `<div style="margin-top:14px;display:flex;align-items:center;gap:8px;"><span style="font-weight:600;font-size:12px;">Override section: ${esc(sec.label)}</span>`
+       + `<button class="btn ghost btn-sm" style="margin-left:auto;" onclick="pmAssist('section:${esc(sec.name)}','${secId}')" title="AI-assisted draft / refine from a described intent">✨ Assist</button></div>`;
     h += `<div style="font-size:10px;color:var(--text-faint);margin-bottom:4px;">${esc(sec.description || '')}</div>`;
     h += `<details style="margin-bottom:4px;"><summary style="font-size:10px;color:var(--text-dim);cursor:pointer;">show base text</summary><pre style="white-space:pre-wrap;font-size:10px;color:var(--text-faint);background:var(--bg-deep,rgba(0,0,0,0.2));padding:8px;border-radius:2px;max-height:160px;overflow:auto;">${esc(sec.base || '')}</pre></details>`;
-    h += `<textarea id="pmSecOv" data-sec="${esc(sec.name)}" oninput="pmRefreshPreview()" style="width:100%;min-height:80px;font-size:12px;font-family:var(--mono,monospace);" placeholder="Leave blank to use the base section unchanged.">${esc(ov[sec.name] || '')}</textarea>`;
+    h += `<textarea id="${secId}" data-sec="${esc(sec.name)}" oninput="pmRefreshPreview()" style="width:100%;min-height:80px;font-size:12px;font-family:var(--mono,monospace);" placeholder="Leave blank to use the base section unchanged.">${esc(ov[sec.name] || '')}</textarea>`;
   }
   h += `<div style="margin-top:12px;"><button class="btn primary btn-sm" onclick="pmSave()">Save</button></div>`;
   h += '</div>';
@@ -10929,6 +10932,28 @@ async function pmSave() {
     st.textContent = '✓ saved';
     toast('✓ Prompt customization saved');
   } catch (e) { st.textContent = ''; toast('✗ ' + e.message); }
+}
+// Prompt assistant — describe the intent, AI drafts/refines the text into the target
+// textarea (human reviews + edits + saves; nothing is auto-applied). Server-side, reuses
+// the project's authoring model. arc: assistant drafts → editor refines → static A/B validates.
+async function pmAssist(target, taId) {
+  const ta = document.getElementById(taId);
+  if (!ta) return;
+  const intent = prompt('✨ Describe the intent — what should this prompt text do?');
+  if (!intent || !intent.trim()) return;
+  const stage = document.getElementById('pmStage').value;
+  const old = ta.value;
+  ta.disabled = true; ta.value = '✨ generating…';
+  try {
+    const r = await api('/api/prompts/assist', {
+      method: 'POST',
+      body: JSON.stringify({ stage, target, intent, current: old }),
+    });
+    ta.value = (r.suggestion && r.suggestion.trim()) ? r.suggestion : old;
+    pmRefreshPreview();
+    toast('✨ Draft generated — review & edit before saving');
+  } catch (e) { ta.value = old; toast('✗ ' + e.message); }
+  finally { ta.disabled = false; }
 }
 
 // ── Capability Map (F5): bidirectional UC ↔ capability matrix ────────────────

@@ -72,7 +72,20 @@ clone`, `POST /api/projects/from-blueprint`) reusing the per-table project-scope
 logic already present for project merge/clone where it exists. Gate with `blueprint.manage`
 (or platform-admin). Task #95.
 
-## Open questions
-- Blueprint nesting (v1: no). Partial override granularity for taxonomy (whole vs term).
-- Promotion: edit in an engagement → "push up to blueprint" affordance?
-- RBAC: who can edit a blueprint (a new `blueprint.manage` privilege vs platform-admin).
+## Decisions + deferred items (Chris 2026-06-10) — revisit when building #95
+- **RBAC:** ✅ resolved — `blueprint.view` + `blueprint.edit` (finer than the earlier
+  `blueprint.manage`; both shipped 2026-06-10 as seeded-but-inert project privileges).
+  Open: should `blueprint.edit` be project-scoped or platform/cross-project, given a
+  blueprint spans engagements? (Leaning: editable by the blueprint project's admins +
+  platform-admin.)
+- **Nesting:** ✅ deferred — no blueprint-of-blueprint in v1; revisit later (Chris liked
+  the idea "down the road").
+- **Taxonomy override granularity:** **per-term** if we do it (not whole-vocabulary).
+  Still TBD whether engagements may override individual inherited terms at all in v1.
+- **Sync direction (clarified):** when an engagement has locally overridden an inherited
+  value (prompt / taxonomy term / config), offer **pull-down** (re-inherit the blueprint's
+  current value, discarding the local override) and/or **push-up** (promote the
+  engagement's local edit to the blueprint so all linked engagements inherit it). A drift
+  view shows where engagements diverge from their blueprint. **Phase 4** — not v1.
+- **Clone modes:** config-only (default for a new engagement) vs deep (config + data) —
+  confirm the exact field set copied for each at build time.
