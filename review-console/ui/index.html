@@ -6892,7 +6892,7 @@ async function _batchAddSelectedToSet(setId, setName) {
       added++;
     } catch (e) {
       if (/already/i.test(e.message)) dup++;
-      else { fail++; log_warn?.('add to set failed', u.uuid, e.message); }
+      else { fail++; console.warn('add to set failed', u.uuid, e.message); }
     }
   }
   const summary = [

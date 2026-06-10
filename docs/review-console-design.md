@@ -1,8 +1,8 @@
 # DAV Review Console — Design & Feature Inventory
 
 **Status:** Living document  
-**Last updated:** 2026-06-09  
-**Current version:** v0.19.0  
+**Last updated:** 2026-06-10  
+**Current version:** v0.19.1  
 **Source:** `review-console/` (API: `api/`, UI: `ui/index.html`)
 
 This document is the authoritative record of what the review console is, what each feature does, and how it hangs together technically. It exists so that:
@@ -1490,6 +1490,36 @@ placeholder until task #95). `navAssess` is gated on `assessment.view` (was plat
 `DAV_STAGE2_EXTRA_CONTEXT` engine seam) — byte-identical by default; any real stage-2
 change is A/B-validated (the static comparator is the measurement tool) before runtime
 trust. See `docs/prompt-management-design.md`.
+
+---
+
+## v0.19.1 — masthead selectors, maturity model, QA lint, fixes (2026-06-10)
+
+- **Masthead quick selectors:** Assessment selector (jump to an assessment in the active
+  project; always shown to `assessment.view` holders with a "— no assessments —"
+  placeholder) + a hidden Blueprint placeholder (task #95). `navAssess` gated on
+  `assessment.view`.
+- **Assessment finding model:** two dimensions — **state** (`present`/`partial`/`absent`/
+  `n/a`) and **pure maturity 1–5** (3 = engagement target). Findings carry a **category**;
+  the detail groups capabilities by category as colored pills (darkened palette + outline
+  for contrast on any background; target ringed; N/A neutral). Migration 019 adds
+  `category` + the `n/a` state.
+- **Run-change loading spinner:** run-chip spinner + a light overlay while the new run's
+  data loads (try/finally so it always clears).
+- **QA — code layer shipped:** `review-console/ui/lint.sh` = `node --check` **+ ESLint
+  `no-undef`**. `no-undef` catches undefined-reference bugs (`ReferenceError`) that
+  `node --check` misses — it found two real ones the day it was added (`hasPriv` should
+  have been `can()`; `log_warn?.()` should have been `console.warn`). **Run before every UI
+  deploy** (operator-runbook). See `api/validation/README.md` + task #99.
+- **Hardening:** `_applyAccessVisibility` now runs `_startPresence` early and guards the
+  masthead-selector calls, so a single failing line can never strip the admin status bar
+  (the `hasPriv` ReferenceError had silently broken the presence chip + config gating).
+  `/api/me` admin status self-heals on tab focus after a transient deploy-rollover blip.
+
+**Captured directions (not yet built):** Config Platform/Project tabs + Users-split +
+add-user role selector with escalation bounds (#100); user-class/intent views — Architecture
+vs Assessment focus, with view/edit perspectives (#101); assessment notes import +
+capability/category detail on click/hover (#102); UI/UX e2e + build-stamp fix (#99).
 
 ---
 

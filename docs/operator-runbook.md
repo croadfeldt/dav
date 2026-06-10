@@ -852,6 +852,18 @@ tkn pipeline start dav-stage2 -n dav \
 
 ---
 
+## Pre-deploy static checks (v0.19.1+)
+
+Before a `--tags review-console` deploy that touches the UI, run the UI lint — it catches
+undefined-reference bugs (`ReferenceError`) that `node --check` does NOT (e.g. a handler
+calling a non-existent function):
+
+```sh
+./review-console/ui/lint.sh   # node --check + eslint no-undef on the inline JS
+```
+
+For Python: `python3 -c "compile(open('review-console/api/app/main.py').read(),'main.py','exec')"`.
+
 ## Post-deploy validation (v0.19.0+)
 
 After a `--tags review-console` deploy, run the in-pod smoke harness — it exercises the

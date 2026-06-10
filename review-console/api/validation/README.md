@@ -1,5 +1,25 @@
 # review-console validation harnesses
 
+The QA validation pipeline (task #99). Three layers:
+
+1. **Code (pre-deploy, static).**
+   - Python: `python3 -c "compile(open(f).read(), f, 'exec')"` on changed modules
+     (catches `await`-outside-`async` that `ast.parse` misses).
+   - **UI: `review-console/ui/lint.sh`** — `node --check` (syntax) **+ ESLint `no-undef`**
+     on the inline JS. The `no-undef` step catches the class `node --check` misses: a
+     handler calling a function that doesn't exist (e.g. `hasPriv(...)` instead of `can`,
+     or `log_warn?.(...)`) → a runtime `ReferenceError` that can abort a whole init path.
+     Both of those real bugs were found the day the lint was added. **Run before every UI
+     deploy.**
+   - Schema/migrations: ephemeral-Postgres harness (spin `postgres:16` via podman, apply
+     migrations + schema.sql, assert) — currently ad-hoc; formalize here.
+2. **Output / integration (post-deploy):** the in-pod smoke harness below.
+3. **UI/UX (planned):** headless-browser e2e — assert key elements render per role, smoke
+   each nav view, fail on console errors at boot (would have caught the presence-chip /
+   `hasPriv` regression).
+
+## In-pod smoke harnesses
+
 Permanent **in-pod integration / post-deploy smoke** harnesses — distinct from the
 pytest unit tests in `review-console/api/test_*.py`. These run inside the deployed API pod
 and exercise the real code against the **live Postgres + run-workspace PVC**. Read-only
