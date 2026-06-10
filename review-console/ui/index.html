@@ -3241,7 +3241,17 @@ document.getElementById('projSetDefaultBtn')?.addEventListener('click', async ()
   catch(e){ toast(e.message, true); }
 });
 
+// Re-fetch identity + re-apply access visibility when the tab regains focus, throttled.
+// Self-heals the case where a transient /api/me during a deploy rollover briefly reported
+// is_platform_admin=false and the admin UI (presence chip, Users/Audit nav, etc.) vanished
+// until a manual refresh.
+let _lastMeRefresh = 0;
+window.addEventListener('focus', () => {
+  if (Date.now() - _lastMeRefresh > 30000) { _lastMeRefresh = Date.now(); loadMe(); }
+});
+
 async function loadMe() {
+  _lastMeRefresh = Date.now();
   try { me = await api('/api/me'); } catch { me = {reviewer:null,authenticated:false}; }
   const chip = document.getElementById('acctChipLabel');
   const who = document.getElementById('acctMenuWho');
@@ -10751,9 +10761,11 @@ async function loadAssessmentSelector() {
   try {
     const data = await api('/api/assessments');
     const items = data.assessments || [];
-    sel.innerHTML = '<option value="">— select —</option>' +
-      items.map(a => `<option value="${esc(a.id)}">${esc(a.handle)}${a.gaps ? ` (${a.gaps} gaps)` : ''}</option>`).join('');
-    chip.style.display = items.length ? '' : 'none';
+    sel.innerHTML = items.length
+      ? '<option value="">— select —</option>' +
+        items.map(a => `<option value="${esc(a.id)}">${esc(a.handle)}${a.gaps ? ` (${a.gaps} gaps)` : ''}</option>`).join('')
+      : '<option value="">— no assessments —</option>';
+    chip.style.display = '';   // always visible to assessment viewers (placeholder when empty)
   } catch (e) { chip.style.display = 'none'; }
 }
 // Blueprint quick selector — populated once blueprints (task #95) exist; hidden until then.
