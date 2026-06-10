@@ -8670,7 +8670,6 @@ async def self_test_runs(limit: int = Query(20, ge=1, le=100)):
 # ========================= MCP SERVERS =========================
 
 
-@app.get("/api/mcp-servers")
 def _mcp_public(row) -> dict:
     """MCP-server row for API responses — never leak the token; expose only
     whether one is set."""
@@ -8680,6 +8679,7 @@ def _mcp_public(row) -> dict:
     return d
 
 
+@app.get("/api/mcp-servers")
 async def list_mcp_servers(request: Request):
     if pool is None:
         raise HTTPException(503, "pool not initialized")
