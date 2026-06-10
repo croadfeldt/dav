@@ -834,6 +834,7 @@
     <select id="globalRunSel" title="Current run — drives all analysis stages" style="font-size:11px;max-width:300px;background:transparent;border:none;color:inherit;cursor:pointer;">
       <option value="">— select run —</option>
     </select>
+    <span class="llm-spinner" id="runLoadSpinner" style="display:none;margin:0 0 0 6px;" title="Loading run data…"></span>
   </div>
   <!-- Quick selectors: jump to an assessment / blueprint (mirrors project + run). -->
   <div class="run-context-chip" id="assessmentChip" title="Assessment — jump to one" style="cursor:default;display:none;">
@@ -9494,13 +9495,36 @@ function _populateGlobalRunSel(){
   }).join('');
   sel.value = cur;
 }
+// Loading indicator while a run change pulls fresh data for the shown page: the run-chip
+// spinner plus a light, non-blocking overlay over the content area.
+function _runLoading(on) {
+  const sp = document.getElementById('runLoadSpinner');
+  if (sp) sp.style.display = on ? '' : 'none';
+  let ov = document.getElementById('runLoadOverlay');
+  if (on) {
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'runLoadOverlay';
+      ov.style.cssText = 'position:fixed;left:0;right:0;top:48px;bottom:0;z-index:60;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(0,0,0,0.12);pointer-events:none;';
+      ov.innerHTML = '<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);background:var(--bg-panel);border:1px solid var(--border);border-radius:3px;padding:8px 14px;box-shadow:0 4px 14px rgba(0,0,0,0.3);"><span class="llm-spinner"></span>Loading run…</div>';
+      document.body.appendChild(ov);
+    }
+    ov.style.display = '';
+  } else if (ov) { ov.style.display = 'none'; }
+}
+
 document.getElementById('globalRunSel')?.addEventListener('change', async function(){
   if (!this.value) return;
-  await selectRunResult(this.value);
-  _rpPopulateUCs(activeRunResultId);  // refresh Architecture UC scope
-  _rpLoadCached();                    // show cached Review/Enhancement for this run
-  const cm = document.getElementById('rpCapMap');  // reset Engineering map prompt
-  if (cm) cm.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Click <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on) for this run.</div>';
+  _runLoading(true);
+  try {
+    await selectRunResult(this.value);
+    _rpPopulateUCs(activeRunResultId);  // refresh Architecture UC scope
+    _rpLoadCached();                    // show cached Review/Enhancement for this run
+    const cm = document.getElementById('rpCapMap');  // reset Engineering map prompt
+    if (cm) cm.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Click <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on) for this run.</div>';
+  } finally {
+    _runLoading(false);
+  }
 });
 
 // View Results button in run detail header
