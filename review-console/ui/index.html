@@ -3675,7 +3675,7 @@ async function _renderProjectMembers(pid, box) {
         const legacy = _LEGACY_PROJ_ROLE[rk] || 'viewer';
         const r = await api('/api/invites', { method:'POST', body: JSON.stringify({ email, project_id: parseInt(pid,10), project_role: legacy }) });
         const link = (r.link && r.link.startsWith('http')) ? r.link : (location.origin + (r.link||''));
-        out.innerHTML = (r.emailed ? '✓ emailed · ' : 'not emailed (no SMTP) · ')
+        out.innerHTML = (r.emailed ? '✓ emailed · ' : ('⚠ not emailed' + (r.email_error ? ' (' + esc(r.email_error) + ')' : ' (no SMTP)') + ' · '))
           + `<a href="javascript:void(0)" id="inv-copy-${pid}" style="color:var(--accent)">copy link</a>`;
         out.style.color = 'var(--text-dim)';
         document.getElementById(`inv-copy-${pid}`)?.addEventListener('click', () => { navigator.clipboard.writeText(link).then(()=>toast('Invite link copied')); });
@@ -3783,7 +3783,11 @@ async function loadAccounts() {
       try {
         const r = await api(`/api/accounts/${encodeURIComponent(this.dataset.rev)}/invite`, {method:'POST'});
         if (r.emailed) toast('Invite emailed');
-        else { const abs=(r.link&&r.link.startsWith('http'))?r.link:(location.origin+(r.link||'')); navigator.clipboard.writeText(abs).then(()=>toast('SMTP off — invite link copied')); }
+        else {
+          const abs=(r.link&&r.link.startsWith('http'))?r.link:(location.origin+(r.link||''));
+          if (r.email_error) toast('⚠ not emailed: ' + r.email_error + ' — link copied (see Audit)', true);
+          navigator.clipboard.writeText(abs).then(()=>{ if(!r.email_error) toast('SMTP off — invite link copied'); });
+        }
       } catch(e){ toast(e.message, true); }
     }));
   } catch(e) { el.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
@@ -3799,7 +3803,7 @@ document.getElementById('acctAddBtn')?.addEventListener('click', async () => {
     const r = await api('/api/accounts', {method:'POST', body: JSON.stringify({email, display_name, password: password||null})});
     document.getElementById('acctNewEmail').value=''; document.getElementById('acctNewName').value=''; document.getElementById('acctNewPw').value='';
     if (r.invited && r.emailed) { msg.textContent='account added · invite emailed'; msg.style.color='var(--green)'; }
-    else if (r.invited) { _showInviteLink(msg, r.link); }
+    else if (r.invited) { _showInviteLink(msg, r.link); if (r.email_error) toast('⚠ invite not emailed: ' + r.email_error + ' (see Audit)', true); }
     else { msg.textContent='account added (password set)'; msg.style.color='var(--green)'; }
     loadAccounts();
   } catch(e){ msg.textContent=e.message; msg.style.color='var(--red)'; }

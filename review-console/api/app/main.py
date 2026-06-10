@@ -1818,17 +1818,15 @@ async def create_account(payload: AccountCreateIn, request: Request):
         if not pw_hash and "@" in email:
             invite = await _create_account_invite(conn, email, inviter, _public_base(request))
     await _reload_approved()
-    emailed = False
+    emailed, email_error = False, ""
     if invite:
-        try:
-            emailed = await asyncio.to_thread(
-                _send_email, email, "Activate your DAV account",
-                f"You've been added to DAV. Open this link to set your password and sign in:\n\n"
-                f"{invite['link']}\n\nThis link expires in 7 days.")
-        except Exception as e:
-            log.warning("account-invite email failed: %s", e)
+        emailed, email_error = await _send_email_audited(
+            email, "Activate your DAV account",
+            f"You've been added to DAV. Open this link to set your password and sign in:\n\n"
+            f"{invite['link']}\n\nThis link expires in 7 days.",
+            actor=inviter, action="invite.email")
     return {"ok": True, "reviewer": email,
-            "invited": bool(invite), "emailed": emailed,
+            "invited": bool(invite), "emailed": emailed, "email_error": email_error,
             "link": invite["link"] if invite else None}
 
 
@@ -1843,15 +1841,12 @@ async def invite_existing_account(reviewer: str, request: Request):
         if not await conn.fetchval("SELECT 1 FROM users WHERE lower(reviewer)=$1", r):
             raise HTTPException(404, "account not found")
         invite = await _create_account_invite(conn, r, inviter, _public_base(request))
-    emailed = False
-    try:
-        emailed = await asyncio.to_thread(
-            _send_email, r, "Activate your DAV account",
-            f"Open this link to set your password and sign in to DAV:\n\n{invite['link']}\n\n"
-            f"This link expires in 7 days.")
-    except Exception as e:
-        log.warning("account-invite email failed: %s", e)
-    return {"ok": True, "link": invite["link"], "emailed": emailed}
+    emailed, email_error = await _send_email_audited(
+        r, "Activate your DAV account",
+        f"Open this link to set your password and sign in to DAV:\n\n{invite['link']}\n\n"
+        f"This link expires in 7 days.",
+        actor=inviter, action="invite.email")
+    return {"ok": True, "link": invite["link"], "emailed": emailed, "email_error": email_error}
 
 
 @app.patch("/api/accounts/{reviewer}")
@@ -2429,6 +2424,29 @@ def _send_email(to: str, subject: str, body: str) -> bool:
     return True
 
 
+async def _send_email_audited(to: str, subject: str, body: str, *, actor: str, action: str):
+    """Send an email; on failure (incl. SMTP unconfigured) record a platform-admin-visible
+    audit event and return (ok, error). Makes silent SMTP problems loud — see the email
+    message-queue TODO (reliable delivery + retries + admin notification)."""
+    err = ""
+    try:
+        ok = await asyncio.to_thread(_send_email, to, subject, body)
+        if not ok:
+            err = "SMTP not configured"
+    except Exception as e:
+        ok, err = False, str(e)
+    if not ok:
+        log.warning("email send failed (%s -> %s): %s", action, to, err)
+        try:
+            _fire(audit.record(pool, action=action, actor=actor, outcome="failure",
+                               object_type="email", object_id=to,
+                               summary=f"email not sent: {err}",
+                               detail={"to": to, "subject": subject, "error": err}))
+        except Exception:
+            log.exception("audit of email failure failed (non-fatal)")
+    return ok, err
+
+
 async def _reload_approved() -> None:
     """Rebuild the in-memory approved set from the users table. Source-agnostic:
     'approved' == an ENABLED account exists (roles decide what they can do)."""
@@ -2534,15 +2552,12 @@ async def create_invite(payload: InviteIn, request: Request):
             payload.project_role, payload.global_role, inviter, expires)
     _base = _public_base(request)
     link = f"{_base}/?invite={token}" if _base else f"/?invite={token}"
-    emailed = False
-    try:
-        emailed = await asyncio.to_thread(
-            _send_email, email, "You're invited to DAV",
-            f"{inviter} invited you to DAV. Open this link to set a password and join:\n\n{link}\n\n"
-            f"This invite expires in 7 days.")
-    except Exception as e:
-        log.warning("invite email send failed: %s", e)
-    return {"ok": True, "token": token, "link": link, "emailed": emailed}
+    emailed, email_error = await _send_email_audited(
+        email, "You're invited to DAV",
+        f"{inviter} invited you to DAV. Open this link to set a password and join:\n\n{link}\n\n"
+        f"This invite expires in 7 days.",
+        actor=inviter, action="invite.email")
+    return {"ok": True, "token": token, "link": link, "emailed": emailed, "email_error": email_error}
 
 
 @app.get("/api/invites")
