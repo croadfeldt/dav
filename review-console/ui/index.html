@@ -553,14 +553,8 @@
   .model-pill.disabled { color:var(--text-faint); border-color:var(--border); }
 
   /* ── Config two-pane layout ── */
-  .config-layout  { display:flex; width:100%; height:100%; overflow:hidden; }
-  .config-nav     { width:192px; flex-shrink:0; overflow-y:auto; border-right:1px solid var(--border); padding:18px 0 32px; background:var(--bg-panel); }
-  .config-nav-group { padding:0 14px 22px; }
-  .config-nav-cat { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--text-faint); padding:4px 0 6px; cursor:pointer; }
-  .config-nav-cat:hover { color:var(--text); }
-  .config-nav-link { display:block; font-size:12px; color:var(--text-dim); padding:3px 0 3px 10px; cursor:pointer; border-left:2px solid transparent; transition:color .15s,border-color .15s; line-height:1.5; }
-  .config-nav-link:hover { color:var(--text); }
-  .config-nav-link.active { color:var(--accent); border-left-color:var(--accent); }
+  .config-layout  { display:flex; flex-direction:column; width:100%; height:100%; overflow:hidden; }
+  .config-tabs    { padding:14px 28px 0; flex-shrink:0; }
   .config-content { flex:1; overflow-y:auto; padding:24px 28px 48px; }
   .cfg-sec-hdr   { margin:36px 0 14px; padding-bottom:9px; border-bottom:1px solid var(--border); }
   .cfg-sec-hdr:first-child { margin-top:0; }
@@ -1673,41 +1667,19 @@
     <section class="pf-view" id="view-config">
   <div class="config-layout">
 
-    <!-- ── Left nav ── -->
-    <nav class="config-nav" id="configNav">
-      <div class="config-nav-group">
-        <div class="config-nav-cat" data-target="cfgSec-registry">Multi-repo Registry</div>
-        <a class="config-nav-link" data-target="configCredentialsPanel">Shared credentials</a>
-        <a class="config-nav-link" data-target="configReposPanel">Managed repos</a>
-      </div>
-      <div class="config-nav-group">
-        <div class="config-nav-cat" data-target="cfgSec-pipeline">Pipeline Sources</div>
-        <a class="config-nav-link" data-target="configSpecPanel">Architecture spec</a>
-        <a class="config-nav-link" data-target="configCorpusPanel">Evaluation corpus</a>
-        <a class="config-nav-link" data-target="configMCPRefreshPanel">MCP refresh</a>
-      </div>
-      <div class="config-nav-group">
-        <div class="config-nav-cat" data-target="cfgSec-aimodels">AI Models</div>
-        <a class="config-nav-link" data-target="configModelsPanel">Review models</a>
-        <a class="config-nav-link" data-target="configUCAssistPanel">UC Assist</a>
-        <a class="config-nav-link" data-target="configArchDefaultPanel">Arch Review</a>
-      </div>
-      <div class="config-nav-group">
-        <div class="config-nav-cat" data-target="cfgSec-integrations">Integrations</div>
-        <a class="config-nav-link" data-target="configMCPPanel">MCP servers</a>
-      </div>
-      <div class="config-nav-group" id="configNavAccess" style="display:none;">
-        <div class="config-nav-cat" data-target="cfgSec-access">Platform</div>
-        <a class="config-nav-link" data-target="configProjectsPanel">Projects</a>
-        <a class="config-nav-link" data-target="configSmtpPanel">Email (SMTP)</a>
-        <a class="config-nav-link" data-target="configLdapPanel">LDAP / approval</a>
-        <a class="config-nav-link" data-target="configUsersPanel">Users &amp; roles</a>
-      </div>
-    </nav>
+    <!-- ── Section tabs (canonical .tabs — see docs/ui-style-guide.md) ── -->
+    <div class="tabs config-tabs" id="configTabs" role="tablist">
+      <button class="tab" data-tab="registry">Multi-repo Registry</button>
+      <button class="tab" data-tab="pipeline">Pipeline Sources</button>
+      <button class="tab" data-tab="aimodels">AI Models</button>
+      <button class="tab" data-tab="integrations">Integrations</button>
+      <button class="tab" data-tab="access" id="configTabAccess" style="display:none;">Platform</button>
+    </div>
 
-    <!-- ── Right content ── -->
+    <!-- ── Tab content ── -->
     <div class="config-content" id="configContent">
 
+      <div class="tabpanel active" data-tabpanel="registry">
       <div class="cfg-sec-hdr" id="cfgSec-registry">
         <span class="cfg-sec-title">Multi-repo Registry</span>
         <span class="cfg-sec-sub">First-class registry of repos DAV operates on — source-of-truth (ADR-003). Spec changes auto-project to dav-source-spec ConfigMap + roll MCP.</span>
@@ -1835,6 +1807,8 @@
         </div>
       </div>
 
+      </div><!-- /tabpanel registry -->
+      <div class="tabpanel" data-tabpanel="pipeline">
       <div class="cfg-sec-hdr" id="cfgSec-pipeline">
         <span class="cfg-sec-title">Pipeline Sources</span>
         <span class="cfg-sec-sub">Architecture spec &amp; evaluation corpus repos trigger a ~60s pod rollout</span>
@@ -1924,6 +1898,8 @@
       </div>
 
 
+      </div><!-- /tabpanel pipeline -->
+      <div class="tabpanel" data-tabpanel="aimodels">
       <div class="cfg-sec-hdr" id="cfgSec-aimodels">
         <span class="cfg-sec-title">AI Models</span>
         <span class="cfg-sec-sub">Architectural review models and the UC authoring assistant</span>
@@ -2060,6 +2036,8 @@
         </div>
       </div>
 
+      </div><!-- /tabpanel aimodels -->
+      <div class="tabpanel" data-tabpanel="integrations">
       <div class="cfg-sec-hdr" id="cfgSec-integrations">
         <span class="cfg-sec-title">Integrations</span>
         <span class="cfg-sec-sub">MCP servers — SSE tool connections for Claude Code and other agents</span>
@@ -2127,7 +2105,9 @@
            creation against it. -->
 
       <!-- ── Users & Access (admin only) ── -->
-      <div class="cfg-sec-hdr" id="cfgSec-access" style="display:none;">
+      </div><!-- /tabpanel integrations -->
+      <div class="tabpanel" data-tabpanel="access">
+      <div class="cfg-sec-hdr" id="cfgSec-access">
         <span class="cfg-sec-title">Platform</span>
         <span class="cfg-sec-sub">Platform-wide settings — projects, email/SMTP, LDAP approval, and accounts &amp; roles</span>
       </div>
@@ -2227,6 +2207,7 @@
         </div>
       </div>
 
+      </div><!-- /tabpanel access -->
     </div><!-- /config-content -->
   </div><!-- /config-layout -->
     </section>
@@ -2982,18 +2963,37 @@ function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt
 // Canonical tab wiring (docs/ui-style-guide.md). Within `container`, clicking a
 // .tab[data-tab=X] activates it + the .tabpanel[data-tabpanel=X] sibling, hiding the
 // rest. Idempotent; call after rendering the tab strip. `onChange(key)` is optional.
-function wireTabs(container, onChange) {
-  if (!container) return;
-  const tabs = Array.from(container.querySelectorAll('.tab'));
-  const panels = Array.from(container.querySelectorAll('.tabpanel'));
+function wireTabs(tabsEl, opts) {
+  opts = opts || {};
+  if (!tabsEl) return;
+  // Panels may be siblings of the tab strip (e.g. Config), so search the enclosing view.
+  const root = opts.panelsRoot || tabsEl.closest('.pf-view') || tabsEl.parentElement || document;
+  const tabs = Array.from(tabsEl.querySelectorAll('.tab'));
+  const panels = Array.from(root.querySelectorAll('.tabpanel'));
   const show = (key) => {
     tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === key));
     panels.forEach(p => p.classList.toggle('active', p.dataset.tabpanel === key));
-    if (typeof onChange === 'function') { try { onChange(key); } catch (e) { console.warn('tab onChange', e); } }
+    if (typeof opts.onChange === 'function') { try { opts.onChange(key); } catch (e) { console.warn('tab onChange', e); } }
   };
-  tabs.forEach(t => t.addEventListener('click', () => show(t.dataset.tab)));
-  const cur = tabs.find(t => t.classList.contains('active')) || tabs.find(t => t.style.display !== 'none') || tabs[0];
+  tabs.forEach(t => { if (!t._tabWired) { t._tabWired = true; t.addEventListener('click', () => show(t.dataset.tab)); } });
+  // Keep a VISIBLE tab active (re-pick if role-gating just hid the active one).
+  const visible = tabs.filter(t => t.style.display !== 'none');
+  const cur = visible.find(t => t.classList.contains('active')) || visible[0] || tabs[0];
   if (cur) show(cur.dataset.tab);
+}
+// Show a Config section-tab only if it has ≥1 visible panel-card (respects the
+// per-panel privilege gating set in _applyAccessVisibility), then (re)wire the strip.
+function _syncConfigTabs() {
+  const view = document.getElementById('view-config');
+  const tabsEl = document.getElementById('configTabs');
+  if (!view || !tabsEl) return;
+  view.querySelectorAll('.tabpanel[data-tabpanel]').forEach(tp => {
+    const tab = tabsEl.querySelector(`.tab[data-tab="${tp.dataset.tabpanel}"]`);
+    if (!tab) return;
+    const anyVisible = Array.from(tp.querySelectorAll('.panel-card')).some(p => p.style.display !== 'none');
+    tab.style.display = anyVisible ? '' : 'none';
+  });
+  wireTabs(tabsEl);
 }
 // Embed JSON.stringify output safely inside a double-quoted HTML attribute
 // (e.g. onclick="..."). Without &quot;-escaping, an inner `"` would terminate
@@ -3346,13 +3346,9 @@ function _applyAccessVisibility() {
   ['configUsersPanel','configLdapPanel','configSmtpPanel'].forEach(id => {
     const el = document.getElementById(id); if (el) el.style.display = platAdmin ? '' : 'none';
   });
-  // Platform settings live in the Config view's "Platform" section. Show its nav group +
-  // header to anyone who can see at least one platform panel; gate each link to its panel.
-  const showPlatformCfg = platAdmin || projAdmin;
-  ['configNavAccess','cfgSec-access'].forEach(id => { const el = document.getElementById(id); if (el) el.style.display = showPlatformCfg ? '' : 'none'; });
-  [['configProjectsPanel', projAdmin], ['configSmtpPanel', platAdmin], ['configLdapPanel', platAdmin], ['configUsersPanel', platAdmin]].forEach(([pid, ok]) => {
-    const link = document.querySelector(`.config-nav-link[data-target="${pid}"]`); if (link) link.style.display = ok ? '' : 'none';
-  });
+  // The Config "Platform" section-tab shows iff one of its panels is visible (projAdmin
+  // → Projects; platAdmin → Email/LDAP/Users) — derived by _syncConfigTabs() below from
+  // the per-panel gating already applied above. No separate nav-link gating needed.
   // The separate Projects / Users & roles left-nav views are retired — consolidated into Config → Platform.
   const navP = document.getElementById('navProjects'); if (navP) navP.style.display = 'none';
   const navU = document.getElementById('navUsers');    if (navU) navU.style.display = 'none';
@@ -3362,19 +3358,17 @@ function _applyAccessVisibility() {
   try { _startPresence(platAdmin); } catch (e) { console.warn('presence init failed', e); }
   const navAs = document.getElementById('navAssess');  if (navAs) navAs.style.display = can('assessment.view') ? '' : 'none';
   try { loadAssessmentSelector(); loadBlueprintSelector(); } catch (e) { console.warn('masthead selector init failed', e); }
-  // Config panels are now project-scoped: gate each on its management privilege,
-  // and hide its config-nav link too so scroll-spy doesn't target a hidden panel.
+  // Config panels are project-scoped: gate each on its management privilege.
   const cfgGate = [
     ['configReposPanel',  'project.repos'],
     ['configModelsPanel', 'project.models'],
     ['configMCPPanel',    'project.integrations'],
   ];
   for (const [panelId, priv] of cfgGate) {
-    const show = can(priv);
-    const panel = document.getElementById(panelId); if (panel) panel.style.display = show ? '' : 'none';
-    const link = document.querySelector(`.config-nav-link[data-target="${panelId}"]`);
-    if (link) link.style.display = show ? '' : 'none';
+    const panel = document.getElementById(panelId); if (panel) panel.style.display = can(priv) ? '' : 'none';
   }
+  // Section-tabs follow the now-resolved per-panel visibility (hides empty sections).
+  try { _syncConfigTabs(); } catch (e) { console.warn('config tab sync failed', e); }
   // Workflow action affordances (server enforces regardless; this is UX). Toggle
   // body data-* flags that CSS can hang off, and hide tagged controls directly.
   const flags = {
@@ -13694,43 +13688,11 @@ async function loadCodeRepos() {
 
 
 // ── Config nav: scroll-spy + click-to-scroll ─────────────────────────────────
-let _configNavReady = false;
-const _cfgPanelIds = [
-  'configCredentialsPanel','configReposPanel',
-  'configSpecPanel','configCorpusPanel','configInferencePanel',
-  'configModelsPanel','configUCAssistPanel','configMCPPanel',
-  // Per ADR-006: configCodeReposPanel folded into configReposPanel
-];
-
-function _updateConfigNavActive() {
-  const content = document.getElementById('configContent');
-  if (!content) return;
-  const cTop = content.getBoundingClientRect().top;
-  let activeId = _cfgPanelIds[0];
-  for (const id of _cfgPanelIds) {
-    const el = document.getElementById(id);
-    if (!el) continue;
-    if (el.getBoundingClientRect().top - cTop <= 40) activeId = id;
-  }
-  document.querySelectorAll('#configNav .config-nav-link').forEach(l => {
-    l.classList.toggle('active', l.dataset.target === activeId);
-  });
-}
-
+// Config is now a tabbed view (docs/ui-style-guide.md): the left scroll-spy nav was
+// replaced by the canonical .tabs strip. setupConfigNav() just syncs + wires the tabs
+// (idempotent; honors the per-panel role-gating from _applyAccessVisibility).
 function setupConfigNav() {
-  _updateConfigNavActive();
-  if (_configNavReady) return;
-  _configNavReady = true;
-  const content = document.getElementById('configContent');
-  document.querySelectorAll('#configNav [data-target]').forEach(el => {
-    el.addEventListener('click', () => {
-      const target = document.getElementById(el.dataset.target);
-      if (!target) return;
-      const offset = target.getBoundingClientRect().top - content.getBoundingClientRect().top;
-      content.scrollBy({ top: offset - 8, behavior: 'smooth' });
-    });
-  });
-  content.addEventListener('scroll', _updateConfigNavActive, { passive: true });
+  try { _syncConfigTabs(); } catch (e) { console.warn('config tab sync failed', e); }
 }
 
 // Config tab data is loaded via loadConfig() called from switchView('config').

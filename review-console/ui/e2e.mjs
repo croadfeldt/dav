@@ -97,32 +97,31 @@ async function runRole(role) {
   const ck = (name, cond, detail = '') => checks.push([cond ? 'PASS' : 'FAIL', `[${role}] ${name}`, detail]);
 
   ck('no uncaught errors at boot', errors.length === 0, errors.slice(0, 4).join('  |  '));
-  const lnk = (t) => linkDisp(document, t);
   // The separate Projects / Users & roles left-nav views are retired for everyone (→ Config → Platform).
   ck('separate Users/Projects nav views retired', disp('navUsers') === 'none' && disp('navProjects') === 'none', `users=${disp('navUsers')} projects=${disp('navProjects')}`);
+  // Config is now tabbed: the Platform section-tab gates on the per-panel visibility; the
+  // panels keep their own privilege gating (the e2e reads each panel's inline display).
   if (role === 'platform-admin') {
     ck('presence chip rendered', disp('presenceWrap') !== 'none', 'display=' + disp('presenceWrap'));
     ck('Audit nav visible', disp('navAudit') !== 'none', 'display=' + disp('navAudit'));
-    ck('Platform config section visible', disp('cfgSec-access') !== 'none', 'display=' + disp('cfgSec-access'));
-    ck('Platform nav group visible', disp('configNavAccess') !== 'none', 'display=' + disp('configNavAccess'));
-    // platform admin: every Platform link present.
-    ck('Projects link visible', lnk('configProjectsPanel') !== 'none', 'display=' + lnk('configProjectsPanel'));
-    ck('Email (SMTP) link visible', lnk('configSmtpPanel') !== 'none', 'display=' + lnk('configSmtpPanel'));
-    ck('LDAP link visible', lnk('configLdapPanel') !== 'none', 'display=' + lnk('configLdapPanel'));
-    ck('Users & roles link visible', lnk('configUsersPanel') !== 'none', 'display=' + lnk('configUsersPanel'));
+    ck('Platform config tab visible', disp('configTabAccess') !== 'none', 'display=' + disp('configTabAccess'));
+    ck('Projects panel visible', disp('configProjectsPanel') !== 'none', 'display=' + disp('configProjectsPanel'));
+    ck('Email (SMTP) panel visible', disp('configSmtpPanel') !== 'none', 'display=' + disp('configSmtpPanel'));
+    ck('LDAP panel visible', disp('configLdapPanel') !== 'none', 'display=' + disp('configLdapPanel'));
+    ck('Users & roles panel visible', disp('configUsersPanel') !== 'none', 'display=' + disp('configUsersPanel'));
   } else if (role === 'project-admin') {
-    // project admin: sees the Platform section + Projects link ONLY — not SMTP/LDAP/Users (platform-only).
+    // project admin: sees the Platform tab (via Projects) + Projects panel ONLY — not SMTP/LDAP/Users.
     ck('presence chip hidden', disp('presenceWrap') === 'none', 'display=' + disp('presenceWrap'));
     ck('Audit nav hidden', disp('navAudit') === 'none', 'display=' + disp('navAudit'));
-    ck('Platform config section visible', disp('cfgSec-access') !== 'none', 'display=' + disp('cfgSec-access'));
-    ck('Projects link visible', lnk('configProjectsPanel') !== 'none', 'display=' + lnk('configProjectsPanel'));
-    ck('Email (SMTP) link hidden', lnk('configSmtpPanel') === 'none', 'display=' + lnk('configSmtpPanel'));
-    ck('LDAP link hidden', lnk('configLdapPanel') === 'none', 'display=' + lnk('configLdapPanel'));
-    ck('Users & roles link hidden', lnk('configUsersPanel') === 'none', 'display=' + lnk('configUsersPanel'));
+    ck('Platform config tab visible', disp('configTabAccess') !== 'none', 'display=' + disp('configTabAccess'));
+    ck('Projects panel visible', disp('configProjectsPanel') !== 'none', 'display=' + disp('configProjectsPanel'));
+    ck('Email (SMTP) panel hidden', disp('configSmtpPanel') === 'none', 'display=' + disp('configSmtpPanel'));
+    ck('LDAP panel hidden', disp('configLdapPanel') === 'none', 'display=' + disp('configLdapPanel'));
+    ck('Users & roles panel hidden', disp('configUsersPanel') === 'none', 'display=' + disp('configUsersPanel'));
   } else {
     ck('presence chip hidden', disp('presenceWrap') === 'none', 'display=' + disp('presenceWrap'));
     ck('Audit nav hidden', disp('navAudit') === 'none', 'display=' + disp('navAudit'));
-    ck('Platform config section hidden', disp('cfgSec-access') === 'none', 'display=' + disp('cfgSec-access'));
+    ck('Platform config tab hidden', disp('configTabAccess') === 'none', 'display=' + disp('configTabAccess'));
   }
   dom.window.close();
   return checks;
