@@ -8931,6 +8931,277 @@ async def mcp_servers_health(request: Request):
     return list(results)
 
 
+# ========================= BUNDLES (#107 Phase 4b) =========================
+# Versioned, immutable, attachable packages of config/capability/output items.
+# Manage (create/edit/publish) = usecat.manage; attach-to-project = project.integrations;
+# attach-to-platform/use-category = usecat.manage. Publishing SNAPSHOTS each referenced
+# item's non-secret definition (secrets are NEVER snapshotted) so a version is frozen.
+
+_BUNDLE_ITEM_TYPES = {"mcp_server", "model_config", "managed_repo", "output_template",
+                      "model_default", "capability_term", "capability_entry"}
+
+
+class BundleIn(BaseModel):
+    name: str
+    kind: str = "mixed"            # config | capability | output | mixed
+    description: str = ""
+
+
+class BundleItemIn(BaseModel):
+    item_type: str
+    source_id: Optional[int] = None     # snapshot from this row at publish
+    item_data: Optional[dict] = None    # OR a hand-authored definition
+    position: int = 0
+
+
+class BundleAttachIn(BaseModel):
+    project_id: Optional[int] = None    # NULL = platform-wide
+    use_category: Optional[str] = None  # NULL = all categories
+
+
+def _slugify(s: str) -> str:
+    out = re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
+    return out or "bundle"
+
+
+async def _snapshot_item(conn, item_type: str, source_id: int) -> dict:
+    """Snapshot a source row's PUBLIC definition for an immutable bundle item — secrets
+    (api_key / auth_token / PAT) are NEVER snapshotted."""
+    if item_type == "mcp_server":
+        r = await conn.fetchrow("SELECT name, sse_url, description, enabled, use_uc_assist, use_category FROM mcp_server_configs WHERE id=$1", source_id)
+    elif item_type == "model_config":
+        r = await conn.fetchrow("SELECT name, provider, endpoint_url, model_id, capabilities, enabled, is_local, use_arch_review, use_uc_assist, use_category FROM model_configs WHERE id=$1", source_id)
+    elif item_type == "output_template":
+        r = await conn.fetchrow("SELECT name, kind, description, content, use_category FROM output_templates WHERE id=$1", source_id)
+    else:
+        return {}
+    if not r:
+        return {}
+    d = dict(r)
+    if "capabilities" in d:
+        d["capabilities"] = _parse_jsonb(d["capabilities"])
+    return d
+
+
+async def _bundle_public(conn, b) -> dict:
+    """Bundle row + version / item / attachment counts."""
+    d = dict(b)
+    bid = d["id"]
+    d["versions"] = await conn.fetchval("SELECT count(*) FROM bundle_versions WHERE bundle_id=$1", bid)
+    d["attachments"] = await conn.fetchval("SELECT count(*) FROM bundle_attachments WHERE bundle_id=$1", bid)
+    cur = d.get("current_version_id")
+    d["item_count"] = (await conn.fetchval("SELECT count(*) FROM bundle_items WHERE bundle_version_id=$1", cur)) if cur else 0
+    return d
+
+
+async def _bundle_editable_version(conn, bundle_id: int, actor: str) -> int:
+    """The bundle's editable DRAFT version id — create one (carrying the published version's
+    items forward) if the latest version is already published."""
+    latest = await conn.fetchrow(
+        "SELECT id, version_no, status FROM bundle_versions WHERE bundle_id=$1 ORDER BY version_no DESC LIMIT 1", bundle_id)
+    if latest and latest["status"] == "draft":
+        return latest["id"]
+    next_no = (latest["version_no"] + 1) if latest else 1
+    vid = await conn.fetchval(
+        "INSERT INTO bundle_versions (bundle_id, version_no, status, created_by) VALUES ($1,$2,'draft',$3) RETURNING id",
+        bundle_id, next_no, actor)
+    if latest:
+        await conn.execute(
+            "INSERT INTO bundle_items (bundle_version_id, item_type, item_data, source_id, position) "
+            "SELECT $1, item_type, item_data, source_id, position FROM bundle_items WHERE bundle_version_id=$2",
+            vid, latest["id"])
+    return vid
+
+
+@app.get("/api/bundles")
+async def list_bundles(request: Request):
+    """All bundles (cross-project shared resources) + counts. Any project member may browse
+    (to attach); managing requires usecat.manage."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        rows = await conn.fetch("SELECT * FROM bundles ORDER BY name")
+        return [await _bundle_public(conn, b) for b in rows]
+
+
+@app.get("/api/bundles/attached")
+async def list_attached_bundles(request: Request):
+    """Bundles attached to the active (project × use-category) scope + their effective items."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        cat = await _active_use_category(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        atts = await conn.fetch(
+            "SELECT ba.id, ba.bundle_id, ba.bundle_version_id, ba.project_id, ba.use_category, "
+            "       b.name, b.slug, bv.version_no "
+            "FROM bundle_attachments ba JOIN bundles b ON b.id=ba.bundle_id "
+            "JOIN bundle_versions bv ON bv.id=ba.bundle_version_id "
+            f"WHERE {_scope_where('$1','$2')}", pid, cat)
+        out = []
+        for a in atts:
+            items = await conn.fetch(
+                "SELECT item_type, item_data FROM bundle_items WHERE bundle_version_id=$1 ORDER BY position, id",
+                a["bundle_version_id"])
+            d = dict(a)
+            d["items"] = [{"item_type": i["item_type"], "item_data": _parse_jsonb(i["item_data"])} for i in items]
+            out.append(d)
+        return out
+
+
+@app.post("/api/bundles", status_code=201)
+async def create_bundle(payload: BundleIn, request: Request):
+    user = get_user(request)
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_USECAT_MANAGE, pid)
+        slug = _slugify(name)
+        if await conn.fetchval("SELECT 1 FROM bundles WHERE slug=$1", slug):
+            slug = f"{slug}-{secrets.token_hex(3)}"
+        bid = await conn.fetchval(
+            "INSERT INTO bundles (name, slug, kind, description, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id",
+            name, slug, payload.kind, payload.description, user)
+        await conn.execute(
+            "INSERT INTO bundle_versions (bundle_id, version_no, status, created_by) VALUES ($1,1,'draft',$2)", bid, user)
+        b = await conn.fetchrow("SELECT * FROM bundles WHERE id=$1", bid)
+    await audit.record(pool, action="bundle.create", actor=user, object_type="bundle", object_id=str(bid), summary=f"created bundle {name}")
+    async with pool.acquire() as conn:
+        return await _bundle_public(conn, b)
+
+
+@app.get("/api/bundles/{bid}")
+async def get_bundle(bid: int, request: Request):
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        b = await conn.fetchrow("SELECT * FROM bundles WHERE id=$1", bid)
+        if not b:
+            raise HTTPException(404, "bundle not found")
+        versions = await conn.fetch(
+            "SELECT id, version_no, status, note, created_by, created_at, published_at FROM bundle_versions WHERE bundle_id=$1 ORDER BY version_no DESC", bid)
+        latest = versions[0] if versions else None
+        items = await conn.fetch(
+            "SELECT id, item_type, item_data, source_id, position FROM bundle_items WHERE bundle_version_id=$1 ORDER BY position, id", latest["id"]) if latest else []
+        attachments = await conn.fetch(
+            "SELECT id, bundle_version_id, project_id, use_category, attached_by, attached_at FROM bundle_attachments WHERE bundle_id=$1", bid)
+        out = await _bundle_public(conn, b)
+        out["version_list"] = [dict(v) for v in versions]
+        out["items"] = [{**dict(i), "item_data": _parse_jsonb(i["item_data"])} for i in items]
+        out["attachment_list"] = [dict(a) for a in attachments]
+        return out
+
+
+@app.post("/api/bundles/{bid}/items", status_code=201)
+async def add_bundle_item(bid: int, payload: BundleItemIn, request: Request):
+    user = get_user(request)
+    if payload.item_type not in _BUNDLE_ITEM_TYPES:
+        raise HTTPException(400, f"invalid item_type: {payload.item_type}")
+    if not payload.source_id and not payload.item_data:
+        raise HTTPException(400, "either source_id (reference) or item_data (hand-authored) is required")
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_USECAT_MANAGE, pid)
+        if not await conn.fetchval("SELECT 1 FROM bundles WHERE id=$1", bid):
+            raise HTTPException(404, "bundle not found")
+        vid = await _bundle_editable_version(conn, bid, user)
+        data = payload.item_data or {}
+        if payload.source_id and not data:
+            data = await _snapshot_item(conn, payload.item_type, payload.source_id)
+        iid = await conn.fetchval(
+            "INSERT INTO bundle_items (bundle_version_id, item_type, item_data, source_id, position) VALUES ($1,$2,$3,$4,$5) RETURNING id",
+            vid, payload.item_type, json.dumps(data), payload.source_id, payload.position)
+        return {"ok": True, "id": iid, "bundle_version_id": vid}
+
+
+@app.delete("/api/bundle-items/{iid}", status_code=204)
+async def delete_bundle_item(iid: int, request: Request):
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_USECAT_MANAGE, pid)
+        v = await conn.fetchrow(
+            "SELECT bv.status FROM bundle_items bi JOIN bundle_versions bv ON bv.id=bi.bundle_version_id WHERE bi.id=$1", iid)
+        if not v:
+            raise HTTPException(404, "item not found")
+        if v["status"] != "draft":
+            raise HTTPException(409, "cannot edit a published version — adding an item creates a new draft")
+        await conn.execute("DELETE FROM bundle_items WHERE id=$1", iid)
+
+
+@app.post("/api/bundles/{bid}/publish")
+async def publish_bundle(bid: int, request: Request):
+    """Publish the draft version: snapshot each referenced item's current non-secret
+    definition, freeze it, and make it the bundle's current version."""
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_USECAT_MANAGE, pid)
+        v = await conn.fetchrow("SELECT id, status FROM bundle_versions WHERE bundle_id=$1 ORDER BY version_no DESC LIMIT 1", bid)
+        if not v:
+            raise HTTPException(404, "bundle has no version")
+        if v["status"] == "published":
+            raise HTTPException(409, "the latest version is already published")
+        vid = v["id"]
+        items = await conn.fetch("SELECT id, item_type, source_id FROM bundle_items WHERE bundle_version_id=$1", vid)
+        if not items:
+            raise HTTPException(400, "cannot publish an empty version")
+        for it in items:
+            if it["source_id"]:
+                snap = await _snapshot_item(conn, it["item_type"], it["source_id"])
+                if snap:
+                    await conn.execute("UPDATE bundle_items SET item_data=$1 WHERE id=$2", json.dumps(snap), it["id"])
+        await conn.execute("UPDATE bundle_versions SET status='published', published_at=now() WHERE id=$1", vid)
+        await conn.execute("UPDATE bundles SET current_version_id=$1, updated_at=now() WHERE id=$2", vid, bid)
+        b = await conn.fetchrow("SELECT * FROM bundles WHERE id=$1", bid)
+        result = await _bundle_public(conn, b)
+    await audit.record(pool, action="bundle.publish", actor=user, object_type="bundle", object_id=str(bid), detail={"version_id": vid}, summary=f"published bundle {bid}")
+    return result
+
+
+@app.post("/api/bundles/{bid}/attach", status_code=201)
+async def attach_bundle(bid: int, payload: BundleAttachIn, request: Request):
+    """Pin the bundle's current published version at a (project × use-category) scope.
+    Attach-to-project → project.integrations; platform/use-category → usecat.manage."""
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        if payload.project_id is not None:
+            await _require_priv_conn(conn, request, rbac.P_PROJECT_INTEGRATIONS, payload.project_id)
+        else:
+            pid = await _active_project_id(request, conn)
+            await _require_priv_conn(conn, request, rbac.P_USECAT_MANAGE, pid)
+        b = await conn.fetchrow("SELECT current_version_id FROM bundles WHERE id=$1", bid)
+        if not b:
+            raise HTTPException(404, "bundle not found")
+        if not b["current_version_id"]:
+            raise HTTPException(409, "bundle has no published version to attach")
+        vid = b["current_version_id"]
+        row = await conn.fetchrow(
+            "INSERT INTO bundle_attachments (bundle_id, bundle_version_id, project_id, use_category, attached_by) "
+            "VALUES ($1,$2,$3,$4,$5) "
+            "ON CONFLICT (bundle_id, COALESCE(project_id,0), COALESCE(use_category,'')) "
+            "DO UPDATE SET bundle_version_id=EXCLUDED.bundle_version_id, attached_by=EXCLUDED.attached_by, attached_at=now() RETURNING id",
+            bid, vid, payload.project_id, payload.use_category, user)
+    await audit.record(pool, action="bundle.attach", actor=user, object_type="bundle", object_id=str(bid), detail={"project_id": payload.project_id, "use_category": payload.use_category}, summary=f"attached bundle {bid}")
+    return {"ok": True, "id": row["id"], "bundle_version_id": vid}
+
+
+@app.delete("/api/bundle-attachments/{aid}", status_code=204)
+async def detach_bundle(aid: int, request: Request):
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        a = await conn.fetchrow("SELECT bundle_id, project_id FROM bundle_attachments WHERE id=$1", aid)
+        if not a:
+            raise HTTPException(404, "attachment not found")
+        if a["project_id"] is not None:
+            await _require_priv_conn(conn, request, rbac.P_PROJECT_INTEGRATIONS, a["project_id"])
+        else:
+            pid = await _active_project_id(request, conn)
+            await _require_priv_conn(conn, request, rbac.P_USECAT_MANAGE, pid)
+        await conn.execute("DELETE FROM bundle_attachments WHERE id=$1", aid)
+    await audit.record(pool, action="bundle.detach", actor=user, object_type="bundle", object_id=str(a["bundle_id"]), summary=f"detached attachment {aid}")
+
+
 # ========================= REVIEW MODELS =========================
 
 
