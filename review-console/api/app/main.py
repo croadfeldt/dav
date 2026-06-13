@@ -12096,12 +12096,71 @@ class EnhancementApplyIn(BaseModel):
     enhancement_text: str = Field(..., min_length=10)
     repo_overrides: dict[str, str] = Field(default_factory=dict)   # {namespace -> uuid_or_namespace}
     branch_name: Optional[str] = None                              # default: dav-enh/<random>; shared across PRs
+    selected_ids: Optional[list[str]] = None   # #138: only submit these enhancement ids (None = all)
     # Scope context for the PR description
     scope: Optional[str] = None     # 'uc' | 'run'
     run_id: Optional[str] = None
     uc_uuid: Optional[str] = None
     uc_handle: Optional[str] = None
     pr_title: Optional[str] = None
+
+
+def _finding_out(e) -> dict:
+    """#138: one parsed ENHANCEMENT as a workbench-renderable finding."""
+    return {
+        "id": e.id, "gap_ids": e.gap_ids, "uc_handles": e.uc_handles,
+        "target": e.target, "target_namespace": e.target_namespace, "target_path": e.target_path,
+        "action": e.action, "section_title": e.section_title, "position": e.position,
+        "rationale": e.rationale, "content": e.content, "acceptance": e.acceptance,
+        "parse_errors": e.parse_errors,
+    }
+
+
+class EnhancementPreviewIn(BaseModel):
+    enhancement_text: str = Field(..., min_length=10)
+    run_id: Optional[str] = None
+    repo_overrides: dict[str, str] = Field(default_factory=dict)
+
+
+@app.post("/api/enhancements/preview")
+async def preview_enhancements(payload: EnhancementPreviewIn, request: Request):
+    """#138 workbench: parse + route the enhancement plan WITHOUT creating PRs. Returns findings
+    grouped by their target repo (the PR groupings), plus unmatched namespaces (with reason) and
+    targetless findings — so the UI can show/select/submit per repo or per finding. Read-only."""
+    async with pool.acquire() as conn:
+        pid = (await _run_project_id(conn, payload.run_id)) if payload.run_id \
+            else await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+    enhancements = _enh_apply.parse_enhancement_blocks(payload.enhancement_text)
+    by_ns: dict[str, list] = {}
+    no_target = []
+    for e in enhancements:
+        (by_ns.setdefault(e.target_namespace, []) if e.target else no_target).append(e)
+    groups, unmatched = [], []
+    async with pool.acquire() as conn:
+        for ns, ns_enhs in by_ns.items():
+            override = payload.repo_overrides.get(ns)
+            repo = await _repos.get_repo(conn, override or ns)
+            findings = [_finding_out(e) for e in ns_enhs]
+            if (not repo or repo.get("project_id") != pid
+                    or "enhancement-target" not in (repo.get("roles") or [])):
+                unmatched.append({
+                    "namespace": ns, "findings": findings,
+                    "reason": (f"no enhancement-target repo for namespace {ns!r}"
+                               if not repo else
+                               f"repo {repo.get('namespace')!r} lacks role=enhancement-target"),
+                })
+            else:
+                groups.append({
+                    "namespace": ns,
+                    "repo": {"uuid": repo["uuid"], "name": repo.get("display_name") or repo.get("namespace"),
+                             "url": repo.get("repo_url"), "branch": repo.get("repo_branch") or "main"},
+                    "findings": findings,
+                })
+    return {"groups": groups, "unmatched": unmatched,
+            "no_target": [_finding_out(e) for e in no_target],
+            "total": len(enhancements),
+            "parse_errors": [e.id for e in enhancements if e.parse_errors]}
 
 
 @app.post("/api/enhancements/apply")
@@ -12125,6 +12184,11 @@ async def apply_enhancements(payload: EnhancementApplyIn, request: Request):
     enhancements = _enh_apply.parse_enhancement_blocks(payload.enhancement_text)
     if not enhancements:
         raise HTTPException(400, "no ENHANCEMENT blocks found in input text")
+    if payload.selected_ids is not None:   # #138: submit only the selected findings
+        _want = set(payload.selected_ids)
+        enhancements = [e for e in enhancements if e.id in _want]
+        if not enhancements:
+            raise HTTPException(400, "none of the selected enhancement ids were found")
 
     # Group enhancements by target namespace (e.g., dcm, udlm).
     by_namespace: dict[str, list] = {}

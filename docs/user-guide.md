@@ -111,14 +111,23 @@ span multiple runs).
 3. Results land in the per-UC cache. **Stop** a run from the Runs list if needed.
 
 ### 4.4 Read results & roadmaps
+The **Roadmaps** domain has four sub-tabs: **Arch Review · Enhancement / PR · Cap Map · Roadmap**.
 - **Ingestion → Results** — per-UC analyses for the active scope.
-- **Roadmaps → Architecture** — the **gap analysis** (what the architecture is missing for these UCs),
-  scoped by the masthead Scope.
-- **Roadmaps → Engineering** — the **capability/build roadmap**: which capabilities the UCs demand, ranked
+- **Roadmaps → Arch Review** — the **gap analysis** (what the architecture is missing for these UCs),
+  scoped by the masthead Scope. This is also where you **generate the Enhancement Plan** (the concrete,
+  ready-to-apply spec edits, one per gap).
+- **Roadmaps → Enhancement / PR** — the **workbench** that turns that Enhancement Plan into pull requests.
+  Click **↻ Load latest plan** (it auto-loads the cached plan for the scope), then **Route into PRs →**:
+  each finding is routed to its target repo (by the `target:` namespace) and grouped into **one PR per repo**.
+  Select findings **per finding, per PR group, or in bulk** (Select all matched), expand any finding to
+  **view its patch + acceptance** before deciding, and **retarget** an unmatched namespace to an
+  enhancement-target repo inline. **Submit selected → create PRs** opens one PR per repo (gated by a
+  confirm + the `project.enhance-pr` privilege). The plan source textarea is editable before routing.
+- **Roadmaps → Cap Map** — the bidirectional UC ↔ capability matrix. Auto-loads the scope.
+  Column ★ = foundational; a thin colored **underline** on each capability column = its R4 disposition.
+- **Roadmaps → Roadmap** — the **capability/build roadmap**: which capabilities the UCs demand, ranked
   by demand, with **Core/Supporting/Generic** + **disposition** badges and a **👥 distinct-customers**
   funding signal. It auto-loads for the current scope and refreshes when you change scope.
-- **Cap Map** (Ingestion or via Roadmaps) — the bidirectional UC ↔ capability matrix. Auto-loads the scope.
-  Column ★ = foundational; a thin colored **underline** on each capability column = its R4 disposition.
 
 ### 4.5 Curate the Capability Catalog
 **Catalog** is the canonical capability list (the engineering roadmap reads this, not raw model strings).

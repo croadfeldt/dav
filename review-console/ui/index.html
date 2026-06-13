@@ -816,6 +816,9 @@
   .rp-output { flex:1; overflow-y:auto; padding:16px 20px; display:flex; flex-direction:column; gap:16px; }
   .rp-section-title { font-size:11px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px; display:flex; align-items:center; gap:8px; }
   .rp-section-title::before { content:''; display:inline-block; width:16px; height:1px; background:var(--accent); }
+  .ew-group { border:1px solid var(--border); border-radius:3px; overflow:hidden; }
+  .ew-tag { display:inline-block; font-size:9px; padding:1px 5px; border-radius:8px; background:var(--bg); border:1px solid var(--border); color:var(--text-dim); }
+  .ew-pre { background:var(--bg); border:1px solid var(--border); border-radius:2px; padding:6px 8px; font-size:10px; white-space:pre-wrap; word-break:break-word; max-height:220px; overflow:auto; margin:3px 0 0; }
   .rp-stream-wrap { display:flex; flex-direction:column; gap:6px; }
 
   /* Footer */
@@ -1546,6 +1549,45 @@
               <span id="rpPrMsg" style="font-size:11px;color:var(--text-faint);"></span>
             </div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ══════════════ ENHANCEMENT / PR WORKBENCH (#138) ══════════════ -->
+    <section class="pf-view" id="view-enhancement">
+      <div style="max-width:1100px;margin:0 auto;padding:4px 2px;">
+        <div style="background:var(--bg-raised);border-left:2px solid var(--accent);padding:8px 12px;border-radius:2px;margin-bottom:12px;">
+          <div style="font-size:12px;color:var(--text);"><strong>Enhancement / PR Workbench</strong> <span style="color:var(--text-faint);">— turn the plan into pull requests</span></div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Loads the Enhancement Plan for the masthead scope, routes each finding to its target repo, and lets you select findings — per finding, per PR, or in bulk — and open one PR per repo. Generate or regenerate the plan in <strong>Arch Review</strong>.</div>
+        </div>
+
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <button class="btn ghost btn-sm" id="ewLoadBtn">↻ Load latest plan</button>
+          <button class="btn primary btn-sm" id="ewRouteBtn">Route into PRs →</button>
+          <span id="ewScopeChip" style="font-size:11px;color:var(--text-faint);"></span>
+          <span id="ewStatus" style="font-size:11px;color:var(--text-faint);margin-left:auto;"></span>
+        </div>
+
+        <details id="ewPlanDetails" style="font-size:11px;margin-bottom:10px;">
+          <summary style="cursor:pointer;color:var(--text-dim);">⚙ Enhancement plan source (editable before routing)</summary>
+          <textarea id="ewPlanText" rows="8" placeholder="The Enhancement Plan text — auto-filled from the cached plan for this scope. You can paste or edit it before routing into PRs." style="width:100%;font-size:11px;margin-top:5px;font-family:var(--mono,monospace);"></textarea>
+        </details>
+
+        <div id="ewEmpty" style="font-size:12px;color:var(--text-dim);padding:18px;text-align:center;border:1px dashed var(--border);border-radius:3px;">
+          No enhancement plan loaded. Click <strong>↻ Load latest plan</strong> (or generate one in Arch Review), then <strong>Route into PRs →</strong>.
+        </div>
+
+        <div id="ewResults" style="display:none;">
+          <!-- selection summary bar -->
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;position:sticky;top:0;background:var(--bg);padding:8px 0;border-bottom:1px solid var(--border);z-index:2;">
+            <strong style="font-size:12px;"><span id="ewSelCount">0</span> finding(s) selected</strong>
+            <span id="ewRouteSummary" style="font-size:11px;color:var(--text-faint);"></span>
+            <button class="btn ghost btn-sm" id="ewSelectAllBtn" style="margin-left:auto;">Select all matched</button>
+            <button class="btn ghost btn-sm" id="ewSelectNoneBtn">Clear</button>
+            <button class="btn primary btn-sm" id="ewSubmitBtn" data-edit-gate>Submit selected → create PRs</button>
+          </div>
+          <div id="ewGroups" style="margin-top:12px;display:flex;flex-direction:column;gap:14px;"></div>
+          <div id="ewPrResults" style="margin-top:14px;"></div>
         </div>
       </div>
     </section>
@@ -4901,9 +4943,10 @@ const DOMAINS = [
       { view:'results', label:'Results',    badge:'badgeResults' },
   ]},
   { key:'roadmap', label:'Roadmaps',   icon:'✦', focus:'architecture', subviews:[
-      { view:'review',      label:'Architecture' },
-      { view:'engineering', label:'Engineering' },
+      { view:'review',      label:'Arch Review' },
+      { view:'enhancement', label:'Enhancement / PR' },
       { view:'capmap',      label:'Cap Map' },
+      { view:'engineering', label:'Roadmap' },
   ]},
   { key:'assess',  label:'Assessments', icon:'📊', focus:'assessment', navId:'navAssess', subviews:[
       { view:'assess', label:'Assessments', priv:'assessment.view' },
@@ -4990,6 +5033,7 @@ function switchView(name) {
   if (name === 'usecases') { loadUCs(); loadSets(); }
   if (name === 'scopingsets') loadScopingSets();
   if (name === 'review')   loadReviewTab();
+  if (name === 'enhancement') loadEnhancementWorkbench();
   if (name === 'engineering') loadEngineeringTab();
   if (name === 'catalog')  loadCatalogTab();
   if (name === 'customers') loadCustomers();
@@ -7033,6 +7077,7 @@ function setScope(v) {
   if (_curView === 'results') _showScopedResults();
   else if (_curView === 'capmap') renderCapMap();
   else if (_curView === 'review') { try { _rpUpdateScopeName(); _rpLoadCached(); } catch (_) {} }
+  else if (_curView === 'enhancement') { try { loadEnhancementWorkbench(); } catch (_) {} }
   else if (_curView === 'engineering') { try { _loadEngCapMap(); } catch (_) {} }
   try { loadFreshness(); } catch (_) {}
   try { _persistUserSettings(); } catch (_) {}   // #129/sync: working context follows the user
@@ -12410,6 +12455,12 @@ async function _rpLoadCached(){
         chip.style.color = 'var(--text-faint)';
       }
     }
+    // The "Create PR →" row was only revealed by a fresh generation, so revisiting a CACHED
+    // enhancement plan lost the ability to issue a PR. Reveal it whenever the plan is present.
+    if (kind === 'enhancement') {
+      const nr = document.getElementById('rpEnhNextRow');
+      if (nr) nr.style.display = (data && data.cached) ? '' : 'none';
+    }
   }
 }
 // Update ONLY the cache chip for one kind — never touches the output pane, so it
@@ -12422,6 +12473,251 @@ async function _rpRefreshChip(kind){
            + (scope === 'uc' && ucUuid ? `&uc_uuid=${encodeURIComponent(ucUuid)}` : '');
   try { const d = await api(`/api/analysis/output?${qs}`); _rpCached[kind] = !!(d && d.cached); _rpCacheChip(kind, d); } catch(e){}
 }
+
+// ══════════════ Enhancement / PR Workbench (#138) ══════════════
+// Loads the Enhancement Plan for the masthead scope, routes each parsed finding to its
+// target enhancement-target repo (server-side, read-only preview), and lets the user select
+// findings — per finding, per PR group, or in bulk — then opens one PR per repo via
+// /api/enhancements/apply (selected_ids). Retarget unmatched namespaces inline.
+let _ewData = null;
+
+function _ewScopeName(){
+  const v = _activeScope || '';
+  if (v === '__unassigned__') return 'unassigned use cases';
+  if (v){ const s=(allSets||[]).find(x=>String(x.id)===String(v)); return s?s.name:`Set ${v}`; }
+  return 'all use cases';
+}
+
+async function _ewLoadPlan(){
+  const { runId, scope } = _rpGetContext();
+  const status = document.getElementById('ewStatus');
+  const ta = document.getElementById('ewPlanText');
+  if (status) status.textContent = 'Loading plan…';
+  try {
+    const d = await api(`/api/analysis/output?run_id=${encodeURIComponent(runId)}&kind=enhancement&scope=${scope}`);
+    if (d && d.cached && d.content){
+      ta.value = d.content;
+      if (status) status.textContent = 'Plan loaded — click “Route into PRs →”.';
+      return true;
+    }
+    if (status) status.textContent = 'No enhancement plan cached for this scope — generate one in Arch Review.';
+    return false;
+  } catch(e){ if (status) status.textContent = 'Load failed: ' + e.message; return false; }
+}
+
+function loadEnhancementWorkbench(){
+  const chip = document.getElementById('ewScopeChip');
+  if (chip) chip.textContent = 'Scope: ' + _ewScopeName();
+  const ta = document.getElementById('ewPlanText');
+  if (ta && !ta.value.trim()) _ewLoadPlan();   // auto-load once on entry; routing is explicit
+}
+
+async function _ewRoute(){
+  const status = document.getElementById('ewStatus');
+  const text = (document.getElementById('ewPlanText')?.value || '').trim();
+  if (!text){ if (status) status.textContent = 'No plan text — load or paste an Enhancement Plan first.'; return; }
+  if (status) status.textContent = 'Routing…';
+  // Make sure we have the enhancement-target repo list for the retarget pickers.
+  if (!_codeRepos.length){ try { const r = await api('/api/repos?role=enhancement-target'); _codeRepos = r.repos || []; } catch {} }
+  try {
+    const d = await api('/api/enhancements/preview', { method:'POST', body: JSON.stringify({ enhancement_text: text }) });
+    _ewData = d;
+    _ewRenderGroups(d);
+    if (status) status.textContent = `${d.total} finding(s) · ${d.groups.length} PR group(s)`
+      + (d.unmatched.length ? ` · ${d.unmatched.length} unmatched` : '')
+      + (d.no_target.length ? ` · ${d.no_target.length} targetless` : '')
+      + (d.parse_errors.length ? ` · ⚠ ${d.parse_errors.length} parse error(s)` : '');
+  } catch(e){ if (status) status.textContent = 'Route failed: ' + e.message; }
+}
+
+function _ewFindingRow(f, opts){
+  opts = opts || {};
+  const checkbox = opts.selectable !== false
+    ? `<input type="checkbox" class="ew-fchk" data-id="${esc(f.id)}" data-ns="${esc(f.target_namespace||'')}" style="margin-top:3px;">`
+    : `<span style="width:13px;display:inline-block;"></span>`;
+  const tags = [];
+  (f.gap_ids||[]).forEach(g => tags.push(`<span class="ew-tag">gap ${esc(g)}</span>`));
+  (f.uc_handles||[]).forEach(u => tags.push(`<span class="ew-tag">${esc(u)}</span>`));
+  if (f.action) tags.push(`<span class="ew-tag" style="background:var(--accent-dim,#2a3a4a);">${esc(f.action)}</span>`);
+  const err = (f.parse_errors||[]).length ? `<div style="color:var(--red);font-size:10px;margin-top:2px;">⚠ ${(f.parse_errors||[]).map(esc).join('; ')}</div>` : '';
+  const body = (f.content||'').trim();
+  const acc = (f.acceptance||'').trim();
+  return `<div style="display:flex;gap:8px;padding:7px 0;border-top:1px solid var(--border);">
+    ${checkbox}
+    <div style="flex:1;min-width:0;">
+      <div style="font-size:12px;color:var(--text);"><strong>${esc(f.section_title || f.target_path || f.id)}</strong>
+        <span style="color:var(--text-faint);font-size:10px;">${esc(f.target_path || f.target || '')}</span></div>
+      <div style="margin:3px 0;">${tags.join(' ')}</div>
+      ${f.rationale ? `<div style="font-size:11px;color:var(--text-dim);">${esc(f.rationale)}</div>` : ''}
+      ${err}
+      ${body || acc ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:10px;color:var(--text-faint);">View patch${acc?' + acceptance':''}</summary>
+        ${body ? `<pre class="ew-pre">${esc(body)}</pre>` : ''}
+        ${acc ? `<div style="font-size:10px;color:var(--text-faint);margin-top:3px;">Acceptance:</div><pre class="ew-pre">${esc(acc)}</pre>` : ''}
+      </details>` : ''}
+    </div>
+  </div>`;
+}
+
+function _ewRepoOptions(selectedNs){
+  const opts = _codeRepos.map(r => `<option value="${esc(r.uuid)}">${esc(r.display_name || r.namespace)}</option>`).join('');
+  return `<option value="">— retarget to a repo —</option>` + opts;
+}
+
+function _ewRenderGroups(d){
+  const wrap = document.getElementById('ewResults');
+  const empty = document.getElementById('ewEmpty');
+  const box = document.getElementById('ewGroups');
+  document.getElementById('ewPrResults').innerHTML = '';
+  if (!d || (!d.groups.length && !d.unmatched.length && !d.no_target.length)){
+    if (wrap) wrap.style.display = 'none';
+    if (empty){ empty.style.display = ''; empty.innerHTML = 'No findings parsed from this plan. Check the plan text (it must contain ENHANCEMENT blocks).'; }
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  if (wrap) wrap.style.display = '';
+  let html = '';
+  // Matched groups → one PR per repo
+  d.groups.forEach((g, gi) => {
+    html += `<div class="ew-group" data-ns="${esc(g.namespace)}" data-repo="${esc(g.repo.uuid)}">
+      <div style="display:flex;gap:8px;align-items:center;background:var(--bg-raised);padding:7px 10px;border-radius:2px;">
+        <input type="checkbox" class="ew-gchk" data-gi="${gi}" checked>
+        <strong style="font-size:12px;">PR → ${esc(g.repo.name)}</strong>
+        <span style="font-size:10px;color:var(--text-faint);">${esc(g.namespace)} · base ${esc(g.repo.branch||'main')} · ${g.findings.length} finding(s)</span>
+        ${g.repo.url ? `<a href="${esc(g.repo.url)}" target="_blank" style="font-size:10px;margin-left:auto;">repo ↗</a>` : ''}
+      </div>
+      <div class="ew-flist" style="padding:2px 10px 8px;">${g.findings.map(f => _ewFindingRow(f)).join('')}</div>
+    </div>`;
+  });
+  // Unmatched namespaces → need a retarget before they can be submitted
+  d.unmatched.forEach(u => {
+    html += `<div class="ew-group ew-unmatched" data-ns="${esc(u.namespace)}">
+      <div style="display:flex;gap:8px;align-items:center;background:var(--bg-raised);padding:7px 10px;border-radius:2px;border-left:2px solid var(--amber,#b8860b);">
+        <strong style="font-size:12px;">${esc(u.namespace)}</strong>
+        <span style="font-size:10px;color:var(--amber,#b8860b);">${esc(u.reason)}</span>
+        <select class="ew-retarget" data-ns="${esc(u.namespace)}" style="margin-left:auto;font-size:11px;">${_ewRepoOptions()}</select>
+      </div>
+      <div class="ew-flist" style="padding:2px 10px 8px;">${u.findings.map(f => _ewFindingRow(f)).join('')}</div>
+    </div>`;
+  });
+  // Targetless findings → informational, can't be submitted
+  if (d.no_target.length){
+    html += `<div class="ew-group">
+      <div style="background:var(--bg-raised);padding:7px 10px;border-radius:2px;border-left:2px solid var(--text-faint);">
+        <strong style="font-size:12px;">No target</strong>
+        <span style="font-size:10px;color:var(--text-faint);">these findings name no <code>target:</code> repo — fix the plan to route them</span>
+      </div>
+      <div class="ew-flist" style="padding:2px 10px 8px;">${d.no_target.map(f => _ewFindingRow(f, {selectable:false})).join('')}</div>
+    </div>`;
+  }
+  box.innerHTML = html;
+  _ewWireSelection();
+  _ewUpdateSel();
+}
+
+function _ewWireSelection(){
+  // Group checkbox toggles all its findings.
+  document.querySelectorAll('#ewGroups .ew-gchk').forEach(gc => {
+    gc.addEventListener('change', function(){
+      const grp = this.closest('.ew-group');
+      grp.querySelectorAll('.ew-fchk').forEach(fc => { fc.checked = gc.checked; });
+      _ewUpdateSel();
+    });
+  });
+  document.querySelectorAll('#ewGroups .ew-fchk').forEach(fc => fc.addEventListener('change', _ewUpdateSel));
+  // A retarget pick lets that previously-unmatched group be submitted.
+  document.querySelectorAll('#ewGroups .ew-retarget').forEach(rt => rt.addEventListener('change', _ewUpdateSel));
+}
+
+function _ewSelectedIds(){
+  return Array.from(document.querySelectorAll('#ewGroups .ew-fchk:checked')).map(c => c.dataset.id);
+}
+function _ewRepoOverrides(){
+  const ov = {};
+  document.querySelectorAll('#ewGroups .ew-retarget').forEach(rt => { if (rt.value) ov[rt.dataset.ns] = rt.value; });
+  return ov;
+}
+
+function _ewUpdateSel(){
+  const ids = _ewSelectedIds();
+  document.getElementById('ewSelCount').textContent = String(ids.length);
+  // Count PR groups that have ≥1 selected finding + a resolvable repo.
+  const ov = _ewRepoOverrides();
+  let repos = new Set();
+  let blocked = 0;
+  document.querySelectorAll('#ewGroups .ew-group').forEach(grp => {
+    const sel = grp.querySelectorAll('.ew-fchk:checked').length;
+    if (!sel) return;
+    const ns = grp.dataset.ns;
+    if (grp.classList.contains('ew-unmatched')){
+      if (ov[ns]) repos.add(ov[ns]); else blocked += sel;
+    } else if (grp.dataset.repo){ repos.add(grp.dataset.repo); }
+  });
+  const sum = document.getElementById('ewRouteSummary');
+  if (sum) sum.textContent = ids.length
+    ? `→ ${repos.size} PR(s)` + (blocked ? ` · ${blocked} need a repo (retarget above)` : '')
+    : '';
+  const btn = document.getElementById('ewSubmitBtn');
+  if (btn) btn.disabled = !ids.length;
+}
+
+async function _ewSubmit(){
+  const ids = _ewSelectedIds();
+  if (!ids.length) return;
+  const ov = _ewRepoOverrides();
+  const status = document.getElementById('ewStatus');
+  const out = document.getElementById('ewPrResults');
+  // Block submit if any selected unmatched group still lacks a repo.
+  let blocked = false;
+  document.querySelectorAll('#ewGroups .ew-group.ew-unmatched').forEach(grp => {
+    if (grp.querySelectorAll('.ew-fchk:checked').length && !ov[grp.dataset.ns]) blocked = true;
+  });
+  if (blocked){ if (status) status.textContent = 'Some selected findings have no target repo — retarget them or deselect.'; return; }
+  if (!confirm(`Open pull request(s) for ${ids.length} selected finding(s)? This pushes branches and opens PRs on the target repos.`)) return;
+  if (status) status.textContent = 'Creating PRs…';
+  const text = (document.getElementById('ewPlanText')?.value || '').trim();
+  try {
+    const r = await api('/api/enhancements/apply', { method:'POST', body: JSON.stringify({
+      enhancement_text: text, selected_ids: ids, repo_overrides: ov,
+      scope: 'set', pr_title: `DAV enhancements — ${_ewScopeName()}`,
+    }) });
+    _ewRenderPrResults(r);
+    if (status) status.textContent = 'Done.';
+  } catch(e){ if (status) status.textContent = 'Submit failed: ' + e.message; }
+}
+
+function _ewRenderPrResults(r){
+  const out = document.getElementById('ewPrResults');
+  if (!out) return;
+  let html = '<div class="rp-section-title" style="margin-top:6px;">Pull requests</div>';
+  (r.repo_results || r.results || []).forEach(pr => {
+    const ok = pr.pr_url || pr.url;
+    html += `<div style="font-size:12px;padding:5px 0;border-top:1px solid var(--border);">
+      ${ok ? '✅' : '⚠'} <strong>${esc(pr.repo || pr.namespace || '')}</strong>
+      ${ok ? `<a href="${esc(ok)}" target="_blank">${esc(ok)}</a>` : esc(pr.error || pr.message || 'no PR created')}
+      ${pr.files ? `<span style="color:var(--text-faint);"> · ${pr.files} file(s)</span>` : ''}
+    </div>`;
+  });
+  (r.unmatched_namespaces || []).forEach(u => {
+    html += `<div style="font-size:11px;color:var(--amber,#b8860b);padding:3px 0;">⚠ ${esc(u.namespace || u)} — no target repo</div>`;
+  });
+  (r.apply_warnings || []).forEach(w => {
+    html += `<div style="font-size:10px;color:var(--text-faint);">• ${esc(w)}</div>`;
+  });
+  out.innerHTML = html;
+}
+
+document.getElementById('ewLoadBtn')?.addEventListener('click', _ewLoadPlan);
+document.getElementById('ewRouteBtn')?.addEventListener('click', _ewRoute);
+document.getElementById('ewSubmitBtn')?.addEventListener('click', _ewSubmit);
+document.getElementById('ewSelectAllBtn')?.addEventListener('click', () => {
+  document.querySelectorAll('#ewGroups .ew-fchk').forEach(c => { c.checked = true; });
+  document.querySelectorAll('#ewGroups .ew-gchk').forEach(c => { c.checked = true; });
+  _ewUpdateSel();
+});
+document.getElementById('ewSelectNoneBtn')?.addEventListener('click', () => {
+  document.querySelectorAll('#ewGroups .ew-fchk, #ewGroups .ew-gchk').forEach(c => { c.checked = false; });
+  _ewUpdateSel();
+});
 
 document.getElementById('rpRevRunBtn')?.addEventListener('click', async () => {
   const { runId, scope, ucUuid, setId } = _rpGetContext();
