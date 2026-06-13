@@ -119,6 +119,14 @@ flow is linear up to analysis, then **branches into the two tracks.**
 
 ## 4. The capability catalog (keystone)
 
+> **Method adoption (2026-06-12, #132) — see `capability-method-design.md`.** The
+> "Mapping Use Cases to Domain-Driven Capabilities" method formalizes this track. DAV already
+> does ~70% (UC→capability map, dedup, depends_on, dual roadmaps, demand-as-funding). Adopting:
+> **R4 disposition** (Reuse/Refurbish/Replace/Retire) per capability on a strategic-fit × tech-fitness
+> 2×2 → a disposition matrix view (the missing actionable-roadmap layer); **Core/Supporting/Generic**
+> classification; **bounded-context owner + single strategic provider**; explicit **Role → Goal** layer;
+> capability-level funding. Design pass + sliced plan in `capability-method-design.md`.
+
 Capabilities are currently **free-form strings the model coins per UC** — no controlled
 vocabulary (unlike `provider_types` / `policy_modes` in the consumer profile). So today's
 cross-UC capability aggregation silently miscounts synonyms; this is why the Capability

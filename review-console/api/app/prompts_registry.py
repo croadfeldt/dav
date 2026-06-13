@@ -37,14 +37,18 @@ _STAGE2_SYSTEM_SNAPSHOT = (
 
 # Ordered stage registry. `sections` are overridable named base sections; `append` is the
 # always-available trailing additional-context lever.
+# #125: each stage pairs 1:1 with a model ROLE (the model_defaults key it runs on), and the
+# `label` matches the model selector's verbiage exactly — so "Evaluation model" ↔ "Evaluation
+# prompt", "Architecture Review model" ↔ "Architecture Review prompt", etc. One vocabulary.
 STAGES = [
     {
-        "key": "stage2-analysis",
-        "label": "Stage 2 — Analysis (eval verdict)",
+        "key": "stage2-analysis",          # engine-internal key (kept; the engine references it)
+        "role": "evaluation",              # ↔ model_defaults 'evaluation'
+        "label": "Evaluation",
         "surface": "engine",
         "status": "stored-held",
-        "description": "The core use-case-vs-spec evaluation. Engine-owned; the eval "
-                       "verdict prompt. Overrides are stored and previewable but held "
+        "description": "The core use-case-vs-spec evaluation — the eval verdict the Evaluation "
+                       "model runs. Engine-owned; overrides are stored and previewable but held "
                        "until A/B-validated (prompt-quality sensitive).",
         "append": {"live": False, "label": "Additional grounding context for evaluation"},
         "sections": [
@@ -54,23 +58,47 @@ STAGES = [
         ],
     },
     {
-        "key": "arch_review",
-        "label": "Architecture review",
+        "key": "arch_review",              # runtime stage key (kept)
+        "role": "arch-review",             # ↔ model_defaults 'arch-review'
+        "label": "Architecture Review",
         "surface": "console",
         "status": "append-live",
-        "description": "Narrative architecture review (post-eval). Additional context is "
-                       "injected at runtime today.",
+        "description": "Narrative architecture review (post-eval), run by the Architecture Review "
+                       "model. Additional context is injected at runtime today.",
         "append": {"live": True, "label": "Additional context & instructions for architecture review"},
         "sections": [],
     },
     {
         "key": "enhancement",
-        "label": "Enhancement planning",
+        "role": "enhancement",             # ↔ model_defaults 'enhancement'
+        "label": "Enhancement",
         "surface": "console",
         "status": "append-live",
-        "description": "Enhancement planning (post-eval) — now independent of architecture "
-                       "review. Additional context is injected at runtime today.",
+        "description": "Enhancement planning (post-eval), run by the Enhancement model — independent "
+                       "of architecture review. Additional context is injected at runtime today.",
         "append": {"live": True, "label": "Additional context & instructions for enhancement planning"},
+        "sections": [],
+    },
+    {
+        "key": "uc-authoring",             # #125: new console stage
+        "role": "uc-authoring",            # ↔ model_defaults 'uc-authoring'
+        "label": "UC Authoring",
+        "surface": "console",
+        "status": "append-live",
+        "description": "NL-assisted use-case authoring, run by the UC Authoring model. Additional "
+                       "context is injected into the assist prompt at runtime.",
+        "append": {"live": True, "label": "Additional context & instructions for UC authoring"},
+        "sections": [],
+    },
+    {
+        "key": "assessment-ingest",        # #125: new console stage
+        "role": "assessment-ingest",       # ↔ model_defaults 'assessment-ingest'
+        "label": "Assessment Ingestion",
+        "surface": "console",
+        "status": "append-live",
+        "description": "Model-based assessment extraction, run by the Assessment Ingestion model. "
+                       "Additional context is injected into the extractor prompt at runtime.",
+        "append": {"live": True, "label": "Additional context & instructions for assessment extraction"},
         "sections": [],
     },
 ]

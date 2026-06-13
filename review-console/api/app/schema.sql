@@ -79,10 +79,34 @@ ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS priority_score INTEGER;
 -- UC definition readiness (DCM feature #4): 0-100 quality score projected from
 -- yaml_content at save, so the list/Set views can show it without re-scoring.
 ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS readiness_score INTEGER;
+-- Customer demand: how many times this use case has been requested by customers.
+-- Operational metadata (not part of the UC definition), edited/incremented in the
+-- console; informs prioritization + roadmap weighting alongside priority_score.
+ALTER TABLE managed_use_cases ADD COLUMN IF NOT EXISTS customer_requests INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_managed_uc_updated ON managed_use_cases(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_managed_uc_state   ON managed_use_cases(lifecycle_state);
 -- Priority-ordered roadmap views sort by weight desc, unranked (NULL) last.
 CREATE INDEX IF NOT EXISTS idx_managed_uc_priority ON managed_use_cases(priority_score DESC NULLS LAST);
+CREATE INDEX IF NOT EXISTS idx_managed_uc_demand   ON managed_use_cases(customer_requests DESC);
+
+-- ── UC customer demand log (dedup-on-ingest foundation) ──────────────────────
+-- One row per *request* for a use case, attributed to a customer. The point is to
+-- track demand WITHOUT poisoning importance: importance = COUNT(DISTINCT customer)
+-- (multi-tenant signal), while total requests = COUNT(*). So the same customer asking
+-- 10× counts as one tenant, not ten. `managed_use_cases.customer_requests` is kept in
+-- sync as the denormalized total. See docs/uc-demand-dedup-design.md.
+CREATE TABLE IF NOT EXISTS uc_customer_requests (
+  id           BIGSERIAL PRIMARY KEY,
+  uc_uuid      TEXT NOT NULL REFERENCES managed_use_cases(uuid) ON DELETE CASCADE,
+  project_id   BIGINT,                        -- attribution copy (projects defined later in this file; FK omitted to keep fresh-install order valid — the UC's project is authoritative)
+  customer     TEXT NOT NULL,                 -- the requesting customer / tenant (free text; migrated to customer_id below)
+  source       TEXT NOT NULL DEFAULT '',      -- where it came from: 'manual' | 'ingest' | 'inbox' | …
+  note         TEXT NOT NULL DEFAULT '',      -- optional context for this request
+  created_by   TEXT NOT NULL DEFAULT '',
+  requested_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_uc_cust_req_uc       ON uc_customer_requests(uc_uuid);
+CREATE INDEX IF NOT EXISTS idx_uc_cust_req_customer ON uc_customer_requests(customer);
 
 -- ── Lifecycle event log ──────────────────────────────────────────────────
 -- Append-only audit trail for UC state transitions.
@@ -207,6 +231,22 @@ CREATE TABLE IF NOT EXISTS uc_analyses (
 CREATE INDEX IF NOT EXISTS idx_uc_analyses_run  ON uc_analyses(run_id);
 CREATE INDEX IF NOT EXISTS idx_uc_analyses_uuid ON uc_analyses(uc_uuid, ingested_at DESC);
 CREATE INDEX IF NOT EXISTS idx_uc_analyses_verdict ON uc_analyses(verdict);
+-- Per-UC evaluation FINGERPRINT (uc-scoped-evaluation-design.md, step 1): the inputs an
+-- evaluation depended on, so staleness = stored fingerprint vs current. Computed at ingest.
+-- engine_commit/consumer_version are already in the analysis metadata (just weren't persisted);
+-- uc_content_sha is hashed from the UC's content; source_repo_shas (the project's spec/arch/corpus
+-- HEAD SHAs at eval time) is captured in step 1b — null until then.
+ALTER TABLE uc_analyses ADD COLUMN IF NOT EXISTS engine_commit    TEXT;
+ALTER TABLE uc_analyses ADD COLUMN IF NOT EXISTS consumer_version TEXT;
+ALTER TABLE uc_analyses ADD COLUMN IF NOT EXISTS uc_content_sha   TEXT;
+ALTER TABLE uc_analyses ADD COLUMN IF NOT EXISTS source_repo_shas JSONB;
+ALTER TABLE uc_analyses ADD COLUMN IF NOT EXISTS eval_fingerprint TEXT;
+CREATE INDEX IF NOT EXISTS idx_uc_analyses_fingerprint ON uc_analyses(eval_fingerprint);
+-- Failure identification (#121): why a UC failed to ingest, and at which stage. error_phase ∈
+-- engine | analysis | ingest | not_emitted | unreliable (the last is a soft note on a success).
+-- A 'not_emitted' row is a STUB the ingest writes for an in-scope UC the engine never produced.
+ALTER TABLE uc_analyses ADD COLUMN IF NOT EXISTS error_reason TEXT;
+ALTER TABLE uc_analyses ADD COLUMN IF NOT EXISTS error_phase  TEXT;
 
 CREATE TABLE IF NOT EXISTS uc_gaps (
   id               BIGSERIAL PRIMARY KEY,
@@ -348,6 +388,56 @@ CREATE TABLE IF NOT EXISTS projects (
 INSERT INTO projects (slug, name, description, created_by)
   VALUES ('default', 'Default', 'Default project (auto-created)', 'system')
   ON CONFLICT (slug) DO NOTHING;
+
+-- ── Customers (first-class entity, orthogonal to projects — M:N) ─────────────
+-- docs/customer-demand-dedup-design.md. Customers + projects are PEER scopes; access to
+-- customer-attributed data is a (customer × project) matrix (AND-composed; *_all_* spanning
+-- grants; *_exclusive* seals). Phase-2a lands the entity + M:N + demand migration; full
+-- matrix ENFORCEMENT on cell resources is a later slice (resolver stays back-compatible).
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS is_exclusive BOOLEAN NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS customers (
+  id           BIGSERIAL PRIMARY KEY,
+  slug         TEXT UNIQUE NOT NULL,
+  name         TEXT NOT NULL,
+  description  TEXT NOT NULL DEFAULT '',
+  is_exclusive BOOLEAN NOT NULL DEFAULT false,   -- sealed: explicit grant required for everyone (incl platform-admin)
+  is_universal BOOLEAN NOT NULL DEFAULT false,   -- the reserved internal/non-customer sentinel
+  archived     BOOLEAN NOT NULL DEFAULT false,
+  created_by   TEXT NOT NULL DEFAULT 'system',
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Reserved universal/internal customer (mirrors the 'default' project): non-customer work
+-- lives here so there are no NULL-customer special cases.
+INSERT INTO customers (slug, name, description, is_universal, created_by)
+  VALUES ('internal', 'Internal / Universal', 'Non-customer / internal work (reserved sentinel)', true, 'system')
+  ON CONFLICT (slug) DO NOTHING;
+
+-- Customer ↔ Project association (M:N). Defines which (customer, project) cells exist.
+CREATE TABLE IF NOT EXISTS customer_projects (
+  customer_id BIGINT NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+  project_id  BIGINT NOT NULL REFERENCES projects(id)  ON DELETE CASCADE,
+  created_by  TEXT NOT NULL DEFAULT 'system',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (customer_id, project_id)
+);
+CREATE INDEX IF NOT EXISTS idx_customer_projects_project ON customer_projects(project_id);
+
+-- Demand log: migrate free-text `customer` → a customer_id FK. Backfill creates one customer
+-- per distinct text value (slugified) and points the requests at it. Slug rule must match the
+-- API's _customer_slug() so picker-created customers reconcile with migrated ones.
+ALTER TABLE uc_customer_requests ADD COLUMN IF NOT EXISTS customer_id BIGINT REFERENCES customers(id);
+INSERT INTO customers (slug, name, created_by)
+  SELECT DISTINCT btrim(regexp_replace(lower(btrim(customer)), '[^a-z0-9]+', '-', 'g'), '-'),
+         btrim(customer), 'migration'
+  FROM uc_customer_requests
+  WHERE btrim(regexp_replace(lower(btrim(customer)), '[^a-z0-9]+', '-', 'g'), '-') <> ''
+ON CONFLICT (slug) DO NOTHING;
+UPDATE uc_customer_requests r SET customer_id = c.id
+  FROM customers c
+  WHERE r.customer_id IS NULL
+    AND c.slug = btrim(regexp_replace(lower(btrim(r.customer)), '[^a-z0-9]+', '-', 'g'), '-');
+CREATE INDEX IF NOT EXISTS idx_uc_cust_req_customer_id ON uc_customer_requests(customer_id);
 
 -- ── Project-scope the config registries ─────────────────────────────────────
 -- model_configs / mcp_server_configs / managed_repos / model_defaults become
@@ -495,6 +585,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_bundle_attach_bundle_scope
   ON bundle_attachments(bundle_id, COALESCE(project_id,0), COALESCE(use_category,''));
 CREATE INDEX IF NOT EXISTS idx_bundle_attach_scope ON bundle_attachments(project_id, use_category);
 
+-- Phase 4d — effective-set CONSUMPTION: attaching a bundle MATERIALIZES its config items
+-- into real scoped rows on the registries below, tagged with the originating attachment.
+-- These rows then flow through the normal scope resolvers (no resolver changes), so runs
+-- actually consume bundled config. ON DELETE CASCADE means detaching (or deleting the
+-- bundle) auto-removes the materialized rows. Secrets are absent (snapshots exclude them).
+ALTER TABLE mcp_server_configs ADD COLUMN IF NOT EXISTS bundle_attachment_id BIGINT REFERENCES bundle_attachments(id) ON DELETE CASCADE;
+ALTER TABLE model_configs      ADD COLUMN IF NOT EXISTS bundle_attachment_id BIGINT REFERENCES bundle_attachments(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_mcp_by_attachment   ON mcp_server_configs(bundle_attachment_id) WHERE bundle_attachment_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_model_by_attachment ON model_configs(bundle_attachment_id)      WHERE bundle_attachment_id IS NOT NULL;
+
 -- MCP servers are no longer statically seeded here. openshift-mcp /
 -- frc-scheduler-mcp are not used by DAV. dav-docs-mcp is self-registered at boot
 -- (_seed_docs_mcp) from DAV_DOCS_MCP_URL/DAV_DOCS_MCP_TOKEN so it carries its
@@ -530,6 +630,10 @@ CREATE TABLE IF NOT EXISTS project_stage_context (
 -- append-context (trailing project section); section_overrides replace named base
 -- sections from the stage registry (prompts_registry.py). Empty = base prompt unchanged.
 ALTER TABLE project_stage_context ADD COLUMN IF NOT EXISTS section_overrides JSONB NOT NULL DEFAULT '{}'::jsonb;
+-- #93 promotion go-live: console stages are always append-live; the engine Evaluation (stage-2)
+-- prompt is stored-held by default. `applied=true` promotes it to LIVE — normal runs then inject it
+-- (set after a winning A/B). Only meaningful for stage='stage2-analysis'.
+ALTER TABLE project_stage_context ADD COLUMN IF NOT EXISTS applied BOOLEAN NOT NULL DEFAULT false;
 -- F8: Review and Enhancement are now independent stages (were a shared 'arch_review'
 -- context). One-time, idempotent copy of existing shared context into 'enhancement' so
 -- current enhancement behavior carries over as an independent starting point. ON CONFLICT
@@ -538,6 +642,28 @@ INSERT INTO project_stage_context (project_id, stage, content, section_overrides
   SELECT project_id, 'enhancement', content, section_overrides, updated_by, updated_at
   FROM project_stage_context WHERE stage='arch_review'
 ON CONFLICT (project_id, stage) DO NOTHING;
+
+-- #129: per-user UI preferences (theme/mode/persona/view-mode/nav), server-side so they
+-- follow the user across devices/browsers. localStorage stays the fast local cache; this
+-- is the source of truth. One JSON blob per user — small, schemaless, merge-on-write.
+CREATE TABLE IF NOT EXISTS user_settings (
+  reviewer   TEXT PRIMARY KEY,
+  settings   JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- #39 identity unification: canonical account = email; an account may have ALIAS identities
+-- (a uid header, an old reviewer key, a secondary email) that all resolve to it. get_user maps
+-- any incoming identity → its canonical reviewer, so one human = one account regardless of which
+-- auth path (oauth-proxy uid vs email vs internal session) issued the request.
+CREATE TABLE IF NOT EXISTS account_identities (
+  alias      TEXT PRIMARY KEY,                 -- a source identity (lowercased), e.g. 'nick' or an old email
+  reviewer   TEXT NOT NULL,                    -- the canonical account it resolves to (its email)
+  source     TEXT NOT NULL DEFAULT 'manual',   -- 'manual' | 'migrated'
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_account_identities_reviewer ON account_identities(lower(reviewer));
 
 -- ── Capability catalog (Phase 1 keystone — manual-curated, LLM-suggested) ────
 -- Project-scoped canonical capabilities. The architect curates; suggestions are
@@ -562,6 +688,21 @@ CREATE TABLE IF NOT EXISTS capability_catalog (
 -- Migrate already-deployed catalog tables that predate `domain`.
 ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS domain TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_capability_catalog_project ON capability_catalog(project_id);
+
+-- Capability method (#132, docs/capability-method-design.md): DDD strategic classification +
+-- R4 disposition (dual-labeled Gartner TIME) + the two disposition drivers. The actionable
+-- categorization layer (signal-over-noise) — turns the catalog into a decision surface.
+-- NB: `subdomain`, NOT `classification` — capability_catalog already has a `classification`
+-- column (data sensitivity, NOT NULL DEFAULT 'public', written by assessment_ingest). The DDD
+-- strategic type is a distinct concern, so it gets its own column.
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS subdomain TEXT;  -- core | supporting | generic (DDD subdomain)
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS disposition    TEXT;  -- reuse | refurbish | replace | retire (≈ Gartner TIME: Invest/Tolerate/Migrate/Eliminate)
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS strategic_fit  TEXT;  -- high | low (business/strategic fit — disposition driver)
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS tech_fitness   TEXT;  -- aligned | constrained (technology fitness — disposition driver)
+-- m-iii: bounded context (the owning DDD context) + the single strategic provider that delivers
+-- it reusably. Formalizes "one capability, one source" — distinct from `domain` (a looser label).
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS bounded_context    TEXT;  -- owning DDD bounded context
+ALTER TABLE capability_catalog ADD COLUMN IF NOT EXISTS strategic_provider TEXT;  -- the one team/platform that delivers it
 
 -- UDLM Knowledge-family Capability fields (migration 020 reconciliation). The catalog
 -- IS the UDLM Capability entity: cap_key = handle, status = lifecycle (confirmed/
@@ -772,6 +913,18 @@ CREATE TABLE IF NOT EXISTS rbac_group_role_mappings (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rbac_grp_role_uniq
   ON rbac_group_role_mappings (source, lower(group_key), role_id, COALESCE(project_id, 0));
 
+-- ── Customer-scope + spanning extensions to RBAC bindings (customer-demand epic) ─
+-- A grant is project-scoped OR customer-scoped; `spans_all` turns a customer grant into
+-- customer_all_projects (or a project grant into project_all_customers). Matrix evaluation
+-- is in rbac.py; columns land now so admin + future enforcement share one binding shape.
+ALTER TABLE rbac_account_roles      ADD COLUMN IF NOT EXISTS customer_id BIGINT REFERENCES customers(id) ON DELETE CASCADE;
+ALTER TABLE rbac_account_roles      ADD COLUMN IF NOT EXISTS spans_all   BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE rbac_group_role_mappings ADD COLUMN IF NOT EXISTS customer_id BIGINT REFERENCES customers(id) ON DELETE CASCADE;
+ALTER TABLE rbac_group_role_mappings ADD COLUMN IF NOT EXISTS spans_all   BOOLEAN NOT NULL DEFAULT false;
+DROP INDEX IF EXISTS idx_rbac_acct_role_uniq;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rbac_acct_role_uniq
+  ON rbac_account_roles (lower(reviewer), role_id, COALESCE(project_id, 0), COALESCE(customer_id, 0));
+
 -- Seed the v1 privilege vocabulary.
 INSERT INTO rbac_privileges (key, name, description, scope) VALUES
   ('platform.admin',     'Platform settings', 'All platform settings (LDAP, SMTP, accounts, roles, repos); see all projects; grant self project roles', 'platform'),
@@ -802,7 +955,12 @@ INSERT INTO rbac_privileges (key, name, description, scope) VALUES
   ('blueprint.view',             'View blueprints',        'View blueprint/template projects and their setup', 'project'),
   ('blueprint.edit',             'Edit blueprints',        'Create, clone and manage blueprint/template projects', 'project'),
   -- Scope & bundles (#107): manage platform- and use-category-scoped config + bundles (cross-project; seeded to Platform Admin).
-  ('usecat.manage',              'Manage shared config',   'Manage platform- and use-category-scoped config, capabilities and bundles (cross-project)', 'cross-project')
+  ('usecat.manage',              'Manage shared config',   'Manage platform- and use-category-scoped config, capabilities and bundles (cross-project)', 'cross-project'),
+  -- Customer-demand epic: the project-axis + customer-axis privileges (peer scopes).
+  ('project.view',               'View project',           'View a project (membership for the project axis of the access matrix)', 'project'),
+  ('project.edit',               'Edit project',           'Edit a project''s settings + data (project axis, edit level)', 'project'),
+  ('customer.view',              'View customer',          'View a customer, its project associations and demand (customer axis)', 'customer'),
+  ('customer.edit',              'Edit customer',          'Manage a customer: settings, project associations, exclusivity (customer axis, edit level)', 'customer')
 ON CONFLICT (key) DO NOTHING;
 -- Reclassify project.create from its original 'platform' scope to 'cross-project'
 -- (project-related but not tied to a specific project). Idempotent.
@@ -813,14 +971,16 @@ INSERT INTO rbac_roles (key, name, description, scope, is_system) VALUES
   ('platform-admin', 'Platform Admin', 'Full platform administration', 'platform', true),
   ('project-admin',  'Project Admin',  'Full administration of a project', 'project', true),
   ('project-edit',   'Project Edit',   'Edit access to a project''s data', 'project', true),
-  ('project-viewer', 'Project Viewer', 'Read-only access to a project''s data', 'project', true)
+  ('project-viewer', 'Project Viewer', 'Read-only access to a project''s data', 'project', true),
+  ('customer-edit',  'Customer Edit',  'Manage a customer (settings, associations, exclusivity)', 'customer', true),
+  ('customer-viewer','Customer Viewer','Read-only access to a customer + its demand', 'customer', true)
 ON CONFLICT (key) DO NOTHING;
 
 -- Seed the role × privilege matrix for the built-in roles. Re-runs every boot
 -- with ON CONFLICT DO NOTHING, so adding keys here backfills existing roles.
 INSERT INTO rbac_role_privileges (role_id, privilege_key)
   SELECT r.id, p.key FROM rbac_roles r CROSS JOIN rbac_privileges p
-  WHERE (r.key='platform-admin' AND p.key IN ('platform.admin','project.create','usecat.manage'))
+  WHERE (r.key='platform-admin' AND p.key IN ('platform.admin','project.create','usecat.manage','customer.view','customer.edit'))
      OR (r.key='project-admin'  AND p.key IN (
             'project.settings','project.members','project.delete','project.data.read',
             'project.usecases','project.runs.manage','project.runs.execute',
@@ -833,7 +993,11 @@ INSERT INTO rbac_role_privileges (role_id, privilege_key)
             'project.archreview.execute','project.archreview.context','prompt.manage',
             'project.enhancement.execute','project.catalog',
             'assessment.view','assessment.edit','blueprint.view'))
-     OR (r.key='project-viewer' AND p.key IN ('project.data.read','assessment.view','blueprint.view'))
+     OR (r.key='project-viewer' AND p.key IN ('project.data.read','project.view','assessment.view','blueprint.view'))
+     OR (r.key='project-admin'  AND p.key IN ('project.view','project.edit'))
+     OR (r.key='project-edit'   AND p.key IN ('project.view','project.edit'))
+     OR (r.key='customer-edit'   AND p.key IN ('customer.view','customer.edit'))
+     OR (r.key='customer-viewer' AND p.key IN ('customer.view'))
 ON CONFLICT DO NOTHING;
 
 -- Retire the legacy umbrella `project.data.write` from the BUILT-IN roles (custom
@@ -851,6 +1015,7 @@ INSERT INTO rbac_role_privileges (role_id, privilege_key)
   FROM rbac_role_privileges rp
   CROSS JOIN (VALUES
     ('project.members'),('project.delete'),('project.data.read'),
+    ('project.view'),('project.edit'),
     ('project.usecases'),('project.runs.manage'),('project.runs.execute'),
     ('project.archreview.execute'),('project.archreview.context'),('prompt.manage'),
     ('project.enhancement.execute'),('project.enhancement.pr'),('project.catalog'),

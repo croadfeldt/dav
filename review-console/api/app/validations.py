@@ -171,6 +171,7 @@ def _mk_pipelinerun(
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
+    stage2_context: Optional[str] = None,
     uc_count: Optional[int] = None,
     time_allowed_seconds: Optional[int] = None,
 ) -> dict:
@@ -243,6 +244,8 @@ def _mk_pipelinerun(
         params.append({"name": "stage2-two-pass", "value": stage2_two_pass})
     if grounding_nudge is not None:
         params.append({"name": "grounding-nudge", "value": grounding_nudge})
+    if stage2_context:
+        params.append({"name": "stage2-context", "value": stage2_context})
 
     return {
         "apiVersion": f"{_TEKTON_GROUP}/{_TEKTON_VERSION}",
@@ -304,6 +307,7 @@ def trigger_run(
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
+    stage2_context: Optional[str] = None,
     uc_count: Optional[int] = None,
     time_allowed_seconds: Optional[int] = None,
 ) -> dict:
@@ -339,6 +343,7 @@ def trigger_run(
         stage2_two_pass=stage2_two_pass,
         max_tokens=max_tokens,
         grounding_nudge=grounding_nudge,
+        stage2_context=stage2_context,
         uc_count=uc_count,
         time_allowed_seconds=time_allowed_seconds,
     )

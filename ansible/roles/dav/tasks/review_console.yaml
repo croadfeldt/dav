@@ -34,6 +34,17 @@
     state: absent
   when: review_console_build_images | bool
 
+# Pre-build guard: FastAPI matches routes in definition order, so a static path
+# declared after a same-shape parameterized sibling is unreachable (returns a
+# misleading 404). check_routes.py fails the play before we build a broken image.
+# (Caught /api/results/uc-latest + /api/runs/preflight-hint, 2026-06-11.)
+- name: Guard against FastAPI route-shadowing (static path after a {param} sibling)
+  ansible.builtin.command:
+    cmd: python3 check_routes.py
+    chdir: "{{ playbook_dir }}/../review-console/api"
+  changed_when: false
+  when: review_console_build_images | bool
+
 # rsync (not ansible.builtin.copy) so we can EXCLUDE node_modules — the UI's
 # lint/e2e harness (ui/lint.sh) runs `npm install`, leaving a 17MB / ~1400-file
 # gitignored ui/node_modules tree. copy walks it file-by-file (20+ min) and would

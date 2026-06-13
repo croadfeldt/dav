@@ -20,9 +20,10 @@ theme layer is already strong; the drift is at the component layer (~1,400 inlin
   pattern.
 
 ## Theming & tokens
-The UI is themeable via `<html data-theme data-mode>` (`amber`|`slate` × `dark`|`light`);
-every color is a CSS variable redefined per theme×mode. **Always consume tokens**, so a new
-theme just works.
+The UI is themeable via `<html data-theme data-mode>` (`amber`|`slate`|`solarized`|`redhat`
+× `dark`|`light`); every color (and per-theme font) is a CSS variable redefined per
+theme×mode. **Always consume tokens**, so a new theme just works. A theme that overrides
+`--mono`/`--sans`/`--serif` (e.g. **Red Hat** → Red Hat Mono/Text/Display) restyles type too.
 
 | Token | Use |
 |---|---|
@@ -30,6 +31,7 @@ theme just works.
 | `--border`, `--border-bright` | hairlines; `-bright` for interactive/input edges |
 | `--text`, `--text-dim`, `--text-faint` | primary / secondary / tertiary text |
 | `--accent`, `--accent-soft`, `--accent-bg` | **primary action + active/selected state** |
+| **`--on-accent`** | **text/icon color to place ON a solid `--accent` fill** (per-theme; white by default, dark only where the accent is light) |
 | `--green`/`--green-bg` | success · accept · positive maturity |
 | `--red` | danger · reject · destructive |
 | `--blue`/`--blue-bg` | applied · informational |
@@ -38,6 +40,13 @@ theme just works.
 
 **Color semantics are fixed:** accent = primary/active, green = accept/success, red =
 reject/danger, blue = applied/info. Don't repurpose them.
+
+**Contrast rule (mandatory):** any element with a **solid saturated-color background**
+(`--accent`, `--blue`, `--red`, `--green`, `--purple`) must set a **contrasting** text color —
+`color:var(--on-accent)` for accent fills, `color:#fff` for blue/red/green/purple fills. Never
+let the default body text inherit onto a color fill (that's how dark-text-on-dark-blue slipped
+in). `--*-bg` tokens are translucent tints meant to pair with the matching `--*` *text* color
+(e.g. `color:var(--blue); background:var(--blue-bg)`).
 
 ## Type scale
 Small, dense, functional. Stick to these sizes:
@@ -86,19 +95,71 @@ gracefully. **Retire** the per-feature `.improve-mode-tab` and ad-hoc tab button
 (`.pc-title` 13px + optional `.pc-sub` 10px) → `.panel-card-body` (flex column, 10px gap).
 Every settings/section block is a `.panel-card`.
 
-### Navigation rule
-- **Left app-nav** (the main rail) = top-level app sections only.
-- **Tabs** (`.tabs`) = sibling sections *within* a view.
-- The old `.config-nav` left-rail inside Config is **superseded by `.tabs`** (the Config
-  conversion — task #107-adjacent). Don't add new left-rail sub-navs.
+### Navigation rule — the domain shell  ← app-wide IA
+The app is a **two-level domain shell**:
+- **Left rail** = **logical domains** (`.pf-nav-item[data-domain]`), rendered from the
+  `DOMAINS` map by `renderDomainRail()`. One entry per domain; `data-focus` keeps the
+  Architecture/Assessment focus filter working; RBAC-gated domains carry a `navId`.
+- **Top strip** (`#domainTabs`, the canonical `.tabs`) = the active domain's **sub-views**,
+  populated by `renderDomainTabs()`. A sub-tab click calls `switchView(view)` (the single
+  funnel that also keeps the rail + strip in sync). The strip is **hidden when a domain has
+  one sub-view** (the view uses its own internal `.tabs` if it needs sub-sections, e.g.
+  Config, Improve).
+- **Bulk** = the selected sub-view's `#view-X` section fills the rest of `.pf-content`.
+
+Rules:
+- A view is reached **only** through its domain's strip — add a new view by adding it to a
+  domain's `subviews` in `DOMAINS`, never as a loose rail item.
+- `.tabs` is still the in-view section switcher (Config's Registry/Pipeline/… tabs, the
+  `#domainTabs` strip itself). **Retire** ad-hoc tab buttons (`.improve-mode-tab`, `.pi-tab`)
+  onto canonical `.tabs`.
+- Nested tabs are fine at different depths (domain strip → a view's internal `.tabs` → a
+  detail-pane's tabs like the run drawer's `.rd-tab`). Don't stack two strips at the same depth.
+
+### Management pages — the two-pane pattern (the canon)  ← apply everywhere
+Entity-management surfaces (Scoping Sets · Customers & Projects · catalog-style editors) use
+**one** layout, modeled on **Scoping Sets** (`#view-scopingsets`, `.ss-split`):
+- **Two panes:** a **left list** (the entities, filterable, the drag source) and a **right
+  detail/accordion** (the selected entity + its members/associations + actions).
+- **Membership / association** is added with the **Scoping-Sets membership control**: a
+  **select-or-drag dropdown** (`_openAddSetPicker` style — a "+ Add …" chip that opens a
+  searchable list, and drag-drop of a list row onto the target). Reuse this, don't invent a
+  bespoke add-row per page. Removal is an inline `×` on the member chip.
+- Both tabs of a domain share the SAME layout + control style (don't make sibling tabs look
+  like different apps — e.g. Customers and Projects must match).
+> Customers & Projects' customer↔project mapping should adopt this exact pattern (left customer
+> list / right detail with the Scoping-Sets add-dropdown for project associations). *(Pending —
+> the Phase-2a tabs ship functional; the two-pane refit is the next consistency slice.)*
+
+### Naming — domains & multi-noun labels
+Two-concept domain/section names join with **`&`**, not `/` — "Customers & Projects",
+"Prompts & Improvement". Title-case; no trailing punctuation.
 
 ### Form rows
 Label above control; label `12px --text-dim`; inputs use `--bg-input` + `--border-bright`,
 2px radius, `11–12px`. Group related rows in a `.panel-card-body`.
 
+### Edit-affordance gating (the canon) ← read/edit posture
+Mark every edit/mutate control with **`data-edit-gate="<privilege>"`** (e.g. `project.usecases`,
+`project.catalog`). `_applyAccessVisibility()` hides it unless **`canEdit(priv)`** = the user holds
+the privilege **and** isn't in read-only **View mode** — one marker covers both the view-only role and
+View mode. `data-needs-priv="<priv>"` is the read/visibility-only variant (ignores View mode). The hard
+guarantee is **server-side**: every mutation endpoint guards an edit privilege, and **`api()` blocks all
+mutating requests in View mode** (PUT/DELETE/PATCH always; POST except a small safe allowlist) — so a
+missing marker degrades UX, never the security boundary. Don't rely on JS click-handler checks alone.
+
 ### Tables / lists
 Header row `10px uppercase --text-faint`; cells `11px`; row separators `1px solid
 --border`; selected row `--bg-raised` + 2px `--accent` left border. Hover `--bg-raised`.
+
+### Member / user picker (the canon) ← every "add member / grant access" surface
+Use the shared type-ahead picker, never a static `<select>` of all users: `userPickerHtml(inputId,
+ddId, placeholder)` for markup + `wireUserPicker(inputId, ddId, accounts, excludeSet, onPick)` to
+wire it. It searches `reviewer/email/display_name` as you type, **excludes existing members**
+(`excludeSet` = lowercased current-member reviewers — you only pick non-members), and on selection
+sets `input.dataset.reviewer` (read that, not `.value`). Used by project members, customer members,
+and any future scope. Same `.dropdown-item`/popover idiom as the lifecycle (`_lcMenu`) + grant
+(`_bmGrantPopover`) menus; `mousedown` + `preventDefault` on items so the pick beats input blur.
 
 ### Badges / pills
 Small status chips: `9–10px`, `uppercase`, 2px radius, semantic color + faint bg. Existing:

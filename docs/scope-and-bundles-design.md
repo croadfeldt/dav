@@ -168,12 +168,29 @@ lists + run-time model/MCP consumption resolution) remain; Phases 3–6 pending.
    hint; run-derived later) + `_scope_where(pid,cat)` UNION predicate; MCP list + health
    rewired. Backward-compatible. _Deferred (2b): models/repos lists + run-time consumption
    (model resolution by id/name, MCP tool calls)._
-3. **Promote platform infra:** move `dav-docs-mcp` + GitHub-style source MCPs to platform
-   (`project_id = NULL`). Add the egress allow for any platform MCP LB IP (ties to #59).
-4. **Bundles (versioned):** `bundles` + `bundle_versions` (immutable, publish-to-snapshot) +
-   `bundle_items` + `bundle_attachments` (pin a published version); CRUD + publish + attach/
-   detach endpoints (gated `usecat.manage` / `project.integrations`); effective-set join.
-   UI: a Bundles manager (versions + publish) + per-project/-category "attached bundles".
+3. **Promote platform infra:** ✅ **DONE.** `dav-docs-mcp` promoted to platform
+   (`project_id = NULL`, idempotent `UPDATE` in `schema.sql`); `_seed_docs_mcp` rewritten to
+   seat it platform-scoped. (GitHub-style source MCPs + egress allow follow with #59.)
+4. **Bundles (versioned):** ✅ **DONE (management + attach).** `bundles` + `bundle_versions`
+   (immutable, publish-to-snapshot) + `bundle_items` (JSONB snapshot, secrets excluded) +
+   `bundle_attachments` (pin a published version, NULL-safe scope uniqueness). 11 endpoints:
+   list / attached / create / get / add-item / del-item / publish / attach / detach /
+   **delete** (gated `usecat.manage`; attach-to-project gated `project.integrations`; all
+   audited). UI: **Config → Platform → Bundles** (gated `usecat.manage`) — list/create →
+   add items (from project models/MCP) → publish → attach to project or use-category →
+   detach/delete; editing a published bundle forks a fresh draft carrying items forward.
+4d. **Effective-set CONSUMPTION (materialize-on-attach):** ✅ **DONE.** Attaching a bundle
+   materializes its `mcp_server` / `model_config` items into **real scoped registry rows**
+   (`mcp_server_configs` / `model_configs`) tagged with a `bundle_attachment_id` provenance
+   FK (`ON DELETE CASCADE`) — so they flow through the **existing** scope resolvers unchanged
+   (visible *and* run-consumed) with **zero churn on the run-critical resolver SQL**.
+   `_materialize_attachment()` is idempotent (clears + re-inserts on re-attach), skips a
+   (scope, name) clash so a manual row wins, and excludes secrets (none in the snapshot).
+   Detach/delete-bundle auto-cleans via the cascade (verified in ephemeral PG). Materialized
+   rows are `from_bundle:true` → **read-only** in the Models/MCP panels and **excluded** from
+   the bundle item-source picker (no re-bundling); their PUT/DELETE endpoints 409. _Deferred
+   (4e): materialize `output_template` items into a consumption registry once outputs consume
+   one; bundle items that legitimately need a secret at the destination (re-supply at scope)._
 5. **Blueprints (#95) recompose** onto pinned bundle versions.
 6. **Docs:** fold into `review-console-design.md` (config-tenancy section), update
    `blueprint-projects-design.md` to reference bundle versions, bump versions.

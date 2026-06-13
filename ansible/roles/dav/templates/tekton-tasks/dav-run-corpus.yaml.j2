@@ -187,6 +187,16 @@ spec:
         it is ever made the default. "0" (default) = no nudge, production prompt.
       default: "0"
 
+    - name: stage2-context
+      type: string
+      description: |
+        #93/#125 per-project Evaluation (stage-2) prompt context. The API populates
+        this (via DAV_STAGE2_CONTEXT) with the project's resolved Evaluation prompt
+        (use-category → project → base). Empty default = byte-identical production
+        prompt (held); a non-empty value is only ever set by an A/B experiment's
+        candidate arm until a win promotes it.
+      default: ""
+
 
     - name: max-tool-calls
       type: string
@@ -284,6 +294,11 @@ spec:
         # grounding nudge without an engine rebuild.
         - name: DAV_GROUNDING_NUDGE
           value: "$(params.grounding-nudge)"
+        # #93/#125: per-project Evaluation (stage-2) prompt context. Empty by default
+        # (byte-identical production prompt); a candidate A/B arm sets it without an
+        # engine rebuild.
+        - name: DAV_STAGE2_CONTEXT
+          value: "$(params.stage2-context)"
         # Where the engine reads its ServiceAccount projected token to
         # authenticate to the console API (Bearer) when fetching managed UCs.
         # The kubelet mints + auto-rotates this token (audience {{ dav_api_token_audience | default('dav-api') }},

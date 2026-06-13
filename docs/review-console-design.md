@@ -1,5 +1,7 @@
 # DAV Review Console — Design & Feature Inventory
 
+**User-facing how-to lives in [`user-guide.md`](user-guide.md)** — keep it current too when behavior changes.
+
 **Status:** Living document  
 **Last updated:** 2026-06-10  
 **Current version:** v0.20.0  
@@ -21,6 +23,7 @@ Update this doc whenever a feature is added, changed, or removed.
 - **Scope clarity** — configuration that affects all users belongs in Config and is stored server-side; personal preferences belong in localStorage and are never shown as shared settings.
 - **Least surprise** — defaults are always visible and editable; overrides are always scoped to the current session and do not mutate the shared default.
 - **Secure by construction** — every trust boundary is authenticated, and service-to-service calls use short-lived, identity-bound credentials, never shared static secrets. In-cluster components authenticate with their Kubernetes ServiceAccount projected token (validated via TokenReview), not a baked-in password; endpoints are defended in depth (auth gate + RBAC + NetworkPolicy). See §Service-to-service auth (engine → API).
+- **Informative, actionable output without clutter (the north star)** — the purpose of DAV is to *encourage the right results*: effective analysis, findings, recommendations and categorization that a human can act on — **signal over noise**. Every surface earns its place by changing a decision. Prefer a clear verdict + the few drivers behind it over an exhaustive dump; lead with the recommendation, make the evidence available but not in the way; categorize (verdicts, dispositions, classifications, severities) so the eye finds the actionable item fast. This governs *process, information, and interface alike*: don't add a step, a field, or a panel that doesn't move a decision. When in doubt, cut. **Every element must have a clear, stated purpose** — and when that purpose is genuinely just *delight* ("it's cool"), **call it out as such** rather than dressing aesthetics up as function. Honesty about why a thing exists keeps the signal honest; a deliberate flourish is fine, a flourish masquerading as a finding is not. (Applies to all of: gap analysis, capability disposition/classification, roadmaps, the matrices, prompts.)
 - **Efficient use of screen real estate** — operational views (Runs detail, Results, Review & Plan) must use the available width and height. Stats that fit side-by-side should sit side-by-side at wide widths and stack only when the viewport forces it. Tail panes (live log-like streams) must bound their height so they never blow past the viewport — scroll *within* the pane, not the whole page. The Runs detail panel is the canonical example: GPU + Inference live tiles render as a 2-column grid at ≥1100px; Prompts/Tasks panes cap at `max-height: 48vh` and scroll internally.
 
 ---
@@ -54,6 +57,45 @@ Browser (index.html SPA)
 The SPA is a single `index.html` with no build step. All state lives in JS globals; the API is called via a thin `api()` wrapper. Auth is handled externally (OCP Route + OAuth proxy).
 
 ---
+
+## Navigation — the domain shell (IA)
+
+The console is a **two-level domain shell** (the app-wide IA, generalized from the Config
+tab pilot #108): a **left rail of logical domains** → the active domain's **sub-views as a
+top tab strip** (`#domainTabs`, canonical `.tabs`) → the selected sub-view's detail fills
+the **bulk** below. The `DOMAINS` map (`ui/index.html`, above `switchView`) is the single
+source of truth; `renderDomainRail()` builds the rail, `renderDomainTabs()` the strip.
+
+- **Domains** (`.pf-nav-item[data-domain]`): **Authoring** (Use Cases · Inbox) · **Execution**
+  (Runs · Results · Cap Map) · **Roadmaps** (Architecture · Engineering) · **Assessments** ·
+  **Catalog** · **Prompts & Improvement** · **Audit** (platform-admin) · **Config**.
+  Single-sub-view domains hide the strip and use their own internal `.tabs` for sub-sections
+  (Config's Registry/Pipeline/AI Models/Integrations/Platform).
+- **Persona selects the rail.** The rail shows the active **persona**'s ordered domains, not a
+  fixed list — see `ux-paradigm-design.md`. `PERSONAS` map → `_personaDomains()` →
+  `renderDomainRail()`; the `#personaSel` masthead dropdown switches it; default is RBAC-derived
+  (`_defaultPersona()`), orthogonal to view-mode.
+- **`switchView(name)` stays the single funnel**: it activates `#view-name`, runs that view's
+  loader, and (guarded by `_inSwitchView` against the persona auto-home re-entry) marks the rail
+  domain active + renders the strip. Every existing `switchView('x')` caller works unchanged.
+  `switchDomain(key)` selects a domain → its remembered-or-first permitted sub-view.
+- **Persona + RBAC**: `_applyPersona()` renders the persona's domains; `_domainPermitted()`
+  hides a domain whose sub-views are all impermissible; sub-tabs gate per-privilege
+  (`_subviewPermitted`). Boot lands on the active persona's first domain.
+- Retired **Projects/Users** views remain folded into **Config → Platform** (no rail entry).
+- The **tabs** documented below are these domains/sub-views; the run drawer's `.rd-tab`
+  (Run · Review & Plan) is a nested detail-pane switcher, independent of the domain strip.
+- **Runs are eliminated as a scoping mechanism — everywhere.** The masthead `globalRunSel` is gone
+  (→ read-only `#rccName` status + the live run-progress chip #112), and the four in-view run
+  pickers (`rpRunSel`/`engRunSel`/`cmRunSel`/`resultsRunsPanel`) are being retired too. The **only
+  selectable scope is the UC / UC Set**; a run is purely the *ingestion/evaluation event* that fills
+  the per-UC result cache. Every output view (Results · Architecture · Engineering · Cap Map) scopes
+  by UC/Set and reads the **latest-eval-per-UC** from the cache (so a Set's results may span multiple
+  runs). The masthead becomes **Project · Persona · Run-status · Analysis-freshness**. The **Runs
+  view repurposes into a "UC ingestion audit"** (per-UC: last evaluated · by which run · fresh/stale).
+  Full model + build order: **`uc-scoped-evaluation-design.md`** (decision 4b).
+  *In flight (build step 3):* the latest-eval-per-UC backend → the UC/Set scope picker → the Runs-view
+  repurpose. Until it lands, run selection still works via the **Runs** sub-tab.
 
 ## Tabs
 
@@ -167,13 +209,49 @@ panes never surface the raw PipelineRun name.
 
 **UC Assist:** NL prompt → YAML suggestion via configured model (any enabled model, or env-var fallback). The **Clear** button wipes both the conversation history and the compose textarea. When the assist panel is opened with no model selected, focus moves to the model selector so the user knows what to do first.
 
+**Customer demand & compatibility-aware dedup (NEW PARADIGM, 2026-06-12 — see `customer-demand-dedup-design.md`):**
+Use cases recur — the same need, requested by different customers (and sometimes the same customer many
+times). The paradigm:
+- **Customer is a first-class entity, orthogonal to Project (M:N).** DCM = one project, many customers;
+  Assessments = customer-focused, spanning many projects. Customers live at the platform level and associate
+  to projects via a join (planned `customers` + `customer_projects`).
+- **Importance = DISTINCT customers** for a UC (multi-tenant weight), never raw request count — so one
+  customer asking 10× cannot poison priority. Anti-poisoning invariant.
+- **Dedup-on-ingest is a disposition, not blind duplication:** skip / import-as-is / **bump** (log a
+  customer request on the existing canonical UC) / **increase & adapt** (close-but-not-compatible → bump +
+  merge). Gated by a **similarity** score (semantic embeddings) and a **compatibility** score.
+- **Access = a (customer × project) MATRIX, AND-composed** (peer scopes): need both axes, with
+  `customer_all_projects` / `project_all_customers` spanning grants and `customer_exclusive` /
+  `project_exclusive` *seals* (explicit grant required for everyone incl. platform-admin, with
+  creator-auto-grant + audited break-glass). The **universal/internal customer** sentinel holds
+  non-customer work (no NULL-customer special cases).
+- **RBAC — one model for projects + customers** (generalized `(scope_type, scope_id, spans_all)` binding):
+  privileges `project.view/edit` + `customer.view/edit`; roles `customer-viewer`/`customer-edit`. Per-customer
+  allocation two ways: (a) in-app **Members** panel on the customer (grant/revoke, escalation-guarded); (b)
+  FreeIPA/LDAP **group-naming convention `<scope_type>.<entity_slug>.<level>`** (e.g. `customer.acme.edit`) →
+  group-sync resolves entity-by-slug + level→role → writes the binding. `*_all_*` append a 4th field.
+- **Phase 1 SHIPPED:** per-customer demand log + denormalized total; list demand badge `👥 distinct·total`;
+  UC-detail Customer demand panel; `GET/POST/DELETE /api/use-cases/{uuid}/customer-requests`;
+  `GET /api/use-cases` returns `distinct_customers` + `?sort=demand` (+ `customer_id` filter).
+- **Phase 2a SHIPPED:** `customers` (+ universal sentinel, `is_exclusive`) + `customer_projects` M:N +
+  `projects.is_exclusive`; RBAC binding columns (`customer_id`, `spans_all`) + the 4 privileges / 2 roles +
+  back-compatible resolver; customer CRUD + associations + **Members** (`/api/customers/...`);
+  **Customers & Projects domain** (projects-admin relocated from Config; Scoping-Sets-style membership);
+  **matrix UI 2b-i/2b-ii** (masthead Customer axis + customerQuery() + the (customer × project) association grid).
+- **Remaining (in design/queue):** matrix 2b-iii (customer column on lists) / 2b-iv (RBAC grant matrix +
+  cell enforcement); embeddings similarity → compatibility score → New-Ingestion warn-and-confirm
+  disposition. See `customer-demand-dedup-design.md`.
+
 ---
 
 ### Config tab
 
 **Purpose:** Operational configuration — spec/corpus sources, review models, MCP servers, code repos, UC assist.
 
-Two-pane layout: left nav (category list), right content (selected category).
+Config is one **domain** in the domain shell (see §Navigation). Its sub-sections are a
+canonical `.tabs` strip — **Multi-repo Registry · Pipeline Sources · AI Models · Integrations ·
+Platform** — each privilege-gated via `_syncConfigTabs()`; the selected tab's `.panel-card`s
+fill the content area. (The old left-rail category list is retired.)
 
 **Categories:**
 - **Shared credentials** *(M9, shipped)* — credentials registry view. Lists every shared credential by name, type, description, and "used by N repo(s)" chip. Add/edit/delete via `POST/PUT/DELETE /api/credentials`. Values are write-only (never returned by HTTP); rotation propagates to every dependent repo automatically per [ADR-005](../adr/005-shared-credentials-abstraction.md). Delete refuses with 409 + dependent repo list until references are reassigned. Forward path to HashiCorp Vault localized to this module + crypto.py.
@@ -1499,6 +1577,67 @@ trust. See `docs/prompt-management-design.md`.
 
 ---
 
+## 2026-06-12 — Self-service projects · edit-gating hardening · per-user settings · UC lifecycle UX
+
+A burst of access-model + UX work (tasks #129, #135–137, plus UC-lifecycle/presence fixes). Recorded
+here so the access model + settings substrate are discoverable.
+
+- **Self-service project.create (#135).** `project.create` is now a **baseline privilege every
+  authenticated user holds** — added unconditionally in `rbac.privileges_for` (so both the guard and
+  `/api/me` reflect it), not role-gated. `POST /api/projects`: **soft dedup** — compares names
+  case-insensitively + fuzzily (`difflib` ratio ≥ 0.85 via `_norm_project_name`/`_project_name_close`)
+  plus exact slug; a match → `409 "project already exists"`. The **creator is auto-granted `project-admin`**
+  on the new project (administers their own project; a future two-step external flow may narrow this).
+- **Edit-gating, actually wired (#136/#137).** The v0.20.0 `data-can-*` flags were set but **consumed by
+  no CSS/elements** — view-mode gating was effectively dead. Now:
+  - **`api()` view-mode backstop** — in read-only View mode, `api()` refuses every mutating request
+    (PUT/DELETE/PATCH always; POST except a safe allowlist: `/api/auth/`, `/api/me/settings`,
+    `/api/models/probe`, `/api/presence`). So even an un-gated control **cannot** mutate in View mode.
+    This is the real guarantee, independent of per-control marking.
+  - **`data-edit-gate="<priv>"`** — affordances tagged with it hide unless `canEdit(priv)` (holds the
+    privilege **and** not in View mode). One marker covers both View mode (#136) and view-only role (#137).
+    Applied to the primary toolbar edit buttons; inline list controls rely on the two real boundaries.
+  - **Server enforcement is the security boundary** — all mutation endpoints already guard an edit-level
+    privilege (`_require_priv_conn`/`_gate_resource`), so a view-only role's edits 403 regardless of UI.
+- **Per-user settings + session sync (#129).** `user_settings (reviewer PK, settings JSONB)` — one
+  merge-on-write blob per user. `GET`/`PUT /api/me/settings` (PUT merges, so partial writes don't clobber).
+  UI: localStorage is the fast cache; `_loadUserSettings()` pulls at boot + re-applies. Synced chrome:
+  `davTheme/davMode/davPersona/davViewMode/davNavCollapsed`. A master **"Continue session across devices"**
+  toggle (`davSyncSession`, default on) additionally syncs working context (`davActiveProject/davScope/
+  davCustomer`); a fresh device seeds missing keys from the server and re-boots once (guarded) to restore
+  the session; an active device's local choices win (no surprise overrides) but still push.
+- **UC lifecycle UX.** Inline transition menu on the list status badge (`_lcMenu`, gated `canEdit
+  ('project.usecases')`) so status changes — incl. **Reactivate** a deprecated UC — don't need the detail
+  pane. The state filter defaults to **active (hides deprecated)**; options add **all (incl. deprecated)**
+  + the specific states. The tab badge counts active UCs (reconciles with the masthead, which already
+  excludes deprecated). NB: corpus `POST /api/import` derives `lifecycle_state` from the top-level archive
+  dir (`{state}/{set}/{uuid}.yaml`) — UCs under `deprecated/` import deprecated; reactivating in-app drifts
+  from the corpus until the YAML is moved.
+- **Presence (#64 fix).** The who's-online popover now lists **every identity in the counts** (online OR
+  active), labeling an active-but-not-polling tab as "active · not polling" — previously such an identity
+  was in the `active` count but invisible in the list. `system:*` service identities are excluded from
+  presence entirely.
+
+### Later same day — engine A/B promotion (#93) · identity unification (#39) · access matrix discoverability
+
+- **#93 promotion go-live.** The stage-2 A/B lever already shipped; this closes the loop.
+  `project_stage_context.applied` (per project, stage `stage2-analysis`) — when true, **normal runs**
+  inject the project's Evaluation prompt (`trigger_run` resolves it → `stage2_context` param), not just
+  A/B candidate arms. `PUT /api/prompts/stage2/applied` flips it (prompt.manage, guarded confirm). UI: an
+  **"Apply to live runs"** toggle on the Evaluation prompt (Prompts tab). Workflow: edit Evaluation prompt
+  → A/B (Improve → New A/B → evaluation prompt) → promote on a win. Byte-identical until promoted.
+- **#39 identity unification.** Canonical account = email, with an **alias table** (`account_identities`:
+  alias→canonical) so multiple source identities (oauth-proxy uid vs email, old keys, 2nd emails) resolve
+  to **one** account. `get_user` resolves through an in-memory `_ALIAS_MAP` (loaded at boot + on change;
+  single replica). Endpoints `GET/POST/DELETE /api/accounts/{rev}/identities` — linking with `migrate=true`
+  moves the alias's role bindings (dropping would-be duplicates) + settings onto the canonical account and
+  removes the duplicate `users` row. UI: alias chips + a **🔗 link** action in the accounts list. Fixes the
+  "2 identities, 1 person" duplication (the presence finding). *Note: resolution is non-destructive by
+  default — the header order is unchanged; aliasing is the explicit unify action.*
+- **Access matrix discoverability (#134 follow).** The RBAC grant matrix (subject × scope → role) was only
+  in Config → Users & roles; surfaced it as a **🔑 Access** tab in the **Customers & Projects** domain
+  (`_renderBindingsMatrix` parameterized by target box), where access is naturally managed. Platform-admin gated.
+
 ## v0.20.0 — Workspace focus (Architecture ⇄ Assessment) + View mode (2026-06-10)
 
 - **Focus switcher (#101):** a masthead toggle splits the console by intent. Each left-nav
@@ -1570,10 +1709,13 @@ trust. See `docs/prompt-management-design.md`.
   + responses are stamped with it. Versioned contract = task #106. Multi-format
   (PDF/image/structured) + the ingest-model *selector* in Config = #105.
 
-**Captured directions (not yet built):** Config Platform/Project tabs + Users-split +
-add-user role selector with escalation bounds (#100); user-class/intent views — Architecture
-vs Assessment focus, with view/edit perspectives (#101); assessment notes import +
-capability/category detail on click/hover (#102); UI/UX e2e + build-stamp fix (#99).
+**Shipped since:** Config Platform/Project tabs + Users-split + escalation-bounded add-user
+role selector (#100); Architecture/Assessment focus + view/edit perspectives (#101);
+multi-format assessment ingest + ingest-model selector (#105); scope & bundles incl. the
+Bundles manager (#107); **the app-wide domain shell** (left domain rail + top sub-tab strip,
+see §Navigation). **Captured directions (not yet built):** assessment notes import +
+capability/category detail on click/hover (#102); audit action detail (#103); masthead
+run-stats summary (#112); mobile/responsive layout (#73).
 
 ---
 

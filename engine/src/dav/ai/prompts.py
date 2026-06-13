@@ -184,6 +184,19 @@ def build_stage2_system_prompt(consumer_profile=None) -> str:
             "claim to a spec, set its `confidence` to low rather than asserting it "
             "as though grounded."
         )
+    # #93/#125 — per-project Evaluation (stage-2) prompt context. Set by the run-corpus
+    # Tekton task from DAV_STAGE2_CONTEXT, which the API populates with the project's
+    # resolved Evaluation prompt (use-category → project → base, most-specific-first).
+    # Byte-identical by default (empty → no change); a real override is only ever injected
+    # by an A/B experiment's candidate arm until a win promotes it. Same lever shape as the
+    # grounding nudge above — the established A/B-able seam.
+    stage2_ctx = (os.environ.get("DAV_STAGE2_CONTEXT") or "").strip()
+    if stage2_ctx:
+        prompt += (
+            "\n\n## Project context & instructions for evaluation "
+            "(set by the architect — honor these)\n"
+            f"{stage2_ctx}"
+        )
     return prompt
 
 def build_stage2_user_prompt(use_case: UseCase, consumer_profile=None) -> str:

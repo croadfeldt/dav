@@ -1,7 +1,14 @@
 # DAV Framework Roadmap
 
-**Status:** Living document, last updated 2026-06-02
+**Status:** Living document, last updated 2026-06-11
 **Current state:** Phase 4 baseline complete (run `2026-04-27T02-05-41Z-3b49872`); Review Console v1 shipped (ops frontend, Runs/Results/Use Cases/Config tabs). Framework verified working end-to-end. DCM/cost-mgmt feature requests #1–#4 shipped (see below).
+
+> **UX direction (2026-06-11):** the console is now an **audience-shell** — left rail of logical
+> domains, top sub-tab strip, detail bulk; the active **audience** (Architect/Engineer/Customer/
+> Stakeholder/Assessor/Operator) selects the lens. **Run selection is retired** — the consumer
+> views' subject is the **UC/Set**, with a run reframed as the *evaluation* (a per-UC fingerprinted
+> result cache, rebuilt on change) and a masthead **freshness chip**. Design:
+> **`docs/ux-paradigm-design.md`** + **`docs/uc-scoped-evaluation-design.md`** (now building).
 
 > **Product direction (2026-06-02):** DAV is evolving from a spec gap-analysis tool into a
 > **UC-driven gap-analysis / prioritization / design tool** with two roadmaps off one

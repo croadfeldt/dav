@@ -396,6 +396,7 @@ async def lifespan(app: FastAPI):
     # locking out every internal user (incl. the break-glass admin) once
     # DAV_REQUIRE_AUTH disables the fail-open.
     await _reload_approved()
+    await _load_aliases()   # #39 identity unification
     if _ldap_is_configured():
         log.info("LDAP configured (enforce=%s) — running initial user sync...", _ldap_enforcing())
         await _sync_ldap_users()
@@ -879,6 +880,30 @@ _GATE_EXEMPT_PREFIXES = ("/readyz", "/healthz", "/livez", "/metrics", "/docs", "
 # request. "online" = a tab seen recently (any request, incl. background polls);
 # "active" = a recent NON-poll request (a real action). Single API replica, so a
 # plain dict is fine; it resets on pod restart (acceptable for a live gauge).
+# #39 identity unification: in-memory alias → canonical reviewer map (single API replica, so a
+# plain dict is fine; reloaded at boot + after any alias change). get_user resolves through it.
+_ALIAS_MAP: dict = {}   # alias(lower) -> canonical reviewer
+
+
+async def _load_aliases() -> None:
+    global _ALIAS_MAP
+    if pool is None:
+        return
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT lower(alias) AS alias, reviewer FROM account_identities")
+        _ALIAS_MAP = {r["alias"]: r["reviewer"] for r in rows}
+    except Exception as e:
+        log.warning("alias map load failed: %s", e)
+
+
+def _canonical_identity(raw: str) -> str:
+    """Resolve any incoming identity to its canonical account (#39). Unknown → unchanged."""
+    if not raw:
+        return raw
+    return _ALIAS_MAP.get(raw.lower(), raw)
+
+
 _presence_seen: dict = {}     # user(lower) -> last request epoch
 _presence_active: dict = {}   # user(lower) -> last non-poll request epoch
 _PRESENCE_ONLINE_WINDOW = 120   # seconds — a 60s client poll keeps a tab "online"
@@ -892,7 +917,8 @@ _PRESENCE_POLL_PATHS = frozenset({
 
 
 def _record_presence(user: str, request: Request) -> None:
-    if not user:
+    # Exclude non-human / service identities (e.g. system:engine) — presence reflects people.
+    if not user or user.lower().startswith("system:"):
         return
     now = time.time()
     ul = user.lower()
@@ -1038,7 +1064,7 @@ def get_user(request: Request) -> str:
     # (OCP/FreeIPA users), then anon. Identity is the email/username string.
     sess = local_auth.read_session(request.cookies.get(local_auth.SESSION_COOKIE, ""))
     if sess:
-        return sess
+        return _canonical_identity(sess)   # #39: resolve aliases → canonical account
     user = (
         request.headers.get("X-Forwarded-User")
         or request.headers.get("X-Forwarded-Email")
@@ -1046,7 +1072,7 @@ def get_user(request: Request) -> str:
         or request.headers.get("X-Auth-Request-Email")
     )
     if user:
-        return user
+        return _canonical_identity(user)
     if ALLOW_ANON_WRITES:
         return ANON_REVIEWER
     raise HTTPException(status_code=401, detail="reviewer identity not provided")
@@ -1351,17 +1377,39 @@ async def require_role(request: Request, minimum: str) -> str:
     return user
 
 
+async def _project_sealed(conn, project_id) -> bool:
+    """A sealed (is_exclusive) project requires an explicit grant for EVERYONE, incl. platform
+    admins (#130 seal). Only gates project-scoped privilege checks — platform operations
+    (project_id=None) are never sealed, so break-glass (granting via the platform-scoped Config /
+    grant matrix) always works. Default-false → no effect on existing projects."""
+    if not project_id:
+        return False
+    return bool(await conn.fetchval("SELECT is_exclusive FROM projects WHERE id=$1", project_id))
+
+
+async def _customer_sealed(conn, customer_id) -> bool:
+    if not customer_id:
+        return False
+    return bool(await conn.fetchval("SELECT is_exclusive FROM customers WHERE id=$1", customer_id))
+
+
 async def require_priv(request: Request, privilege: str, project_id: Optional[int] = None) -> str:
     """Auth dependency: require a specific privilege (optionally project-scoped).
-    platform.admin is a superuser and passes any check."""
+    platform.admin is a superuser EXCEPT on a sealed project (explicit grant required)."""
     user = get_user(request)
     if _service_token_ok(request):
         return user
     if not _multiuser():
         return user
     privs = await _privs(user, project_id)
-    if privilege in privs or rbac.P_PLATFORM_ADMIN in privs:
+    if privilege in privs:
         return user
+    if rbac.P_PLATFORM_ADMIN in privs:
+        if not project_id or pool is None:
+            return user
+        async with pool.acquire() as _c:
+            if not await _project_sealed(_c, project_id):
+                return user
     raise HTTPException(403, f"requires privilege {privilege}")
 
 
@@ -1376,7 +1424,10 @@ async def _require_priv_conn(conn, request: Request, privilege: str,
     if not _multiuser():
         return user
     privs = await rbac.privileges_for(conn, user, project_id)
-    if privilege in privs or rbac.P_PLATFORM_ADMIN in privs:
+    if privilege in privs:
+        return user
+    # platform.admin is a superuser EXCEPT on a sealed project (explicit grant required, #130).
+    if rbac.P_PLATFORM_ADMIN in privs and not await _project_sealed(conn, project_id):
         return user
     raise HTTPException(403, f"requires privilege {privilege}")
 
@@ -1405,6 +1456,23 @@ async def require_project_admin(request: Request, project_id: Optional[int]) -> 
     if project_id is not None and await _has_priv(user, rbac.P_PROJECT_MEMBERS, project_id):
         return user
     raise HTTPException(403, "requires project admin")
+
+
+async def _require_customer_priv_conn(conn, request: Request, privilege: str,
+                                      customer_id: Optional[int] = None) -> str:
+    """Customer-axis guard: require a customer-scoped privilege on `customer_id`.
+    platform.admin is a superuser EXCEPT on a sealed (is_exclusive) customer, which requires an
+    explicit grant for everyone (#130 seal). Mirrors _require_priv_conn on the project axis."""
+    user = get_user(request)
+    if _service_token_ok(request) or not _multiuser():
+        return user
+    privs = await rbac.privileges_for(conn, user, None, customer_id)
+    if privilege in privs:
+        return user
+    # platform.admin is a superuser EXCEPT on a sealed customer (explicit grant required, #130).
+    if rbac.P_PLATFORM_ADMIN in privs and not await _customer_sealed(conn, customer_id):
+        return user
+    raise HTTPException(403, f"requires privilege {privilege}")
 
 
 # ------------------------- Models -------------------------
@@ -1565,6 +1633,43 @@ async def readyz():
 # ------------------------- Identity -------------------------
 
 
+class UserSettingsIn(BaseModel):
+    settings: dict = Field(default_factory=dict)
+
+
+@app.get("/api/me/settings")
+async def get_my_settings(request: Request):
+    """#129: the caller's persisted UI prefs (theme/mode/persona/view-mode/nav). Server-side
+    so they follow the user across devices; localStorage is the fast local cache."""
+    try:
+        user = get_user(request)
+    except HTTPException:
+        return {"settings": {}}
+    if pool is None:
+        return {"settings": {}}
+    async with pool.acquire() as conn:
+        row = await conn.fetchval("SELECT settings FROM user_settings WHERE reviewer=$1", user.lower())
+    s = row if isinstance(row, dict) else (json.loads(row) if row else {})
+    return {"settings": s or {}}
+
+
+@app.put("/api/me/settings")
+async def put_my_settings(payload: UserSettingsIn, request: Request):
+    """#129: merge-upsert the caller's UI prefs (partial updates merge, so one changed key
+    doesn't clobber the rest)."""
+    user = get_user(request)
+    if pool is None:
+        raise HTTPException(503, "pool not initialized")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO user_settings (reviewer, settings, updated_at)
+               VALUES ($1, $2::jsonb, now())
+               ON CONFLICT (reviewer) DO UPDATE
+               SET settings = user_settings.settings || EXCLUDED.settings, updated_at = now()""",
+            user.lower(), json.dumps(payload.settings or {}))
+    return {"ok": True}
+
+
 @app.get("/api/me")
 async def me(request: Request):
     try:
@@ -1630,16 +1735,23 @@ async def presence(request: Request, detail: bool = Query(False)):
     out = _presence_counts()
     if detail:
         now = time.time()
+        # Include anyone online (pinged ≤2 min) OR active (real request ≤5 min), so the popover
+        # accounts for EVERY identity in the counts — incl. an "active but no longer polling" tab
+        # (active without online), which previously showed in the count but not the list.
+        ids = {uid for uid, t in _presence_seen.items() if now - t <= _PRESENCE_ONLINE_WINDOW}
+        ids |= {uid for uid, t in _presence_active.items() if now - t <= _PRESENCE_ACTIVE_WINDOW}
         users = []
-        for uid, seen in _presence_seen.items():
-            if now - seen <= _PRESENCE_ONLINE_WINDOW:
-                last_active = _presence_active.get(uid, 0)
-                users.append({
-                    "id": uid,
-                    "idle_secs": int(now - seen),
-                    "active": (now - last_active) <= _PRESENCE_ACTIVE_WINDOW,
-                })
-        users.sort(key=lambda u: (not u["active"], u["idle_secs"]))  # active first, freshest first
+        for uid in ids:
+            seen = _presence_seen.get(uid, 0)
+            last_active = _presence_active.get(uid, 0)
+            online = bool(seen) and (now - seen) <= _PRESENCE_ONLINE_WINDOW
+            users.append({
+                "id": uid,
+                "idle_secs": int(now - seen) if seen else None,
+                "online": online,
+                "active": bool(last_active) and (now - last_active) <= _PRESENCE_ACTIVE_WINDOW,
+            })
+        users.sort(key=lambda u: (not u["active"], not u["online"], u["idle_secs"] if u["idle_secs"] is not None else 1e9))
         out["users"] = users
     return out
 
@@ -1715,6 +1827,11 @@ async def list_accounts(request: Request):
             "SELECT reviewer, email, display_name, enabled, source, last_seen, "
             "       (password_hash IS NOT NULL) AS has_password "
             "FROM users ORDER BY enabled DESC, reviewer")
+        # #39: aliases per account, one grouped query (no N+1).
+        alias_rows = await conn.fetch(
+            "SELECT lower(reviewer) AS reviewer, array_agg(alias ORDER BY alias) AS aliases "
+            "FROM account_identities GROUP BY lower(reviewer)")
+        aliases_by = {r["reviewer"]: list(r["aliases"] or []) for r in alias_rows}
         out = []
         for r in rows:
             roles = await rbac.roles_for(conn, r["reviewer"])
@@ -1725,6 +1842,7 @@ async def list_accounts(request: Request):
                 "last_seen": r["last_seen"].isoformat() if r["last_seen"] else None,
                 "is_default_admin": r["reviewer"].lower() == _DEFAULT_ADMIN_EMAIL,
                 "roles": _acct_roles_out(roles),
+                "aliases": aliases_by.get(r["reviewer"].lower(), []),
             })
     return {"accounts": out}
 
@@ -2028,6 +2146,79 @@ async def revoke_account_role(reviewer: str, request: Request,
     await _reload_approved()
 
 
+# ── #39 identity unification: aliases (uid / old key / 2nd email) → one canonical account ──
+class IdentityLinkIn(BaseModel):
+    alias: str
+    migrate: bool = True   # move the alias's existing role bindings + settings onto the canonical account
+
+
+@app.get("/api/accounts/{reviewer}/identities")
+async def list_account_identities(reviewer: str, request: Request):
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT alias, source, created_by, created_at FROM account_identities "
+            "WHERE lower(reviewer)=lower($1) ORDER BY alias", reviewer)
+    return {"reviewer": reviewer, "identities": [
+        {**dict(r), "created_at": r["created_at"].isoformat()} for r in rows]}
+
+
+@app.post("/api/accounts/{reviewer}/identities")
+async def link_account_identity(reviewer: str, payload: IdentityLinkIn, request: Request):
+    """Link an ALIAS identity to this (canonical) account, so any auth path using the alias
+    resolves here. With migrate=true, the alias's existing role bindings + settings move onto
+    this account and the alias's duplicate account row is removed."""
+    granter = await require_role(request, "admin")
+    canon = reviewer.strip()
+    alias = (payload.alias or "").strip().lower()
+    if not alias:
+        raise HTTPException(400, "alias required")
+    if alias == canon.lower():
+        raise HTTPException(400, "an account can't alias itself")
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM users WHERE lower(reviewer)=lower($1)", canon):
+            raise HTTPException(404, "canonical account not found")
+        owner = await conn.fetchval("SELECT reviewer FROM account_identities WHERE alias=$1", alias)
+        if owner and owner.lower() != canon.lower():
+            raise HTTPException(409, f"{alias!r} is already an alias of {owner!r}")
+        async with conn.transaction():
+            await conn.execute(
+                """INSERT INTO account_identities (alias, reviewer, source, created_by)
+                   VALUES ($1,$2,'manual',$3)
+                   ON CONFLICT (alias) DO UPDATE SET reviewer=EXCLUDED.reviewer""",
+                alias, canon, granter)
+            if payload.migrate:
+                # Move role bindings (drop ones that would duplicate a canonical binding), then settings.
+                await conn.execute(
+                    """DELETE FROM rbac_account_roles a WHERE lower(a.reviewer)=$1
+                       AND EXISTS (SELECT 1 FROM rbac_account_roles b WHERE lower(b.reviewer)=lower($2)
+                                   AND b.role_id=a.role_id
+                                   AND COALESCE(b.project_id,0)=COALESCE(a.project_id,0)
+                                   AND COALESCE(b.customer_id,0)=COALESCE(a.customer_id,0))""",
+                    alias, canon)
+                await conn.execute("UPDATE rbac_account_roles SET reviewer=$2 WHERE lower(reviewer)=$1", alias, canon)
+                await conn.execute(
+                    "DELETE FROM user_settings WHERE lower(reviewer)=$1 AND EXISTS "
+                    "(SELECT 1 FROM user_settings WHERE lower(reviewer)=lower($2))", alias, canon)
+                await conn.execute("UPDATE user_settings SET reviewer=$2 WHERE lower(reviewer)=$1", alias, canon)
+                # Remove the alias's now-redundant standalone account row (it lives on as an alias).
+                await conn.execute("DELETE FROM users WHERE lower(reviewer)=$1", alias)
+        await _reconcile_admin(conn)
+    await _load_aliases()
+    await _reload_approved()
+    return {"ok": True, "alias": alias, "reviewer": canon, "migrated": payload.migrate}
+
+
+@app.delete("/api/accounts/{reviewer}/identities/{alias}", status_code=204)
+async def unlink_account_identity(reviewer: str, alias: str, request: Request):
+    """Remove an alias (does NOT restore the old account or un-migrate bindings)."""
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM account_identities WHERE alias=$1 AND lower(reviewer)=lower($2)",
+                           alias.strip().lower(), reviewer)
+    await _load_aliases()
+
+
 # ── Role bindings (the "who has what, where" view) + LDAP group mapper ────────
 @app.get("/api/rbac/bindings")
 async def list_rbac_bindings(request: Request):
@@ -2035,22 +2226,28 @@ async def list_rbac_bindings(request: Request):
     mappings. Platform admin."""
     await require_role(request, "admin")
     async with pool.acquire() as conn:
+        # Surface the customer axis + spans_all too (2b-iv): customer-scoped grants were
+        # invisible here, and the grant matrix needs every binding's full scope.
         accts = await conn.fetch(
             """SELECT ar.id AS binding_id, lower(ar.reviewer) AS subject, u.display_name,
                       ar.role_id, ro.key AS role_key, ro.name AS role_name, ro.scope,
-                      ar.project_id, p.name AS project_name
+                      ar.project_id, p.name AS project_name,
+                      ar.customer_id, c.name AS customer_name, ar.spans_all
                FROM rbac_account_roles ar
                JOIN rbac_roles ro ON ro.id=ar.role_id
                LEFT JOIN users u ON lower(u.reviewer)=lower(ar.reviewer)
                LEFT JOIN projects p ON p.id=ar.project_id
+               LEFT JOIN customers c ON c.id=ar.customer_id
                ORDER BY ro.scope DESC, ro.name, ar.reviewer""")
         groups = await conn.fetch(
             """SELECT g.id AS mapping_id, g.source, g.group_key AS subject,
                       g.role_id, ro.key AS role_key, ro.name AS role_name, ro.scope,
-                      g.project_id, p.name AS project_name
+                      g.project_id, p.name AS project_name,
+                      g.customer_id, c.name AS customer_name, g.spans_all
                FROM rbac_group_role_mappings g
                JOIN rbac_roles ro ON ro.id=g.role_id
                LEFT JOIN projects p ON p.id=g.project_id
+               LEFT JOIN customers c ON c.id=g.customer_id
                ORDER BY g.source, g.group_key""")
     return {"account_bindings": [dict(r) for r in accts],
             "group_mappings": [dict(r) for r in groups]}
@@ -3074,6 +3271,15 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                                             "reproduce": 1}.get(payload.mode, 1)
     _trig_sample_conc = (payload.sample_concurrency if payload.sample_concurrency is not None
                          else min(_eff_samples, int(os.environ.get("DAV_MAX_SAMPLE_CONCURRENCY", "4"))))
+    # #93 promotion: inject the project's Evaluation (stage-2) prompt into NORMAL runs iff it's been
+    # promoted live (applied=true) — set after a winning A/B. Held prompts stay A/B-only (byte-identical).
+    _stage2_ctx = None
+    async with pool.acquire() as conn:
+        _s2 = await conn.fetchval(
+            "SELECT content FROM project_stage_context "
+            "WHERE project_id=$1 AND stage='stage2-analysis' AND applied=true", _trigpid)
+        if _s2 and _s2.strip():
+            _stage2_ctx = _s2.strip()
     try:
         result = await asyncio.to_thread(validations.trigger_run,
             triggered_by=reviewer,
@@ -3100,6 +3306,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             capabilities_json=capabilities_json,
             use_profile_json=use_profile_json,
             stage2_two_pass=payload.stage2_two_pass,
+            stage2_context=_stage2_ctx,
             uc_count=_trig_uc_count,
             # Explicit "time allowed" from the modal, else the data-driven
             # default (ETA = uc_count × median per-UC + buffer); None for full
@@ -3452,6 +3659,87 @@ async def run_estimate():
             "failsafe_buffer_seconds": validations.FAILSAFE_BUFFER_SEC}
 
 
+@app.get("/api/runs/preflight-hint")
+async def runs_preflight_hint(
+    set_id: Optional[str] = Query(None, description="UC set the operator is about to run (int id or '__all__')"),
+    lookback_runs: int = Query(5, ge=1, le=20),
+):
+    """Pre-flight hint for the New Ingestion modal — Phase C of the
+    infrastructure-confidence work.
+
+    Looks at the last N runs for the same set_id (or globally if no set),
+    counts how many had any UC flagged with infrastructure_confidence
+    label = 'low' or 'compromised', and returns a structured hint object
+    when the threshold is crossed. The UI renders this as an inline
+    banner suggesting a long-context model or per-UC spec_namespaces.
+
+    NB: declared BEFORE /api/runs/{name} — FastAPI matches in definition order, so the
+    static path must come first or "preflight-hint" is swallowed as a run name (404)."""
+    # '__all__' (synthetic set) runs are stored with set_id NULL — treat the
+    # sentinel as a global lookback rather than failing int coercion.
+    if set_id is not None and _is_all_set(set_id):
+        set_id = None
+    elif set_id is not None:
+        set_id = _real_set_id(set_id)
+    if set_id is None:
+        return {"hint": None}
+    async with pool.acquire() as conn:
+        # Find recent runs that included this set
+        recent_runs = await conn.fetch(
+            """SELECT DISTINCT ar.run_id
+               FROM analysis_runs ar
+               JOIN run_sessions rs ON rs.run_name = ar.run_id
+               WHERE rs.set_id = $1
+               ORDER BY ar.run_id DESC LIMIT $2""",
+            set_id, lookback_runs,
+        )
+        if not recent_runs:
+            return {"hint": None}
+        run_ids = [r["run_id"] for r in recent_runs]
+        # For each run, count UCs by infra_confidence_label
+        stats = await conn.fetch(
+            """SELECT run_id, infra_confidence_label, COUNT(*) AS n
+               FROM uc_analyses
+               WHERE run_id = ANY($1::text[])
+               GROUP BY run_id, infra_confidence_label""",
+            run_ids,
+        )
+    from collections import defaultdict
+    per_run = defaultdict(lambda: defaultdict(int))
+    for r in stats:
+        per_run[r["run_id"]][r["infra_confidence_label"] or "unscored"] += r["n"]
+    # Threshold: ≥2 of the last N runs had at least one low or compromised UC
+    triggering_runs = [
+        rid for rid, counts in per_run.items()
+        if counts.get("low", 0) + counts.get("compromised", 0) > 0
+    ]
+    if len(triggering_runs) < 2:
+        return {"hint": None}
+    worst = max(
+        (counts.get("compromised", 0), counts.get("low", 0), rid)
+        for rid, counts in per_run.items()
+    )
+    return {
+        "hint": {
+            "severity": "warning",
+            "headline": (
+                f"Heads up: {len(triggering_runs)} of the last "
+                f"{len(per_run)} run(s) of this set had at least one UC "
+                f"flagged with low or compromised infrastructure confidence."
+            ),
+            "detail": (
+                "Consider running on a long-context model (Sonnet 4.6 / "
+                "Opus 4.7 — 200K context) for this set, or narrowing each "
+                "UC's spec_namespaces field to reduce exploration depth. "
+                "The current local Qwen3-32B at 86K context may force "
+                "early commits on deep-exploration UCs."
+            ),
+            "triggering_runs": triggering_runs,
+            "set_id": set_id,
+        }
+    }
+
+
 @app.get("/api/runs/{name}")
 async def get_run_detail(name: str):
     """Return Tekton PipelineRun spec + per-TaskRun status + session metadata
@@ -3662,6 +3950,70 @@ async def compare_results(
         raise HTTPException(500, f"compare failed: {e}")
 
 
+@app.get("/api/results/uc-latest")
+async def results_uc_latest(request: Request, set_id: str = None, uc_uuids: str = None):
+    """Latest cached evaluation PER UC, run-agnostic, for a UC/Set scope — the heart of UC-scoped
+    output (uc-scoped-evaluation-design.md 3a). Resolves the scope to UC uuids, then returns each
+    UC's newest uc_analyses row (DISTINCT ON uc_uuid ORDER BY ingested_at DESC) + content-staleness.
+    A Set's results may therefore span multiple runs (decision 4b).
+
+    NB: declared BEFORE /api/results/{run_id} — FastAPI matches in definition order, so the static
+    path must come first or "uc-latest" is swallowed as a run_id (404 "run 'uc-latest' not found")."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        uuids = await _resolve_scope_uc_uuids(conn, pid, set_id, uc_uuids)
+        if not uuids:
+            return {"ucs": [], "total": 0, "evaluated": 0}
+        rows = await conn.fetch(
+            """
+            WITH latest AS (
+              SELECT DISTINCT ON (a.uc_uuid)
+                     a.id, a.uc_uuid, a.uc_handle, a.verdict, a.overall_assessment,
+                     a.analyzed_at, a.ingested_at, a.run_id, a.model, a.eval_fingerprint,
+                     a.status, a.error_reason, a.error_phase, a.source_repo_shas
+              FROM uc_analyses a
+              WHERE a.uc_uuid = ANY($1)
+              ORDER BY a.uc_uuid, a.ingested_at DESC
+            )
+            SELECT u.uuid AS uc_uuid, u.title, u.updated_at,
+                   l.id AS analysis_id, l.uc_handle, l.verdict, l.overall_assessment,
+                   l.analyzed_at, l.ingested_at, l.run_id, l.model, l.eval_fingerprint,
+                   l.status, l.error_reason, l.error_phase, l.source_repo_shas
+            FROM managed_use_cases u
+            LEFT JOIN latest l ON l.uc_uuid = u.uuid
+            WHERE u.uuid = ANY($1)
+            ORDER BY COALESCE(NULLIF(u.title,''), u.uuid)
+            """, uuids)
+        current = await _current_project_repo_shas_cached(conn, pid)   # #114
+        ucs, evaluated, failed = [], 0, 0
+        for r in rows:
+            has = r["analysis_id"] is not None
+            # #121: a 'failed' latest row is NOT a successful evaluation — it's a failure that
+            # needs re-ingestion. Legacy NULL status counts as success (don't regress coverage).
+            is_failed = has and r["status"] == "failed"
+            ok = has and not is_failed
+            if ok:
+                evaluated += 1
+            if is_failed:
+                failed += 1
+            # #114: two staleness axes — UC edited OR the code it was evaluated against drifted.
+            edited  = bool(ok and r["analyzed_at"] and r["updated_at"] and r["updated_at"] > r["analyzed_at"])
+            drifted = bool(ok and _repo_drifted(r["source_repo_shas"], current))
+            ucs.append({
+                "uc_uuid": r["uc_uuid"], "title": r["title"], "uc_handle": r["uc_handle"],
+                "verdict": r["verdict"], "overall_assessment": r["overall_assessment"],
+                "run_id": r["run_id"], "model": r["model"], "eval_fingerprint": r["eval_fingerprint"],
+                "evaluated": ok, "failed": is_failed,
+                "stale": (edited or drifted), "stale_edited": edited, "stale_drifted": drifted,
+                "status": r["status"], "error_reason": r["error_reason"], "error_phase": r["error_phase"],
+                "analyzed_at": r["analyzed_at"].isoformat() if r["analyzed_at"] else None,
+                "ingested_at": r["ingested_at"].isoformat() if r["ingested_at"] else None,
+                "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+            })
+        return {"ucs": ucs, "total": len(ucs), "evaluated": evaluated, "failed": failed}
+
+
 @app.get("/api/results/{run_id}")
 async def get_result(run_id: str):
     """Return the run-summary.yaml content for a specific run, enriched with
@@ -3687,7 +4039,7 @@ async def get_result(run_id: str):
                     run_id,
                 )
                 rows = await conn.fetch(
-                    """SELECT uc_uuid, lifecycle_state_at_run, source_kind
+                    """SELECT uc_uuid, lifecycle_state_at_run, source_kind, error_reason, error_phase
                        FROM uc_analyses WHERE run_id = $1""",
                     run_id,
                 )
@@ -3696,12 +4048,24 @@ async def get_result(run_id: str):
                 summary["set_id"]          = meta["set_id"]
                 summary["set_name"]        = meta["set_name"] or None
                 summary["selection_mode"]  = meta["selection_mode"] or None
-            state_by_uuid = {r["uc_uuid"]: (r["lifecycle_state_at_run"], r["source_kind"]) for r in rows}
+            state_by_uuid = {r["uc_uuid"]: r for r in rows}
             for uc in (summary.get("ucs") or []):
                 s = state_by_uuid.get(uc.get("uc_uuid"))
                 if s:
-                    uc["lifecycle_state_at_run"] = s[0]
-                    uc["source_kind"] = s[1]
+                    uc["lifecycle_state_at_run"] = s["lifecycle_state_at_run"]
+                    uc["source_kind"] = s["source_kind"]
+                    uc["error_reason"] = s["error_reason"]      # #121
+                    uc["error_phase"]  = s["error_phase"]
+            # A dropped UC has a DB row but no entry in the workspace summary — append it so the
+            # drawer shows it instead of silently omitting it.
+            _summary_uuids = {uc.get("uc_uuid") for uc in (summary.get("ucs") or [])}
+            for r in rows:
+                if r["error_phase"] == "not_emitted" and r["uc_uuid"] not in _summary_uuids:
+                    summary.setdefault("ucs", []).append({
+                        "uc_uuid": r["uc_uuid"], "status": "failed",
+                        "error_reason": r["error_reason"], "error_phase": r["error_phase"],
+                        "lifecycle_state_at_run": r["lifecycle_state_at_run"], "source_kind": r["source_kind"],
+                    })
         except Exception as e:
             log.warning("get_result: lineage enrichment failed for %s: %s", run_id, e)
     return summary
@@ -3769,6 +4133,12 @@ class ModelConfigIn(BaseModel):
     # See `model_configs.capabilities` (migration 014).
     capabilities: dict = Field(default_factory=dict)
 
+class ModelProbeIn(BaseModel):
+    """Connection-test an endpoint and list its models, before saving a config."""
+    provider: str = Field("openai", pattern="^(openai|anthropic)$")
+    endpoint_url: str = Field(..., min_length=1, max_length=512)
+    api_key: str = Field("", max_length=512)
+
 
 _VALID_USE_KEYS = {
     "evaluation_verification",
@@ -3791,20 +4161,22 @@ class ModelUseProfileIn(BaseModel):
 
 
 class ArchReviewIn(BaseModel):
-    scope: str = Field(..., pattern="^(uc|run)$")
+    scope: str = Field(..., pattern="^(uc|run|set)$")
     model_config_id: Optional[int] = None
     endpoint_url: Optional[str] = None
     model_id: Optional[str] = None
     run_id: Optional[str] = None
     uc_uuid: Optional[str] = None
+    set_id: Optional[str] = None   # Scoping Set id / '__all__' / '__unassigned__' for scope='set'
 
 class EnhancementIn(BaseModel):
-    scope: str = Field(..., pattern="^(uc|run)$")
+    scope: str = Field(..., pattern="^(uc|run|set)$")
     model_config_id: Optional[int] = None
     endpoint_url: Optional[str] = None
     model_id: Optional[str] = None
     run_id: Optional[str] = None
     uc_uuid: Optional[str] = None
+    set_id: Optional[str] = None   # Scoping Set id / '__all__' / '__unassigned__' for scope='set'
 
 class CodeRepoIn(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
@@ -3898,10 +4270,13 @@ async def uc_assist_chat(payload: UCAssistIn, request: Request):
             # No explicit model — use the project UC-authoring default if set;
             # else leave cfg=None so uc_assist.chat falls back to env config.
             cfg = await _model_default_row(conn, "uc-authoring", project_id=pid)
+        _uctx = await _stage_context(conn, "uc-authoring", pid)   # #125 prompt management (append-live)
+    # Merge the architect-set UC-authoring prompt context with the per-request context.
+    _merged_ctx = "\n\n".join(p for p in [(payload.context or "").strip(), _uctx] if p) or None
     result = await uc_assist.chat(
         user_message=payload.message,
         current_yaml=payload.current_yaml,
-        context=payload.context,
+        context=_merged_ctx,
         cfg=cfg,
         pool=pool,
     )
@@ -4246,6 +4621,11 @@ def _validate_uc_yaml(parsed: dict) -> list[str]:
         errors.append("uuid is required and must be a non-empty string")
     elif not uid.startswith("uc-"):
         errors.append(f"uuid '{uid}' must start with 'uc-'")
+    # handle — REQUIRED. The engine loader does uc['handle'] and KeyErrors without it (this gap let
+    # 9 handle-less UCs save then fail to load). Auto-repairable via _derive_uc_handle (#122).
+    hnd = parsed.get("handle")
+    if not isinstance(hnd, str) or not hnd.strip():
+        errors.append("handle is required and must be a non-empty string (e.g. namespace/profile/slug)")
     # generated_by
     gb = parsed.get("generated_by") or {}
     if not isinstance(gb, dict):
@@ -4326,12 +4706,28 @@ def _derive_uc_title(parsed: dict, fallback_id: str) -> str:
     return fallback_id
 
 
+def _slugify(s: str, maxlen: int = 60) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
+    return (s[:maxlen].strip("-")) or "use-case"
+
+def _derive_uc_handle(parsed: dict) -> str:
+    """Derive a `namespace/profile/slug` handle for a UC missing one (#122 repair). Profile comes
+    from the actor/scenario profile (falls back to 'standard'); slug from the title."""
+    sc = parsed.get("scenario") or {}
+    profile = ((sc.get("actor") or {}).get("profile") or sc.get("profile") or "standard")
+    if not isinstance(profile, str) or not profile.strip():
+        profile = "standard"
+    slug = _slugify(_derive_uc_title(parsed, parsed.get("uuid") or "use-case"))
+    return f"managed/{profile.strip()}/{slug}"
+
+
 @app.get("/api/use-cases")
 async def list_use_cases(
     request: Request,
     source: Optional[str] = Query(None, description="'managed', 'corpus', or None for both"),
     sort: Optional[str] = Query(None, description="'priority' to order by roadmap weight; default is most-recently-updated"),
     priority: Optional[str] = Query(None, description="filter to a single priority label (critical/high/medium/low)"),
+    customer_id: Optional[str] = Query(None, description="matrix #130: filter to managed UCs this customer has requested (corpus UCs carry no demand, so omitted when set)"),
 ):
     """List use cases — from the managed DB, the corpus files, or both.
 
@@ -4348,6 +4744,8 @@ async def list_use_cases(
     if prio_filter is not None and prio_filter not in _PRIORITY_DEFAULTS:
         raise HTTPException(400, f"priority filter '{priority}' not in {sorted(_PRIORITY_DEFAULTS)}")
     by_priority = (sort == "priority")
+    by_demand = (sort == "demand")   # order by customer request count (highest first)
+    cust_filter = int(customer_id) if (customer_id and str(customer_id).isdigit()) else None
 
     # Pre-build uuid → [set_ids] map once for all UCs (managed + corpus).
     async with pool.acquire() as conn:
@@ -4358,9 +4756,21 @@ async def list_use_cases(
     for r in member_rows:
         set_ids_by_uuid.setdefault(r["uc_uuid"], []).append(int(r["set_id"]))
 
+    # Demand rollup: distinct customers per UC (the multi-tenant importance signal),
+    # one grouped query for the whole list (no N+1).
+    async with pool.acquire() as conn:
+        dc_rows = await conn.fetch(
+            "SELECT uc_uuid, COUNT(DISTINCT customer) AS dc, "
+            "array_agg(DISTINCT customer ORDER BY customer) AS names "
+            "FROM uc_customer_requests GROUP BY uc_uuid")
+    distinct_customers_by_uuid = {r["uc_uuid"]: int(r["dc"]) for r in dc_rows}
+    # #130 2b-iii: the requesting customers per UC (names), for the customer column.
+    customer_names_by_uuid = {r["uc_uuid"]: list(r["names"] or []) for r in dc_rows}
+
     if source in (None, "managed"):
-        order = ("priority_score DESC NULLS LAST, updated_at DESC"
-                 if by_priority else "updated_at DESC")
+        order = ("customer_requests DESC, updated_at DESC" if by_demand
+                 else "priority_score DESC NULLS LAST, updated_at DESC" if by_priority
+                 else "updated_at DESC")
         async with pool.acquire() as conn:
             pid = await _active_project_id(request, conn)
             conds, params = [], []
@@ -4368,10 +4778,13 @@ async def list_use_cases(
                 params.append(pid); conds.append(f"project_id = ${len(params)}")
             if prio_filter:
                 params.append(prio_filter); conds.append(f"priority = ${len(params)}")
+            if cust_filter is not None:
+                params.append(cust_filter)
+                conds.append(f"uuid IN (SELECT uc_uuid FROM uc_customer_requests WHERE customer_id = ${len(params)})")
             where = ("WHERE " + " AND ".join(conds)) if conds else ""
             sql = (
                 "SELECT uuid, title, tags, lifecycle_state, priority, priority_score, readiness_score, "
-                "created_by, created_at, updated_by, updated_at "
+                "customer_requests, created_by, created_at, updated_by, updated_at "
                 f"FROM managed_use_cases {where} ORDER BY {order}"
             )
             rows = await conn.fetch(sql, *params)
@@ -4382,11 +4795,13 @@ async def list_use_cases(
                 "created_at": r["created_at"].isoformat(),
                 "updated_at": r["updated_at"].isoformat(),
                 "set_ids": set_ids_by_uuid.get(r["uuid"], []),
+                "distinct_customers": distinct_customers_by_uuid.get(r["uuid"], 0),
+                "customers": customer_names_by_uuid.get(r["uuid"], []),
             }
             for r in rows
         ]
 
-    if source in (None, "corpus"):
+    if source in (None, "corpus") and cust_filter is None:
         # Corpus UC files — already seeded into the files table; filter to .yaml files
         # that look like UCs (have a uuid field when parsed as YAML).
         async with pool.acquire() as conn:
@@ -4412,6 +4827,8 @@ async def list_use_cases(
                     "priority": c_priority,
                     "priority_score": c_priority_score,
                     "readiness_score": _uc_readiness.score_use_case(data)["score"],
+                    "customer_requests": 0,   # demand is console-tracked; corpus files carry none
+                    "distinct_customers": 0,
                     "path":    r["path"],
                     "source":  "corpus",
                     "set_ids": set_ids_by_uuid.get(uc_uuid, []),
@@ -4430,6 +4847,30 @@ async def list_use_cases(
             return (1, 0) if s is None else (0, -s)
         use_cases.sort(key=_prio_key)
     return {"use_cases": use_cases}
+
+
+@app.get("/api/use-cases/health")
+async def use_cases_health(request: Request):
+    """Per-project UC validity (#122). For each managed UC: parse + run engine validation, so the
+    list can FLAG invalid UCs and the editor can surface what's wrong + whether it's auto-repairable
+    (currently a missing `handle`, which we can derive). NB: declared BEFORE /api/use-cases/{uuid}."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        rows = await conn.fetch(
+            "SELECT uuid, title, yaml_content FROM managed_use_cases WHERE project_id=$1", pid)
+    ucs = []
+    for r in rows:
+        data = None
+        try:
+            data = _parse_uc_yaml(r["yaml_content"])
+            errs = _validate_uc_yaml(data)
+        except ValueError as e:
+            errs = [str(e)]
+        repairable = bool(data is not None and any("handle is required" in e for e in errs))
+        ucs.append({"uuid": r["uuid"], "title": r["title"], "valid": not errs,
+                    "errors": errs, "repairable": repairable})
+    return {"total": len(ucs), "invalid": sum(1 for u in ucs if not u["valid"]), "ucs": ucs}
 
 
 @app.get("/api/use-cases/{uuid}")
@@ -4516,6 +4957,39 @@ async def readiness_use_case(payload: ManagedUCIn):
     except ValueError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, **_uc_readiness.score_use_case(data)}
+
+
+@app.post("/api/use-cases/{uuid}/repair")
+async def repair_use_case(uuid: str, request: Request):
+    """Auto-repair common UC issues without hand-editing YAML (#122). Currently: backfill a missing
+    `handle` (derived `managed/<profile>/<slug>`). Re-validates + saves; returns what changed and any
+    errors that still need a manual fix."""
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        await _gate_resource(conn, request, "managed_use_cases", "uuid", uuid,
+                             rbac.P_PROJECT_USECASES, "use case not found")
+        yc = await conn.fetchval("SELECT yaml_content FROM managed_use_cases WHERE uuid=$1", uuid)
+    try:
+        data = _parse_uc_yaml(yc)
+    except ValueError as e:
+        raise HTTPException(400, f"cannot auto-repair — YAML does not parse: {e}")
+    repaired = []
+    h = data.get("handle")
+    if not isinstance(h, str) or not h.strip():
+        data["handle"] = _derive_uc_handle(data)
+        repaired.append(f"backfilled handle → {data['handle']}")
+    remaining = _validate_uc_yaml(data)
+    if not repaired:
+        return {"ok": not remaining, "repaired": [], "remaining_errors": remaining,
+                "message": "Nothing to auto-repair." if not remaining
+                           else "No auto-repair is available for the remaining issues — edit manually."}
+    new_yaml = _yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    title = _derive_uc_title(data, uuid)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE managed_use_cases SET yaml_content=$2, title=$3, updated_by=$4, updated_at=now() WHERE uuid=$1",
+            uuid, new_yaml, title, user)
+    return {"ok": not remaining, "repaired": repaired, "remaining_errors": remaining, "yaml_content": new_yaml}
 
 
 @app.post("/api/use-cases")
@@ -4608,6 +5082,116 @@ async def update_use_case(uuid: str, payload: ManagedUCIn, request: Request):
     if result == "UPDATE 0":
         raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
     return {"ok": True, "uuid": uuid, "title": title, "priority": priority, "readiness_score": readiness}
+
+
+class CustomerRequestIn(BaseModel):
+    """Log a customer's request for a UC (the dedup-on-ingest substrate). `customer`
+    is required — importance is measured by DISTINCT customers, so attributing the
+    request is what keeps one customer asking 10× from poisoning priority."""
+    customer: str = Field(..., min_length=1, max_length=200)
+    source:   str = Field("manual", max_length=40)
+    note:     str = Field("", max_length=2000)
+
+
+def _customer_slug(name: str) -> str:
+    """Stable customer key — MUST match the schema.sql backfill so picker-created
+    customers reconcile with migrated ones."""
+    return re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+
+
+async def _get_or_create_customer(conn, name: str, by: str = "system") -> Optional[int]:
+    """Resolve a customer by slug, creating it if absent (the 'select-or-create' the
+    demand picker uses). Returns the customer id, or None for an empty name."""
+    slug = _customer_slug(name)
+    if not slug:
+        return None
+    return await conn.fetchval(
+        "INSERT INTO customers (slug, name, created_by) VALUES ($1,$2,$3) "
+        "ON CONFLICT (slug) DO UPDATE SET slug = EXCLUDED.slug RETURNING id",
+        slug, (name or "").strip(), by)
+
+
+async def _sync_uc_demand_total(conn, uuid: str) -> int:
+    """Re-derive managed_use_cases.customer_requests from the request log (the source
+    of truth), so the denormalized total never drifts. Returns the new total."""
+    return await conn.fetchval(
+        "UPDATE managed_use_cases SET customer_requests = "
+        "(SELECT COUNT(*) FROM uc_customer_requests WHERE uc_uuid=$1) "
+        "WHERE uuid=$1 RETURNING customer_requests", uuid)
+
+
+async def _uc_demand_summary(conn, uuid: str) -> dict:
+    """Demand rollup for a UC: total requests, DISTINCT customers (the multi-tenant
+    importance signal), and per-customer counts."""
+    rows = await conn.fetch(
+        "SELECT customer, COUNT(*) AS n FROM uc_customer_requests WHERE uc_uuid=$1 "
+        "GROUP BY customer ORDER BY n DESC, customer", uuid)
+    by_customer = [{"customer": r["customer"], "count": int(r["n"])} for r in rows]
+    total = sum(c["count"] for c in by_customer)
+    return {"total_requests": total, "distinct_customers": len(by_customer),
+            "multi_tenant": len(by_customer) > 1, "by_customer": by_customer}
+
+
+@app.get("/api/use-cases/{uuid}/customer-requests")
+async def list_uc_customer_requests(uuid: str, request: Request):
+    """The demand log for a UC: every attributed request + the rollup (total /
+    distinct customers / per-customer)."""
+    async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM managed_use_cases WHERE uuid=$1", uuid)
+        if owner is None:
+            raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, owner)
+        rows = await conn.fetch(
+            "SELECT id, customer, source, note, created_by, requested_at "
+            "FROM uc_customer_requests WHERE uc_uuid=$1 ORDER BY requested_at DESC", uuid)
+        summary = await _uc_demand_summary(conn, uuid)
+    return {
+        "uuid": uuid,
+        **summary,
+        "requests": [
+            {**dict(r), "requested_at": r["requested_at"].isoformat()} for r in rows
+        ],
+    }
+
+
+@app.post("/api/use-cases/{uuid}/customer-requests")
+async def log_uc_customer_request(uuid: str, payload: CustomerRequestIn, request: Request):
+    """Record that a customer requested this UC. Importance = distinct customers, so
+    re-logging the same customer is allowed (it's a real signal of repeated demand) but
+    does NOT increase the multi-tenant count. Operational metadata — does not touch the
+    UC YAML or eval staleness."""
+    user = get_user(request)
+    customer = payload.customer.strip()
+    if not customer:
+        raise HTTPException(400, "customer is required")
+    async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM managed_use_cases WHERE uuid=$1", uuid)
+        if owner is None:
+            raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, owner)
+        cid = await _get_or_create_customer(conn, customer, by=user)
+        await conn.execute(
+            "INSERT INTO uc_customer_requests (uc_uuid, project_id, customer_id, customer, source, note, created_by) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            uuid, owner, cid, customer, (payload.source or "manual")[:40], payload.note or "", user)
+        await _sync_uc_demand_total(conn, uuid)
+        summary = await _uc_demand_summary(conn, uuid)
+    return {"ok": True, "uuid": uuid, **summary}
+
+
+@app.delete("/api/use-cases/{uuid}/customer-requests/{rid}")
+async def delete_uc_customer_request(uuid: str, rid: int, request: Request):
+    """Remove a logged request (correct a mis-attribution / accidental double-count)."""
+    get_user(request)
+    async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM managed_use_cases WHERE uuid=$1", uuid)
+        if owner is None:
+            raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, owner)
+        await conn.execute("DELETE FROM uc_customer_requests WHERE id=$1 AND uc_uuid=$2", rid, uuid)
+        await _sync_uc_demand_total(conn, uuid)
+        summary = await _uc_demand_summary(conn, uuid)
+    return {"ok": True, "uuid": uuid, **summary}
 
 
 @app.delete("/api/use-cases/{uuid}")
@@ -4796,85 +5380,6 @@ async def get_run_infra_confidence_aggregate(run_name: str):
         "total_ucs": sum(breakdown.values()),
         "breakdown": dict(breakdown),
         "recommendations": recommendations,
-    }
-
-
-@app.get("/api/runs/preflight-hint")
-async def runs_preflight_hint(
-    set_id: Optional[str] = Query(None, description="UC set the operator is about to run (int id or '__all__')"),
-    lookback_runs: int = Query(5, ge=1, le=20),
-):
-    """Pre-flight hint for the New Run modal — Phase C of the
-    infrastructure-confidence work.
-
-    Looks at the last N runs for the same set_id (or globally if no set),
-    counts how many had any UC flagged with infrastructure_confidence
-    label = 'low' or 'compromised', and returns a structured hint object
-    when the threshold is crossed. The UI renders this as an inline
-    banner suggesting a long-context model or per-UC spec_namespaces.
-    """
-    # '__all__' (synthetic set) runs are stored with set_id NULL — treat the
-    # sentinel as a global lookback rather than failing int coercion.
-    if set_id is not None and _is_all_set(set_id):
-        set_id = None
-    elif set_id is not None:
-        set_id = _real_set_id(set_id)
-    if set_id is None:
-        return {"hint": None}
-    async with pool.acquire() as conn:
-        # Find recent runs that included this set
-        recent_runs = await conn.fetch(
-            """SELECT DISTINCT ar.run_id
-               FROM analysis_runs ar
-               JOIN run_sessions rs ON rs.run_name = ar.run_id
-               WHERE rs.set_id = $1
-               ORDER BY ar.run_id DESC LIMIT $2""",
-            set_id, lookback_runs,
-        )
-        if not recent_runs:
-            return {"hint": None}
-        run_ids = [r["run_id"] for r in recent_runs]
-        # For each run, count UCs by infra_confidence_label
-        stats = await conn.fetch(
-            """SELECT run_id, infra_confidence_label, COUNT(*) AS n
-               FROM uc_analyses
-               WHERE run_id = ANY($1::text[])
-               GROUP BY run_id, infra_confidence_label""",
-            run_ids,
-        )
-    from collections import defaultdict
-    per_run = defaultdict(lambda: defaultdict(int))
-    for r in stats:
-        per_run[r["run_id"]][r["infra_confidence_label"] or "unscored"] += r["n"]
-    # Threshold: ≥2 of the last N runs had at least one low or compromised UC
-    triggering_runs = [
-        rid for rid, counts in per_run.items()
-        if counts.get("low", 0) + counts.get("compromised", 0) > 0
-    ]
-    if len(triggering_runs) < 2:
-        return {"hint": None}
-    worst = max(
-        (counts.get("compromised", 0), counts.get("low", 0), rid)
-        for rid, counts in per_run.items()
-    )
-    return {
-        "hint": {
-            "severity": "warning",
-            "headline": (
-                f"Heads up: {len(triggering_runs)} of the last "
-                f"{len(per_run)} run(s) of this set had at least one UC "
-                f"flagged with low or compromised infrastructure confidence."
-            ),
-            "detail": (
-                "Consider running on a long-context model (Sonnet 4.6 / "
-                "Opus 4.7 — 200K context) for this set, or narrowing each "
-                "UC's spec_namespaces field to reduce exploration depth. "
-                "The current local Qwen3-32B at 86K context may force "
-                "early commits on deep-exploration UCs."
-            ),
-            "triggering_runs": triggering_runs,
-            "set_id": set_id,
-        }
     }
 
 
@@ -6097,6 +6602,97 @@ def _derive_gap_namespace(gap: dict) -> Optional[str]:
     return None
 
 
+def _eval_fingerprint(content_sha, model, engine_version, engine_commit, repo_shas) -> str:
+    """Per-UC evaluation fingerprint (uc-scoped-evaluation-design.md): the inputs an evaluation
+    depended on. Staleness = stored fingerprint != recomputed-from-current. Stable field order;
+    repo_shas is a dict (sorted) — null/{} until step 1b captures the project repo HEADs."""
+    h = hashlib.sha256()
+    for part in (content_sha, model, engine_version, engine_commit,
+                 json.dumps(repo_shas or {}, sort_keys=True)):
+        h.update((part or "").encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+async def _resolve_repo_head(repo: dict, token: str):
+    """Best-effort current HEAD SHA of a managed repo's branch (GitHub only for now). Returns the
+    SHA or None and NEVER raises — drift is best-effort and must not break ingest (step 1b)."""
+    try:
+        url = repo.get("repo_url") or ""
+        if "github.com" not in url:
+            return None  # non-GitHub providers (gitlab/generic): 1b-drift follow-up
+        owner, name = corpus_push.parse_github_url(url)
+        branch = repo.get("repo_branch") or "main"
+        r = await corpus_push._gh(
+            "GET", f"https://api.github.com/repos/{owner}/{name}/git/refs/heads/{branch}", token)
+        if r.status_code == 200:
+            return (r.json().get("object") or {}).get("sha")
+    except Exception:
+        log.warning("repo HEAD resolve failed for %s", repo.get("namespace"))
+    return None
+
+
+async def _resolve_project_repo_shas(conn, project_id):
+    """{role:namespace -> HEAD sha} for the project's spec/corpus repos at eval time, for the eval
+    fingerprint (uc-scoped-evaluation-design.md step 1b). Best-effort, GitHub-only, fully guarded."""
+    if not project_id:
+        return None
+    token = corpus_push.push_token()
+    if not token:
+        return None
+    out = {}
+    try:
+        for role in ("spec", "corpus"):
+            for rp in await _repos.list_repos(conn, role=role, project_id=project_id):
+                sha = await _resolve_repo_head(rp, token)
+                if sha:
+                    out[f"{role}:{rp.get('namespace')}"] = sha
+    except Exception:
+        log.warning("project repo SHA resolve failed for project %s", project_id)
+    return out or None
+
+
+# #114 drift detection: a UC is stale not only when its content was edited, but when the CODE it
+# was evaluated against has moved (captured source_repo_shas != current repo HEADs). Resolving HEADs
+# is a live GitHub call, so cache per project with a short TTL — /api/freshness is polled.
+_repo_head_cache: dict = {}   # project_id -> (epoch_ts, {role:ns -> sha})
+_REPO_HEAD_TTL = 120          # seconds
+
+async def _current_project_repo_shas_cached(conn, project_id):
+    """Current project repo HEADs, cached (TTL). {} on any failure — drift then degrades to false."""
+    if not project_id:
+        return {}
+    ent = _repo_head_cache.get(project_id)
+    if ent and (time.time() - ent[0]) < _REPO_HEAD_TTL:
+        return ent[1]
+    shas = await _resolve_project_repo_shas(conn, project_id) or {}
+    _repo_head_cache[project_id] = (time.time(), shas)
+    return shas
+
+def _parse_jsonb(v):
+    """asyncpg returns JSONB as a str by default — parse defensively to a dict."""
+    if isinstance(v, dict):
+        return v
+    if isinstance(v, str) and v:
+        try:
+            return json.loads(v)
+        except Exception:
+            return {}
+    return {}
+
+def _repo_drifted(captured, current):
+    """True iff any repo the eval captured has a DIFFERENT current HEAD. Only compares keys present
+    (and resolvable) on both sides, so an unresolved/removed repo never falsely drifts a UC."""
+    captured = _parse_jsonb(captured)
+    if not captured or not current:
+        return False
+    for k, was in captured.items():
+        now = current.get(k)
+        if was and now and was != now:
+            return True
+    return False
+
+
 async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
     """Ingest a workspace run's analysis results into Postgres.
 
@@ -6182,14 +6778,20 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             _ar_pid,
         )
 
+        # Step 1b: resolve the project's spec/corpus repo HEAD SHAs ONCE per ingest, for the eval
+        # fingerprint (a repo change then makes the cache stale). Best-effort, guarded.
+        _run_repo_shas = await _resolve_project_repo_shas(conn, _ar_pid)
+
         ingested_ucs = 0
         ingested_gaps = 0
         ingested_caps = 0
         ingested_deps = 0
+        emitted_uuids = set()   # #121: track which UCs the engine actually produced
         for uc in (summary.get("ucs") or []):
             uc_uuid = uc.get("uc_uuid")
             if not uc_uuid:
                 continue
+            emitted_uuids.add(uc_uuid)
             # Load full analysis for this UC
             analysis = _results.get_analysis(run_id, uc_uuid)
             meta = {}
@@ -6198,6 +6800,8 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             model = None
             endpoint_url = None
             engine_version = None
+            engine_commit = None
+            consumer_version = None
             gaps = []
             caps = []          # capabilities_invoked (DCM feature #2)
             infra: dict = {}   # infrastructure_confidence object from analysis metadata
@@ -6210,6 +6814,8 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 model = a_meta.get("model")
                 endpoint_url = a_meta.get("endpoint_url")
                 engine_version = a_meta.get("engine_version")
+                engine_commit = a_meta.get("engine_commit")
+                consumer_version = a_meta.get("consumer_version")
                 infra = a_meta.get("infrastructure_confidence") or {}
                 gaps = analysis.get("gaps_identified") or []
                 caps = analysis.get("capabilities_invoked") or []
@@ -6220,6 +6826,8 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 model = a_meta.get("model")
                 endpoint_url = a_meta.get("endpoint_url")
                 engine_version = a_meta.get("engine_version")
+                engine_commit = a_meta.get("engine_commit")
+                consumer_version = a_meta.get("consumer_version")
                 infra = a_meta.get("infrastructure_confidence") or {}
                 # Collect gaps from all samples (deduplicated by gap_id)
                 seen_gap_ids = set()
@@ -6242,6 +6850,27 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             # the UC was corpus-source (no managed lifecycle).
             state_at_run = uc_state_snapshot.get(uc_uuid)
             source_kind = "managed" if state_at_run else "corpus"
+            # Step 1 fingerprint: UC content hash + eval config (repo SHAs = step 1b → null).
+            # Managed UCs hash their stored yaml_content; corpus UCs have no managed row, so their
+            # content_sha stays null (their staleness will ride the repo SHAs once 1b lands).
+            uc_content_sha = None
+            _yc = await conn.fetchval("SELECT yaml_content FROM managed_use_cases WHERE uuid=$1", uc_uuid)
+            if _yc:
+                uc_content_sha = hashlib.sha256(_yc.encode("utf-8")).hexdigest()
+            source_repo_shas = _run_repo_shas   # step 1b: project repo HEAD SHAs at eval time
+            eval_fp = _eval_fingerprint(uc_content_sha, model, engine_version, engine_commit, source_repo_shas)
+            # #121: capture why a UC failed (and the stage), or flag a low-confidence success.
+            _status = uc.get("status")
+            _infra_label = (infra.get("label") if infra else None)
+            err_reason, err_phase = None, None
+            if _status == "failed":
+                err_phase = "engine"
+                err_reason = (uc.get("error") or (analysis or {}).get("error")
+                              or overall or (infra.get("explanation") if infra else None)
+                              or "The engine reported a failure for this use case (no detail provided).")
+            elif _infra_label in ("low", "compromised"):
+                err_phase = "unreliable"
+                err_reason = (infra.get("explanation") if infra else None) or f"Infrastructure confidence: {_infra_label}."
             row = await conn.fetchrow(
                 """INSERT INTO uc_analyses
                    (run_id, uc_uuid, uc_handle, status, verdict, overall_assessment,
@@ -6250,24 +6879,31 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                     lifecycle_state_at_run, source_kind,
                     infra_confidence_label, infra_confidence_score,
                     infra_confidence_signals, infra_confidence_explanation,
-                    infra_confidence_recommendations)
+                    infra_confidence_recommendations,
+                    engine_commit, consumer_version, uc_content_sha,
+                    source_repo_shas, eval_fingerprint,
+                    error_reason, error_phase)
                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
-                           $15,$16,$17::jsonb,$18,$19::jsonb)
+                           $15,$16,$17::jsonb,$18,$19::jsonb,
+                           $20,$21,$22,$23::jsonb,$24,$25,$26)
                    RETURNING id""",
                 run_id, uc_uuid,
                 uc.get("uc_handle"),
-                uc.get("status"),
+                _status,
                 uc.get("verdict"),
                 overall,
                 uc.get("wall_time_seconds"),
                 uc.get("sample_count"),
                 engine_version, model, endpoint_url, analyzed_at,
                 state_at_run, source_kind,
-                (infra.get("label") if infra else None),
+                _infra_label,
                 (infra.get("score") if infra else None),
                 json.dumps(infra.get("signals") or []) if infra else None,
                 (infra.get("explanation") if infra else None),
                 json.dumps(infra.get("recommendations") or []) if infra else None,
+                engine_commit, consumer_version, uc_content_sha,
+                (json.dumps(source_repo_shas) if source_repo_shas is not None else None), eval_fp,
+                err_reason, err_phase,
             )
             analysis_id = row["id"]
             ingested_ucs += 1
@@ -6346,6 +6982,34 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                     )
                     ingested_deps += 1
 
+        # #121 — DROPPED-UC diff: the run's intended managed scope (uc_state_snapshot, captured
+        # at trigger) minus what the engine actually emitted. The remainder silently fell out
+        # (timeout / OOM / skipped). Write a stub 'not_emitted' failed row so the audit can SEE it
+        # instead of it looking like "never attempted".
+        _dropped = 0
+        intended_uuids = set(uc_state_snapshot.keys()) if uc_state_snapshot else set()
+        for d_uuid in (intended_uuids - emitted_uuids):
+            _yc2 = await conn.fetchval("SELECT yaml_content FROM managed_use_cases WHERE uuid=$1", d_uuid)
+            _csha2 = hashlib.sha256(_yc2.encode("utf-8")).hexdigest() if _yc2 else None
+            _fp2 = _eval_fingerprint(_csha2, None, None, None, _run_repo_shas)
+            await conn.execute(
+                """INSERT INTO uc_analyses
+                   (run_id, uc_uuid, status, verdict, lifecycle_state_at_run, source_kind,
+                    uc_content_sha, source_repo_shas, eval_fingerprint, error_reason, error_phase)
+                   VALUES ($1,$2,'failed',NULL,$3,'managed',$4,$5::jsonb,$6,$7,'not_emitted')""",
+                run_id, d_uuid, uc_state_snapshot.get(d_uuid),
+                _csha2, (json.dumps(_run_repo_shas) if _run_repo_shas is not None else None), _fp2,
+                "Use case was in the ingestion scope but the engine produced no result — it likely "
+                "timed out, errored, or was skipped before completion.",
+            )
+            ingested_ucs += 1
+            _dropped += 1
+        if _dropped:
+            # Keep the run's failed tally honest so the masthead/list reflect the dropped UCs too.
+            await conn.execute(
+                "UPDATE analysis_runs SET failed = COALESCE(failed,0) + $2 WHERE run_id=$1",
+                run_id, _dropped)
+
     return {
         "run_id": run_id,
         "ingested_ucs": ingested_ucs,
@@ -6374,60 +7038,223 @@ async def ingest_analysis(run_id: str, request: Request):
         raise HTTPException(500, f"ingest failed: {e}")
 
 
+@app.get("/api/freshness")
+async def project_freshness(request: Request):
+    """Active-project analysis FRESHNESS summary (uc-scoped-evaluation-design.md, step 2) for the
+    masthead chip: UC coverage (ingested/total), staleness, and last-eval age. Staleness now has TWO
+    axes (#114): the UC was **edited** since its eval (updated_at > eval_at), OR the **code drifted**
+    (captured source_repo_shas != current repo HEADs). Either makes it stale."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        rows = await conn.fetch(
+            """
+            WITH ucs AS (
+              SELECT uuid, updated_at FROM managed_use_cases
+              WHERE project_id = $1 AND lifecycle_state <> 'deprecated'
+            ),
+            latest AS (
+              SELECT DISTINCT ON (a.uc_uuid) a.uc_uuid, a.status, a.source_repo_shas,
+                     COALESCE(a.analyzed_at, a.ingested_at) AS eval_at
+              FROM uc_analyses a JOIN ucs u ON u.uuid = a.uc_uuid
+              ORDER BY a.uc_uuid, a.ingested_at DESC
+            )
+            SELECT u.uuid, u.updated_at, l.status, l.eval_at, l.source_repo_shas
+            FROM ucs u LEFT JOIN latest l ON l.uc_uuid = u.uuid
+            """, pid)
+        current = await _current_project_repo_shas_cached(conn, pid)
+        # Deprecated UCs are excluded from the analyzable corpus above; surface the count
+        # so the masthead's `total` reconciles with the Use Cases view (which lists all).
+        deprecated = await conn.fetchval(
+            "SELECT count(*) FROM managed_use_cases WHERE project_id=$1 AND lifecycle_state='deprecated'", pid)
+    total = len(rows)
+    ingested = failed = stale = stale_edited = stale_drifted = 0
+    last_eval = oldest_stale_eval = None
+    for r in rows:
+        eval_at = r["eval_at"]
+        if eval_at is None:
+            continue                              # never evaluated → uncovered
+        if r["status"] == "failed":
+            failed += 1
+            continue                              # #121: failures aren't coverage
+        ingested += 1
+        if last_eval is None or eval_at > last_eval:
+            last_eval = eval_at
+        edited  = bool(r["updated_at"] and r["updated_at"] > eval_at)
+        drifted = _repo_drifted(r["source_repo_shas"], current)
+        if edited or drifted:
+            stale += 1
+            if edited:  stale_edited += 1
+            if drifted: stale_drifted += 1
+            if oldest_stale_eval is None or eval_at < oldest_stale_eval:
+                oldest_stale_eval = eval_at
+    return {
+        "total": total,
+        "deprecated": int(deprecated or 0),     # excluded from the analyzable corpus (reconciles with the UC view)
+        "ingested": ingested,
+        "failed": failed,
+        "uncovered": max(0, total - ingested),
+        "stale": stale,
+        "stale_edited": stale_edited,           # #114: UC content changed
+        "stale_drifted": stale_drifted,         # #114: code (repo HEAD) moved since eval
+        "last_eval": last_eval.isoformat() if last_eval else None,
+        "oldest_stale_eval": oldest_stale_eval.isoformat() if oldest_stale_eval else None,
+        "drift": stale_drifted or None,         # commits-since (ahead_by) = #114 Pass B
+    }
+
+
+async def _resolve_scope_uc_uuids(conn, project_id, set_id=None, uc_uuids=None):
+    """Resolve a UC/Set scope to the active project's UC uuids (uc-scoped-evaluation-design.md 3a).
+    Explicit `uc_uuids` (csv) → those (project-scoped); a numeric `set_id` → its members; else (or
+    `__all__`) all the project's non-deprecated managed UCs."""
+    if uc_uuids:
+        want = [u.strip() for u in str(uc_uuids).split(",") if u.strip()]
+        if not want:
+            return []
+        rows = await conn.fetch(
+            "SELECT uuid FROM managed_use_cases WHERE project_id=$1 AND uuid = ANY($2)", project_id, want)
+        return [r["uuid"] for r in rows]
+    if set_id and str(set_id) == "__unassigned__":
+        # Synthetic "Unassigned" scope: non-deprecated managed UCs in NO Scoping Set.
+        rows = await conn.fetch(
+            "SELECT u.uuid FROM managed_use_cases u "
+            "WHERE u.project_id=$1 AND u.lifecycle_state <> 'deprecated' "
+            "AND NOT EXISTS (SELECT 1 FROM use_case_set_members m WHERE m.uc_uuid = u.uuid)",
+            project_id)
+        return [r["uuid"] for r in rows]
+    if set_id and str(set_id) != "__all__":
+        try:
+            sid = int(set_id)
+        except (TypeError, ValueError):
+            return []
+        rows = await conn.fetch(
+            "SELECT m.uc_uuid FROM use_case_set_members m "
+            "JOIN managed_use_cases u ON u.uuid = m.uc_uuid AND u.project_id=$1 WHERE m.set_id=$2",
+            project_id, sid)
+        return [r["uc_uuid"] for r in rows]
+    rows = await conn.fetch(
+        "SELECT uuid FROM managed_use_cases WHERE project_id=$1 AND lifecycle_state <> 'deprecated'",
+        project_id)
+    return [r["uuid"] for r in rows]
+
+
+# ── Set-scoped roadmap generation (arch review / enhancement over a Scoping Set) ──
+# The Architecture roadmap now scopes to the masthead Scoping Set instead of a single
+# run (the run picker is retired). We reuse the run-style generation/cache machinery
+# by minting a synthetic run token `set:<id>` for keying, and gather the *latest eval
+# per UC* across the set (so it may span runs) — exactly how the Engineering/Cap-Map
+# scope views already aggregate. No version comparison is kept (by request).
+def _set_token(set_id) -> str:
+    """Synthetic run-id token for a Scoping-Set scope, used as the cache/generation key."""
+    s = "" if set_id is None else str(set_id)
+    return "set:" + (s if s else "__all__")
+
+
+def _parse_set_token(run_id: str) -> Optional[str]:
+    """'set:123' → '123'; 'set:__all__' → '__all__'. None when `run_id` isn't a set token."""
+    if isinstance(run_id, str) and run_id.startswith("set:"):
+        return run_id[4:] or "__all__"
+    return None
+
+
+async def _set_label(conn, set_id) -> str:
+    """Human label for a set scope, for the generation prompt header."""
+    s = str(set_id) if set_id not in (None, "") else "__all__"
+    if s == "__all__":
+        return "all use cases in the project"
+    if s == "__unassigned__":
+        return "use cases not in any Scoping Set"
+    try:
+        nm = await conn.fetchval("SELECT name FROM use_case_sets WHERE id=$1", int(s))
+    except (TypeError, ValueError):
+        nm = None
+    return f"Scoping Set '{nm}'" if nm else f"Scoping Set {s}"
+
+
+async def _set_latest_analyses(conn, project_id, set_id) -> list[dict]:
+    """Latest *successful* eval per UC across a Scoping Set → run-style analyses (each
+    with its gaps), for set-scoped arch review / enhancement / PR context."""
+    uuids = await _resolve_scope_uc_uuids(conn, project_id, set_id, None)
+    if not uuids:
+        return []
+    rows = await conn.fetch(
+        "SELECT DISTINCT ON (uc_uuid) * FROM uc_analyses "
+        "WHERE uc_uuid = ANY($1) AND COALESCE(status,'success')='success' "
+        "ORDER BY uc_uuid, ingested_at DESC",
+        uuids)
+    out: list[dict] = []
+    for ua in rows:
+        gaps = await conn.fetch("SELECT * FROM uc_gaps WHERE analysis_id=$1 ORDER BY id", ua["id"])
+        out.append({**dict(ua), "gaps": [dict(g) for g in gaps]})
+    return out
+
+
 @app.get("/api/analysis/capability-density")
 async def capability_density(
-    run_id: str = Query(..., description="workspace run_id to aggregate"),
-    set_id: Optional[int] = Query(None, description="restrict to UCs in this Set"),
+    request: Request,
+    run_id: str = Query(None, description="workspace run_id; OMIT for latest-eval-per-UC across a Scoping Set"),
+    set_id: Optional[str] = Query(None, description="Scoping Set id, or '__all__' / '__unassigned__'"),
 ):
-    """Cross-UC capability demand density for a run (DCM feature #2).
-
-    Returns capabilities ranked by how many distinct UCs in the run demand them
-    ("capability X demanded by N/M UCs"), optionally scoped to a Set. Reads the
-    `uc_capabilities` rows projected at ingest; if the run predates capability
-    ingest, re-ingest it first. The denominator is the number of *successfully
-    analyzed* UCs in scope, so the ratio reflects real demand coverage.
+    """Cross-UC capability demand density (DCM feature #2). Two modes: a single `run_id`
+    (legacy run-scoped), or — the UC-scoped roadmap path (3b) — a **Scoping Set** with no run_id,
+    aggregating the **latest eval per UC** (so it may span runs). Denominator = successfully-analyzed
+    UCs in scope, so the ratio reflects real demand coverage.
     """
     async with pool.acquire() as conn:
-        run_exists = await conn.fetchval(
-            "SELECT 1 FROM analysis_runs WHERE run_id=$1", run_id
-        )
-        if not run_exists:
-            raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
-
-        set_uuids: Optional[set] = None
-        if set_id is not None:
-            member_rows = await conn.fetch(
-                "SELECT uc_uuid FROM use_case_set_members WHERE set_id=$1", set_id
-            )
-            set_uuids = {r["uc_uuid"] for r in member_rows}
-            if not set_uuids:
-                return {"run_id": run_id, "set_id": set_id, "total_ucs": 0, "capabilities": []}
-
-        # Denominator: distinct successfully-analyzed UCs in scope.
-        if set_uuids is not None:
-            total_ucs = await conn.fetchval(
-                "SELECT COUNT(DISTINCT uc_uuid) FROM uc_analyses "
-                "WHERE run_id=$1 AND status='success' AND uc_uuid = ANY($2)",
-                run_id, list(set_uuids),
-            )
-            cap_rows = await conn.fetch(
-                "SELECT capability_id, uc_uuid, confidence_score, namespace "
-                "FROM uc_capabilities WHERE run_id=$1 AND uc_uuid = ANY($2)",
-                run_id, list(set_uuids),
-            )
+        if run_id:
+            if not await conn.fetchval("SELECT 1 FROM analysis_runs WHERE run_id=$1", run_id):
+                raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
+            set_uuids: Optional[set] = None
+            _sid = int(set_id) if (set_id is not None and str(set_id).isdigit()) else None
+            if _sid is not None:
+                member_rows = await conn.fetch("SELECT uc_uuid FROM use_case_set_members WHERE set_id=$1", _sid)
+                set_uuids = {r["uc_uuid"] for r in member_rows}
+                if not set_uuids:
+                    return {"run_id": run_id, "set_id": set_id, "total_ucs": 0, "capabilities": []}
+            if set_uuids is not None:
+                total_ucs = await conn.fetchval(
+                    "SELECT COUNT(DISTINCT uc_uuid) FROM uc_analyses WHERE run_id=$1 AND status='success' AND uc_uuid = ANY($2)",
+                    run_id, list(set_uuids))
+                cap_rows = await conn.fetch(
+                    "SELECT capability_id, uc_uuid, confidence_score, namespace FROM uc_capabilities WHERE run_id=$1 AND uc_uuid = ANY($2)",
+                    run_id, list(set_uuids))
+            else:
+                total_ucs = await conn.fetchval(
+                    "SELECT COUNT(DISTINCT uc_uuid) FROM uc_analyses WHERE run_id=$1 AND status='success'", run_id)
+                cap_rows = await conn.fetch(
+                    "SELECT capability_id, uc_uuid, confidence_score, namespace FROM uc_capabilities WHERE run_id=$1", run_id)
+            usage_map = await _capability_usage_map(conn, run_id)
         else:
-            total_ucs = await conn.fetchval(
-                "SELECT COUNT(DISTINCT uc_uuid) FROM uc_analyses "
-                "WHERE run_id=$1 AND status='success'",
-                run_id,
-            )
+            # UC-scoped roadmap (3b): latest eval per UC across the Scoping Set.
+            pid = await _active_project_id(request, conn)
+            uuids = await _resolve_scope_uc_uuids(conn, pid, set_id, None)
+            if not uuids:
+                return {"run_id": None, "set_id": set_id, "total_ucs": 0, "capabilities": []}
+            _latest = ("SELECT DISTINCT ON (uc_uuid) uc_uuid, run_id, status FROM uc_analyses "
+                       "WHERE uc_uuid = ANY($1) ORDER BY uc_uuid, ingested_at DESC")
+            total_ucs = await conn.fetchval(f"SELECT count(*) FROM ({_latest}) l WHERE l.status='success'", uuids)
             cap_rows = await conn.fetch(
-                "SELECT capability_id, uc_uuid, confidence_score, namespace "
-                "FROM uc_capabilities WHERE run_id=$1",
-                run_id,
-            )
-        name_map = await _catalog_name_map(conn, await _default_project_id(conn))
-        usage_map = await _capability_usage_map(conn, run_id)
+                "SELECT c.capability_id, c.uc_uuid, c.confidence_score, c.namespace FROM uc_capabilities c "
+                f"JOIN ({_latest}) l ON l.uc_uuid=c.uc_uuid AND l.run_id=c.run_id", uuids)
+            # Representative usage gloss per capability across the set's latest evals, so the
+            # roadmap shows the descriptive sentence (not just the terse id) even cross-run.
+            _um = await conn.fetch(
+                "SELECT DISTINCT ON (c.capability_id) c.capability_id, c.usage FROM uc_capabilities c "
+                f"JOIN ({_latest}) l ON l.uc_uuid=c.uc_uuid AND l.run_id=c.run_id "
+                "WHERE COALESCE(c.usage,'') <> '' ORDER BY c.capability_id, length(c.usage) DESC", uuids)
+            usage_map = {r["capability_id"]: r["usage"] for r in _um}
+        _cat_pid = await _default_project_id(conn)
+        name_map = await _catalog_name_map(conn, _cat_pid)
+        meta_map = await _catalog_meta_map(conn, _cat_pid)   # #132 subdomain/disposition lens
+        # m-v capability-level funding: the distinct customers demanding each capability (union
+        # across its UCs). Reuses the demand log's free-text `customer` (same metric as the UC list),
+        # so investment can be weighed at the capability — the method's "fund the capability, not the UC".
+        _scope_uuids = list({r["uc_uuid"] for r in cap_rows})
+        cust_by_uuid: dict = {}
+        if _scope_uuids:
+            for r in await conn.fetch(
+                "SELECT uc_uuid, customer FROM uc_customer_requests WHERE uc_uuid = ANY($1)", _scope_uuids):
+                cust_by_uuid.setdefault(r["uc_uuid"], set()).add(r["customer"])
 
     capabilities = _capability_density.aggregate_density(
         [dict(r) for r in cap_rows], int(total_ucs or 0)
@@ -6435,6 +7262,13 @@ async def capability_density(
     for c in capabilities:
         c["name"] = name_map.get(c["capability_id"])   # catalog name, or None → UI falls back to id
         c["usage"] = usage_map.get(c["capability_id"])  # readable gloss from analysis (already stored)
+        _m = meta_map.get(c["capability_id"]) or {}
+        c["subdomain"] = _m.get("subdomain")            # core | supporting | generic (or None)
+        c["disposition"] = _m.get("disposition")        # reuse | refurbish | replace | retire (or None)
+        _custs: set = set()
+        for _u in (c.get("uc_uuids") or []):
+            _custs |= cust_by_uuid.get(_u, set())
+        c["distinct_customers"] = len(_custs)           # m-v capability-level demand (distinct customers)
     return {
         "run_id": run_id,
         "set_id": set_id,
@@ -6445,64 +7279,59 @@ async def capability_density(
 
 @app.get("/api/analysis/foundational-capabilities")
 async def foundational_capabilities(
-    run_id: str = Query(..., description="workspace run_id to analyze"),
-    set_id: Optional[int] = Query(None, description="restrict to UCs in this Set"),
+    request: Request,
+    run_id: str = Query(None, description="workspace run_id; OMIT for latest-eval-per-UC across a Scoping Set"),
+    set_id: Optional[str] = Query(None, description="Scoping Set id, or '__all__' / '__unassigned__'"),
 ):
-    """Foundational capability detection for a run (DCM feature #3).
-
-    Ranks capabilities by how many others *transitively* depend on them — the
-    "boring but foundational" building blocks that should be built first even
-    when few UCs demand them directly. Reads the `uc_capability_deps` edges and
-    `uc_capabilities` demand projected at ingest, then runs the graph analysis.
-
-    Empty until analyses carry capability `depends_on` edges (needs the engine
-    prompt tuned to emit them, then a re-ingest). `edge_count` reports how many
-    edges were found so the UI can explain an empty result.
+    """Foundational capability detection (DCM feature #3) — ranks capabilities by how many others
+    transitively depend on them. Two modes: a single `run_id` (legacy), or — the UC-scoped roadmap
+    path (3b) — a **Scoping Set** with no run_id, over the **latest eval per UC** (may span runs).
+    Empty until analyses carry capability `depends_on` edges. `edge_count` explains an empty result.
     """
     async with pool.acquire() as conn:
-        run_exists = await conn.fetchval(
-            "SELECT 1 FROM analysis_runs WHERE run_id=$1", run_id
-        )
-        if not run_exists:
-            raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
-
-        set_uuids: Optional[set] = None
-        if set_id is not None:
-            member_rows = await conn.fetch(
-                "SELECT uc_uuid FROM use_case_set_members WHERE set_id=$1", set_id
-            )
-            set_uuids = {r["uc_uuid"] for r in member_rows}
-            if not set_uuids:
-                return {"run_id": run_id, "set_id": set_id, "edge_count": 0, "capabilities": []}
-
-        if set_uuids is not None:
-            edge_rows = await conn.fetch(
-                "SELECT capability_id, depends_on_id FROM uc_capability_deps "
-                "WHERE run_id=$1 AND uc_uuid = ANY($2)",
-                run_id, list(set_uuids),
-            )
-            demand_rows = await conn.fetch(
-                "SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n FROM uc_capabilities "
-                "WHERE run_id=$1 AND uc_uuid = ANY($2) GROUP BY capability_id",
-                run_id, list(set_uuids),
-            )
+        if run_id:
+            if not await conn.fetchval("SELECT 1 FROM analysis_runs WHERE run_id=$1", run_id):
+                raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
+            set_uuids: Optional[set] = None
+            _sid = int(set_id) if (set_id is not None and str(set_id).isdigit()) else None
+            if _sid is not None:
+                member_rows = await conn.fetch("SELECT uc_uuid FROM use_case_set_members WHERE set_id=$1", _sid)
+                set_uuids = {r["uc_uuid"] for r in member_rows}
+                if not set_uuids:
+                    return {"run_id": run_id, "set_id": set_id, "edge_count": 0, "capabilities": []}
+            if set_uuids is not None:
+                edge_rows = await conn.fetch(
+                    "SELECT capability_id, depends_on_id FROM uc_capability_deps WHERE run_id=$1 AND uc_uuid = ANY($2)",
+                    run_id, list(set_uuids))
+                demand_rows = await conn.fetch(
+                    "SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n FROM uc_capabilities WHERE run_id=$1 AND uc_uuid = ANY($2) GROUP BY capability_id",
+                    run_id, list(set_uuids))
+            else:
+                edge_rows = await conn.fetch(
+                    "SELECT capability_id, depends_on_id FROM uc_capability_deps WHERE run_id=$1", run_id)
+                demand_rows = await conn.fetch(
+                    "SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n FROM uc_capabilities WHERE run_id=$1 GROUP BY capability_id", run_id)
         else:
+            # UC-scoped roadmap (3b): latest eval per UC across the Scoping Set.
+            pid = await _active_project_id(request, conn)
+            uuids = await _resolve_scope_uc_uuids(conn, pid, set_id, None)
+            if not uuids:
+                return {"run_id": None, "set_id": set_id, "edge_count": 0, "capabilities": []}
+            _latest = ("SELECT DISTINCT ON (uc_uuid) uc_uuid, run_id FROM uc_analyses "
+                       "WHERE uc_uuid = ANY($1) ORDER BY uc_uuid, ingested_at DESC")
             edge_rows = await conn.fetch(
-                "SELECT capability_id, depends_on_id FROM uc_capability_deps WHERE run_id=$1",
-                run_id,
-            )
+                "SELECT d.capability_id, d.depends_on_id FROM uc_capability_deps d "
+                f"JOIN ({_latest}) l ON l.uc_uuid=d.uc_uuid AND l.run_id=d.run_id", uuids)
             demand_rows = await conn.fetch(
-                "SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n FROM uc_capabilities "
-                "WHERE run_id=$1 GROUP BY capability_id",
-                run_id,
-            )
+                "SELECT c.capability_id, COUNT(DISTINCT c.uc_uuid) AS n FROM uc_capabilities c "
+                f"JOIN ({_latest}) l ON l.uc_uuid=c.uc_uuid AND l.run_id=c.run_id GROUP BY c.capability_id", uuids)
 
     edges = [(r["capability_id"], r["depends_on_id"]) for r in edge_rows]
     demand = {r["capability_id"]: int(r["n"]) for r in demand_rows}
     capabilities = _capability_graph.foundational_ranking(edges, demand)
     async with pool.acquire() as _c:
         name_map = await _catalog_name_map(_c, await _default_project_id(_c))
-        usage_map = await _capability_usage_map(_c, run_id)
+        usage_map = await _capability_usage_map(_c, run_id) if run_id else {}
     for c in capabilities:
         c["name"] = name_map.get(c["capability_id"])    # catalog name, or None → UI falls back to id
         c["usage"] = usage_map.get(c["capability_id"])  # readable gloss from analysis (already stored)
@@ -6516,44 +7345,64 @@ async def foundational_capabilities(
 
 @app.get("/api/analysis/uc-capability-map")
 async def uc_capability_map(
-    run_id: str = Query(..., description="workspace run_id"),
-    set_id: Optional[int] = Query(None, description="restrict to UCs in this Set"),
+    request: Request,
+    run_id: str = Query(None, description="workspace run_id; OMIT for latest-eval-per-UC across a Scoping Set"),
+    set_id: Optional[str] = Query(None, description="Scoping Set id, or '__all__' / '__unassigned__'"),
 ):
-    """Bidirectional UC ↔ capability map for a run: the bipartite edges plus
-    per-capability demand + foundational flag and per-UC labels. Drives the
-    matrix view (rows=UCs, cols=capabilities, read either direction). Reads
-    uc_capabilities (edges), uc_capability_deps (foundational), catalog names.
+    """Bidirectional UC ↔ capability map: the bipartite edges plus per-capability demand +
+    foundational flag and per-UC labels. Drives the matrix (rows=UCs, cols=capabilities). Two modes:
+    a single `run_id` (legacy run-scoped), or — the UC-scoped path (3b) — a **Scoping Set** with no
+    run_id, building from the **latest eval per UC** (so the map may span runs).
     """
     from collections import Counter, defaultdict
     async with pool.acquire() as conn:
-        if not await conn.fetchval("SELECT 1 FROM analysis_runs WHERE run_id=$1", run_id):
-            raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
-        set_uuids: Optional[list] = None
-        if set_id is not None:
-            mrows = await conn.fetch(
-                "SELECT uc_uuid FROM use_case_set_members WHERE set_id=$1", set_id)
-            set_uuids = [r["uc_uuid"] for r in mrows]
-            if not set_uuids:
-                return {"run_id": run_id, "set_id": set_id, "ucs": [], "capabilities": [], "edges": []}
-        if set_uuids is not None:
-            cap_rows = await conn.fetch(
-                "SELECT capability_id, uc_uuid FROM uc_capabilities WHERE run_id=$1 AND uc_uuid = ANY($2)",
-                run_id, set_uuids)
-            dep_rows = await conn.fetch(
-                "SELECT capability_id, depends_on_id FROM uc_capability_deps WHERE run_id=$1 AND uc_uuid = ANY($2)",
-                run_id, set_uuids)
-            label_rows = await conn.fetch(
-                "SELECT uc_uuid, uc_handle FROM uc_analyses WHERE run_id=$1 AND uc_uuid = ANY($2)",
-                run_id, set_uuids)
+        if run_id:
+            if not await conn.fetchval("SELECT 1 FROM analysis_runs WHERE run_id=$1", run_id):
+                raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
+            set_uuids: Optional[list] = None
+            _sid = int(set_id) if (set_id is not None and str(set_id).isdigit()) else None
+            if _sid is not None:
+                mrows = await conn.fetch("SELECT uc_uuid FROM use_case_set_members WHERE set_id=$1", _sid)
+                set_uuids = [r["uc_uuid"] for r in mrows]
+                if not set_uuids:
+                    return {"run_id": run_id, "set_id": set_id, "ucs": [], "capabilities": [], "edges": []}
+            if set_uuids is not None:
+                cap_rows = await conn.fetch(
+                    "SELECT capability_id, uc_uuid, usage FROM uc_capabilities WHERE run_id=$1 AND uc_uuid = ANY($2)", run_id, set_uuids)
+                dep_rows = await conn.fetch(
+                    "SELECT capability_id, depends_on_id FROM uc_capability_deps WHERE run_id=$1 AND uc_uuid = ANY($2)", run_id, set_uuids)
+                label_rows = await conn.fetch(
+                    "SELECT uc_uuid, uc_handle FROM uc_analyses WHERE run_id=$1 AND uc_uuid = ANY($2)", run_id, set_uuids)
+            else:
+                cap_rows = await conn.fetch("SELECT capability_id, uc_uuid, usage FROM uc_capabilities WHERE run_id=$1", run_id)
+                dep_rows = await conn.fetch("SELECT capability_id, depends_on_id FROM uc_capability_deps WHERE run_id=$1", run_id)
+                label_rows = await conn.fetch("SELECT uc_uuid, uc_handle FROM uc_analyses WHERE run_id=$1", run_id)
         else:
+            # UC-scoped (3b): latest eval per UC across the Scoping Set — the map may span runs.
+            pid = await _active_project_id(request, conn)
+            uuids = await _resolve_scope_uc_uuids(conn, pid, set_id, None)
+            if not uuids:
+                return {"run_id": None, "set_id": set_id, "ucs": [], "capabilities": [], "edges": []}
+            _latest = ("SELECT DISTINCT ON (uc_uuid) uc_uuid, run_id, uc_handle FROM uc_analyses "
+                       "WHERE uc_uuid = ANY($1) ORDER BY uc_uuid, ingested_at DESC")
+            label_rows = await conn.fetch(_latest, uuids)
             cap_rows = await conn.fetch(
-                "SELECT capability_id, uc_uuid FROM uc_capabilities WHERE run_id=$1", run_id)
+                "SELECT c.capability_id, c.uc_uuid, c.usage FROM uc_capabilities c "
+                f"JOIN ({_latest}) l ON l.uc_uuid=c.uc_uuid AND l.run_id=c.run_id", uuids)
             dep_rows = await conn.fetch(
-                "SELECT capability_id, depends_on_id FROM uc_capability_deps WHERE run_id=$1", run_id)
-            label_rows = await conn.fetch(
-                "SELECT uc_uuid, uc_handle FROM uc_analyses WHERE run_id=$1", run_id)
-        name_map = await _catalog_name_map(conn, await _default_project_id(conn))
+                "SELECT d.capability_id, d.depends_on_id FROM uc_capability_deps d "
+                f"JOIN ({_latest}) l ON l.uc_uuid=d.uc_uuid AND l.run_id=d.run_id", uuids)
+        _cat_pid = await _default_project_id(conn)
+        name_map = await _catalog_name_map(conn, _cat_pid)
+        meta_map = await _catalog_meta_map(conn, _cat_pid)   # #132 subdomain/disposition lens
 
+    # Representative usage gloss per capability (longest sentence wins) — gives the matrix
+    # headers a descriptive hover instead of just the terse capability id.
+    usage_map: dict = {}
+    for r in cap_rows:
+        u = (r["usage"] or "").strip()
+        if u and len(u) > len(usage_map.get(r["capability_id"], "")):
+            usage_map[r["capability_id"]] = u
     edge_w = Counter((r["uc_uuid"], r["capability_id"]) for r in cap_rows)
     demand: dict = defaultdict(set)
     for r in cap_rows:
@@ -6569,10 +7418,13 @@ async def uc_capability_map(
     capabilities = [{
         "id": c,
         "name": name_map.get(c) or c,
+        "usage": usage_map.get(c),
         "demand": len(demand[c]),
         "transitive_dependents": int((found.get(c) or {}).get("transitive_dependents", 0) or 0),
         "foundational": bool((found.get(c) or {}).get("transitive_dependents", 0)),
         "leverage": (found.get(c) or {}).get("leverage"),
+        "subdomain": (meta_map.get(c) or {}).get("subdomain"),
+        "disposition": (meta_map.get(c) or {}).get("disposition"),
     } for c in cap_ids]
     edges = [{"uc": u, "cap": c, "weight": w} for ((u, c), w) in edge_w.items()]
     return {"run_id": run_id, "set_id": set_id,
@@ -6779,6 +7631,7 @@ async def _extract_and_ingest_assessment(request: Request, content: str, *, mode
         else:
             cfg = await _model_default_row(
                 conn, "assessment-ingest", "uc-authoring", "arch-review", "evaluation", project_id=pid)
+        _actx = await _stage_context(conn, "assessment-ingest", pid)   # #125 prompt management
     if not cfg:
         raise HTTPException(400, "the selected extractor model is unavailable, and no assessment-ingest / authoring / evaluation model default is configured for this project")
     schema = _assessment_ingest.structured_output_schema()
@@ -6792,6 +7645,7 @@ async def _extract_and_ingest_assessment(request: Request, content: str, *, mode
             + "Extract every capability that was assessed into a finding. Use state 'n/a' for "
               "not-asked / not-applicable, maturity 1-5 (3 = target; null when there is no "
               "capability), and carry any notes/evidence. Output the JSON object only.")
+    user = _inject_context(user, _actx, "assessment ingestion")   # #125 prompt management (append-live)
     call_fn = _make_diagnosis_call_fn(cfg)
     try:
         raw = await call_fn(system, user)
@@ -7311,7 +8165,7 @@ async def _current_profile(conn, model_config_id, use_key) -> Optional[dict]:
 
 async def _trigger_eval_run(conn, *, mc, managed_uuids, sample_count,
                             max_tokens, reviewer, profile_override=None,
-                            grounding_nudge=None):
+                            grounding_nudge=None, stage2_context=None):
     """Trigger one arm of an experiment. `mc` is _eval_model_config().
 
     max_tokens=None → production task default (baseline arm). profile_override
@@ -7334,7 +8188,7 @@ async def _trigger_eval_run(conn, *, mc, managed_uuids, sample_count,
         sample_count=sample_count, managed_uc_uuids=managed_uuids,
         use_key=mc["use_key"], capabilities_json=caps_json,
         use_profile_json=use_profile_json, max_tokens=max_tokens, halt_on_error=False,
-        grounding_nudge=grounding_nudge,
+        grounding_nudge=grounding_nudge, stage2_context=stage2_context,
     )
     return result["name"]
 
@@ -7499,6 +8353,7 @@ async def create_experiment(payload: ExperimentIn, request: Request):
     max_tokens_arg = None
     profile_override = None
     grounding_nudge_arg = None
+    stage2_context_arg = None   # #93/#125: resolved inside the conn block (needs the project)
     if stype == "max_tokens":
         if not isinstance(candidate, int) or candidate <= 0:
             raise HTTPException(400, "change_spec.candidate must be a positive int (max_tokens)")
@@ -7519,8 +8374,14 @@ async def create_experiment(payload: ExperimentIn, request: Request):
         # max_tokens — the A/B PROOF is automated, the apply is instructed.
         grounding_nudge_arg = "1"
         title = payload.title or "grounding nudge → on"
+    elif stype == "stage2_context":
+        # #93/#125: candidate injects the project's stored Evaluation (stage-2) prompt
+        # via the per-run stage2-context param; baseline is the production prompt (none).
+        # The content is resolved inside the conn block (it needs the project). Promotion
+        # is human-gated (a project flag flips normal runs to inject it), like grounding.
+        title = payload.title or "evaluation prompt → on"
     else:
-        raise HTTPException(400, "change_spec.type must be 'max_tokens', 'sampling', or 'grounding_nudge'")
+        raise HTTPException(400, "change_spec.type must be 'max_tokens', 'sampling', 'grounding_nudge', or 'stage2_context'")
 
     async with pool.acquire() as conn:
         exp_pid = await _active_project_id(request, conn)
@@ -7541,6 +8402,16 @@ async def create_experiment(payload: ExperimentIn, request: Request):
         mc = await _eval_model_config(conn, exp_pid)
         if not mc:
             raise HTTPException(400, "no evaluation default model configured")
+
+        # #93/#125: resolve the project's stored Evaluation (stage-2) prompt for the
+        # candidate arm. (Use-category → project resolution lands when prompts gain the
+        # category axis; today _stage_context is project-scoped.)
+        if stype == "stage2_context":
+            stage2_context_arg = await _stage_context(conn, "stage2-analysis", exp_pid)
+            if not stage2_context_arg:
+                raise HTTPException(400, "no Evaluation prompt set for this project — add one in "
+                                         "Prompts → Evaluation, then launch the A/B")
+            spec["stage2_context_preview"] = stage2_context_arg[:280]
 
         # For a sampling change, record where production lives + its current
         # value, so promote can write it and revert can restore it.
@@ -7581,7 +8452,7 @@ async def create_experiment(payload: ExperimentIn, request: Request):
             candidate_run = await _trigger_eval_run(
                 conn, mc=mc, managed_uuids=uuids, sample_count=payload.sample_count,
                 max_tokens=max_tokens_arg, profile_override=profile_override, reviewer=user,
-                grounding_nudge=grounding_nudge_arg)
+                grounding_nudge=grounding_nudge_arg, stage2_context=stage2_context_arg)
         except Exception as e:
             log.exception("experiment launch failed")
             raise HTTPException(500, f"failed to launch experiment runs: {e}")
@@ -8799,10 +9670,12 @@ async def self_test_runs(limit: int = Query(20, ge=1, le=100)):
 
 def _mcp_public(row) -> dict:
     """MCP-server row for API responses — never leak the token; expose only
-    whether one is set."""
+    whether one is set. `from_bundle` flags rows materialized from an attached bundle
+    (#107 4d): read-only in the UI, owned by the bundle attachment."""
     d = dict(row)
     enc = d.pop("auth_token_encrypted", "") or ""
     d["has_auth_token"] = bool(enc)
+    d["from_bundle"] = bool(d.get("bundle_attachment_id"))
     return d
 
 
@@ -8850,18 +9723,21 @@ async def update_mcp_server(mid: int, payload: MCPServerIn, request: Request):
     # replaces it (encrypted). Pass NULL when preserving so the SQL keeps it.
     token_enc = crypto.encrypt(payload.auth_token) if payload.auth_token else None
     async with pool.acquire() as conn:
-        owner = await conn.fetchval("SELECT project_id FROM mcp_server_configs WHERE id=$1", mid)
-        if owner is None:
+        cur = await conn.fetchrow("SELECT project_id, bundle_attachment_id FROM mcp_server_configs WHERE id=$1", mid)
+        if cur is None:
             raise HTTPException(404, "MCP server not found")
+        if cur["bundle_attachment_id"]:
+            raise HTTPException(409, "this server is provided by an attached bundle — edit the bundle instead")
+        owner = cur["project_id"]
         await _require_priv_conn(conn, request, rbac.P_PROJECT_INTEGRATIONS, owner)
         row = await conn.fetchrow(
             """UPDATE mcp_server_configs
                SET name=$1, sse_url=$2, description=$3, enabled=$4, use_uc_assist=$5,
-                   auth_token_encrypted = COALESCE($8, auth_token_encrypted),
+                   auth_token_encrypted = COALESCE($7, auth_token_encrypted),
                    updated_at=now()
-               WHERE id=$6 AND project_id=$7 RETURNING *""",
+               WHERE id=$6 AND bundle_attachment_id IS NULL RETURNING *""",
             payload.name, payload.sse_url.rstrip("/"),
-            payload.description, payload.enabled, payload.use_uc_assist, mid, owner, token_enc,
+            payload.description, payload.enabled, payload.use_uc_assist, mid, token_enc,
         )
     if not row:
         raise HTTPException(404, "MCP server not found")
@@ -8873,11 +9749,13 @@ async def delete_mcp_server(mid: int, request: Request):
     if pool is None:
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
-        owner = await conn.fetchval("SELECT project_id FROM mcp_server_configs WHERE id=$1", mid)
-        if owner is None:
+        cur = await conn.fetchrow("SELECT project_id, bundle_attachment_id FROM mcp_server_configs WHERE id=$1", mid)
+        if cur is None:
             return
-        await _require_priv_conn(conn, request, rbac.P_PROJECT_INTEGRATIONS, owner)
-        await conn.execute("DELETE FROM mcp_server_configs WHERE id=$1", mid)
+        if cur["bundle_attachment_id"]:
+            raise HTTPException(409, "this server is provided by an attached bundle — detach the bundle instead")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_INTEGRATIONS, cur["project_id"])
+        await conn.execute("DELETE FROM mcp_server_configs WHERE id=$1 AND bundle_attachment_id IS NULL", mid)
 
 
 @app.get("/api/mcp-servers/health")
@@ -9160,6 +10038,52 @@ async def publish_bundle(bid: int, request: Request):
 
 
 @app.post("/api/bundles/{bid}/attach", status_code=201)
+async def _materialize_attachment(conn, aid: int, version_id: int, pid, cat) -> int:
+    """Phase 4d — (re)materialize an attachment's config items into real scoped registry
+    rows so runs actually consume them via the normal scope resolvers. Idempotent: clears
+    this attachment's prior rows, then inserts fresh copies of the pinned version's items at
+    the attachment scope. Skips an item whose (scope, name) already exists (a manual or other
+    row wins). Secrets are absent — snapshots never carry them. Returns count materialized."""
+    await conn.execute("DELETE FROM mcp_server_configs WHERE bundle_attachment_id=$1", aid)
+    await conn.execute("DELETE FROM model_configs WHERE bundle_attachment_id=$1", aid)
+    items = await conn.fetch(
+        "SELECT item_type, item_data FROM bundle_items WHERE bundle_version_id=$1 ORDER BY position, id", version_id)
+    n = 0
+    for it in items:
+        d = _parse_jsonb(it["item_data"]) or {}
+        name = (d.get("name") or "").strip()
+        if not name:
+            continue
+        if it["item_type"] == "mcp_server":
+            clash = await conn.fetchval(
+                "SELECT 1 FROM mcp_server_configs WHERE COALESCE(project_id,0)=COALESCE($1::bigint,0) "
+                "AND COALESCE(use_category,'')=COALESCE($2,'') AND lower(name)=lower($3)", pid, cat, name)
+            if clash:
+                continue
+            await conn.execute(
+                "INSERT INTO mcp_server_configs (name, sse_url, description, enabled, use_uc_assist, "
+                "project_id, use_category, bundle_attachment_id, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+                name, d.get("sse_url", ""), d.get("description", ""), bool(d.get("enabled", True)),
+                bool(d.get("use_uc_assist", False)), pid, cat, aid, "system-bundle")
+            n += 1
+        elif it["item_type"] == "model_config":
+            clash = await conn.fetchval(
+                "SELECT 1 FROM model_configs WHERE COALESCE(project_id,0)=COALESCE($1::bigint,0) "
+                "AND COALESCE(use_category,'')=COALESCE($2,'') AND lower(name)=lower($3)", pid, cat, name)
+            if clash:
+                continue
+            await conn.execute(
+                "INSERT INTO model_configs (name, provider, endpoint_url, model_id, capabilities, enabled, "
+                "is_local, use_arch_review, use_uc_assist, project_id, use_category, bundle_attachment_id, created_by) "
+                "VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12,$13)",
+                name, d.get("provider", "openai"), d.get("endpoint_url", ""), d.get("model_id", ""),
+                json.dumps(d.get("capabilities") or []), bool(d.get("enabled", True)), bool(d.get("is_local", False)),
+                bool(d.get("use_arch_review", True)), bool(d.get("use_uc_assist", False)), pid, cat, aid, "system-bundle")
+            n += 1
+        # output_template items are not materialized into a consumption registry yet (4e).
+    return n
+
+
 async def attach_bundle(bid: int, payload: BundleAttachIn, request: Request):
     """Pin the bundle's current published version at a (project × use-category) scope.
     Attach-to-project → project.integrations; platform/use-category → usecat.manage."""
@@ -9176,14 +10100,16 @@ async def attach_bundle(bid: int, payload: BundleAttachIn, request: Request):
         if not b["current_version_id"]:
             raise HTTPException(409, "bundle has no published version to attach")
         vid = b["current_version_id"]
-        row = await conn.fetchrow(
-            "INSERT INTO bundle_attachments (bundle_id, bundle_version_id, project_id, use_category, attached_by) "
-            "VALUES ($1,$2,$3,$4,$5) "
-            "ON CONFLICT (bundle_id, COALESCE(project_id,0), COALESCE(use_category,'')) "
-            "DO UPDATE SET bundle_version_id=EXCLUDED.bundle_version_id, attached_by=EXCLUDED.attached_by, attached_at=now() RETURNING id",
-            bid, vid, payload.project_id, payload.use_category, user)
-    await audit.record(pool, action="bundle.attach", actor=user, object_type="bundle", object_id=str(bid), detail={"project_id": payload.project_id, "use_category": payload.use_category}, summary=f"attached bundle {bid}")
-    return {"ok": True, "id": row["id"], "bundle_version_id": vid}
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "INSERT INTO bundle_attachments (bundle_id, bundle_version_id, project_id, use_category, attached_by) "
+                "VALUES ($1,$2,$3,$4,$5) "
+                "ON CONFLICT (bundle_id, COALESCE(project_id,0), COALESCE(use_category,'')) "
+                "DO UPDATE SET bundle_version_id=EXCLUDED.bundle_version_id, attached_by=EXCLUDED.attached_by, attached_at=now() RETURNING id",
+                bid, vid, payload.project_id, payload.use_category, user)
+            materialized = await _materialize_attachment(conn, row["id"], vid, payload.project_id, payload.use_category)
+    await audit.record(pool, action="bundle.attach", actor=user, object_type="bundle", object_id=str(bid), detail={"project_id": payload.project_id, "use_category": payload.use_category, "materialized": materialized}, summary=f"attached bundle {bid} ({materialized} item(s) live)")
+    return {"ok": True, "id": row["id"], "bundle_version_id": vid, "materialized": materialized}
 
 
 @app.delete("/api/bundle-attachments/{aid}", status_code=204)
@@ -9202,6 +10128,19 @@ async def detach_bundle(aid: int, request: Request):
     await audit.record(pool, action="bundle.detach", actor=user, object_type="bundle", object_id=str(a["bundle_id"]), summary=f"detached attachment {aid}")
 
 
+@app.delete("/api/bundles/{bid}", status_code=204)
+async def delete_bundle(bid: int, request: Request):
+    """Delete a bundle and ALL its versions/items/attachments (CASCADE). usecat.manage."""
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_USECAT_MANAGE, pid)
+        if not await conn.fetchval("SELECT 1 FROM bundles WHERE id=$1", bid):
+            raise HTTPException(404, "bundle not found")
+        await conn.execute("DELETE FROM bundles WHERE id=$1", bid)
+    await audit.record(pool, action="bundle.delete", actor=user, object_type="bundle", object_id=str(bid), summary=f"deleted bundle {bid}")
+
+
 # ========================= REVIEW MODELS =========================
 
 
@@ -9216,7 +10155,7 @@ async def list_review_models(request: Request):
             """SELECT id, name, provider, endpoint_url, model_id,
                       CASE WHEN api_key != '' THEN '••••••••' ELSE '' END AS api_key,
                       enabled, is_local, use_arch_review, use_uc_assist,
-                      capabilities,
+                      capabilities, bundle_attachment_id,
                       created_by, created_at, updated_at
                FROM model_configs
                WHERE (project_id IS NULL OR project_id=$1) AND (use_category IS NULL OR use_category=$2)
@@ -9226,6 +10165,7 @@ async def list_review_models(request: Request):
     for r in rows:
         d = dict(r)
         d["capabilities"] = _parse_jsonb(d.get("capabilities"))
+        d["from_bundle"] = bool(d.get("bundle_attachment_id"))  # #107 4d: read-only, bundle-owned
         out.append(d)
     return out
 
@@ -9259,12 +10199,80 @@ async def create_review_model(payload: ModelConfigIn, request: Request):
     return d
 
 
+async def _probe_model_endpoint(provider: str, endpoint_url: str, api_key: str) -> dict:
+    """Connection-test + list models from an endpoint, mirroring the exact URL/auth
+    convention the generation code uses (so a green probe means the model is callable):
+    OpenAI-compatible → `GET {base}/v1/models` + `Authorization: Bearer`; Anthropic →
+    `GET {base}/v1/models` + `x-api-key` + `anthropic-version`. Read-only; persists nothing."""
+    base = (endpoint_url or "").rstrip("/")
+    out = {"reachable": False, "url": None, "status_code": None,
+           "models": [], "latency_ms": None, "error": None}
+    if not base.startswith(("http://", "https://")):
+        out["error"] = f"invalid endpoint: {endpoint_url!r} (must start with http:// or https://)"
+        return out
+    if base.endswith("/v1"):           # match the chat code — never produce /v1/v1
+        base = base[:-3]
+    url = f"{base}/v1/models"
+    headers: dict[str, str] = {}
+    if provider == "anthropic":
+        headers["anthropic-version"] = "2023-06-01"
+        if api_key:
+            headers["x-api-key"] = api_key
+    elif api_key:                       # local vLLM has no key — omit the header entirely
+        headers["Authorization"] = f"Bearer {api_key}"
+    out["url"] = url
+    start = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as cx:
+            resp = await cx.get(url, headers=headers)
+        out["latency_ms"] = int((time.time() - start) * 1000)
+        out["status_code"] = resp.status_code
+        if 200 <= resp.status_code < 300:
+            out["reachable"] = True
+            try:
+                data = resp.json()
+                items = data.get("data") if isinstance(data, dict) else None
+                if isinstance(items, list):
+                    out["models"] = sorted(
+                        m.get("id") for m in items if isinstance(m, dict) and m.get("id"))
+            except Exception as e:
+                out["error"] = f"connected, but could not parse the /v1/models response: {e}"
+        elif resp.status_code in (401, 403):
+            out["error"] = f"HTTP {resp.status_code} — authentication required or invalid (check the API key)"
+        elif resp.status_code == 404:
+            out["error"] = "HTTP 404 — no /v1/models at this endpoint (it may not be OpenAI-compatible)"
+        else:
+            out["error"] = f"HTTP {resp.status_code}"
+    except httpx.TimeoutException:
+        out["latency_ms"] = int((time.time() - start) * 1000)
+        out["error"] = "timeout (8s) — endpoint unreachable from the API pod (check the URL / egress)"
+    except httpx.RequestError as e:
+        out["latency_ms"] = int((time.time() - start) * 1000)
+        out["error"] = f"connection error: {e}"
+    except Exception as e:
+        out["error"] = f"probe failed: {e}"
+    return out
+
+
+@app.post("/api/models/probe")
+async def probe_review_model(payload: ModelProbeIn, request: Request):
+    """Connection-test an endpoint and return its available model IDs, so the Add Model
+    dialog can offer them for selection instead of hand-typing. Nothing is persisted."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_MODELS, pid)
+    return await _probe_model_endpoint(payload.provider, payload.endpoint_url, payload.api_key)
+
+
 @app.put("/api/models/{mid}")
 async def update_review_model(mid: int, payload: ModelConfigIn, request: Request):
     async with pool.acquire() as conn:
-        owner = await conn.fetchval("SELECT project_id FROM model_configs WHERE id=$1", mid)
-        if owner is None:
+        cur = await conn.fetchrow("SELECT project_id, bundle_attachment_id FROM model_configs WHERE id=$1", mid)
+        if cur is None:
             raise HTTPException(404, "Model config not found")
+        if cur["bundle_attachment_id"]:
+            raise HTTPException(409, "this model is provided by an attached bundle — edit the bundle instead")
+        owner = cur["project_id"]
         await _require_priv_conn(conn, request, rbac.P_PROJECT_MODELS, owner)
         row = await conn.fetchrow(
             """UPDATE model_configs
@@ -9273,7 +10281,7 @@ async def update_review_model(mid: int, payload: ModelConfigIn, request: Request
                    enabled=$6, is_local=$7, use_arch_review=$8, use_uc_assist=$9,
                    capabilities=$10::jsonb,
                    updated_at=now()
-               WHERE id=$11 AND project_id=$12 RETURNING id""",
+               WHERE id=$11 AND project_id=$12 AND bundle_attachment_id IS NULL RETURNING id""",
             payload.name, payload.provider, payload.endpoint_url,
             payload.model_id, payload.api_key, payload.enabled,
             payload.is_local, payload.use_arch_review, payload.use_uc_assist,
@@ -9287,11 +10295,13 @@ async def update_review_model(mid: int, payload: ModelConfigIn, request: Request
 @app.delete("/api/models/{mid}")
 async def delete_review_model(mid: int, request: Request):
     async with pool.acquire() as conn:
-        owner = await conn.fetchval("SELECT project_id FROM model_configs WHERE id=$1", mid)
-        if owner is None:
+        cur = await conn.fetchrow("SELECT project_id, bundle_attachment_id FROM model_configs WHERE id=$1", mid)
+        if cur is None:
             return {"ok": True}
-        await _require_priv_conn(conn, request, rbac.P_PROJECT_MODELS, owner)
-        await conn.execute("DELETE FROM model_configs WHERE id=$1", mid)
+        if cur["bundle_attachment_id"]:
+            raise HTTPException(409, "this model is provided by an attached bundle — detach the bundle instead")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_MODELS, cur["project_id"])
+        await conn.execute("DELETE FROM model_configs WHERE id=$1 AND bundle_attachment_id IS NULL", mid)
     return {"ok": True}
 
 
@@ -9470,7 +10480,7 @@ async def _store_output_cache(run_id: str, kind: str, scope: str,
 async def get_cached_output(
     run_id: str = Query(..., min_length=1),
     kind: str = Query(..., pattern="^(review|enhancement)$"),
-    scope: str = Query("run", pattern="^(run|uc)$"),
+    scope: str = Query("run", pattern="^(run|uc|set)$"),
     uc_uuid: str = Query(""),
 ):
     """Return the cached generation for a run/scope/UC, or {cached: false}.
@@ -9666,6 +10676,7 @@ async def list_projects(request: Request, show_archived: bool = Query(False)):
     async with pool.acquire() as conn:
         myroles = await _user_project_roles(conn, user)
         cols = ("p.id, p.slug, p.name, p.description, p.created_by, p.created_at, p.archived, "
+                "p.is_exclusive, "
                 + _PROJECT_MEMBER_COUNT_SQL)
         if platform:
             rows = await conn.fetch(
@@ -9703,27 +10714,303 @@ async def my_projects(request: Request):
     return {"projects": [dict(r) for r in rows], "default_project_id": default_pid}
 
 
+# ========================= CUSTOMERS (first-class entity; customer-demand epic) =========================
+# Customers are platform-level, orthogonal to projects (M:N). Phase-2a: entity CRUD +
+# associations + demand rollup. Access here is single-axis (customer.view/edit on the
+# customer; platform-admin superuser). The (customer × project) matrix enforcement on
+# cell resources is a later slice. See docs/customer-demand-dedup-design.md.
+
+class CustomerIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    description: str = Field("", max_length=2000)
+    is_exclusive: bool = False
+
+class CustomerPatchIn(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    is_exclusive: Optional[bool] = None
+    archived: Optional[bool] = None
+
+class CustomerProjectIn(BaseModel):
+    project_id: int
+
+_CUSTOMER_DEMAND_SQL = (
+    "(SELECT count(DISTINCT r.uc_uuid) FROM uc_customer_requests r WHERE r.customer_id=c.id) AS uc_count, "
+    "(SELECT count(*) FROM uc_customer_requests r WHERE r.customer_id=c.id) AS request_count, "
+    "(SELECT count(*) FROM customer_projects cp WHERE cp.customer_id=c.id) AS project_count")
+
+
+async def _customer_visible_ids(conn, user: str):
+    """None = sees all (platform-admin / single-user); else the customer ids the user
+    holds any customer-scoped role on."""
+    if (not _multiuser()) or await _has_priv(user, rbac.P_PLATFORM_ADMIN):
+        return None
+    rows = await conn.fetch(
+        "SELECT DISTINCT ar.customer_id FROM rbac_account_roles ar "
+        "JOIN rbac_roles ro ON ro.id=ar.role_id AND ro.scope='customer' "
+        "WHERE lower(ar.reviewer)=lower($1) AND ar.customer_id IS NOT NULL", user)
+    return [r["customer_id"] for r in rows]
+
+
+@app.get("/api/customers")
+async def list_customers(request: Request, show_archived: bool = Query(False)):
+    """Customers visible to the caller (platform-admin = all; else the customers they
+    hold a customer-scoped role on), with demand + association rollups."""
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        vis = await _customer_visible_ids(conn, user)
+        cols = ("c.id, c.slug, c.name, c.description, c.is_exclusive, c.is_universal, "
+                f"c.archived, c.created_at, {_CUSTOMER_DEMAND_SQL}")
+        if vis is None:
+            rows = await conn.fetch(
+                f"SELECT {cols} FROM customers c WHERE ($1 OR NOT c.archived) "
+                "ORDER BY c.is_universal DESC, c.name", show_archived)
+        else:
+            rows = await conn.fetch(
+                f"SELECT {cols} FROM customers c WHERE c.id = ANY($1::bigint[]) AND ($2 OR NOT c.archived) "
+                "ORDER BY c.is_universal DESC, c.name", vis, show_archived)
+    return {"customers": [{**dict(r), "created_at": r["created_at"].isoformat()} for r in rows]}
+
+
+@app.post("/api/customers")
+async def create_customer(payload: CustomerIn, request: Request):
+    """Create a customer (Phase-2a: platform-admin; per-customer delegation is a later
+    slice). An exclusive customer auto-grants the creator customer-edit (anti-lockout)."""
+    user = await require_priv(request, rbac.P_PLATFORM_ADMIN)
+    slug = _customer_slug(payload.name)
+    if not slug:
+        raise HTTPException(400, "name must contain at least one alphanumeric character")
+    async with pool.acquire() as conn:
+        if await conn.fetchval("SELECT 1 FROM customers WHERE slug=$1", slug):
+            raise HTTPException(409, f"customer {slug!r} already exists")
+        row = await conn.fetchrow(
+            "INSERT INTO customers (slug, name, description, is_exclusive, created_by) "
+            "VALUES ($1,$2,$3,$4,$5) RETURNING id",
+            slug, payload.name.strip(), payload.description or "", payload.is_exclusive, user)
+        if payload.is_exclusive:
+            rid = await conn.fetchval("SELECT id FROM rbac_roles WHERE key='customer-edit'")
+            if rid:
+                await rbac.assign_role(conn, user.lower(), rid, None, user.lower(), customer_id=row["id"])
+    return {"ok": True, "id": row["id"], "slug": slug}
+
+
+@app.patch("/api/customers/{cid}")
+async def patch_customer(cid: int, payload: CustomerPatchIn, request: Request):
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM customers WHERE id=$1", cid):
+            raise HTTPException(404, "customer not found")
+        await _require_customer_priv_conn(conn, request, rbac.P_CUSTOMER_EDIT, cid)
+        user = get_user(request)
+        sets, args = [], []
+        for col, val in (("name", payload.name), ("description", payload.description),
+                         ("is_exclusive", payload.is_exclusive), ("archived", payload.archived)):
+            if val is not None:
+                args.append(val); sets.append(f"{col}=${len(args)}")
+        if not sets:
+            return {"ok": True}
+        args.append(cid)
+        await conn.execute(f"UPDATE customers SET {', '.join(sets)} WHERE id=${len(args)}", *args)
+        # Sealing a customer auto-grants the actor customer-edit (anti-lockout).
+        if payload.is_exclusive:
+            rid = await conn.fetchval("SELECT id FROM rbac_roles WHERE key='customer-edit'")
+            if rid:
+                await rbac.assign_role(conn, user.lower(), rid, None, user.lower(), customer_id=cid)
+    return {"ok": True}
+
+
+@app.delete("/api/customers/{cid}")
+async def delete_customer(cid: int, request: Request):
+    await require_priv(request, rbac.P_PLATFORM_ADMIN)
+    async with pool.acquire() as conn:
+        cust = await conn.fetchrow("SELECT is_universal FROM customers WHERE id=$1", cid)
+        if not cust:
+            raise HTTPException(404, "customer not found")
+        if cust["is_universal"]:
+            raise HTTPException(400, "the universal/internal customer cannot be deleted")
+        n = await conn.fetchval("SELECT count(*) FROM uc_customer_requests WHERE customer_id=$1", cid)
+        if n:
+            raise HTTPException(409, f"customer has {n} demand request(s) — reassign or remove them first")
+        await conn.execute("DELETE FROM customers WHERE id=$1", cid)
+    return {"ok": True}
+
+
+@app.get("/api/customers/{cid}/projects")
+async def list_customer_projects(cid: int, request: Request):
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM customers WHERE id=$1", cid):
+            raise HTTPException(404, "customer not found")
+        await _require_customer_priv_conn(conn, request, rbac.P_CUSTOMER_VIEW, cid)
+        rows = await conn.fetch(
+            "SELECT p.id, p.slug, p.name, p.is_exclusive FROM customer_projects cp "
+            "JOIN projects p ON p.id=cp.project_id WHERE cp.customer_id=$1 ORDER BY p.name", cid)
+    return {"customer_id": cid, "projects": [dict(r) for r in rows]}
+
+
+@app.post("/api/customers/{cid}/projects")
+async def add_customer_project(cid: int, payload: CustomerProjectIn, request: Request):
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM customers WHERE id=$1", cid):
+            raise HTTPException(404, "customer not found")
+        await _require_customer_priv_conn(conn, request, rbac.P_CUSTOMER_EDIT, cid)
+        if not await conn.fetchval("SELECT 1 FROM projects WHERE id=$1", payload.project_id):
+            raise HTTPException(404, "project not found")
+        await conn.execute(
+            "INSERT INTO customer_projects (customer_id, project_id, created_by) "
+            "VALUES ($1,$2,$3) ON CONFLICT DO NOTHING", cid, payload.project_id, user)
+    return {"ok": True}
+
+
+@app.delete("/api/customers/{cid}/projects/{pid}")
+async def remove_customer_project(cid: int, pid: int, request: Request):
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM customers WHERE id=$1", cid):
+            raise HTTPException(404, "customer not found")
+        await _require_customer_priv_conn(conn, request, rbac.P_CUSTOMER_EDIT, cid)
+        await conn.execute("DELETE FROM customer_projects WHERE customer_id=$1 AND project_id=$2", cid, pid)
+    return {"ok": True}
+
+
+@app.get("/api/customer-projects")
+async def list_customer_project_pairs(request: Request):
+    """All customer↔project association pairs the caller can see — feeds the
+    (customer × project) association matrix grid (#130 2b-ii) without N+1. Scoped to the
+    caller's visible customers (platform-admin = all)."""
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        vis = await _customer_visible_ids(conn, user)
+        if vis is None:
+            rows = await conn.fetch("SELECT customer_id, project_id FROM customer_projects")
+        else:
+            rows = await conn.fetch(
+                "SELECT customer_id, project_id FROM customer_projects WHERE customer_id = ANY($1::bigint[])", vis)
+    return {"pairs": [{"customer_id": r["customer_id"], "project_id": r["project_id"]} for r in rows]}
+
+
+class CustomerMemberIn(BaseModel):
+    reviewer: str
+    role_id: Optional[int] = None
+    role: Optional[str] = None   # customer role key: 'customer-viewer' | 'customer-edit'
+
+
+@app.get("/api/customers/{cid}/members")
+async def list_customer_members(cid: int, request: Request):
+    """Accounts with a customer-scoped role on this customer (customer-viewer/edit)."""
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM customers WHERE id=$1", cid):
+            raise HTTPException(404, "customer not found")
+        await _require_customer_priv_conn(conn, request, rbac.P_CUSTOMER_VIEW, cid)
+        rows = await conn.fetch(
+            """SELECT lower(ar.reviewer) AS reviewer, u.email, u.display_name,
+                      ar.role_id, ro.key AS role_key, ro.name AS role_name, ar.spans_all,
+                      ar.granted_at AS added_at
+               FROM rbac_account_roles ar
+               JOIN rbac_roles ro ON ro.id=ar.role_id AND ro.scope='customer'
+               LEFT JOIN users u ON lower(u.reviewer)=lower(ar.reviewer)
+               WHERE ar.customer_id=$1 ORDER BY ro.name, ar.reviewer""", cid)
+    return {"members": [{**dict(r), "added_at": r["added_at"].isoformat()} for r in rows]}
+
+
+@app.post("/api/customers/{cid}/members")
+async def add_customer_member(cid: int, payload: CustomerMemberIn, request: Request):
+    """Grant a customer-scoped role (customer-viewer / customer-edit) to a user on this
+    customer. Requires customer.edit on it (or platform-admin); escalation-guarded."""
+    granter = get_user(request)
+    reviewer = (payload.reviewer or "").strip().lower()
+    if not reviewer:
+        raise HTTPException(400, "reviewer required")
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM customers WHERE id=$1", cid):
+            raise HTTPException(404, "customer not found")
+        await _require_customer_priv_conn(conn, request, rbac.P_CUSTOMER_EDIT, cid)
+        role_id = payload.role_id
+        if role_id is None and payload.role:
+            role_id = await conn.fetchval(
+                "SELECT id FROM rbac_roles WHERE key=$1 AND scope='customer'", payload.role)
+        if role_id is None or not await conn.fetchval(
+                "SELECT 1 FROM rbac_roles WHERE id=$1 AND scope='customer'", role_id):
+            raise HTTPException(400, "a valid customer role is required (customer-viewer / customer-edit)")
+        # Escalation guard: only grant a role whose privileges you already hold on this customer.
+        granter_privs = await rbac.privileges_for(conn, granter, None, cid)
+        if rbac.P_PLATFORM_ADMIN not in granter_privs:
+            role_privs = {x["privilege_key"] for x in await conn.fetch(
+                "SELECT privilege_key FROM rbac_role_privileges WHERE role_id=$1", role_id)}
+            esc = role_privs - granter_privs
+            if esc:
+                raise HTTPException(403, "you can only grant a role whose privileges you already "
+                                         f"hold (this role adds: {', '.join(sorted(esc))})")
+        await conn.execute(
+            "INSERT INTO users (reviewer,email,role,approved,source,enabled) "
+            "VALUES ($1,$1,'viewer',true,'manual',true) ON CONFLICT (reviewer) DO NOTHING", reviewer)
+        await rbac.assign_role(conn, reviewer, role_id, None, granter, customer_id=cid)
+    await _reload_approved()
+    return {"ok": True}
+
+
+@app.delete("/api/customers/{cid}/members/{reviewer}", status_code=204)
+async def remove_customer_member(cid: int, reviewer: str, request: Request,
+                                 role_id: Optional[int] = Query(None)):
+    """Revoke a user's customer role(s) on this customer — a specific role_id, or all."""
+    r = reviewer.strip().lower()
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM customers WHERE id=$1", cid):
+            raise HTTPException(404, "customer not found")
+        await _require_customer_priv_conn(conn, request, rbac.P_CUSTOMER_EDIT, cid)
+        if role_id is not None:
+            await conn.execute(
+                "DELETE FROM rbac_account_roles WHERE customer_id=$1 AND lower(reviewer)=lower($2) AND role_id=$3",
+                cid, r, role_id)
+        else:
+            await conn.execute(
+                "DELETE FROM rbac_account_roles ar USING rbac_roles ro "
+                "WHERE ar.role_id=ro.id AND ro.scope='customer' AND ar.customer_id=$1 "
+                "AND lower(ar.reviewer)=lower($2)", cid, r)
+    await _reload_approved()
+
+
 class ProjectIn(BaseModel):
     slug: str
     name: str
     description: str = ""
 
 
+def _norm_project_name(s: str) -> str:
+    """Soft-normalize a project name for dedup: lowercase, punctuation/whitespace → single space."""
+    return re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+
+def _project_name_close(a: str, b: str) -> bool:
+    """'Close in spelling' — normalized equality OR high fuzzy similarity (typo/variant catch)."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    import difflib
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
+
+
 @app.post("/api/projects")
 async def create_project(payload: ProjectIn, request: Request):
+    # #135: project.create is a baseline privilege (every authenticated user holds it).
     user = await require_priv(request, rbac.P_PROJECT_CREATE)
-    slug = (payload.slug or "").strip().lower()
-    if not slug or not re.match(r"^[a-z0-9][a-z0-9-]*$", slug):
+    name = (payload.name or payload.slug or "").strip()
+    if not name:
+        raise HTTPException(400, "project name is required")
+    slug = (payload.slug or "").strip().lower() or _slugify(name)
+    if not re.match(r"^[a-z0-9][a-z0-9-]*$", slug):
         raise HTTPException(400, "slug must be lowercase alphanumeric/dashes, starting alphanumeric")
     async with pool.acquire() as conn:
-        exists = await conn.fetchval("SELECT 1 FROM projects WHERE slug=$1", slug)
-        if exists:
-            raise HTTPException(409, f"project {slug!r} already exists")
+        # Soft dedup: compare names case-insensitively + fuzzily (close spelling), slug exactly.
+        norm = _norm_project_name(name)
+        for e in await conn.fetch("SELECT name, slug FROM projects"):
+            if e["slug"] == slug or _project_name_close(norm, _norm_project_name(e["name"])):
+                raise HTTPException(409, f"project already exists: {e['name']!r}")
         row = await conn.fetchrow(
             "INSERT INTO projects (slug, name, description, created_by) VALUES ($1,$2,$3,$4) RETURNING id",
-            slug, (payload.name or slug).strip(), payload.description or "", user,
+            slug, name, payload.description or "", user,
         )
-        # Creator becomes a project admin (RBAC) so they can manage + see it.
+        # #135: the creator administers their own project (project-admin) — can manage members,
+        # settings, and content. (A future two-step, externally-administered flow may narrow this.)
         rid = await conn.fetchval("SELECT id FROM rbac_roles WHERE key='project-admin'")
         if rid:
             await rbac.assign_role(conn, user.lower(), rid, row["id"], user.lower())
@@ -9734,13 +11021,15 @@ class ProjectPatchIn(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     archived: Optional[bool] = None
+    is_exclusive: Optional[bool] = None   # seal: explicit grant required (customer-demand epic)
 
 
 @app.patch("/api/projects/{pid}")
 async def patch_project(pid: int, payload: ProjectPatchIn, request: Request):
     await require_project_admin(request, pid)
     sets, args = [], []
-    for col, val in (("name", payload.name), ("description", payload.description), ("archived", payload.archived)):
+    for col, val in (("name", payload.name), ("description", payload.description),
+                     ("archived", payload.archived), ("is_exclusive", payload.is_exclusive)):
         if val is not None:
             args.append(val)
             sets.append(f"{col}=${len(args)}")
@@ -10082,16 +11371,16 @@ async def _stage_customization(conn, stage: str, project_id: Optional[int]) -> d
     if project_id is None:
         return {"content": "", "section_overrides": {}}
     row = await conn.fetchrow(
-        "SELECT content, section_overrides FROM project_stage_context WHERE project_id=$1 AND stage=$2",
+        "SELECT content, section_overrides, applied FROM project_stage_context WHERE project_id=$1 AND stage=$2",
         project_id, stage,
     )
     if not row:
-        return {"content": "", "section_overrides": {}}
+        return {"content": "", "section_overrides": {}, "applied": False}
     so = row["section_overrides"]
     if isinstance(so, str):
         try: so = json.loads(so)
         except Exception: so = {}
-    return {"content": (row["content"] or "").strip(), "section_overrides": so or {}}
+    return {"content": (row["content"] or "").strip(), "section_overrides": so or {}, "applied": bool(row["applied"])}
 
 
 @app.get("/api/stage-context/{stage}")
@@ -10161,7 +11450,34 @@ async def prompts_project_get(stage: str, request: Request):
     meta = _prompts_registry.stage(stage)
     return {"stage": stage, "project_id": pid, "meta": meta,
             "content": cust["content"], "section_overrides": cust["section_overrides"],
-            "assembled": assembled}
+            "applied": cust.get("applied", False), "assembled": assembled}
+
+
+class Stage2AppliedIn(BaseModel):
+    applied: bool
+
+
+@app.put("/api/prompts/stage2/applied")
+async def set_stage2_applied(payload: Stage2AppliedIn, request: Request):
+    """#93 promotion go-live: flip the project's Evaluation (stage-2) prompt between stored-held and
+    LIVE (injected into NORMAL runs). prompt.manage gated. Promote only after a winning A/B — this
+    changes eval behavior for every subsequent run."""
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        if pid is None:
+            raise HTTPException(404, "no active project")
+        await _require_priv_conn(conn, request, rbac.P_PROMPT_MANAGE, pid)
+        content = await conn.fetchval(
+            "SELECT content FROM project_stage_context WHERE project_id=$1 AND stage='stage2-analysis'", pid)
+        if payload.applied and not (content or "").strip():
+            raise HTTPException(400, "set an Evaluation prompt before applying it to live runs")
+        await conn.execute(
+            """INSERT INTO project_stage_context (project_id, stage, content, applied, updated_by, updated_at)
+               VALUES ($1, 'stage2-analysis', '', $2, $3, now())
+               ON CONFLICT (project_id, stage) DO UPDATE SET applied=$2, updated_by=$3, updated_at=now()""",
+            pid, payload.applied, user)
+    return {"ok": True, "applied": payload.applied}
 
 
 class PromptAssistIn(BaseModel):
@@ -10231,6 +11547,15 @@ class CatalogIn(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     status: str = "confirmed"
     project_id: Optional[int] = None
+    # Capability method (#132): DDD subdomain + R4 disposition (≈ Gartner TIME) + drivers.
+    # `subdomain` (not `classification`) — that column already exists for data sensitivity.
+    subdomain: Optional[str] = None        # core | supporting | generic (DDD subdomain)
+    disposition:    Optional[str] = None   # reuse | refurbish | replace | retire
+    strategic_fit:  Optional[str] = None   # high | low
+    tech_fitness:   Optional[str] = None   # aligned | constrained
+    # m-iii: ownership — the owning DDD bounded context + the single strategic provider.
+    bounded_context:    Optional[str] = None
+    strategic_provider: Optional[str] = None
 
 
 def _catalog_row(r) -> dict:
@@ -10248,6 +11573,17 @@ async def _catalog_name_map(conn, project_id) -> dict:
     rows = await conn.fetch(
         "SELECT cap_key, name FROM capability_catalog WHERE project_id=$1", project_id)
     return {r["cap_key"]: (r["name"] or r["cap_key"]) for r in rows}
+
+
+async def _catalog_meta_map(conn, project_id) -> dict:
+    """cap_key -> {subdomain, disposition} from the catalog (#132). Lets the
+    Engineering roadmap / Cap-Map views carry the DDD subdomain + R4 disposition
+    lens without re-deriving — the catalog stays the single source of truth."""
+    if project_id is None:
+        return {}
+    rows = await conn.fetch(
+        "SELECT cap_key, subdomain, disposition FROM capability_catalog WHERE project_id=$1", project_id)
+    return {r["cap_key"]: {"subdomain": r["subdomain"], "disposition": r["disposition"]} for r in rows}
 
 
 async def _capability_usage_map(conn, run_id) -> dict:
@@ -10288,39 +11624,59 @@ async def catalog_suggestions(request: Request, run_id: Optional[str] = Query(No
         # stored) so a suggestion has context without re-deriving anything.
         _usage = "(array_agg(usage ORDER BY length(usage) DESC) FILTER (WHERE COALESCE(usage,'') <> ''))[1] AS usage"
         # Constrain to runs in THIS project so capabilities don't leak across projects.
-        _scoped = "run_id IN (SELECT run_id FROM analysis_runs WHERE project_id=$2)"
+        # NB: the project-scope subquery binds the LAST param in each branch — keep the
+        # placeholder numbers in sync with the args (the no-run_id branch has only $1,
+        # so a hard-coded $2 there raised IndeterminateDatatypeError — the catalog 500).
         if run_id:
             rows = await conn.fetch(
                 f"SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n, {_usage} FROM uc_capabilities "
-                f"WHERE run_id=$1 AND {_scoped} GROUP BY capability_id ORDER BY n DESC", run_id, pid)
+                "WHERE run_id=$1 AND run_id IN (SELECT run_id FROM analysis_runs WHERE project_id=$2) "
+                "GROUP BY capability_id ORDER BY n DESC", run_id, pid)
         else:
             rows = await conn.fetch(
                 f"SELECT capability_id, COUNT(DISTINCT uc_uuid) AS n, {_usage} FROM uc_capabilities "
-                f"WHERE {_scoped} GROUP BY capability_id ORDER BY n DESC", pid)
+                "WHERE run_id IN (SELECT run_id FROM analysis_runs WHERE project_id=$1) "
+                "GROUP BY capability_id ORDER BY n DESC", pid)
         ex = {r["cap_key"] for r in await conn.fetch(
             "SELECT cap_key FROM capability_catalog WHERE project_id=$1", pid)}
+    # Exclude already-cataloged caps by their NORMALIZED key (cap_key), not the raw
+    # LLM string — otherwise case/spacing variants slip through as dup "suggestions".
+    from .capability_catalog import _cap_key
     suggestions = [{"capability_id": r["capability_id"], "uc_count": int(r["n"]), "usage": r["usage"]}
-                   for r in rows if r["capability_id"] and r["capability_id"] not in ex]
+                   for r in rows if r["capability_id"] and _cap_key(r["capability_id"]) not in ex]
     return {"project_id": pid, "suggestions": suggestions}
 
 
 @app.post("/api/catalog")
 async def add_catalog(payload: CatalogIn, request: Request):
     user = get_user(request)
-    key = (payload.cap_key or "").strip()
+    from .capability_catalog import _cap_key
+    raw = (payload.cap_key or "").strip()
+    # Store the NORMALIZED key so it matches observed entries + the suggestions
+    # exclusion (which compares _cap_key(capability_id)); keep the raw text as the
+    # display name when none was supplied. Without this, an added capability is
+    # never recognized as already-cataloged and its suggestion never clears.
+    key = _cap_key(raw)
     if not key:
         raise HTTPException(400, "cap_key required")
     async with pool.acquire() as conn:
-        pid = payload.project_id if payload.project_id is not None else await _default_project_id(conn)
+        # Scope to the ACTIVE project (same as GET /api/catalog + suggestions) so the
+        # capability lands where the user is looking — defaulting to the default project
+        # made adds vanish from any non-default project's list.
+        pid = payload.project_id if payload.project_id is not None else await _active_project_id(request, conn)
         await _require_priv_conn(conn, request, rbac.P_PROJECT_CATALOG, pid)
         if await conn.fetchval("SELECT 1 FROM capability_catalog WHERE project_id=$1 AND cap_key=$2", pid, key):
             raise HTTPException(409, f"capability {key!r} already in catalog")
         row = await conn.fetchrow(
             """INSERT INTO capability_catalog
-               (project_id, cap_key, name, definition, domain, spec_refs, depends_on, status, created_by, updated_by)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) RETURNING id""",
-            pid, key, payload.name or key, payload.definition, payload.domain,
-            payload.spec_refs, payload.depends_on, payload.status, user)
+               (project_id, cap_key, name, definition, domain, spec_refs, depends_on, status,
+                subdomain, disposition, strategic_fit, tech_fitness,
+                bounded_context, strategic_provider, created_by, updated_by)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15) RETURNING id""",
+            pid, key, payload.name or raw, payload.definition, payload.domain,
+            payload.spec_refs, payload.depends_on, payload.status,
+            payload.subdomain, payload.disposition, payload.strategic_fit, payload.tech_fitness,
+            payload.bounded_context, payload.strategic_provider, user)
     return {"ok": True, "id": row["id"], "cap_key": key}
 
 
@@ -10332,10 +11688,15 @@ async def update_catalog(cap_id: int, payload: CatalogIn, request: Request):
                                      rbac.P_PROJECT_CATALOG, "capability not found")
         result = await conn.execute(
             """UPDATE capability_catalog
-               SET name=$2, definition=$3, domain=$4, spec_refs=$5, depends_on=$6, status=$7, updated_by=$8, updated_at=now()
+               SET name=$2, definition=$3, domain=$4, spec_refs=$5, depends_on=$6, status=$7,
+                   subdomain=$10, disposition=$11, strategic_fit=$12, tech_fitness=$13,
+                   bounded_context=$14, strategic_provider=$15,
+                   updated_by=$8, updated_at=now()
                WHERE id=$1 AND project_id=$9""",
             cap_id, payload.name, payload.definition, payload.domain, payload.spec_refs,
-            payload.depends_on, payload.status, user, owner)
+            payload.depends_on, payload.status, user, owner,
+            payload.subdomain, payload.disposition, payload.strategic_fit, payload.tech_fitness,
+            payload.bounded_context, payload.strategic_provider)
     if result == "UPDATE 0":
         raise HTTPException(404, "capability not found")
     return {"ok": True, "id": cap_id}
@@ -10470,7 +11831,17 @@ async def arch_review(payload: ArchReviewIn, request: Request):
                 )
             model_row = dict(model_row)
 
-        if payload.scope == "uc":
+        if payload.scope == "set":
+            # Set scope (roadmap): cross-cutting review over the latest eval per UC in the
+            # masthead Scoping Set (the run picker is retired). Keyed by a synthetic
+            # `set:<id>` run token so the cache/generation machinery is reused unchanged.
+            analyses = await _set_latest_analyses(conn, arpid, payload.set_id)
+            if not analyses:
+                raise HTTPException(404, "No evaluated use cases in this scope — ingest the set first")
+            user_prompt = _ar._build_run_prompt(await _set_label(conn, payload.set_id), analyses)
+            system_prompt = _ar._RUN_SYSTEM
+
+        elif payload.scope == "uc":
             if not payload.run_id or not payload.uc_uuid:
                 raise HTTPException(400, "run_id and uc_uuid required for UC scope")
             analysis = await conn.fetchrow(
@@ -10516,13 +11887,14 @@ async def arch_review(payload: ArchReviewIn, request: Request):
         _ctx = await _stage_context(_c, "arch_review")
     user_prompt = _inject_context(user_prompt, _ctx, "architectural review")
 
-    key = ("review", payload.scope, payload.run_id, payload.uc_uuid or "")
+    _gen_run = _set_token(payload.set_id) if payload.scope == "set" else payload.run_id
+    key = ("review", payload.scope, _gen_run, payload.uc_uuid or "")
     _ensure_generation(
         key,
         provider=model["provider"], endpoint_url=model["endpoint_url"],
         model_id=model["model_id"], api_key=model["api_key"],
         system_prompt=system_prompt, user_prompt=user_prompt,
-        run_id=payload.run_id, kind="review", scope=payload.scope,
+        run_id=_gen_run, kind="review", scope=payload.scope,
         uc_uuid=payload.uc_uuid,
         model_label=model.get("name") or model.get("model_id") or "",
         user=reviewer,
@@ -10532,18 +11904,28 @@ async def arch_review(payload: ArchReviewIn, request: Request):
 
 @app.get("/api/arch-review/prompt")
 async def get_arch_review_prompt(
-    scope: str = Query(..., pattern="^(uc|run)$"),
+    request: Request,
+    scope: str = Query(..., pattern="^(uc|run|set)$"),
     run_id: str = Query(...),
     uc_uuid: Optional[str] = Query(None),
 ):
     """Return system + user prompts for an arch review without calling any model.
 
     Intended for copy-to-clipboard so users can paste into Claude Code or chat.
+    Set scope carries the Scoping Set as a synthetic `set:<id>` run token.
     """
     from . import arch_review as _ar
 
     async with pool.acquire() as conn:
-        if scope == "uc":
+        _sid = _parse_set_token(run_id) if scope == "set" else None
+        if scope == "set":
+            pid = await _active_project_id(request, conn)
+            analyses = await _set_latest_analyses(conn, pid, _sid)
+            if not analyses:
+                raise HTTPException(404, "No evaluated use cases in this scope — ingest the set first")
+            user_prompt = _ar._build_run_prompt(await _set_label(conn, _sid), analyses)
+            system_prompt = _ar._RUN_SYSTEM
+        elif scope == "uc":
             if not uc_uuid:
                 raise HTTPException(400, "uc_uuid required for UC scope")
             analysis = await conn.fetchrow(
@@ -10585,9 +11967,17 @@ async def get_arch_review_prompt(
 
 # ── Enhancement planning ──────────────────────────────────────────────────────
 
-async def _enhancement_prompts(scope: str, run_id: str, uc_uuid: Optional[str], conn):
+async def _enhancement_prompts(scope: str, run_id: str, uc_uuid: Optional[str], conn,
+                               set_id: Optional[str] = None, project_id: Optional[int] = None):
     """Shared DB logic for both the streaming and prompt-export endpoints."""
     from . import arch_review as _ar
+    if scope == "set":
+        # Roadmap scope: enhancement plan over the latest eval per UC in the Scoping Set.
+        analyses = await _set_latest_analyses(conn, project_id, set_id)
+        if not analyses:
+            raise HTTPException(404, "No evaluated use cases in this scope — ingest the set first")
+        return (_ar._build_enhancement_run_prompt(await _set_label(conn, set_id), analyses),
+                _ar._ENHANCEMENT_RUN_SYSTEM)
     if scope == "uc":
         if not uc_uuid:
             raise HTTPException(400, "uc_uuid required for UC scope")
@@ -10664,10 +12054,11 @@ async def enhancements(payload: EnhancementIn, request: Request):
                     "Provide a model, or set a Default Enhancement / Arch Review "
                     "model in Config",
                 )
-        if not payload.run_id:
+        if payload.scope != "set" and not payload.run_id:
             raise HTTPException(400, "run_id required")
         user_prompt, system_prompt = await _enhancement_prompts(
-            payload.scope, payload.run_id, payload.uc_uuid, conn
+            payload.scope, payload.run_id, payload.uc_uuid, conn,
+            set_id=payload.set_id, project_id=enpid,
         )
         # Inject the architect's project/stage context (F8: enhancement is now its own
         # stage, independent of review; existing arch_review content was migrated over).
@@ -10676,13 +12067,14 @@ async def enhancements(payload: EnhancementIn, request: Request):
 
     model = model_row
 
-    key = ("enhancement", payload.scope, payload.run_id, payload.uc_uuid or "")
+    _gen_run = _set_token(payload.set_id) if payload.scope == "set" else payload.run_id
+    key = ("enhancement", payload.scope, _gen_run, payload.uc_uuid or "")
     _ensure_generation(
         key,
         provider=model["provider"], endpoint_url=model["endpoint_url"],
         model_id=model["model_id"], api_key=model["api_key"],
         system_prompt=system_prompt, user_prompt=user_prompt,
-        run_id=payload.run_id, kind="enhancement", scope=payload.scope,
+        run_id=_gen_run, kind="enhancement", scope=payload.scope,
         uc_uuid=payload.uc_uuid,
         model_label=model.get("name") or model.get("model_id") or "",
         user=reviewer,
@@ -10964,13 +12356,18 @@ def _enh_apply_pr_body(
 
 @app.get("/api/enhancements/prompt")
 async def get_enhancement_prompt(
-    scope: str = Query(..., pattern="^(uc|run)$"),
+    request: Request,
+    scope: str = Query(..., pattern="^(uc|run|set)$"),
     run_id: str = Query(...),
     uc_uuid: Optional[str] = Query(None),
 ):
-    """Return system + user prompts for enhancement planning without calling any model."""
+    """Return system + user prompts for enhancement planning without calling any model.
+    Set scope carries the Scoping Set as a synthetic `set:<id>` run token."""
     async with pool.acquire() as conn:
-        user_prompt, system_prompt = await _enhancement_prompts(scope, run_id, uc_uuid, conn)
+        _sid = _parse_set_token(run_id) if scope == "set" else None
+        _pid = await _active_project_id(request, conn) if scope == "set" else None
+        user_prompt, system_prompt = await _enhancement_prompts(
+            scope, run_id, uc_uuid, conn, set_id=_sid, project_id=_pid)
     return {"system_prompt": system_prompt, "user_prompt": user_prompt}
 
 
@@ -11023,9 +12420,38 @@ def _slugify_handle(handle: str) -> str:
     return h.lower() or "unknown"
 
 
-async def _pr_gap_context(scope: str, run_id: str, uc_uuid: Optional[str], conn) -> dict:
+async def _pr_gap_context(scope: str, run_id: str, uc_uuid: Optional[str], conn,
+                          project_id: Optional[int] = None) -> dict:
     """Build PR metadata (title, branch, file_path, gap_context) from gap DB rows."""
     import base64 as _b64
+
+    if scope == "set":
+        # Roadmap scope: aggregate gaps over the latest eval per UC in the Scoping Set.
+        sid = _parse_set_token(run_id) or "__all__"
+        analyses = await _set_latest_analyses(conn, project_id, sid)
+        label = await _set_label(conn, sid)
+        slug = _slugify_handle(str(sid))
+        total_gaps = sum(len(a.get("gaps") or []) for a in analyses)
+        title = f"gap(set/{sid}): cross-cutting enhancements"
+        branch = f"gap/set-{slug}"
+        file_path = f"enhancements/set-{slug}.md"
+        lines = [
+            "## Context\n",
+            f"**Scope:** {label}  ",
+            f"**Use cases:** {len(analyses)}  ",
+            f"**Total gaps:** {total_gaps}  ",
+            "",
+            "## Gaps addressed\n",
+        ]
+        for a in analyses:
+            ag = a.get("gaps") or []
+            if not ag:
+                continue
+            lines.append(f"\n### {a.get('uc_handle') or a.get('uc_uuid')} — {a.get('verdict') or 'unknown'}\n")
+            for g in ag:
+                lines.append(f"- **[{g.get('gap_id') or '?'}]** {g.get('title') or ''}")
+        gap_context = "\n".join(lines)
+        return {"title": title, "branch": branch, "file_path": file_path, "gap_context": gap_context}
 
     if scope == "uc":
         if not uc_uuid:
@@ -11107,13 +12533,15 @@ async def _pr_gap_context(scope: str, run_id: str, uc_uuid: Optional[str], conn)
 
 @app.get("/api/pr/preview")
 async def pr_preview(
-    scope: str = Query(..., pattern="^(uc|run)$"),
+    request: Request,
+    scope: str = Query(..., pattern="^(uc|run|set)$"),
     run_id: str = Query(...),
     uc_uuid: Optional[str] = Query(None),
 ):
     """Return PR metadata (title, branch, file_path, gap_context) without touching any remote."""
     async with pool.acquire() as conn:
-        return await _pr_gap_context(scope, run_id, uc_uuid, conn)
+        _pid = await _active_project_id(request, conn) if scope == "set" else None
+        return await _pr_gap_context(scope, run_id, uc_uuid, conn, project_id=_pid)
 
 
 def _parse_repo_url(provider: str, repo_url: str) -> tuple[str, str]:

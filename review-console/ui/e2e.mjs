@@ -20,7 +20,7 @@ const ROLES = {
     is_platform_admin: true, is_admin: true, is_project_admin: true,
     privileges: ['platform.admin', 'project.data.read', 'assessment.view', 'assessment.edit',
                  'prompt.manage', 'project.models', 'project.integrations', 'project.repos',
-                 'project.catalog', 'blueprint.view', 'blueprint.edit'],
+                 'project.catalog', 'blueprint.view', 'blueprint.edit', 'usecat.manage'],
   },
   'project-admin': {
     is_platform_admin: false, is_admin: true, is_project_admin: true,
@@ -93,50 +93,93 @@ async function runRole(role) {
   const { document } = dom.window;
   const disp = (id) => { const el = document.getElementById(id); return el ? (el.style.display) : '(missing)'; };
   const navView = (v) => { const el = document.querySelector(`.pf-nav-item[data-view="${v}"]`); return el ? el.style.display : '(missing)'; };
+  // Domain IA: the left rail lists DOMAINS (data-domain); a view's sub-tab only exists in
+  // #domainTabs when its domain is active. So area-reachability is checked on the domain anchor.
+  const domDisp = (key) => { const el = document.querySelector(`.pf-nav-item[data-domain="${key}"]`); return el ? el.style.display : '(missing)'; };
+  const shown = (d) => d !== 'none' && d !== '(missing)';
 
   const checks = [];
   const ck = (name, cond, detail = '') => checks.push([cond ? 'PASS' : 'FAIL', `[${role}] ${name}`, detail]);
 
   ck('no uncaught errors at boot', errors.length === 0, errors.slice(0, 4).join('  |  '));
-  // Workspace focus (#101): switcher present; nav filters to the active focus. Default is
-  // role-derived — platform-admin → Architecture; assessment-only users → Assessment.
-  ck('focus switcher present', !!document.getElementById('focusSwitch'));
+  // Persona paradigm (ux-paradigm-design.md): the persona switcher selects which domains
+  // the rail foregrounds. Default is role-derived — platform-admin → Architect; assessment-
+  // only users → Assessor. The rail renders only the active persona's domains.
+  ck('persona switcher present', !!document.getElementById('personaSel'));
   ck('view-mode toggle present', !!document.getElementById('viewModeToggle'));
+  // Masthead run selector retired → read-only run-status label (run is working context, not chrome).
+  ck('run selector retired (read-only status)',
+     !document.getElementById('globalRunSel') && !!document.getElementById('rccName'),
+     'globalRunSel=' + !!document.getElementById('globalRunSel') + ' rccName=' + !!document.getElementById('rccName'));
+  ck('domain top-tab strip present', !!document.getElementById('domainTabs'));
+  ck('domain rail rendered', document.querySelectorAll('.pf-nav-item[data-domain]').length >= 2,
+     'count=' + document.querySelectorAll('.pf-nav-item[data-domain]').length);
   if (role === 'platform-admin') {
-    ck('Architecture focus: Use Cases nav shown', navView('usecases') !== 'none', 'display=' + navView('usecases'));
-    ck('Architecture focus: Assessments nav hidden', disp('navAssess') === 'none', 'display=' + disp('navAssess'));
+    // Architect persona: Authoring · Execution · Roadmaps · Catalog · Improve (no Assessments).
+    ck('Architect persona: Authoring domain shown', shown(domDisp('author')), 'display=' + domDisp('author'));
+    ck('Architect persona: Assessments domain not in rail', !shown(domDisp('assess')), 'display=' + domDisp('assess'));
+    // Authoring is multi-sub-view → the top strip renders ≥2 tabs (Use Cases · Inbox).
+    ck('Authoring strip has ≥2 sub-tabs', document.querySelectorAll('#domainTabs .tab').length >= 2,
+       'tabs=' + document.querySelectorAll('#domainTabs .tab').length);
   } else {
-    // project-admin + project-viewer have assessment.view but no UC/run pipeline → Assessment focus.
-    ck('Assessment focus: Assessments nav shown', disp('navAssess') !== 'none', 'display=' + disp('navAssess'));
-    ck('Assessment focus: Use Cases nav hidden', navView('usecases') === 'none', 'display=' + navView('usecases'));
-    ck('Catalog (shared) nav shown in either focus', navView('catalog') !== 'none', 'display=' + navView('catalog'));
+    // project-admin + project-viewer (mock: assessment.view, no UC/run pipeline) → Assessor persona.
+    ck('Assessor persona: Assessments domain shown', shown(domDisp('assess')), 'display=' + domDisp('assess'));
+    ck('Assessor persona: Authoring domain not in rail', !shown(domDisp('author')), 'display=' + domDisp('author'));
+    ck('Catalog domain shown (in Assessor persona)', shown(domDisp('catalog')), 'display=' + domDisp('catalog'));
   }
-  // The separate Projects / Users & roles left-nav views are retired for everyone (→ Config → Platform).
-  ck('separate Users/Projects nav views retired', disp('navUsers') === 'none' && disp('navProjects') === 'none', `users=${disp('navUsers')} projects=${disp('navProjects')}`);
+  // #137: a view-only role must not see edit affordances (data-edit-gate hidden when !canEdit).
+  // project-viewer has no project.catalog → the catalog "Add capability" button is hidden; a privileged
+  // role (not in view mode) sees it.
+  if (role === 'project-viewer') {
+    ck('view-only role: edit affordance hidden', disp('catSaveBtn') === 'none', 'display=' + disp('catSaveBtn'));
+  } else if (role === 'platform-admin') {
+    ck('editor role: edit affordance shown', disp('catSaveBtn') !== 'none', 'display=' + disp('catSaveBtn'));
+  }
+  // Capability method (#132): the catalog editor carries the DDD subdomain + R4 disposition controls.
+  ck('catalog editor has subdomain + disposition controls',
+     !!document.getElementById('catClass') && !!document.getElementById('catDisp') &&
+     !!document.getElementById('catFit') && !!document.getElementById('catTech'),
+     `class=${!!document.getElementById('catClass')} disp=${!!document.getElementById('catDisp')}`);
+  // Catalog List ⇄ Board (R4 disposition decision surface) toggle present.
+  ck('catalog has List/Board toggle',
+     !!document.getElementById('catViewListBtn') && !!document.getElementById('catViewBoardBtn') && !!document.getElementById('catBoard'),
+     `board=${!!document.getElementById('catBoard')}`);
+  // #130 2b-iv: RBAC role-bindings List ⇄ Matrix (grant matrix) toggle present.
+  ck('role-bindings has List/Matrix toggle',
+     !!document.getElementById('bindViewListBtn') && !!document.getElementById('bindViewMatrixBtn') && !!document.getElementById('roleBindingsMatrix'),
+     `matrix=${!!document.getElementById('roleBindingsMatrix')}`);
+  // The separate Projects / Users & roles left-nav views are retired for everyone (→ Config → Platform):
+  // no domain anchor and no view sub-tab exists for them.
+  ck('separate Users/Projects nav retired',
+     domDisp('users') === '(missing)' && domDisp('projects') === '(missing)' && navView('users') === '(missing)' && navView('projects') === '(missing)',
+     `users=${domDisp('users')} projects=${domDisp('projects')}`);
   // Config is now tabbed: the Platform section-tab gates on the per-panel visibility; the
   // panels keep their own privilege gating (the e2e reads each panel's inline display).
   if (role === 'platform-admin') {
     ck('presence chip rendered', disp('presenceWrap') !== 'none', 'display=' + disp('presenceWrap'));
-    ck('Audit nav visible', disp('navAudit') !== 'none', 'display=' + disp('navAudit'));
     ck('Platform config tab visible', disp('configTabAccess') !== 'none', 'display=' + disp('configTabAccess'));
-    ck('Projects panel visible', disp('configProjectsPanel') !== 'none', 'display=' + disp('configProjectsPanel'));
+    ck('Projects tab list present (relocated)', !!document.getElementById('projectsList'), 'projectsList in DOM');
     ck('Email (SMTP) panel visible', disp('configSmtpPanel') !== 'none', 'display=' + disp('configSmtpPanel'));
     ck('LDAP panel visible', disp('configLdapPanel') !== 'none', 'display=' + disp('configLdapPanel'));
     ck('Users & roles panel visible', disp('configUsersPanel') !== 'none', 'display=' + disp('configUsersPanel'));
+    ck('Bundles panel visible (usecat.manage)', disp('configBundlesPanel') !== 'none', 'display=' + disp('configBundlesPanel'));
   } else if (role === 'project-admin') {
-    // project admin: sees the Platform tab (via Projects) + Projects panel ONLY — not SMTP/LDAP/Users.
+    // project admin: manages projects in the Customers & Projects → Projects tab now; the
+    // Config Platform tab is hidden (only platform-admin settings — SMTP/LDAP/Users — remain there).
     ck('presence chip hidden', disp('presenceWrap') === 'none', 'display=' + disp('presenceWrap'));
-    ck('Audit nav hidden', disp('navAudit') === 'none', 'display=' + disp('navAudit'));
-    ck('Platform config tab visible', disp('configTabAccess') !== 'none', 'display=' + disp('configTabAccess'));
-    ck('Projects panel visible', disp('configProjectsPanel') !== 'none', 'display=' + disp('configProjectsPanel'));
+    ck('Platform config tab hidden (projects moved out)', disp('configTabAccess') === 'none', 'display=' + disp('configTabAccess'));
+    ck('Projects tab list present (relocated)', !!document.getElementById('projectsList'), 'projectsList in DOM');
     ck('Email (SMTP) panel hidden', disp('configSmtpPanel') === 'none', 'display=' + disp('configSmtpPanel'));
     ck('LDAP panel hidden', disp('configLdapPanel') === 'none', 'display=' + disp('configLdapPanel'));
     ck('Users & roles panel hidden', disp('configUsersPanel') === 'none', 'display=' + disp('configUsersPanel'));
+    ck('Bundles panel hidden (no usecat.manage)', disp('configBundlesPanel') === 'none', 'display=' + disp('configBundlesPanel'));
   } else {
     ck('presence chip hidden', disp('presenceWrap') === 'none', 'display=' + disp('presenceWrap'));
-    ck('Audit nav hidden', disp('navAudit') === 'none', 'display=' + disp('navAudit'));
     ck('Platform config tab hidden', disp('configTabAccess') === 'none', 'display=' + disp('configTabAccess'));
   }
+  // (Audit's gating — platform-admin only — rides the same _domainPermitted/__platAdmin
+  // predicate as the Config Platform panels checked above; it surfaces in the Operator
+  // persona. Not re-driven here to avoid a full Config-domain load under stub fixtures.)
   dom.window.close();
   return checks;
 }

@@ -136,7 +136,8 @@ async def list_comments(
     ) if where else ""
     rows = await conn.fetch(
         f"SELECT pc.*, mr.namespace AS repo_namespace, "
-        f"       mr.display_name AS repo_display_name "
+        f"       mr.display_name AS repo_display_name, "
+        f"       mr.repo_url AS repo_url, mr.repo_branch AS repo_branch "
         f"FROM pr_comments pc "
         f"LEFT JOIN managed_repos mr ON mr.uuid = pc.repo_uuid "
         f"{qualified_where} "
@@ -149,7 +150,8 @@ async def list_comments(
 async def get_comment(conn: asyncpg.Connection, uuid: str) -> Optional[dict]:
     row = await conn.fetchrow(
         "SELECT pc.*, mr.namespace AS repo_namespace, "
-        "       mr.display_name AS repo_display_name "
+        "       mr.display_name AS repo_display_name, "
+        "       mr.repo_url AS repo_url, mr.repo_branch AS repo_branch "
         "FROM pr_comments pc "
         "LEFT JOIN managed_repos mr ON mr.uuid = pc.repo_uuid "
         "WHERE pc.uuid::text = $1",

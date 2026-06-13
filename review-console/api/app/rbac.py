@@ -40,17 +40,28 @@ P_ASSESSMENT_EDIT = "assessment.edit"   # F7: ingest / edit assessments
 P_BLUEPRINT_VIEW = "blueprint.view"     # blueprints (task #95) — inert until built
 P_BLUEPRINT_EDIT = "blueprint.edit"     # blueprints (task #95) — inert until built
 P_USECAT_MANAGE = "usecat.manage"       # scope & bundles (#107): manage platform / use-category-scoped config + bundles (cross-project; seeded to Platform Admin)
+# Customer-demand epic: the project-axis + customer-axis privileges (peer scopes).
+P_PROJECT_VIEW = "project.view"         # project-axis, view level (membership)
+P_PROJECT_EDIT = "project.edit"         # project-axis, edit level
+P_CUSTOMER_VIEW = "customer.view"       # customer-axis, view level
+P_CUSTOMER_EDIT = "customer.edit"       # customer-axis, edit level
 
 ROLE_PLATFORM_ADMIN = "platform-admin"
 ROLE_PROJECT_ADMIN = "project-admin"
 ROLE_PROJECT_EDIT = "project-edit"
 ROLE_PROJECT_VIEWER = "project-viewer"
+ROLE_CUSTOMER_EDIT = "customer-edit"
+ROLE_CUSTOMER_VIEWER = "customer-viewer"
 
 
-async def privileges_for(conn, reviewer: str, project_id: Optional[int] = None) -> set[str]:
-    """The set of privilege keys `reviewer` holds in the given project context.
-    Platform-role privileges apply regardless of project_id; project-role
-    privileges only when their project_id matches the one supplied."""
+async def privileges_for(conn, reviewer: str, project_id: Optional[int] = None,
+                         customer_id: Optional[int] = None) -> set[str]:
+    """The set of privilege keys `reviewer` holds in the given context.
+    Platform/cross-project-role privileges apply regardless of scope id; project-role
+    privileges only when their project_id matches; customer-role privileges only when
+    their customer_id matches. Back-compatible: with customer_id=None (every existing
+    caller) the result is identical to before — the customer axis simply contributes
+    nothing, so existing project guards are unaffected."""
     if not reviewer:
         return set()
     rows = await conn.fetch(
@@ -61,15 +72,19 @@ async def privileges_for(conn, reviewer: str, project_id: Optional[int] = None) 
         JOIN rbac_role_privileges rp  ON rp.role_id = ar.role_id
         WHERE lower(ar.reviewer) = lower($1)
           AND ( ro.scope IN ('platform', 'cross-project')
-                OR ($2::bigint IS NOT NULL AND ar.project_id = $2::bigint) )
+                OR ($2::bigint IS NOT NULL AND ar.project_id = $2::bigint)
+                OR ($3::bigint IS NOT NULL AND ar.customer_id = $3::bigint) )
         """,
-        reviewer, project_id,
+        reviewer, project_id, customer_id,
     )
     privs = {r["privilege_key"] for r in rows}
     # F8: prompt.manage supersedes project.archreview.context. Existing grants of the
     # legacy privilege keep working — treat it as an alias that confers prompt.manage.
     if P_PROJECT_ARCHREVIEW_CONTEXT in privs:
         privs.add(P_PROMPT_MANAGE)
+    # #135: project creation is self-service — every authenticated user may create a project
+    # (they become its editor; see create_project). A baseline privilege, not role-gated.
+    privs.add(P_PROJECT_CREATE)
     return privs
 
 
@@ -177,14 +192,18 @@ async def set_role_privileges(conn, role_id: int, privilege_keys: list[str]) -> 
 
 
 async def assign_role(conn, reviewer: str, role_id: int,
-                      project_id: Optional[int], granted_by: str) -> None:
+                      project_id: Optional[int], granted_by: str,
+                      customer_id: Optional[int] = None, spans_all: bool = False) -> None:
+    # A grant is project-scoped OR customer-scoped (or neither, for platform/cross roles).
+    # spans_all turns it into customer_all_projects / project_all_customers. Bare ON
+    # CONFLICT relies on the 4-col unique index (reviewer, role, project, customer).
     await conn.execute(
         """
-        INSERT INTO rbac_account_roles (reviewer, role_id, project_id, granted_by)
-        VALUES (lower($1), $2, $3, $4)
-        ON CONFLICT (lower(reviewer), role_id, COALESCE(project_id, 0)) DO NOTHING
+        INSERT INTO rbac_account_roles (reviewer, role_id, project_id, customer_id, spans_all, granted_by)
+        VALUES (lower($1), $2, $3, $4, $5, $6)
+        ON CONFLICT DO NOTHING
         """,
-        reviewer, role_id, project_id, granted_by,
+        reviewer, role_id, project_id, customer_id, spans_all, granted_by,
     )
 
 

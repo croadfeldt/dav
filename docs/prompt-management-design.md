@@ -13,6 +13,42 @@ specific prompt for the different DAV stages." Repurpose the Improve view into a
 3. **Stages:** **all** stages.
 4. **Edit rights:** **new `prompt.manage` privilege**, grantable per project.
 
+## #125 — prompt-per-model-role + verbiage sync (Chris 2026-06-12) — SHIPPED Part 1
+
+**Decision (Chris): per-role 1:1 + unify the vocabulary.** Every model ROLE now has a matching
+prompt stage, named *identically* to the model selector — "Evaluation model" ↔ "Evaluation prompt",
+"Architecture Review model" ↔ "Architecture Review prompt", etc. One vocabulary across both subsystems.
+
+**Shipped Part 1 (2026-06-12, console-side):**
+- `prompts_registry.STAGES` gained a `role` field (↔ `model_defaults` key) and unified `label`s.
+  Relabelled: `stage2-analysis`→"Evaluation", `arch_review`→"Architecture Review",
+  `enhancement`→"Enhancement". **Two new console stages added**: `uc-authoring`→"UC Authoring" and
+  `assessment-ingest`→"Assessment Ingestion" — the two model roles that previously had no editable prompt.
+- **Wired append-live** at the two runtime sites (reuse `_stage_context`/`_inject_context`):
+  UC authoring merges the project prompt into `uc_assist.chat`'s `context`; assessment ingestion injects
+  it into the extractor `user` prompt. So 4 of the 5 roles are append-live; **Evaluation stays stored-held**
+  (it's the engine stage-2 prompt — Part 2 / #93 A/B before it goes live).
+- **Verbiage sync (UI):** model-default headings aligned ("Arch Review model"→"Architecture Review model";
+  "Assessment ingest model"→"Assessment Ingestion model"). The Prompts tab shows each prompt's paired model
+  ("runs on <model>") + status badge — the 1:1 made explicit.
+
+**Part 2 (#93 — the engine stage-2 A/B lever) — SHIPPED 2026-06-12.** Mirrors the proven `grounding_nudge`
+lever end-to-end: a new `DAV_STAGE2_CONTEXT` env var read in `build_stage2_system_prompt` (**byte-identical
+when empty** — normal runs unchanged, prompt stays held). Plumbed: Tekton `stage2-context` param + env
+(`dav-run-corpus.yaml.j2`) → `validations.trigger_run`/`_mk_pipelinerun` → `_trigger_eval_run` →
+`create_experiment` new change_spec **`type: "stage2_context"`** (candidate arm injects the project's stored
+Evaluation prompt resolved via `_stage_context("stage2-analysis")`; baseline = production). UI: the New A/B
+form gained **"evaluation prompt"** + **"grounding nudge"** flag-style types. So Chris can now: edit the
+Evaluation prompt (Prompts → Evaluation) → launch an A/B (Improve → New A/B → evaluation prompt) → the
+semantic comparator + success gate score it → **promote on a win** (a project flag flips normal runs to
+inject it — the human-gated apply, same model as grounding-nudge promotion).
+
+**Part 2 remainder (deferred):** `depends_on` (#126) is already emitted (schema + prompt line 132); a
+*stronger* emission nudge + role→goal (#132 m-iv, new schema field) are additional env-var levers, each
+A/B'd the same way — build when prioritized. **Promotion go-live flag** (project-level "apply Evaluation
+prompt") is added after a winning A/B. Prompts gain the **use-category axis** (Chris 2026-06-12) as a
+follow-up across all stages; the engine seam already takes the *resolved* string, so no rework there.
+
 ## What the engine actually does (verified 2026-06-09, see exploration)
 - **Engine stages = Stage 2 only** (`engine/src/dav/ai/prompts.py`,
   `engine/src/dav/ai/agent.py`): one base **system** prompt
