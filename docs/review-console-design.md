@@ -484,6 +484,15 @@ Every Analysis carries `metadata.infrastructure_confidence = {label, score, sign
 
 `corpus_push.push_uc_to_github` gained a `token_override` parameter so the applier authenticates with the per-repo PAT (`repos.get_repo_secrets`) instead of the legacy `DAV_CORPUS_PUSH_TOKEN` env var.
 
+### Enhancement / PR Workbench (#138, 2026-06-13)
+
+The apply endpoint is now driven by a dedicated **Enhancement / PR** workbench — its own tab in the **Roadmaps** domain (`Arch Review · Enhancement / PR · Cap Map · Roadmap`), `#view-enhancement`. The workbench is **generate → route → select → submit**:
+
+- **`POST /api/enhancements/preview`** (read-only) parses the plan and routes it exactly like `apply` (same `parse_enhancement_blocks` + namespace→`enhancement-target` repo resolution + `repo_overrides`), but **creates no PRs**. Returns `groups[]` (matched repo + its findings = one prospective PR), `unmatched[]` (namespace + reason + findings), and `no_target[]` (findings with no `target:`). Each finding carries `{id, gap_ids, uc_handles, target, target_namespace, target_path, action, section_title, position, rationale, content, acceptance, parse_errors}` via the `_finding_out()` helper.
+- **`POST /api/enhancements/apply`** gained **`selected_ids: list[str] | None`** — when set, only those enhancement ids are submitted (filtered right after parse). `None` = all (back-compat).
+- **UI flow:** Step 1 generates the Enhancement Plan (the generation surface — model picker + `rpEnh*` stream — was **moved here from Arch Review** in #145; Arch Review is now review-only, and the old single-repo Create-PR form `rpPrSection` was removed). Step 2 routes the plan → per-repo PR groups; the user selects **per finding / per PR group / bulk**, expands any finding to view its patch + acceptance, **retargets** an unmatched namespace to an enhancement-target repo inline, then **Submit selected → one PR per repo** (confirm gate + `project.enhance-pr`). The workbench project is resolved from the **active project** (not a `set:` run token), so PRs land in the right tenant.
+- **Scroll:** `.pf-view` is `overflow:hidden`; the view's content is wrapped in a `flex:1; overflow-y:auto` region (mirrors `.rp-output`) so long plans/finding lists scroll.
+
 ---
 
 ## Infrastructure: LLM-bound endpoint timeouts (M12+)
