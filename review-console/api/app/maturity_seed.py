@@ -1,17 +1,18 @@
-"""Seed the FlightPath maturity framework (the one seeded template; #147 slice 1b).
+"""Seed the default platform maturity framework (the one seeded template; #147 slice 1b).
 
 Idempotent (ON CONFLICT DO NOTHING on natural keys), runs after schema in lifespan, wrapped
 in try/except by the caller so a seed surprise can never crash boot. The framework is a GLOBAL
 seed template (project_id NULL); projects copy + edit it (the model is fully configurable —
-this is just a useful starting point, not a hard-coded taxonomy). Data transcribed from the
-anonymized FlightPath assessment deck (the Function Appraisal wall). See maturity-wall-design.md.
+this is just a useful starting point, not a hard-coded taxonomy). The category/capability
+structure is a generic platform-maturity wall (Function Appraisal 0–5). See maturity-wall-design.md.
 """
 import json
 import logging
 
 log = logging.getLogger("dav-review-api")
 
-FRAMEWORK_KEY = "flightpath-v1"
+FRAMEWORK_KEY = "platform-maturity-v1"
+_LEGACY_KEY = "flightpath-v1"   # rename the previously-seeded template in place (drop the branding)
 
 # 0..5 Function Appraisal scale (+ '-' Not Assessed = NULL maturity), heat-mapped low→high.
 SCALE = [
@@ -70,9 +71,16 @@ def _slug(s: str) -> str:
     return out.strip("-")
 
 
-async def seed_flightpath(conn) -> None:
-    """Idempotently ensure the flightpath-v1 seed framework + its categories/capabilities/states
-    exist. Safe to call every boot; inserts nothing on a second run."""
+async def seed_default_framework(conn) -> None:
+    """Idempotently ensure the default platform-maturity seed framework + its
+    categories/capabilities/states exist. Safe to call every boot; inserts nothing on a second run.
+    Renames the legacy flightpath-v1 seed in place (drops the branding) if present."""
+    # Drop the old branding: rename the previously-seeded template, preserving its children.
+    await conn.execute(
+        """UPDATE assessment_frameworks SET key=$1, name=$2
+           WHERE key=$3 AND project_id IS NULL
+             AND NOT EXISTS (SELECT 1 FROM assessment_frameworks WHERE key=$1 AND project_id IS NULL)""",
+        FRAMEWORK_KEY, "Platform Maturity Model", _LEGACY_KEY)
     fid = await conn.fetchval(
         "SELECT id FROM assessment_frameworks WHERE key=$1 AND project_id IS NULL", FRAMEWORK_KEY)
     if fid is None:
@@ -81,7 +89,7 @@ async def seed_flightpath(conn) -> None:
                VALUES (NULL, $1, $2, 1, 'active', true, $3::jsonb)
                ON CONFLICT (key) WHERE project_id IS NULL DO NOTHING
                RETURNING id""",
-            FRAMEWORK_KEY, "FlightPath Platform Journey", json.dumps(SCALE))
+            FRAMEWORK_KEY, "Platform Maturity Model", json.dumps(SCALE))
         if fid is None:  # lost a race; re-read
             fid = await conn.fetchval(
                 "SELECT id FROM assessment_frameworks WHERE key=$1 AND project_id IS NULL", FRAMEWORK_KEY)

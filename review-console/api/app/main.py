@@ -388,9 +388,9 @@ async def lifespan(app: FastAPI):
         except Exception:
             log.exception("DCM taxonomy seed failed (non-fatal)")
         try:
-            await _maturity_seed.seed_flightpath(conn)
+            await _maturity_seed.seed_default_framework(conn)
         except Exception:
-            log.exception("FlightPath maturity framework seed failed (non-fatal)")
+            log.exception("default maturity framework seed failed (non-fatal)")
         await _migrate_code_repo_configs(conn)
         await _backfill_uc_projections(conn)
     await _load_ldap_cfg()
@@ -7671,7 +7671,7 @@ async def assessment_maturity_wall(assessment_id: str, request: Request, state: 
             "SELECT framework_id FROM assessment_framework_link WHERE assessment_id=$1", assessment_id)
         if fid is None:
             fid = await conn.fetchval(
-                "SELECT id FROM assessment_frameworks WHERE key='flightpath-v1' AND project_id IS NULL")
+                "SELECT id FROM assessment_frameworks WHERE key='platform-maturity-v1' AND project_id IS NULL")
         if fid is None:
             raise HTTPException(404, "no framework linked or seeded")
         struct = await _framework_structure(conn, fid)
