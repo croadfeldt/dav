@@ -7930,6 +7930,9 @@ async def _extract_and_ingest_assessment(request: Request, content: str, *, mode
         result = await _assessment_ingest.ingest(conn, extracted, actor=actor, project_id=pid)
     result["model"] = cfg.get("model_id")
     result["udlm_version"] = schema["udlm_version"]
+    result["via"] = "vision" if images else "text"      # so the UI can show which path ran
+    if images:
+        result["pages"] = len(images)
     return result
 
 

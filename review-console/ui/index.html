@@ -1773,7 +1773,7 @@
               <textarea id="asIngestJson" spellcheck="false" placeholder='{"handle":"…","assessment_type":"automation","findings":[…]}' style="width:100%;min-height:120px;font-size:11px;font-family:var(--mono,monospace);"></textarea>
               <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap;">
                 <input type="file" id="asIngestFile" accept=".json,.txt,.md,.csv,.tsv,.yaml,.yml,.log,.pdf,.png,.jpg,.jpeg,.gif,.webp,.bmp,application/json,application/pdf,text/plain,image/*" style="font-size:10px;" onchange="_asLoadIngestFile(this)">
-                <button class="btn primary btn-sm" onclick="ingestAssessment()">Ingest</button>
+                <button class="btn primary btn-sm" id="asIngestSubmit" onclick="ingestAssessment()">Ingest</button>
                 <button class="btn ghost btn-sm" onclick="toggleAssessmentIngest()">Cancel</button>
                 <span style="font-size:9px;color:var(--text-faint);">scoped to the active project</span>
               </div>
@@ -13117,8 +13117,31 @@ async function _apiForm(url, formData) {
   }
   return res.json();
 }
+// Live "something is happening" feedback for the (potentially long) model/vision ingest:
+// a ticking spinner + elapsed seconds in the status line, and a disabled Ingest button.
+let _asBusyTimer = null;
+function _asBusy(on, label) {
+  const status = document.getElementById('asStatus');
+  const btn = document.getElementById('asIngestSubmit');
+  if (btn) btn.disabled = !!on;
+  if (_asBusyTimer) { clearInterval(_asBusyTimer); _asBusyTimer = null; }
+  if (!on) return;
+  const t0 = Date.now();
+  const spin = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+  let i = 0;
+  const tick = () => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    const slow = s >= 20 ? ' <span style="color:var(--text-faint);">(vision over many pages can take a minute+)</span>' : '';
+    if (status) status.innerHTML = `<span style="color:var(--accent);">${spin[i = (i + 1) % spin.length]}</span> ${esc(label)} <span style="color:var(--text-faint);">· ${s}s</span>${slow}`;
+  };
+  tick();
+  _asBusyTimer = setInterval(tick, 200);
+}
 function _asIngestDone(r, status) {
-  if (status) status.textContent = `✓ ingested ${r.findings} findings (${r.mapped} mapped, ${r.gaps} gaps)${r.model ? ' · ' + r.model : ''}`;
+  _asBusy(false);
+  const via = r.via === 'vision' ? `🖼 vision${r.pages ? ` · ${r.pages} page${r.pages === 1 ? '' : 's'}` : ''}`
+            : (r.via === 'text' ? 'text' : '');
+  if (status) status.textContent = `✓ ingested ${r.findings} findings (${r.mapped} mapped, ${r.gaps} gaps)${via ? ' · ' + via : ''}${r.model ? ' · ' + r.model : ''}`;
   toast('✓ Assessment ingested');
   toggleAssessmentIngest();
   document.getElementById('asIngestJson').value = '';
@@ -13132,22 +13155,26 @@ async function ingestAssessment() {
   const mode = document.getElementById('asIngestMode')?.value || 'json';
   const status = document.getElementById('asStatus');
   const modelId = parseInt(document.getElementById('asIngestModelSel')?.value || '', 10);
-  // PDF (staged file) → multipart server-side extraction (model mode only).
+  // PDF / image (staged file) → multipart server-side extraction (model mode only).
   if (mode === 'model' && _asIngestFile) {
-    status.textContent = 'extracting via model (PDF)…';
+    const isVision = !!document.getElementById('asIngestVision')?.checked;
+    const fname = _asIngestFile.name || 'file';
+    _asBusy(true, isVision
+      ? `Reading "${fname}" with vision model — rendering pages + extracting…`
+      : `Extracting "${fname}" via model — text, or vision if it's a slide deck…`);
     try {
       const fd = new FormData();
       fd.append('file', _asIngestFile);
       if (modelId) fd.append('model_config_id', String(modelId));
-      if (document.getElementById('asIngestVision')?.checked) fd.append('vision', 'true');
-      status.textContent = document.getElementById('asIngestVision')?.checked ? 'reading with vision model…' : 'extracting via model…';
+      if (isVision) fd.append('vision', 'true');
       _asIngestDone(await _apiForm('/api/assessments/ingest-file', fd), status);
-    } catch (e) { status.textContent = ''; toast('✗ ' + e.message); }
+    } catch (e) { _asBusy(false); status.textContent = '✗ ' + e.message; toast('✗ ' + e.message); }
     return;
   }
   const raw = (document.getElementById('asIngestJson').value || '').trim();
   if (!raw) { toast('Paste or upload assessment content', true); return; }
-  status.textContent = (mode === 'model') ? 'extracting via model…' : 'ingesting…';
+  if (mode === 'model') _asBusy(true, 'Extracting via model…');
+  else status.textContent = 'ingesting…';
   try {
     let r;
     if (mode === 'model') {
@@ -13161,7 +13188,7 @@ async function ingestAssessment() {
       r = await api('/api/assessments/ingest', { method:'POST', body: JSON.stringify({ assessment: payload }) });
     }
     _asIngestDone(r, status);
-  } catch (e) { status.textContent = ''; toast('✗ ' + e.message); }
+  } catch (e) { _asBusy(false); status.textContent = '✗ ' + e.message; toast('✗ ' + e.message); }
 }
 async function renderAssessment(id) {
   _asSel = id;
