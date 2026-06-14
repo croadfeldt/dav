@@ -41,6 +41,7 @@ from . import capability_density as _capability_density
 from . import capability_graph as _capability_graph
 from . import capability_catalog as _capability_catalog
 from . import assessment_ingest as _assessment_ingest
+from . import maturity_seed as _maturity_seed
 from . import prompts_registry as _prompts_registry
 from . import analysis_compare as _analysis_compare
 from . import uc_readiness as _uc_readiness
@@ -386,6 +387,10 @@ async def lifespan(app: FastAPI):
             await _capability_catalog.seed_dcm_taxonomy(conn)
         except Exception:
             log.exception("DCM taxonomy seed failed (non-fatal)")
+        try:
+            await _maturity_seed.seed_flightpath(conn)
+        except Exception:
+            log.exception("FlightPath maturity framework seed failed (non-fatal)")
         await _migrate_code_repo_configs(conn)
         await _backfill_uc_projections(conn)
     await _load_ldap_cfg()
