@@ -1752,18 +1752,18 @@
             </div>
             <!-- Ingest a real assessment: paste/upload a canonical or automation-format JSON. -->
             <div id="asIngestForm" style="display:none;margin-top:8px;border:1px solid var(--border);border-radius:3px;padding:8px;background:var(--bg-deep,rgba(0,0,0,0.18));">
-              <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">
                 <label style="font-size:10px;color:var(--text-dim);">Mode</label>
-                <select id="asIngestMode" onchange="_asIngestModeChanged()" style="font-size:10px;">
+                <select id="asIngestMode" onchange="_asIngestModeChanged()" style="font-size:10px;max-width:100%;">
                   <option value="json">Structured JSON</option>
                   <option value="model">Extract with model (text/PDF → UDLM)</option>
                 </select>
-                <span id="asIngestModelRow" style="display:none;gap:6px;align-items:center;flex-wrap:wrap;">
+                <span id="asIngestModelRow" style="display:none;width:100%;margin-top:4px;gap:6px;align-items:center;flex-wrap:wrap;box-sizing:border-box;">
                   <label style="font-size:10px;color:var(--text-dim);">model</label>
-                  <select id="asIngestModelSel" style="font-size:10px;min-width:190px;" title="Extractor model for this ingest (overrides the project assessment-ingest default)">
+                  <select id="asIngestModelSel" style="font-size:10px;min-width:150px;max-width:100%;flex:1;" title="Extractor model for this ingest (overrides the project assessment-ingest default)">
                     <option value="">— project default —</option>
                   </select>
-                  <label style="font-size:10px;color:var(--text-dim);display:inline-flex;align-items:center;gap:3px;" title="Read images / slide decks with a vision model (auto for image uploads + image-only PDFs). Pick a vision-capable model.">
+                  <label style="font-size:10px;color:var(--text-dim);display:inline-flex;align-items:center;gap:3px;white-space:nowrap;" title="Read images / slide decks with a vision model (auto for image uploads + image-only PDFs). Pick a vision-capable model.">
                     <input type="checkbox" id="asIngestVision"> 🖼 vision
                   </label>
                 </span>
