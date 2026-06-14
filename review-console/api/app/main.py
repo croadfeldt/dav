@@ -95,6 +95,7 @@ MIGRATE_017_PATH = Path(__file__).parent / "migrate_017_capability_catalog.sql"
 MIGRATE_018_PATH = Path(__file__).parent / "migrate_018_audit_log.sql"
 MIGRATE_019_PATH = Path(__file__).parent / "migrate_019_assessments.sql"
 MIGRATE_020_PATH = Path(__file__).parent / "migrate_020_reconcile_catalog.sql"
+MIGRATE_021_PATH = Path(__file__).parent / "migrate_021_maturity_wall.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 # Secured dav-docs-mcp self-registration (its LoadBalancer SSE URL + bearer token).
@@ -368,6 +369,14 @@ async def lifespan(app: FastAPI):
         await conn.execute(MIGRATE_019_PATH.read_text())
         log.info("Applying migration 020 (reconcile capability catalogs into one)...")
         await conn.execute(MIGRATE_020_PATH.read_text())
+        # Migration 021 (maturity wall) is new + DB-verified post-deploy via boot logs; wrap it
+        # so a structural-DDL surprise can never crash API startup (worst case: tables absent,
+        # the feature is unavailable but the rest of the app boots). Remove the guard once proven.
+        try:
+            log.info("Applying migration 021 (maturity wall — goal-driven assessment substrate)...")
+            await conn.execute(MIGRATE_021_PATH.read_text())
+        except Exception:
+            log.exception("migration 021 (maturity wall) FAILED — continuing boot without it")
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)

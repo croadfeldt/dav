@@ -1,5 +1,31 @@
 # DAV — active work (session checkpoint 2026-06-13)
 
+## 🔭 NEW EPIC 2026-06-13 — Maturity Wall: goal-driven, backward-chained assessment (#147)
+Design + requirements: **`docs/maturity-wall-design.md`**. Models the Red Hat **FlightPath**
+assessment (Function Appraisal maturity wall + per-phase recommended states + high-level
+roadmap) as a first-class, **configurable** capability in the **Assessments** domain.
+- **Organizing principle:** goal-driven, backward-chained — **Goals are the apex**; Desired
+  State (target maturity per capability) → vs Current State (the assessment) → **Gap** →
+  **Roadmap** (backward plan) → Swimlanes/Gantt → Execute (enhancement actions + Measure-By).
+  This is the #120 outcomes-triangle made concrete. The **maturity wall is first-class and
+  standalone** (valuable with no goals); goal↔maturity is **bidirectional** (goals drive
+  desired-state; the assessment *informs* goals). Goals have **all 3 origins**
+  (human/derived/customer); **themes group per-capability targets** with rollups.
+- **Reuse:** builds on the existing assessment model (#91, migration 019) — `assessment_findings`
+  already carries `category`/`capability_handle`/`maturity`/`catalog_capability_id`. Shares the
+  capability spine with the architecture roadmap (#141) → maturity-gap becomes a free
+  prioritization axis + a shared Gantt renderer (design §Bridges).
+- **✅ SHIPPED slice 1 (schema, migration 021):** themes · goals · goal_targets · goal_measures ·
+  assessment_frameworks (configurable 0–5 scale) · framework_categories (band + Inflection-Point)
+  · framework_capabilities (catalog-linked) · framework_states · assessment_capability_scores
+  (capability×state→0–5, source llm|human). Migration wrapped in try/except (can't crash boot);
+  applied + verified via API boot logs. **Deferred (slice 1b):** FlightPath framework data seed +
+  back-fill `current` from findings (separate verifiable pass).
+- **NEXT:** slice 1b seed → slice 2 backend (framework CRUD · `GET /maturity-wall?state=` ·
+  LLM score + human override) → slice 3 UI (heat-mapped wall + state switcher) → per-phase
+  targets · Recommendations-per-Phase · High-Level Roadmap Gantt · export (feeds SOW #142).
+  Tasks #147–#150.
+
 ## ✅ SHIPPED 2026-06-13 — Roadmaps IA + Enhancement/PR Workbench (#140 · #138 · #145)
 Deployed to ns `dav` (gate: compile · route-shadow 249 · UI e2e 60/0). Commits on
 `feat/dcm-uc-prioritization`: `f2f5297` (IA + workbench + CI/CD design), `4051409` (#145 split),

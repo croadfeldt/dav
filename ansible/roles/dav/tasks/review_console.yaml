@@ -45,6 +45,17 @@
   changed_when: false
   when: review_console_build_images | bool
 
+# Pre-build guard: migrations run in lifespan() on every boot with no per-migration
+# isolation, so an unwired/renamed/out-of-order migration or an unbalanced BEGIN/COMMIT
+# is an outage-class mistake. check_migrations.py fails the play before we ship a boot-breaking
+# image. (Added with migration 021 / the maturity-wall epic, 2026-06-13.)
+- name: Guard migration wiring (declared + executed + contiguous + BEGIN/COMMIT balanced)
+  ansible.builtin.command:
+    cmd: python3 check_migrations.py
+    chdir: "{{ playbook_dir }}/../review-console/api"
+  changed_when: false
+  when: review_console_build_images | bool
+
 # rsync (not ansible.builtin.copy) so we can EXCLUDE node_modules — the UI's
 # lint/e2e harness (ui/lint.sh) runs `npm install`, leaving a 17MB / ~1400-file
 # gitignored ui/node_modules tree. copy walks it file-by-file (20+ min) and would

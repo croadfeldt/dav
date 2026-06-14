@@ -23,8 +23,25 @@ pull_request to `croadfeldt/dav`.
 2. `validate` —
    - `python -m compileall review-console/api/app engine/src/dav/ai/prompts.py`
    - `cd review-console/api && python check_routes.py` (route-shadow guard)
-   - `cd review-console/ui && bash lint.sh` (node --check + eslint + jsdom e2e — the 57+ assertion gate)
+   - `cd review-console/api && python check_migrations.py` (**migration-wiring guard** — every
+     `migrate_0NN_*.sql` is declared + executed in `lifespan`, numbering contiguous, BEGIN/COMMIT
+     balanced; migrations run on boot with no isolation, so an unwired/unbalanced one is
+     outage-class. Added with the maturity-wall epic / migration 021; wired into the deploy play.)
+   - `cd review-console/ui && bash lint.sh` (node --check + eslint + jsdom e2e — the 60+ assertion gate)
+   - _(future)_ **migration-applies smoke** — spin a throwaway Postgres, apply `schema.sql` + all
+     migrations, assert clean (catches SQL that `check_migrations.py`'s static checks can't — the
+     reason migration 021 is wrapped in try/except + verified via boot logs until this exists).
 3. report status back to GitHub (PR check). **Red blocks merge.**
+
+### Per-epic test surface (keep the gate matching the code — #144 / "update CI/CD testing to match")
+As each epic lands, the gate grows with it:
+- **Maturity Wall (#147):** `check_migrations.py` covers migration 021 wiring; new endpoints
+  (`/api/assessment-frameworks*`, `/api/assessments/{id}/maturity-wall`, `/score`) are covered by
+  `check_routes.py` (route count) + targeted `e2e.mjs` assertions for the wall sub-view as slices
+  2–3 ship.
+- The validate gate is the **single source of "is it shippable"** — every new view gets an
+  `e2e.mjs` assertion, every new migration is caught by `check_migrations.py`, every new route by
+  `check_routes.py`.
 
 **CD (on merge to the release branch / a tag — only if CI green):**
 4. `build-api` / `build-ui` — binary builds of the API + UI images (what ansible does today),
