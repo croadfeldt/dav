@@ -1788,6 +1788,26 @@
       </div>
     </section>
 
+    <!-- ══════════════ MATURITY WALL (#147 — FlightPath-style assessment) ══════════════ -->
+    <section class="pf-view" id="view-maturity">
+      <div style="flex:1;overflow-y:auto;padding:14px 18px;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <strong style="font-size:13px;">Maturity Wall</strong>
+          <select id="mwAssessSel" style="font-size:11px;min-width:200px;"></select>
+          <span style="font-size:11px;color:var(--text-faint);">Framework:</span>
+          <span id="mwFramework" style="font-size:11px;color:var(--text-dim);">—</span>
+          <button class="btn ghost btn-sm" id="mwReloadBtn" title="Reload">↻</button>
+          <span id="mwOverall" style="margin-left:auto;font-size:11px;color:var(--text-dim);"></span>
+        </div>
+        <!-- state switcher (Current / Phase 1-3 / Desired) -->
+        <div id="mwStates" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;"></div>
+        <!-- appraisal scale legend -->
+        <div id="mwScale" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:10px;color:var(--text-faint);"></div>
+        <div id="mwStatus" style="font-size:11px;color:var(--text-faint);margin-bottom:8px;"></div>
+        <div id="mwWall" style="overflow-x:auto;"></div>
+      </div>
+    </section>
+
     <!-- ══════════════ IMPROVE (self-improvement: diagnose & propose) ══════════════ -->
     <section class="pf-view" id="view-improve">
       <!-- F8: merged Prompts & Improvement — top tabs -->
@@ -4942,7 +4962,8 @@ const DOMAINS = [
       { view:'engineering', label:'Roadmap' },
   ]},
   { key:'assess',  label:'Assessments', icon:'📊', focus:'assessment', navId:'navAssess', subviews:[
-      { view:'assess', label:'Assessments', priv:'assessment.view' },
+      { view:'assess',   label:'Assessments', priv:'assessment.view' },
+      { view:'maturity', label:'Maturity Wall', priv:'assessment.view' },
   ]},
   { key:'catalog', label:'Catalog',    icon:'📒', focus:'both', subviews:[
       { view:'catalog', label:'Catalog' },
@@ -5034,6 +5055,7 @@ function switchView(name) {
   if (name === 'capmap')   loadCapMap();
   if (name === 'audit')    loadAudit();
   if (name === 'assess')   loadAssessments();
+  if (name === 'maturity') loadMaturityWall();
   if (name === 'improve')  { pmInit(); loadImproveQueue(); }
   if (name === 'config') {
     loadConfig();
@@ -12876,6 +12898,108 @@ document.getElementById('globalAssessmentSel')?.addEventListener('change', funct
   switchView('assess');
   renderAssessment(id);
 });
+
+// ══════════════ Maturity Wall (#147 slice 3) ══════════════
+// FlightPath-style wall: capabilities grouped into ordered categories/bands, each scored 0–5 in
+// the framework's appraisal scale (heat-mapped), with a state switcher (Current/Phase 1-3/Desired)
+// and an Inflection-Point divider. Reads /api/assessments/{id}/maturity-wall (or the seed skeleton).
+let _mwState = 'current';
+let _mwWall = null;
+
+async function loadMaturityWall(){
+  const sel = document.getElementById('mwAssessSel');
+  const status = document.getElementById('mwStatus');
+  if (!sel) return;
+  try {
+    const r = await api('/api/assessments');
+    const list = r.assessments || [];
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">— framework skeleton (no scores) —</option>'
+      + list.map(a => `<option value="${esc(a.id)}">${esc(a.handle || a.id)}</option>`).join('');
+    if (prev) sel.value = prev;
+  } catch(e){ if (status) status.textContent = 'Failed to load assessments: ' + e.message; }
+  await _mwRender();
+}
+
+function _mwScaleColor(wall, v){
+  if (v === null || v === undefined) return 'var(--bg-raised)';
+  const lvl = (wall.scale || []).find(s => s.value === v);
+  return lvl ? lvl.color : 'var(--bg-raised)';
+}
+
+async function _mwRender(){
+  const sel = document.getElementById('mwAssessSel');
+  const status = document.getElementById('mwStatus');
+  const aid = sel && sel.value;
+  let wall = null;
+  try {
+    if (aid){
+      wall = await api(`/api/assessments/${encodeURIComponent(aid)}/maturity-wall?state=${encodeURIComponent(_mwState)}`);
+    } else {
+      const fl = await api('/api/assessment-frameworks');
+      const seed = (fl.frameworks || []).find(f => f.is_seed) || (fl.frameworks || [])[0];
+      if (seed){ wall = await api(`/api/assessment-frameworks/${encodeURIComponent(seed.id)}`); wall.state = _mwState; }
+    }
+  } catch(e){ if (status) status.textContent = 'Load failed: ' + e.message; return; }
+  if (!wall){ if (status) status.textContent = 'No framework available — seed missing.'; return; }
+  _mwWall = wall;
+  const fwEl = document.getElementById('mwFramework'); if (fwEl) fwEl.textContent = wall.name || wall.key || '—';
+  _mwRenderStates(wall); _mwRenderScale(wall); _mwRenderWall(wall);
+  const ov = document.getElementById('mwOverall');
+  if (ov) ov.textContent = (wall.overall != null)
+    ? `Overall ${wall.overall} · ${wall.assessed || 0} assessed`
+    : (aid ? 'Not yet scored for this state' : 'Skeleton — pick an assessment to score');
+  if (status) status.textContent = '';
+}
+
+function _mwRenderStates(wall){
+  const box = document.getElementById('mwStates'); if (!box) return;
+  const states = wall.states || [];
+  if (states.length && !states.some(s => s.key === _mwState)) _mwState = states[0].key;
+  box.innerHTML = states.map(s =>
+    `<button class="btn ${s.key === _mwState ? 'primary' : 'ghost'} btn-sm mw-state" data-state="${esc(s.key)}">${esc(s.label)}</button>`).join('');
+  box.querySelectorAll('.mw-state').forEach(b => b.addEventListener('click', () => { _mwState = b.dataset.state; _mwRender(); }));
+}
+
+function _mwRenderScale(wall){
+  const box = document.getElementById('mwScale'); if (!box) return;
+  box.innerHTML = (wall.scale || []).map(s =>
+    `<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${esc(s.color)};vertical-align:middle;"></span> ${esc(String(s.value))} ${esc(s.label)}</span>`
+  ).join('') + ' <span>· – Not Assessed</span>';
+}
+
+function _mwRenderWall(wall){
+  const box = document.getElementById('mwWall'); if (!box) return;
+  let html = '<div style="display:flex;align-items:flex-start;gap:0;">';
+  let prevSide = null;
+  (wall.bands || []).forEach(band => {
+    (band.categories || []).forEach(cat => {
+      if (prevSide === 'pre' && cat.inflection_side === 'post'){
+        html += `<div title="Inflection Point" style="align-self:stretch;border-left:2px dotted var(--accent);margin:0 7px;"></div>`;
+      }
+      prevSide = cat.inflection_side;
+      html += `<div class="mw-col" style="min-width:148px;margin:0 3px;">
+        <div style="font-size:9px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;min-height:24px;line-height:1.2;">${esc(band.band || '')}</div>
+        <div style="font-size:10px;font-weight:600;color:var(--text-dim);border-bottom:1px solid var(--border);padding-bottom:3px;margin-bottom:4px;">${esc(cat.label)}${cat.rollup != null ? `<span style="float:right;color:var(--text-faint);">${cat.rollup}</span>` : ''}</div>
+        ${(cat.capabilities || []).map(cap => {
+          const v = (cap.maturity === undefined) ? null : cap.maturity;
+          const bg = _mwScaleColor(wall, v);
+          const fg = (v === null) ? 'var(--text-faint)' : '#fff';
+          const tip = esc(cap.label) + (cap.rationale ? ' — ' + esc(cap.rationale) : '');
+          return `<div class="mw-cell" title="${tip}" style="display:flex;justify-content:space-between;align-items:center;gap:4px;background:${bg};color:${fg};border-radius:2px;padding:3px 6px;margin-bottom:3px;font-size:10px;">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(cap.label)}</span>
+            <span style="font-weight:700;flex-shrink:0;">${v === null ? '–' : v}</span>
+          </div>`;
+        }).join('')}
+      </div>`;
+    });
+  });
+  html += '</div>';
+  box.innerHTML = html;
+}
+
+document.getElementById('mwAssessSel')?.addEventListener('change', _mwRender);
+document.getElementById('mwReloadBtn')?.addEventListener('click', loadMaturityWall);
 
 async function loadAssessments() {
   const list = document.getElementById('asList');

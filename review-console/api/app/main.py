@@ -7580,6 +7580,127 @@ async def assessments_get(assessment_id: str, request: Request):
     return out
 
 
+# ══════════════ Maturity Wall (#147) — read side (slice 2) ══════════════
+async def _framework_structure(conn, fid) -> Optional[dict]:
+    """The configurable framework as a nested wall skeleton: bands → categories → capabilities
+    (all ordered), plus the appraisal scale + the rendered states. Scores overlay separately."""
+    fw = await conn.fetchrow(
+        "SELECT id, key, name, version, status, is_seed, scale, project_id FROM assessment_frameworks WHERE id=$1", fid)
+    if fw is None:
+        return None
+    states = await conn.fetch(
+        "SELECT key, label, ord, kind FROM framework_states WHERE framework_id=$1 ORDER BY ord", fid)
+    cats = await conn.fetch(
+        """SELECT id, key, label, band, ord, inflection_side
+           FROM framework_categories WHERE framework_id=$1 ORDER BY ord""", fid)
+    caps = await conn.fetch(
+        """SELECT fc.id, fc.category_id, fc.key, fc.label, fc.ord, fc.catalog_capability_id
+           FROM framework_capabilities fc JOIN framework_categories c ON c.id=fc.category_id
+           WHERE c.framework_id=$1 ORDER BY fc.ord""", fid)
+    caps_by_cat: dict = {}
+    for c in caps:
+        caps_by_cat.setdefault(c["category_id"], []).append({
+            "id": str(c["id"]), "key": c["key"], "label": c["label"], "ord": c["ord"],
+            "catalog_capability_id": c["catalog_capability_id"],
+        })
+    # Preserve band order as first seen across ordered categories.
+    bands: list = []
+    band_idx: dict = {}
+    for c in cats:
+        band = c["band"] or ""
+        if band not in band_idx:
+            band_idx[band] = len(bands)
+            bands.append({"band": band, "categories": []})
+        bands[band_idx[band]]["categories"].append({
+            "id": str(c["id"]), "key": c["key"], "label": c["label"], "ord": c["ord"],
+            "inflection_side": c["inflection_side"],
+            "capabilities": caps_by_cat.get(c["id"], []),
+        })
+    scale = fw["scale"]
+    if isinstance(scale, str):
+        try: scale = json.loads(scale)
+        except Exception: scale = []
+    return {
+        "id": str(fw["id"]), "key": fw["key"], "name": fw["name"], "version": fw["version"],
+        "status": fw["status"], "is_seed": fw["is_seed"], "project_id": fw["project_id"],
+        "scale": scale,
+        "states": [{"key": s["key"], "label": s["label"], "ord": s["ord"], "kind": s["kind"]} for s in states],
+        "bands": bands,
+    }
+
+
+@app.get("/api/assessment-frameworks")
+async def assessment_frameworks_list(request: Request):
+    """List maturity frameworks visible to the active project: the global seed templates
+    (project_id NULL) + the project's own. Requires assessment.view."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_ASSESSMENT_VIEW, pid)
+        rows = await conn.fetch(
+            """SELECT f.id, f.key, f.name, f.version, f.status, f.is_seed, f.project_id,
+                      (SELECT count(*) FROM framework_categories c WHERE c.framework_id=f.id) AS category_count,
+                      (SELECT count(*) FROM framework_capabilities fc JOIN framework_categories c
+                         ON c.id=fc.category_id WHERE c.framework_id=f.id) AS capability_count
+               FROM assessment_frameworks f
+               WHERE f.project_id IS NULL OR f.project_id=$1
+               ORDER BY f.is_seed DESC, f.name""", pid)
+        return {"frameworks": [dict(r) | {"id": str(r["id"])} for r in rows]}
+
+
+@app.get("/api/assessment-frameworks/{framework_id}")
+async def assessment_framework_get(framework_id: str, request: Request):
+    """One framework's full wall skeleton (bands → categories → capabilities + scale + states)."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_ASSESSMENT_VIEW, pid)
+        out = await _framework_structure(conn, framework_id)
+    if out is None:
+        raise HTTPException(404, "framework not found")
+    return out
+
+
+@app.get("/api/assessments/{assessment_id}/maturity-wall")
+async def assessment_maturity_wall(assessment_id: str, request: Request, state: str = "current"):
+    """The maturity wall for an assessment in one state: the framework skeleton with each
+    capability's 0–5 score overlaid, plus category + overall rollups (mean of assessed cells).
+    Resolves the assessment's linked framework, else falls back to the flightpath-v1 seed."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_ASSESSMENT_VIEW, pid)
+        fid = await conn.fetchval(
+            "SELECT framework_id FROM assessment_framework_link WHERE assessment_id=$1", assessment_id)
+        if fid is None:
+            fid = await conn.fetchval(
+                "SELECT id FROM assessment_frameworks WHERE key='flightpath-v1' AND project_id IS NULL")
+        if fid is None:
+            raise HTTPException(404, "no framework linked or seeded")
+        struct = await _framework_structure(conn, fid)
+        scores = await conn.fetch(
+            """SELECT framework_capability_id, maturity, rationale, source
+               FROM assessment_capability_scores WHERE assessment_id=$1 AND state_key=$2""",
+            assessment_id, state)
+    score_map = {str(s["framework_capability_id"]):
+                 {"maturity": s["maturity"], "rationale": s["rationale"], "source": s["source"]}
+                 for s in scores}
+    all_vals: list = []
+    for band in struct["bands"]:
+        for cat in band["categories"]:
+            cat_vals: list = []
+            for cap in cat["capabilities"]:
+                sc = score_map.get(cap["id"])
+                cap["maturity"] = sc["maturity"] if sc else None
+                cap["rationale"] = sc["rationale"] if sc else None
+                cap["source"] = sc["source"] if sc else None
+                if cap["maturity"] is not None:
+                    cat_vals.append(cap["maturity"]); all_vals.append(cap["maturity"])
+            cat["rollup"] = round(sum(cat_vals) / len(cat_vals), 1) if cat_vals else None
+            cat["assessed"] = len(cat_vals)
+    struct["state"] = state
+    struct["overall"] = round(sum(all_vals) / len(all_vals), 1) if all_vals else None
+    struct["assessed"] = len(all_vals)
+    return struct
+
+
 def _strip_code_fences(s: str) -> str:
     """Strip a ```...``` (optionally ```json) wrapper a model may add despite instructions."""
     s = (s or "").strip()

@@ -117,6 +117,9 @@ async function runRole(role) {
   // #140/#138: Roadmaps gained the Enhancement / PR workbench tab + view.
   ck('Enhancement/PR workbench view present',
      !!document.getElementById('view-enhancement') && !!document.getElementById('ewRouteBtn') && !!document.getElementById('ewSubmitBtn'));
+  // #147: Assessments gained the Maturity Wall sub-view (FlightPath-style).
+  ck('Maturity Wall view present',
+     !!document.getElementById('view-maturity') && !!document.getElementById('mwWall') && !!document.getElementById('mwStates'));
   if (role === 'platform-admin') {
     // Architect persona: Authoring · Execution · Roadmaps · Catalog · Improve (no Assessments).
     ck('Architect persona: Authoring domain shown', shown(domDisp('author')), 'display=' + domDisp('author'));
