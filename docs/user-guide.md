@@ -114,15 +114,17 @@ span multiple runs).
 The **Roadmaps** domain has four sub-tabs: **Arch Review · Enhancement / PR · Cap Map · Roadmap**.
 - **Ingestion → Results** — per-UC analyses for the active scope.
 - **Roadmaps → Arch Review** — the **gap analysis** (what the architecture is missing for these UCs),
-  scoped by the masthead Scope. This is also where you **generate the Enhancement Plan** (the concrete,
-  ready-to-apply spec edits, one per gap).
-- **Roadmaps → Enhancement / PR** — the **workbench** that turns that Enhancement Plan into pull requests.
-  Click **↻ Load latest plan** (it auto-loads the cached plan for the scope), then **Route into PRs →**:
-  each finding is routed to its target repo (by the `target:` namespace) and grouped into **one PR per repo**.
-  Select findings **per finding, per PR group, or in bulk** (Select all matched), expand any finding to
-  **view its patch + acceptance** before deciding, and **retarget** an unmatched namespace to an
-  enhancement-target repo inline. **Submit selected → create PRs** opens one PR per repo (gated by a
-  confirm + the `project.enhance-pr` privilege). The plan source textarea is editable before routing.
+  scoped by the masthead Scope. A prose assessment only; turn the gaps into patches in the next tab.
+- **Roadmaps → Enhancement / PR** — the two-step home for **gaps → patches → pull requests**:
+  - **Step 1 · Enhancement Plan** — pick the Enhancement model and **▶ Generate Enhancement Plan** (the
+    concrete, ready-to-apply spec edits, one per gap, for the active scope). When it's ready, **Route into
+    PRs ↓** hands it straight to Step 2.
+  - **Step 2 · Route → Pull Requests** — the **workbench**. (Or **↻ Load latest plan** to pull the cached
+    plan, then **Route into PRs →**.) Each finding routes to its target repo (by the `target:` namespace),
+    grouped into **one PR per repo**. Select findings **per finding, per PR group, or in bulk** (Select all
+    matched), expand any finding to **view its patch + acceptance**, and **retarget** an unmatched namespace
+    to an enhancement-target repo inline. **Submit selected → create PRs** opens one PR per repo (gated by a
+    confirm + the `project.enhance-pr` privilege). The plan-source textarea is editable before routing.
 - **Roadmaps → Cap Map** — the bidirectional UC ↔ capability matrix. Auto-loads the scope.
   Column ★ = foundational; a thin colored **underline** on each capability column = its R4 disposition.
 - **Roadmaps → Roadmap** — the **capability/build roadmap**: which capabilities the UCs demand, ranked

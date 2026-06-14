@@ -1466,13 +1466,9 @@
             <label>Review model</label>
             <select id="rpRevModelSel" style="width:100%;font-size:11px;"></select>
           </div>
-          <div>
-            <label>Enhancement model</label>
-            <select id="rpEnhModelSel" style="width:100%;font-size:11px;"></select>
-          </div>
           <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
           <button class="btn ghost" id="rpRevRunBtn" style="width:100%;">▶ Generate Review</button>
-          <button class="btn ghost" id="rpEnhRunBtn" style="width:100%;margin-top:4px;">▶ Generate Enhancement Plan</button>
+          <div style="font-size:10px;color:var(--text-faint);margin-top:6px;">Generate the Enhancement Plan + open PRs in the <strong>Enhancement / PR</strong> tab ▸</div>
           <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
           <details id="rpCtxDetails" style="font-size:11px;">
             <summary style="cursor:pointer;color:var(--text-dim);">⚙ Stage context — informs the LLM</summary>
@@ -1492,7 +1488,7 @@
           <!-- ── Track 1 · Architecture & Capability (gap-anchored) ── -->
           <div style="background:var(--bg-raised);border-left:2px solid var(--accent);padding:8px 12px;border-radius:2px;">
             <div style="font-size:12px;color:var(--text);"><strong>Track 1 · Architecture &amp; Capability</strong> <span style="color:var(--text-faint);">— gap-anchored</span></div>
-            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Find where the spec is deficient and turn it into changes. <em>Output:</em> a reviewed roadmap of architectural changes, then ready-to-apply spec patches (→ PRs).</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Find where the spec is deficient. <em>Output:</em> a prose assessment of the gaps. Turn those gaps into ready-to-apply spec patches (→ PRs) in the <strong>Enhancement / PR</strong> tab.</div>
           </div>
           <div>
             <div class="rp-section-title">Architectural Review</div>
@@ -1511,44 +1507,6 @@
             <div id="rpRevStream" class="arch-review-stream" style="display:none;"></div>
             <div id="rpRevHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
           </div>
-          <hr style="border:none;border-top:1px solid var(--border);margin:0;">
-          <div>
-            <div class="rp-section-title">Enhancement Plan</div>
-            <div style="font-size:11px;color:var(--text-dim);margin:-2px 0 8px;">
-              <strong>What:</strong> concrete, ready-to-apply spec edits (one per gap) that close the gaps.
-              <strong>Use:</strong> turn the gaps into committable patches (→ PR).
-              <strong>From:</strong> derives independently from the same analysis gaps — <em>not</em> from the review text above, so you can run it without the review.
-            </div>
-            <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
-              <button class="btn ghost btn-sm" id="rpEnhCopyBtn" style="display:none;">⧉ Copy</button>
-              <button class="btn ghost btn-sm" id="rpEnhUseClaudeBtn">⧉ Use in Claude</button>
-              <button class="btn ghost btn-sm" id="rpEnhReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
-              <span id="rpEnhStatus" style="font-size:11px;color:var(--text-faint);display:none;"></span>
-              <span id="rpEnhCacheChip" style="font-size:10px;color:var(--text-faint);margin-left:auto;"></span>
-            </div>
-            <div id="rpEnhStream" class="arch-review-stream" style="display:none;"></div>
-            <div id="rpEnhHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
-            <div id="rpEnhNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
-              <span style="font-size:11px;color:var(--text-faint);">Plan complete —</span>
-              <button class="btn ghost btn-sm" id="rpEnhToPrBtn">Create PR →</button>
-            </div>
-          </div>
-          <!-- PR section for top-level review tab -->
-          <div id="rpPrSection" style="display:none;">
-            <div class="rp-section-title">Create Pull Request</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;">
-              <div class="form-field"><label style="font-size:10px;">Repository</label><select id="rpPrRepoSel"></select></div>
-              <div class="form-field"><label style="font-size:10px;">Base branch</label><input id="rpPrBaseBranch" placeholder="main" /></div>
-              <div class="form-field"><label style="font-size:10px;">New branch</label><input id="rpPrBranch" /></div>
-              <div class="form-field"><label style="font-size:10px;">File path</label><input id="rpPrFilePath" /></div>
-              <div class="form-field" style="grid-column:1/-1;"><label style="font-size:10px;">PR title</label><input id="rpPrTitle" /></div>
-            </div>
-            <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
-              <button class="btn ghost btn-sm" id="rpPrCopyBtn">⧉ Copy PR description</button>
-              <button class="btn primary btn-sm" id="rpPrCreateBtn">Push branch + open PR</button>
-              <span id="rpPrMsg" style="font-size:11px;color:var(--text-faint);"></span>
-            </div>
-          </div>
         </div>
       </div>
     </section>
@@ -1557,10 +1515,41 @@
     <section class="pf-view" id="view-enhancement">
       <div style="max-width:1100px;margin:0 auto;padding:4px 2px;">
         <div style="background:var(--bg-raised);border-left:2px solid var(--accent);padding:8px 12px;border-radius:2px;margin-bottom:12px;">
-          <div style="font-size:12px;color:var(--text);"><strong>Enhancement / PR Workbench</strong> <span style="color:var(--text-faint);">— turn the plan into pull requests</span></div>
-          <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Loads the Enhancement Plan for the masthead scope, routes each finding to its target repo, and lets you select findings — per finding, per PR, or in bulk — and open one PR per repo. Generate or regenerate the plan in <strong>Arch Review</strong>.</div>
+          <div style="font-size:12px;color:var(--text);"><strong>Enhancement / PR Workbench</strong> <span style="color:var(--text-faint);">— gaps → patches → pull requests</span></div>
+          <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">First <strong>generate the Enhancement Plan</strong> (concrete, ready-to-apply spec edits, one per gap, for the masthead scope). Then <strong>route</strong> it: each finding goes to its target repo, and you select findings — per finding, per PR, or in bulk — to open one PR per repo.</div>
         </div>
 
+        <!-- ── Step 1 · Generate the Enhancement Plan ── -->
+        <div style="margin-bottom:14px;">
+          <div class="rp-section-title">1 · Enhancement Plan</div>
+          <div style="font-size:11px;color:var(--text-dim);margin:-2px 0 8px;">
+            <strong>What:</strong> ready-to-apply spec edits (one per gap) that close the architecture gaps.
+            <strong>From:</strong> derives from the analysis gaps for the active scope (independent of the Arch Review prose).
+          </div>
+          <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:6px;">
+            <div style="flex:0 0 220px;"><label style="font-size:10px;display:block;color:var(--text-dim);">Enhancement model</label>
+              <select id="rpEnhModelSel" style="width:100%;font-size:11px;"></select></div>
+            <button class="btn ghost btn-sm" id="rpEnhRunBtn">▶ Generate Enhancement Plan</button>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+            <button class="btn ghost btn-sm" id="rpEnhCopyBtn" style="display:none;">⧉ Copy</button>
+            <button class="btn ghost btn-sm" id="rpEnhUseClaudeBtn">⧉ Use in Claude</button>
+            <button class="btn ghost btn-sm" id="rpEnhReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
+            <span id="rpEnhStatus" style="font-size:11px;color:var(--text-faint);display:none;"></span>
+            <span id="rpEnhCacheChip" style="font-size:10px;color:var(--text-faint);margin-left:auto;"></span>
+          </div>
+          <div id="rpEnhStream" class="arch-review-stream" style="display:none;"></div>
+          <div id="rpEnhHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
+          <div id="rpEnhNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
+            <span style="font-size:11px;color:var(--text-faint);">Plan ready —</span>
+            <button class="btn primary btn-sm" id="rpEnhToPrBtn">Route into PRs ↓</button>
+          </div>
+        </div>
+
+        <hr style="border:none;border-top:1px solid var(--border);margin:0 0 14px;">
+
+        <!-- ── Step 2 · Route → PRs ── -->
+        <div class="rp-section-title">2 · Route → Pull Requests</div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
           <button class="btn ghost btn-sm" id="ewLoadBtn">↻ Load latest plan</button>
           <button class="btn primary btn-sm" id="ewRouteBtn">Route into PRs →</button>
@@ -12508,8 +12497,12 @@ async function _ewLoadPlan(){
 function loadEnhancementWorkbench(){
   const chip = document.getElementById('ewScopeChip');
   if (chip) chip.textContent = 'Scope: ' + _ewScopeName();
+  // Generation moved here from Arch Review: populate the enhancement model picker + surface the
+  // cached plan (rpEnhStream + cache chip + the "Route into PRs ↓" row) for the active scope.
+  try { _updateArchModelInfo(); } catch(_) {}
+  try { _rpLoadCached(); } catch(_) {}
   const ta = document.getElementById('ewPlanText');
-  if (ta && !ta.value.trim()) _ewLoadPlan();   // auto-load once on entry; routing is explicit
+  if (ta && !ta.value.trim()) _ewLoadPlan();   // auto-load the workbench source once; routing is explicit
 }
 
 async function _ewRoute(){
@@ -14010,78 +14003,14 @@ document.getElementById('rpEnhUseClaudeBtn')?.addEventListener('click', () => {
     document.getElementById('rpEnhHint'), document.getElementById('rpEnhUseClaudeBtn'));
 });
 
-document.getElementById('rpEnhNextRow') && document.getElementById('rpEnhToPrBtn')?.addEventListener('click', async () => {
-  const panel  = document.getElementById('rpPrSection');
-  const msgEl  = document.getElementById('rpPrMsg');
-  msgEl.textContent = '';
-  // ADR-006: enhancement targets are managed_repos rows with role=enhancement-target
-  if (!_codeRepos.length) {
-    try {
-      const r = await api('/api/repos?role=enhancement-target');
-      _codeRepos = r.repos || [];
-    } catch {}
-  }
-  const sel = document.getElementById('rpPrRepoSel');
-  sel.innerHTML = _codeRepos.length
-    ? _codeRepos.map(r => {
-        const provider = (r.metadata && r.metadata.provider) || (r.repo_url && r.repo_url.toLowerCase().includes('gitlab') ? 'gitlab' : 'github');
-        return `<option value="${esc(r.uuid)}" data-branch="${esc(r.repo_branch)}">${esc(r.display_name || r.namespace)} (${esc(provider)})</option>`;
-      }).join('')
-    : '<option value="">No enhancement-target repos — add the role in the Repos panel</option>';
-  if (_codeRepos.length) {
-    const opt = sel.selectedOptions[0];
-    if (opt?.dataset.branch) document.getElementById('rpPrBaseBranch').value = opt.dataset.branch;
-  }
-  const { runId, scope, ucUuid } = _rpGetContext();
-  try {
-    let url = `/api/pr/preview?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
-    if (scope === 'uc' && ucUuid) url += `&uc_uuid=${encodeURIComponent(ucUuid)}`;
-    const preview = await api(url);
-    document.getElementById('rpPrBranch').value   = preview.branch;
-    document.getElementById('rpPrTitle').value    = preview.title;
-    document.getElementById('rpPrFilePath').value = preview.file_path;
-    panel._gapContext = preview.gap_context;
-  } catch(e) {
-    msgEl.textContent = 'Preview load failed: ' + e.message;
-    panel._gapContext = '';
-  }
-  panel.style.display = '';
-});
-
-document.getElementById('rpPrRepoSel')?.addEventListener('change', function() {
-  const opt = this.selectedOptions[0];
-  if (opt?.dataset.branch) document.getElementById('rpPrBaseBranch').value = opt.dataset.branch;
-});
-
-document.getElementById('rpPrCopyBtn')?.addEventListener('click', () => {
-  const panel = document.getElementById('rpPrSection');
-  const body = `**Branch:** \`${document.getElementById('rpPrBranch').value}\`\n**File:** \`${document.getElementById('rpPrFilePath').value}\`\n\n---\n\n${panel._gapContext||''}\n\n## Enhancement plan\n\n${_stripThink(_rpEnhRaw.text)}\n\n---\n*Generated by DAV Console*`;
-  navigator.clipboard.writeText(body).then(() => toast('PR description copied')).catch(() => toast('Copy failed', true));
-});
-
-document.getElementById('rpPrCreateBtn')?.addEventListener('click', async () => {
-  const repoUuid = document.getElementById('rpPrRepoSel').value;
-  if (!repoUuid) { toast('Select a repository first'); return; }
-  const { runId, scope, ucUuid } = _rpGetContext();
-  const msgEl = document.getElementById('rpPrMsg');
-  const btn   = document.getElementById('rpPrCreateBtn');
-  const payload = {
-    repo_uuid: repoUuid, run_id: runId, uc_uuid: ucUuid || null, scope,
-    branch:      document.getElementById('rpPrBranch').value.trim(),
-    title:       document.getElementById('rpPrTitle').value.trim(),
-    base_branch: document.getElementById('rpPrBaseBranch').value.trim() || null,
-    file_path:   document.getElementById('rpPrFilePath').value.trim(),
-    enhancement_text: _stripThink(_rpEnhRaw.text),
-  };
-  if (!payload.branch || !payload.title) { toast('Branch and title required'); return; }
-  btn.disabled = true; msgEl.textContent = 'Creating…'; msgEl.style.color = 'var(--text-faint)';
-  try {
-    const result = await createPrWithApprovalGate(payload);
-    if (!result) { msgEl.textContent = 'Cancelled.'; msgEl.style.color = 'var(--text-faint)'; }
-    else { msgEl.textContent = '✓ PR created'; msgEl.style.color = 'var(--ok)';
-           if (result.pr_url) window.open(result.pr_url, '_blank'); }
-  } catch(e) { msgEl.textContent = 'Failed: ' + e.message; msgEl.style.color = 'var(--error)'; }
-  finally { btn.disabled = false; }
+// "Route into PRs ↓" — hand the freshly generated plan straight to the workbench (Step 2)
+// and route it. Replaces the old single-repo Create-PR form (now superseded by the workbench).
+document.getElementById('rpEnhToPrBtn')?.addEventListener('click', () => {
+  const ta = document.getElementById('ewPlanText');
+  if (ta) ta.value = _stripThink(_rpEnhRaw.text || '');
+  const details = document.getElementById('ewPlanDetails'); if (details) details.open = false;
+  document.getElementById('ewRouteBtn')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  _ewRoute();
 });
 
 // ── Run detail tab buttons ────────────────────────────────────
