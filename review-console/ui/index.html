@@ -1758,18 +1758,21 @@
                   <option value="json">Structured JSON</option>
                   <option value="model">Extract with model (text/PDF → UDLM)</option>
                 </select>
-                <span id="asIngestModelRow" style="display:none;gap:6px;align-items:center;">
+                <span id="asIngestModelRow" style="display:none;gap:6px;align-items:center;flex-wrap:wrap;">
                   <label style="font-size:10px;color:var(--text-dim);">model</label>
                   <select id="asIngestModelSel" style="font-size:10px;min-width:190px;" title="Extractor model for this ingest (overrides the project assessment-ingest default)">
                     <option value="">— project default —</option>
                   </select>
+                  <label style="font-size:10px;color:var(--text-dim);display:inline-flex;align-items:center;gap:3px;" title="Read images / slide decks with a vision model (auto for image uploads + image-only PDFs). Pick a vision-capable model.">
+                    <input type="checkbox" id="asIngestVision"> 🖼 vision
+                  </label>
                 </span>
               </div>
               <div id="asIngestHint" style="font-size:10px;color:var(--text-dim);margin-bottom:4px;">Paste a <b>canonical</b> assessment JSON (or upload a file). Shape:
                 <code style="font-size:9px;">{handle, assessment_type, pillar, findings:[{capability, category, state:present|partial|absent|n/a, maturity:1-5, evidence, notes}]}</code></div>
               <textarea id="asIngestJson" spellcheck="false" placeholder='{"handle":"…","assessment_type":"automation","findings":[…]}' style="width:100%;min-height:120px;font-size:11px;font-family:var(--mono,monospace);"></textarea>
               <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap;">
-                <input type="file" id="asIngestFile" accept=".json,.txt,.md,.csv,.tsv,.yaml,.yml,.log,.pdf,application/json,application/pdf,text/plain" style="font-size:10px;" onchange="_asLoadIngestFile(this)">
+                <input type="file" id="asIngestFile" accept=".json,.txt,.md,.csv,.tsv,.yaml,.yml,.log,.pdf,.png,.jpg,.jpeg,.gif,.webp,.bmp,application/json,application/pdf,text/plain,image/*" style="font-size:10px;" onchange="_asLoadIngestFile(this)">
                 <button class="btn primary btn-sm" onclick="ingestAssessment()">Ingest</button>
                 <button class="btn ghost btn-sm" onclick="toggleAssessmentIngest()">Cancel</button>
                 <span style="font-size:9px;color:var(--text-faint);">scoped to the active project</span>
@@ -13071,7 +13074,7 @@ function _asIngestModeChanged() {
   if (modelRow) modelRow.style.display = (mode === 'model') ? 'inline-flex' : 'none';
   if (mode === 'model') {
     _asPopulateIngestModels();
-    if (hint) hint.innerHTML = 'Paste the assessment <b>text/notes</b>, or upload a <b>PDF</b> or text/structured file (txt, md, csv, json, yaml). The selected model (or the project <code>assessment-ingest</code> default) extracts it into the UDLM Assessment contract. <span style="color:var(--text-faint);">Images aren\'t supported yet.</span>';
+    if (hint) hint.innerHTML = 'Paste the assessment <b>text/notes</b>, or upload a <b>PDF, image, or slide deck</b> (also txt/md/csv/json/yaml). The selected model extracts it into the UDLM Assessment contract. <b>Images & slide-deck PDFs</b> are read by a <b>vision model</b> (🖼 auto for images / image-only PDFs) — pick a vision-capable model (e.g. qwen2.5-vl).';
     if (ta) ta.placeholder = 'Paste the assessment artifact text — or upload a PDF / file below…';
   } else {
     if (hint) hint.innerHTML = 'Paste a <b>canonical</b> assessment JSON (or upload a file). Shape: <code style="font-size:9px;">{handle, assessment_type, pillar, findings:[{capability, category, state:present|partial|absent|n/a, maturity:1-5, evidence, notes}]}</code>';
@@ -13083,13 +13086,17 @@ function _asLoadIngestFile(input) {
   _asIngestFile = null;
   if (!file) return;
   const name = (file.name || '').toLowerCase();
-  // PDF (binary) → stage for server-side extraction; force model mode (the extractor reads it).
-  if (name.endsWith('.pdf')) {
+  const isImage = /\.(png|jpg|jpeg|gif|webp|bmp)$/.test(name);
+  // PDF or image (binary) → stage for server-side extraction; force model mode (the extractor
+  // reads it). Images auto-enable vision (#113); image-only PDFs auto-fall-back to vision server-side.
+  if (name.endsWith('.pdf') || isImage) {
     _asIngestFile = file;
     const ta = document.getElementById('asIngestJson');
-    if (ta) ta.value = `[PDF staged: ${file.name} — extracted server-side on Ingest]`;
+    if (ta) ta.value = `[${isImage ? 'Image' : 'PDF'} staged: ${file.name} — extracted server-side on Ingest]`;
     const modeSel = document.getElementById('asIngestMode');
     if (modeSel && modeSel.value !== 'model') { modeSel.value = 'model'; _asIngestModeChanged(); }
+    const vis = document.getElementById('asIngestVision');
+    if (vis && isImage) vis.checked = true;   // images require vision
     return;
   }
   // text / structured → read into the textarea
@@ -13132,6 +13139,8 @@ async function ingestAssessment() {
       const fd = new FormData();
       fd.append('file', _asIngestFile);
       if (modelId) fd.append('model_config_id', String(modelId));
+      if (document.getElementById('asIngestVision')?.checked) fd.append('vision', 'true');
+      status.textContent = document.getElementById('asIngestVision')?.checked ? 'reading with vision model…' : 'extracting via model…';
       _asIngestDone(await _apiForm('/api/assessments/ingest-file', fd), status);
     } catch (e) { status.textContent = ''; toast('✗ ' + e.message); }
     return;

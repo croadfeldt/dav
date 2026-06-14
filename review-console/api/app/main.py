@@ -7799,14 +7799,77 @@ def _extract_assessment_text(filename: str, data: bytes) -> str:
         return data.decode("utf-8", errors="replace")
 
 
+def _extract_assessment_images(filename: str, data: bytes, max_pages: int = 25) -> list:
+    """#113: turn an uploaded image or (image-based) PDF into base64 PNG/JPEG data URLs for a
+    vision model. PDFs are rendered page→PNG via PyMuPDF (no poppler dep); images pass through.
+    Pages are capped to bound the vision payload (a slide deck can be 50+ pages)."""
+    import base64
+    name = (filename or "").lower()
+    if name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")):
+        ext = name.rsplit(".", 1)[-1]
+        mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
+        return [f"data:{mime};base64,{base64.b64encode(data).decode()}"]
+    if name.endswith(".pdf"):
+        try:
+            import fitz  # PyMuPDF
+        except ImportError:
+            raise HTTPException(400, "image/PDF vision ingestion requires PyMuPDF (not installed)")
+        try:
+            doc = fitz.open(stream=data, filetype="pdf")
+        except Exception as e:
+            raise HTTPException(422, f"could not open the PDF: {e}")
+        out: list = []
+        mat = fitz.Matrix(1.6, 1.6)   # ~115 DPI — legible slides, bounded size
+        for i in range(min(len(doc), max_pages)):
+            png = doc[i].get_pixmap(matrix=mat, alpha=False).tobytes("png")
+            out.append(f"data:image/png;base64,{base64.b64encode(png).decode()}")
+        n_total = len(doc)
+        doc.close()
+        if not out:
+            raise HTTPException(422, "no pages rendered from the PDF")
+        if n_total > max_pages:
+            log.info("vision ingest: PDF has %s pages, capped to %s", n_total, max_pages)
+        return out
+    raise HTTPException(400, f"unsupported file type for vision ingestion: {filename}")
+
+
+def _make_vision_call_fn(cfg: dict):
+    """OpenAI-compatible vision call: call_fn(system, user_text, images)->text. images are data
+    URLs sent as image_url content (vLLM qwen-vl). Mirrors _make_diagnosis_call_fn's OpenAI path.
+    (Anthropic image blocks use a different shape — a follow-up; the homelab vision model is vLLM.)"""
+    endpoint = (cfg.get("endpoint_url") or "").rstrip("/")
+    model_id = cfg.get("model_id")
+    api_key = cfg.get("api_key") or ""
+
+    async def call_fn(system: str, user_text: str, images: list) -> str:
+        base = endpoint[:-3] if endpoint.endswith("/v1") else endpoint
+        content = [{"type": "text", "text": user_text}] \
+            + [{"type": "image_url", "image_url": {"url": u}} for u in images]
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        async with httpx.AsyncClient(timeout=300.0) as cx:
+            r = await cx.post(
+                f"{base}/v1/chat/completions", headers=headers,
+                json={"model": model_id, "max_tokens": 4096, "temperature": 0.1,
+                      "messages": [{"role": "system", "content": system},
+                                   {"role": "user", "content": content}]})
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"] or ""
+
+    return call_fn
+
+
 async def _extract_and_ingest_assessment(request: Request, content: str, *, model_config_id=None,
-                                         handle=None, assessment_type=None, pillar=None, source=None):
-    """Shared core for model-based assessment ingestion (#105): resolve the extractor model
-    (the per-ingest override if given, else the project's assessment-ingest default —
-    scope-aware), emit UDLM-conformant structured output, and store via the normal pipeline."""
+                                         handle=None, assessment_type=None, pillar=None, source=None,
+                                         images=None):
+    """Shared core for model-based assessment ingestion (#105 text, #113 vision): resolve the
+    extractor model (the per-ingest override if given, else the project's assessment-ingest default
+    — scope-aware), emit UDLM-conformant structured output, and store via the normal pipeline.
+    `images` (a list of data URLs) routes through a vision model instead of the text artifact."""
     content = (content or "").strip()
-    if not content:
-        raise HTTPException(400, "content (the assessment artifact text) is required")
+    if not content and not images:
+        raise HTTPException(400, "content (the assessment artifact text) or images is required")
     actor = get_user(request)
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
@@ -7827,16 +7890,29 @@ async def _extract_and_ingest_assessment(request: Request, content: str, *, mode
               "ONLY a single JSON object conforming to the UDLM Knowledge-family Assessment "
               "contract below — no prose, no markdown code fences, no surrounding text.\n\n"
               "UDLM Assessment contract:\n" + json.dumps(schema, indent=2))
-    user = (f"Assessment artifact:\n\n{content}\n\n"
-            + (f"assessment_type hint: {assessment_type}\n" if assessment_type else "")
-            + (f"handle hint: {handle}\n" if handle else "")
-            + "Extract every capability that was assessed into a finding. Use state 'n/a' for "
-              "not-asked / not-applicable, maturity 1-5 (3 = target; null when there is no "
-              "capability), and carry any notes/evidence. Output the JSON object only.")
+    _extract_instr = (
+        "Extract every capability that was assessed into a finding. Capture its category, "
+        "state ('n/a' for not-asked / not-applicable), maturity 1-5 (3 = target; null when there "
+        "is no capability), and any notes/evidence. Output the JSON object only.")
+    if images:
+        user = ("The assessment artifact is the attached image"
+                + (f"s ({len(images)} pages/slides)" if len(images) > 1 else "")
+                + ". Read it/them — including any maturity 'wall' grids, scores, focus areas, "
+                  "findings, and recommendations.\n"
+                + (f"assessment_type hint: {assessment_type}\n" if assessment_type else "")
+                + (f"handle hint: {handle}\n" if handle else "")
+                + _extract_instr)
+    else:
+        user = (f"Assessment artifact:\n\n{content}\n\n"
+                + (f"assessment_type hint: {assessment_type}\n" if assessment_type else "")
+                + (f"handle hint: {handle}\n" if handle else "")
+                + _extract_instr)
     user = _inject_context(user, _actx, "assessment ingestion")   # #125 prompt management (append-live)
-    call_fn = _make_diagnosis_call_fn(cfg)
     try:
-        raw = await call_fn(system, user)
+        if images:
+            raw = await _make_vision_call_fn(cfg)(system, user, images)
+        else:
+            raw = await _make_diagnosis_call_fn(cfg)(system, user)
     except Exception as e:
         raise HTTPException(502, f"extraction model call failed: {e}")
     try:
@@ -7878,14 +7954,34 @@ async def assessments_ingest_file(
     handle: Optional[str] = Form(None),
     pillar: Optional[str] = Form(None),
     source: Optional[str] = Form(None),
+    vision: bool = Form(False),
 ):
-    """#105: multi-format model ingestion — upload a PDF or text/structured (txt/md/csv/json/
-    yaml/log) assessment artifact; its text is extracted and run through the same model
-    pipeline as /ingest-model. Images aren't supported yet (vision model — follow-up)."""
+    """#105/#113: multi-format model ingestion. Text/structured (txt/md/csv/json/yaml/log) +
+    text-PDF are text-extracted; **images and image/slide-deck PDFs go through a vision model**
+    (`vision=true`, or auto when an image is uploaded / a PDF has no extractable text). The
+    selected model must be vision-capable for the image path. Same UDLM pipeline as /ingest-model."""
     data = await file.read()
     if not data:
         raise HTTPException(400, "empty file")
-    text = _extract_assessment_text(file.filename or "", data)
+    name = (file.filename or "").lower()
+    is_image = name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"))
+
+    async def _vision():
+        images = _extract_assessment_images(file.filename or "", data)
+        return await _extract_and_ingest_assessment(
+            request, "", images=images, model_config_id=model_config_id, handle=handle,
+            assessment_type=assessment_type, pillar=pillar,
+            source=source or f"vision:{file.filename}")
+
+    if vision or is_image:
+        return await _vision()
+    # text / structured / text-PDF; an image-only PDF (no extractable text) auto-falls back to vision.
+    try:
+        text = _extract_assessment_text(file.filename or "", data)
+    except HTTPException as e:
+        if name.endswith(".pdf") and e.status_code == 422:
+            return await _vision()
+        raise
     return await _extract_and_ingest_assessment(
         request, text, model_config_id=model_config_id, handle=handle,
         assessment_type=assessment_type, pillar=pillar,
