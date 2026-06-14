@@ -7629,6 +7629,53 @@ async def _framework_structure(conn, fid) -> Optional[dict]:
     }
 
 
+async def _findings_wall(conn, assessment_id) -> Optional[dict]:
+    """Pre-filled CURRENT-state wall built straight from the assessment's own findings — category
+    columns, capability rows, maturity 1–5, notes/evidence as rationale. Reuses MATURITY_SCALE so
+    it renders identically to the Assessments detail view. None if the assessment has no findings."""
+    rows = await conn.fetch(
+        """SELECT id, category, capability_handle, maturity, state, notes, evidence
+           FROM assessment_findings WHERE assessment_id=$1
+           ORDER BY category NULLS LAST, capability_handle""", assessment_id)
+    if not rows:
+        return None
+    cats_order: list = []
+    cap_by_cat: dict = {}
+    all_vals: list = []
+    for r in rows:
+        cat = r["category"] or "Uncategorized"
+        if cat not in cap_by_cat:
+            cap_by_cat[cat] = []; cats_order.append(cat)
+        m = r["maturity"]
+        cap_by_cat[cat].append({
+            "id": str(r["id"]), "finding_id": str(r["id"]),
+            "key": (r["capability_handle"] or "").lower(), "label": r["capability_handle"],
+            "maturity": m, "state": r["state"],
+            "rationale": (r["notes"] or r["evidence"] or ""), "source": "finding",
+        })
+        if m is not None:
+            all_vals.append(m)
+    categories: list = []
+    for cat in cats_order:
+        vals = [c["maturity"] for c in cap_by_cat[cat] if c["maturity"] is not None]
+        categories.append({
+            "id": None, "key": cat, "label": cat, "band": "", "inflection_side": "pre",
+            "capabilities": cap_by_cat[cat],
+            "rollup": round(sum(vals) / len(vals), 1) if vals else None, "assessed": len(vals),
+        })
+    return {
+        "id": None, "key": "from-findings", "name": "From assessment findings",
+        "derived_from": "findings",
+        "scale": _assessment_ingest.MATURITY_SCALE,
+        "maturity_target": _assessment_ingest.MATURITY_TARGET,
+        "states": [{"key": "current", "label": "Current State", "ord": 0, "kind": "current"}],
+        "bands": [{"band": "", "categories": categories}],
+        "state": "current",
+        "overall": round(sum(all_vals) / len(all_vals), 1) if all_vals else None,
+        "assessed": len(all_vals),
+    }
+
+
 @app.get("/api/assessment-frameworks")
 async def assessment_frameworks_list(request: Request):
     """List maturity frameworks visible to the active project: the global seed templates
@@ -7661,12 +7708,18 @@ async def assessment_framework_get(framework_id: str, request: Request):
 
 @app.get("/api/assessments/{assessment_id}/maturity-wall")
 async def assessment_maturity_wall(assessment_id: str, request: Request, state: str = "current"):
-    """The maturity wall for an assessment in one state: the framework skeleton with each
-    capability's 0–5 score overlaid, plus category + overall rollups (mean of assessed cells).
-    Resolves the assessment's linked framework, else falls back to the flightpath-v1 seed."""
+    """The maturity wall for an assessment in one state. CURRENT state is PRE-FILLED straight from
+    the assessment's own findings (category/capability/maturity/notes) when present, so it renders
+    populated — and identically to the Assessments detail view (same MATURITY_SCALE). Target/desired
+    states overlay the configurable framework + per-state scores. Category + overall rollups = mean
+    of assessed cells."""
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
         await _require_priv_conn(conn, request, rbac.P_ASSESSMENT_VIEW, pid)
+        if state == "current":
+            fwall = await _findings_wall(conn, assessment_id)
+            if fwall is not None:
+                return fwall   # pre-filled from findings (the common case)
         fid = await conn.fetchval(
             "SELECT framework_id FROM assessment_framework_link WHERE assessment_id=$1", assessment_id)
         if fid is None:
