@@ -7819,7 +7819,7 @@ def _extract_assessment_images(filename: str, data: bytes, max_pages: int = 25) 
         except Exception as e:
             raise HTTPException(422, f"could not open the PDF: {e}")
         out: list = []
-        mat = fitz.Matrix(1.6, 1.6)   # ~115 DPI — legible slides, bounded size
+        mat = fitz.Matrix(1.4, 1.4)   # ~100 DPI — legible slides, bounded vision-token cost
         for i in range(min(len(doc), max_pages)):
             png = doc[i].get_pixmap(matrix=mat, alpha=False).tobytes("png")
             out.append(f"data:image/png;base64,{base64.b64encode(png).decode()}")
@@ -7833,7 +7833,7 @@ def _extract_assessment_images(filename: str, data: bytes, max_pages: int = 25) 
     raise HTTPException(400, f"unsupported file type for vision ingestion: {filename}")
 
 
-def _make_vision_call_fn(cfg: dict):
+def _make_vision_call_fn(cfg: dict, max_tokens: int = 4096):
     """OpenAI-compatible vision call: call_fn(system, user_text, images)->text. images are data
     URLs sent as image_url content (vLLM qwen-vl). Mirrors _make_diagnosis_call_fn's OpenAI path.
     (Anthropic image blocks use a different shape — a follow-up; the homelab vision model is vLLM.)"""
@@ -7851,13 +7851,61 @@ def _make_vision_call_fn(cfg: dict):
         async with httpx.AsyncClient(timeout=300.0) as cx:
             r = await cx.post(
                 f"{base}/v1/chat/completions", headers=headers,
-                json={"model": model_id, "max_tokens": 4096, "temperature": 0.1,
+                json={"model": model_id, "max_tokens": max_tokens, "temperature": 0.1,
                       "messages": [{"role": "system", "content": system},
                                    {"role": "user", "content": content}]})
-            r.raise_for_status()
+            if r.status_code >= 400:
+                # Surface the model's ACTUAL reason (vLLM puts it in the body) instead of a bare
+                # status — e.g. too many images/prompt, context length exceeded, model not loaded.
+                body = (r.text or "").strip()[:500]
+                raise RuntimeError(
+                    f"vision model '{model_id}' returned HTTP {r.status_code} for {len(images)} "
+                    f"image(s): {body}")
             return r.json()["choices"][0]["message"]["content"] or ""
 
     return call_fn
+
+
+async def _vision_extract_batched(cfg, system, user, images, batch_pages=2):
+    """Call the vision model in small page-batches — the model's context is tight (e.g. qwen2.5-vl
+    at 8192 tokens, and each page-image costs ~1-2k vision tokens), so a whole deck can't go in one
+    request. Each batch extracts a UDLM-assessment JSON; findings are merged across batches and
+    deduped by (category, capability), keeping the highest maturity. Returns the merged dict.
+    A bigger model context (--max-model-len) → larger batch_pages → fewer calls."""
+    vcall = _make_vision_call_fn(cfg, max_tokens=2048)   # leave input room within an 8k window
+    batches = [images[i:i + batch_pages] for i in range(0, len(images), batch_pages)]
+    merged = None
+    by_key: dict = {}
+    last_err = None
+    ok = 0
+    for bi, batch in enumerate(batches):
+        bmsg = user + (f"\n\n(Page batch {bi + 1} of {len(batches)} — extract every capability "
+                       "visible in these page(s); omit nothing you can read.)")
+        try:
+            raw = await vcall(system, bmsg, batch)
+            obj = json.loads(_strip_code_fences(raw))
+            if not isinstance(obj, dict):
+                raise ValueError("not a JSON object")
+        except Exception as e:
+            last_err = e
+            log.warning("vision ingest batch %s/%s failed: %s", bi + 1, len(batches), e)
+            continue
+        ok += 1
+        if merged is None:
+            merged = {k: v for k, v in obj.items() if k != "findings"}
+        for f in (obj.get("findings") or []):
+            cap = (f.get("capability") or f.get("capability_handle") or "").strip()
+            if not cap:
+                continue
+            key = ((f.get("category") or "").strip().lower(), cap.lower())
+            cur = by_key.get(key)
+            if cur is None or (f.get("maturity") or -1) > (cur.get("maturity") or -1):
+                by_key[key] = f
+    if merged is None:
+        raise HTTPException(502, f"vision extraction failed for all {len(batches)} page batch(es): {last_err}")
+    merged["findings"] = list(by_key.values())
+    log.info("vision ingest: %s/%s batches ok, %s findings merged", ok, len(batches), len(by_key))
+    return merged
 
 
 async def _extract_and_ingest_assessment(request: Request, content: str, *, model_config_id=None,
@@ -7908,19 +7956,20 @@ async def _extract_and_ingest_assessment(request: Request, content: str, *, mode
                 + (f"handle hint: {handle}\n" if handle else "")
                 + _extract_instr)
     user = _inject_context(user, _actx, "assessment ingestion")   # #125 prompt management (append-live)
-    try:
-        if images:
-            raw = await _make_vision_call_fn(cfg)(system, user, images)
-        else:
+    if images:
+        # Vision: batched across pages (tight model context) + merged. Raises HTTPException itself.
+        extracted = await _vision_extract_batched(cfg, system, user, images)
+    else:
+        try:
             raw = await _make_diagnosis_call_fn(cfg)(system, user)
-    except Exception as e:
-        raise HTTPException(502, f"extraction model call failed: {e}")
-    try:
-        extracted = json.loads(_strip_code_fences(raw))
-        if not isinstance(extracted, dict):
-            raise ValueError("not a JSON object")
-    except Exception as e:
-        raise HTTPException(422, f"extractor did not return valid UDLM-assessment JSON: {e}")
+        except Exception as e:
+            raise HTTPException(502, f"extraction model call failed: {e}")
+        try:
+            extracted = json.loads(_strip_code_fences(raw))
+            if not isinstance(extracted, dict):
+                raise ValueError("not a JSON object")
+        except Exception as e:
+            raise HTTPException(422, f"extractor did not return valid UDLM-assessment JSON: {e}")
     for k, v in (("handle", handle), ("assessment_type", assessment_type), ("pillar", pillar), ("source", source)):
         if v and not extracted.get(k):
             extracted[k] = v
