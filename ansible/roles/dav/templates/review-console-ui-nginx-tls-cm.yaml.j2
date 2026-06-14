@@ -27,6 +27,10 @@ data:
         root /opt/app-root/src;
         index index.html;
 
+        # Allow large assessment uploads (multi-MB PDFs / slide decks / images for vision
+        # ingest, #113). nginx's 1m default 413s a real deck before it reaches the API.
+        client_max_body_size 64m;
+
         ssl_certificate     /etc/nginx/tls/tls.crt;
         ssl_certificate_key /etc/nginx/tls/tls.key;
         ssl_protocols TLSv1.2 TLSv1.3;

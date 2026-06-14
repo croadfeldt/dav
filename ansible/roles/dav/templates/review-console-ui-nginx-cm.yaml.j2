@@ -18,6 +18,11 @@ data:
     add_header X-Frame-Options "DENY" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
+    # Allow large assessment uploads (multi-MB PDFs / slide decks / images for vision ingest,
+    # #113). nginx's 1m default 413s a real deck BEFORE it reaches the API (no server log,
+    # just a bare error in the UI). Merges into the image's server block.
+    client_max_body_size 64m;
+
     location = /healthz {
         access_log off;
         return 200 "ok\n";

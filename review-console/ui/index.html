@@ -13111,9 +13111,18 @@ async function _apiForm(url, formData) {
   if (typeof _activeProject !== 'undefined' && _activeProject) headers['X-DAV-Project'] = _activeProject;
   const res = await fetch(url, { method: 'POST', headers, body: formData, credentials: 'same-origin' });
   if (!res.ok) {
-    let msg = res.statusText;
-    try { const j = await res.json(); const d = j.detail; msg = (typeof d === 'string' ? d : (d ? JSON.stringify(d) : msg)); } catch {}
-    throw new Error(msg);
+    // Surface a REAL reason — JSON detail when present, else a cleaned text/HTML body (e.g. an
+    // nginx 413 page that never reached the API), always tagged with the HTTP status.
+    let msg = '';
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      try { const j = await res.json(); const d = j.detail; msg = (typeof d === 'string' ? d : (d ? JSON.stringify(d) : '')); } catch {}
+    } else {
+      try { msg = (await res.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200); } catch {}
+    }
+    if (res.status === 413) msg = `File too large — it exceeds the server upload limit (was the deck > the limit?). ${msg}`.trim();
+    if (!msg) msg = res.statusText || 'request failed';
+    throw new Error(`HTTP ${res.status}: ${msg}`);
   }
   return res.json();
 }
@@ -13168,7 +13177,7 @@ async function ingestAssessment() {
       if (modelId) fd.append('model_config_id', String(modelId));
       if (isVision) fd.append('vision', 'true');
       _asIngestDone(await _apiForm('/api/assessments/ingest-file', fd), status);
-    } catch (e) { _asBusy(false); status.textContent = '✗ ' + e.message; toast('✗ ' + e.message); }
+    } catch (e) { _asBusy(false); status.innerHTML = '<span style="color:var(--red);">✗ ' + esc(e.message) + '</span>'; toast('✗ ' + e.message, true); }
     return;
   }
   const raw = (document.getElementById('asIngestJson').value || '').trim();
@@ -13188,7 +13197,7 @@ async function ingestAssessment() {
       r = await api('/api/assessments/ingest', { method:'POST', body: JSON.stringify({ assessment: payload }) });
     }
     _asIngestDone(r, status);
-  } catch (e) { _asBusy(false); status.textContent = '✗ ' + e.message; toast('✗ ' + e.message); }
+  } catch (e) { _asBusy(false); status.innerHTML = '<span style="color:var(--red);">✗ ' + esc(e.message) + '</span>'; toast('✗ ' + e.message, true); }
 }
 async function renderAssessment(id) {
   _asSel = id;
