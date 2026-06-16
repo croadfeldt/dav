@@ -1,0 +1,70 @@
+# dav-recording-worker (#176) — dedicated worker for the recording→UC pipeline.
+# Build:  oc -n dav start-build dav-recording-worker --from-dir=review-console/api --follow
+# (BuildConfig uses Containerfile.worker in that context.) The Deployment auto-rolls on push.
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: dav-recording-worker
+  namespace: dav
+spec:
+  lookupPolicy:
+    local: true
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: dav-recording-worker
+  namespace: dav
+spec:
+  source:
+    type: Binary
+    binary: {}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Containerfile.worker
+  output:
+    to:
+      kind: ImageStreamTag
+      name: dav-recording-worker:latest
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dav-recording-worker
+  namespace: dav
+  labels:
+    app: dav-recording-worker
+  annotations:
+    image.openshift.io/triggers: |
+      [{"from":{"kind":"ImageStreamTag","name":"dav-recording-worker:latest"},"fieldPath":"spec.template.spec.containers[0].image"}]
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dav-recording-worker
+  template:
+    metadata:
+      labels:
+        app: dav-recording-worker
+    spec:
+      containers:
+        - name: worker
+          image: image-registry.openshift-image-registry.svc:5000/dav/dav-recording-worker:latest
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: dav-review-db-creds
+                  key: dsn
+            - name: WHISPER_MODEL
+              value: small.en
+            - name: RECORDING_POLL_SECONDS
+              value: "5"
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "4"
+              memory: "2Gi"

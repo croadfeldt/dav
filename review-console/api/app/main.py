@@ -99,6 +99,7 @@ MIGRATE_019_PATH = Path(__file__).parent / "migrate_019_assessments.sql"
 MIGRATE_020_PATH = Path(__file__).parent / "migrate_020_reconcile_catalog.sql"
 MIGRATE_021_PATH = Path(__file__).parent / "migrate_021_maturity_wall.sql"
 MIGRATE_022_PATH = Path(__file__).parent / "migrate_022_api_tokens.sql"
+MIGRATE_023_PATH = Path(__file__).parent / "migrate_023_recording_jobs.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 # Secured dav-docs-mcp self-registration (its LoadBalancer SSE URL + bearer token).
@@ -385,6 +386,11 @@ async def lifespan(app: FastAPI):
             await conn.execute(MIGRATE_022_PATH.read_text())
         except Exception:
             log.exception("migration 022 (api_tokens) FAILED — continuing boot without it")
+        try:
+            log.info("Applying migration 023 (recording_jobs — audio/video → UC pipeline)...")
+            await conn.execute(MIGRATE_023_PATH.read_text())
+        except Exception:
+            log.exception("migration 023 (recording_jobs) FAILED — continuing boot without it")
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -9931,6 +9937,74 @@ async def analysis_roadmap(request: Request,
     return {"project_id": pid, "set_id": set_id, "group_by": group_by, "total_gaps": len(gaps),
             "severity_counts": sev_counts, "critical_gaps": critical_gaps,
             "tiers": tiers, "unmapped_gap_count": unmapped, "cluster_count": len(clusters)}
+
+
+# ========================= RECORDING → UC PIPELINE (#176) =========================
+@app.post("/api/use-cases/from-recording")
+async def submit_recording(request: Request,
+                           file: UploadFile = File(...),
+                           context: str = Form(""),
+                           model_config_id: Optional[int] = Form(None)):
+    """Accept an audio/video recording and enqueue a recording_jobs row. A dedicated
+    dav-recording-worker transcribes locally (ffmpeg + whisper.cpp) and extracts UC drafts
+    (uc_assist.extract_bulk) — NO recording data leaves the trust boundary. Returns a job_id
+    to poll. Phase A stores the bytes in-row (TTL-cleared); PVC/object-store is the scale path."""
+    import uuid as _uuid
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "empty upload")
+    MAX = 200 * 1024 * 1024
+    if len(data) > MAX:
+        raise HTTPException(413, f"file too large ({len(data) // 1024 // 1024}MB > 200MB for Phase A)")
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        reviewer = (await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)) or get_user(request)
+        job_id = "rec-" + _uuid.uuid4().hex[:12]
+        await conn.execute(
+            "INSERT INTO recording_jobs (job_id, project_id, submitted_by, status, phase, "
+            "file_name, content_type, file_bytes, file_size, context, model_config_id, expires_at) "
+            "VALUES ($1,$2,$3,'queued','queued',$4,$5,$6,$7,$8,$9, now() + interval '24 hours')",
+            job_id, pid, reviewer, file.filename, file.content_type, data, len(data),
+            (context or None), model_config_id)
+    return {"job_id": job_id, "status": "queued",
+            "message": f"Recording accepted ({len(data) // 1024} KB). "
+                       f"Poll GET /api/use-cases/from-recording/{job_id}."}
+
+
+@app.get("/api/use-cases/from-recording/{job_id}")
+async def recording_status(job_id: str, request: Request):
+    """Poll a recording job. Fields fill progressively (transcript ready before items)."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)
+        r = await conn.fetchrow(
+            "SELECT job_id, project_id, status, phase, progress, file_name, file_size, "
+            "transcript, items, error, duration_seconds, created_at, updated_at, finished_at "
+            "FROM recording_jobs WHERE job_id=$1", job_id)
+    if not r or (r["project_id"] is not None and pid is not None and r["project_id"] != pid):
+        raise HTTPException(404, "recording job not found")
+    d = dict(r)
+    its = d.get("items")
+    d["items"] = (json.loads(its) if isinstance(its, str) else its) or []
+    d["transcript_ready"] = bool(d.get("transcript"))
+    for k in ("created_at", "updated_at", "finished_at"):
+        if d.get(k):
+            d[k] = d[k].isoformat()
+    return d
+
+
+@app.delete("/api/use-cases/from-recording/{job_id}")
+async def cancel_recording(job_id: str, request: Request):
+    """Cancel / clean up a recording job (drops the stored bytes immediately)."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)
+        r = await conn.fetchrow("SELECT project_id FROM recording_jobs WHERE job_id=$1", job_id)
+        if not r or (r["project_id"] is not None and pid is not None and r["project_id"] != pid):
+            raise HTTPException(404, "recording job not found")
+        await conn.execute("UPDATE recording_jobs SET status='cancelled', phase='cancelled', "
+                           "file_bytes=NULL, updated_at=now() WHERE job_id=$1", job_id)
+    return {"ok": True, "artifacts_cleaned": True}
 
 
 # ========================= SOURCING =========================

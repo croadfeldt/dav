@@ -1,0 +1,28 @@
+# dav-recording-worker (#176) — separate from the API so ffmpeg + whisper don't
+# bloat/risk the live API image. Debian slim base because ffmpeg isn't in UBI repos.
+FROM python:3.11-slim
+
+WORKDIR /opt/app-root/src
+
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir pywhispercpp
+
+COPY app/ ./app/
+
+# OCP runs with a random UID in group 0. Make the tree group-writable and point
+# HOME here so pywhispercpp can cache the whisper model under a writable path.
+ENV HOME=/opt/app-root/src \
+    WHISPER_MODEL=small.en \
+    PYTHONUNBUFFERED=1 \
+    LOG_LEVEL=INFO
+RUN mkdir -p /opt/app-root/src/.local/share/pywhispercpp/models \
+    && chgrp -R 0 /opt/app-root/src \
+    && chmod -R g=u /opt/app-root/src
+
+USER 1001
+CMD ["python", "-m", "app.recording_worker"]
