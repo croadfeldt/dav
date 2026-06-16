@@ -2797,11 +2797,12 @@
       <!-- Step 1: paste -->
       <div id="biStep1">
         <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:6px;">Step 1 — source</div>
-        <div style="display:flex;gap:14px;align-items:center;margin-bottom:8px;font-size:11px;flex-wrap:wrap;">
+        <div style="display:flex;gap:14px;align-items:center;margin-bottom:4px;font-size:11px;flex-wrap:wrap;">
           <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="radio" name="biSource" value="text" checked style="width:auto;height:auto;accent-color:var(--accent);" onchange="_biSetSource('text')"/> Paste text</label>
           <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="radio" name="biSource" value="recording" style="width:auto;height:auto;accent-color:var(--accent);" onchange="_biSetSource('recording')"/> 🎙 Upload recording</label>
-          <span style="color:var(--text-faint);font-size:10px;">audio/video → transcribed locally (whisper) → UCs. Nothing leaves the homelab.</span>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="radio" name="biSource" value="browser" style="width:auto;height:auto;accent-color:var(--accent);" onchange="_biSetSource('browser')"/> 🔒 Transcribe in browser</label>
         </div>
+        <div id="biSourceNote" style="font-size:10px;color:var(--text-faint);margin-bottom:8px;"></div>
         <div id="biRecordingRow" class="form-field" style="display:none;">
           <label>Recording file (audio or video, ≤200MB)</label>
           <input type="file" id="biRecordingFile" accept="audio/*,video/*,.m4a,.mp3,.wav,.mp4,.mov,.webm,.mkv,.ogg" style="width:100%;font-size:11px;" />
@@ -9488,7 +9489,14 @@ function _biSetSource(mode) {
   _biMode = mode;
   const t = document.getElementById('biTextRow'), r = document.getElementById('biRecordingRow');
   if (t) t.style.display = mode === 'text' ? '' : 'none';
-  if (r) r.style.display = mode === 'recording' ? '' : 'none';
+  if (r) r.style.display = (mode === 'recording' || mode === 'browser') ? '' : 'none';
+  const note = document.getElementById('biSourceNote');
+  if (note) note.textContent =
+    mode === 'recording'
+      ? 'Audio/video uploads to the homelab worker → transcribed locally (whisper) → UCs. The recording stays in the homelab.'
+    : mode === 'browser'
+      ? 'Audio is transcribed IN THIS BROWSER (whisper, WebGPU/WASM) — the recording never leaves your device. Only the transcript text is sent to the homelab model for extraction. First run downloads the speech model (then cached).'
+      : '';
 }
 
 // Shared "drafts → review step" transition, used by both the text and recording paths.
@@ -9570,8 +9578,83 @@ async function biRunExtractFromRecording() {
   }
 }
 
+// ── In-browser transcription (#180) — the audio NEVER leaves the device. ──
+// Whisper runs client-side via Transformers.js (WebGPU, WASM fallback); only the
+// resulting transcript text is sent to the homelab model for extraction. The speech
+// model downloads from a CDN on first use and is cached in the browser (no audio uploads).
+const _BS_TJS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
+const _BS_MODEL = 'Xenova/whisper-base.en';   // base.en = good speed/quality for the browser
+let _bsTranscriber = null;
+
+async function _bsDecodeTo16kMono(file) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) throw new Error('Web Audio API not available in this browser.');
+  const buf = await file.arrayBuffer();
+  const ac = new AC();
+  let decoded;
+  try { decoded = await ac.decodeAudioData(buf.slice(0)); }
+  catch (e) { throw new Error('Could not decode this file in-browser — try the "Upload recording" path (server worker) for this format.'); }
+  finally { try { ac.close(); } catch {} }
+  const rate = 16000;
+  const frames = Math.max(1, Math.ceil(decoded.duration * rate));
+  const off = new OfflineAudioContext(1, frames, rate);
+  const src = off.createBufferSource();
+  src.buffer = decoded;
+  src.connect(off.destination);
+  src.start(0);
+  const rendered = await off.startRendering();
+  return rendered.getChannelData(0);
+}
+
+async function _bsGetTranscriber(setProg) {
+  if (_bsTranscriber) return _bsTranscriber;
+  const mod = await import(_BS_TJS_URL);
+  const { pipeline, env } = mod;
+  try { env.allowLocalModels = false; } catch {}
+  const device = (typeof navigator !== 'undefined' && navigator.gpu) ? 'webgpu' : 'wasm';
+  _bsTranscriber = await pipeline('automatic-speech-recognition', _BS_MODEL, {
+    device,
+    progress_callback: (p) => {
+      if (p && p.status === 'progress' && p.file) {
+        setProg(`<span class="llm-spinner"></span>downloading speech model (${device}): ${esc(p.file)} ${Math.round(p.progress || 0)}%`);
+      }
+    },
+  });
+  return _bsTranscriber;
+}
+
+async function biRunExtractInBrowser() {
+  const fileEl = document.getElementById('biRecordingFile');
+  const file = fileEl && fileEl.files && fileEl.files[0];
+  if (!file) { toast('Choose a recording file first', true); return; }
+  const primary = document.getElementById('biPrimaryBtn');
+  primary.disabled = true;
+  const prog = document.getElementById('biRecordingProgress');
+  const setProg = (m) => { if (prog) prog.innerHTML = m; };
+  document.getElementById('biStatus').textContent = '';
+  try {
+    setProg('<span class="llm-spinner"></span>decoding audio locally…');
+    const audio = await _bsDecodeTo16kMono(file);
+    setProg('<span class="llm-spinner"></span>loading the speech model (first run downloads it; cached after)…');
+    const transcriber = await _bsGetTranscriber(setProg);
+    setProg('<span class="llm-spinner"></span>transcribing in your browser — the recording never leaves this device…');
+    const out = await transcriber(audio, { chunk_length_s: 30, stride_length_s: 5 });
+    const transcript = ((out && out.text) || '').trim();
+    if (!transcript) { setProg('No speech detected in the recording.'); primary.disabled = false; return; }
+    document.getElementById('biSourceText').value = transcript;
+    const txtRadio = document.querySelector('input[name="biSource"][value="text"]'); if (txtRadio) txtRadio.checked = true;
+    _biSetSource('text');
+    setProg(`Transcribed locally (${transcript.length} chars). Only this transcript is sent for extraction.`);
+    await biRunExtract();   // text path — sends just the transcript to the homelab model
+  } catch (e) {
+    setProg(`<span style="color:var(--red)">${esc(e.message)}</span>`);
+    primary.disabled = false;
+  }
+}
+
 async function biRunExtract() {
   if (_biMode === 'recording') return biRunExtractFromRecording();
+  if (_biMode === 'browser') return biRunExtractInBrowser();
   const text = document.getElementById('biSourceText').value.trim();
   if (!text) { toast('Paste some text first', true); return; }
   const primary = document.getElementById('biPrimaryBtn');
