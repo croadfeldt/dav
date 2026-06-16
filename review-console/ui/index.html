@@ -9611,6 +9611,9 @@ async function _bsGetTranscriber(setProg) {
   const mod = await import(_BS_TJS_URL);
   const { pipeline, env } = mod;
   try { env.allowLocalModels = false; } catch {}
+  // No cross-origin isolation (no COOP/COEP) → SharedArrayBuffer is unavailable, so force
+  // single-threaded WASM; otherwise onnxruntime-web's threaded path fails on the fallback.
+  try { env.backends.onnx.wasm.numThreads = 1; } catch {}
   const device = (typeof navigator !== 'undefined' && navigator.gpu) ? 'webgpu' : 'wasm';
   _bsTranscriber = await pipeline('automatic-speech-recognition', _BS_MODEL, {
     device,
