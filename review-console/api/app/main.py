@@ -41,6 +41,7 @@ from . import capability_density as _capability_density
 from . import capability_graph as _capability_graph
 from . import capability_catalog as _capability_catalog
 from . import assessment_ingest as _assessment_ingest
+from . import api_tokens
 from . import maturity_seed as _maturity_seed
 from . import prompts_registry as _prompts_registry
 from . import analysis_compare as _analysis_compare
@@ -97,6 +98,7 @@ MIGRATE_018_PATH = Path(__file__).parent / "migrate_018_audit_log.sql"
 MIGRATE_019_PATH = Path(__file__).parent / "migrate_019_assessments.sql"
 MIGRATE_020_PATH = Path(__file__).parent / "migrate_020_reconcile_catalog.sql"
 MIGRATE_021_PATH = Path(__file__).parent / "migrate_021_maturity_wall.sql"
+MIGRATE_022_PATH = Path(__file__).parent / "migrate_022_api_tokens.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 # Secured dav-docs-mcp self-registration (its LoadBalancer SSE URL + bearer token).
@@ -378,6 +380,11 @@ async def lifespan(app: FastAPI):
             await conn.execute(MIGRATE_021_PATH.read_text())
         except Exception:
             log.exception("migration 021 (maturity wall) FAILED — continuing boot without it")
+        try:
+            log.info("Applying migration 022 (api_tokens — agent/pipeline PATs)...")
+            await conn.execute(MIGRATE_022_PATH.read_text())
+        except Exception:
+            log.exception("migration 022 (api_tokens) FAILED — continuing boot without it")
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -411,6 +418,7 @@ async def lifespan(app: FastAPI):
     # DAV_REQUIRE_AUTH disables the fail-open.
     await _reload_approved()
     await _load_aliases()   # #39 identity unification
+    await api_tokens.load_cache(pool)   # agent/pipeline PATs (revocable bearer tokens)
     if _ldap_is_configured():
         log.info("LDAP configured (enforce=%s) — running initial user sync...", _ldap_enforcing())
         await _sync_ldap_users()
@@ -1074,6 +1082,12 @@ def get_user(request: Request) -> str:
     # internal token resolves to the system identity, no cookie/header needed.
     if _service_token_ok(request):
         return INTERNAL_IDENTITY
+    # Agent / pipeline Personal Access Token (Authorization: Bearer dav_pat_...)
+    # → the RBAC account it acts as. Checked before cookie/header so an agent can
+    # authenticate with no session, then normal RBAC applies.
+    pat_email = api_tokens.resolve(request.headers.get("Authorization", ""))
+    if pat_email:
+        return _canonical_identity(pat_email)
     # App-native session (internal users) first, then the oauth-proxy headers
     # (OCP/FreeIPA users), then anon. Identity is the email/username string.
     sess = local_auth.read_session(request.cookies.get(local_auth.SESSION_COOKIE, ""))
@@ -1959,6 +1973,43 @@ async def create_account(payload: AccountCreateIn, request: Request):
     return {"ok": True, "reviewer": email,
             "invited": bool(invite), "emailed": emailed, "email_error": email_error,
             "link": invite["link"] if invite else None}
+
+
+# ── agent / pipeline access tokens (PATs) ────────────────────────────────────
+class TokenMintIn(BaseModel):
+    email: str                          # the RBAC account the token acts as
+    label: str = ""
+    expires_at: Optional[datetime] = None
+
+
+@app.post("/api/tokens")
+async def mint_api_token(payload: TokenMintIn, request: Request):
+    """Mint a Personal Access Token for non-interactive / agent auth. Returns the
+    plaintext token ONCE (not stored in the clear). Platform-admin only."""
+    minter = await require_role(request, "platform-admin")
+    email = (payload.email or "").strip().lower()
+    if len(email) < 2:
+        raise HTTPException(400, "valid account email/username required")
+    token = await api_tokens.mint(pool, email, payload.label, minter, payload.expires_at)
+    return {"ok": True, "email": email, "token": token,
+            "note": "Store this now — it is not shown again. "
+                    "Use it as: Authorization: Bearer <token>"}
+
+
+@app.get("/api/tokens")
+async def list_api_tokens(request: Request, email: Optional[str] = None):
+    """List token metadata (never the secret). Platform-admin only."""
+    await require_role(request, "platform-admin")
+    return {"tokens": await api_tokens.listing(pool, email)}
+
+
+@app.delete("/api/tokens/{token_id}")
+async def revoke_api_token(token_id: int, request: Request):
+    """Revoke a token immediately (drops it from the in-memory cache too)."""
+    await require_role(request, "platform-admin")
+    if not await api_tokens.revoke(pool, token_id):
+        raise HTTPException(404, "token not found or already revoked")
+    return {"ok": True, "revoked": token_id}
 
 
 @app.post("/api/accounts/{reviewer}/invite")
