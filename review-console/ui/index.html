@@ -1604,6 +1604,20 @@
             <div style="font-size:12px;color:var(--text);"><strong>Track 2 · Engineering Roadmap</strong> <span style="color:var(--text-faint);">— capability-driven</span></div>
             <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">What to build, in what order, to satisfy the use cases. <em>Output:</em> a dependency-ordered capability roadmap. <em style="color:var(--text-faint);">Provisional until the capability catalog lands — capability ids are still raw model output.</em></div>
           </div>
+          <div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px;flex-wrap:wrap;">
+            <strong style="font-size:12px;">Roadmap</strong>
+            <select id="rpRoadmapGroupBy" style="font-size:10px;" title="How to cluster the gaps into a roadmap (theme works now; capability/subdomain sharpen once the catalog is curated)">
+              <option value="theme">by theme</option>
+              <option value="capability">by capability</option>
+              <option value="subdomain">by subdomain</option>
+            </select>
+            <span id="rpRoadmapMeta" style="font-size:10px;color:var(--text-faint);"></span>
+            <span style="flex:1;"></span>
+            <button class="btn ghost btn-sm" id="rpRoadmapExport" type="button" title="Download the roadmap as markdown">⬇ Markdown</button>
+            <button class="btn ghost btn-sm" id="rpRoadmapRefresh" type="button" title="Refresh">↻</button>
+          </div>
+          <div id="rpRoadmap"><div style="font-size:11px;color:var(--text-faint);">Synthesizing roadmap from the gap analysis…</div></div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">
           <div id="rpCapMapSection">
             <div class="rp-section-title">Capability Map / Foundational</div>
             <div id="rpCapMap">
@@ -13819,8 +13833,93 @@ function loadEngineeringTab() {
   if (sel) sel.style.display = 'none';   // scope lives in the masthead now
   if (!(allSets || []).length) { try { loadSets(); } catch {} }
   populateScopeSel();
+  try { _loadRoadmapProjection(); } catch (_) {}   // #141 synthesized roadmap (primary)
   try { _loadEngCapMap(); } catch (_) {}   // auto-load for the current scope on entry
 }
+
+// ── Roadmap projection (#141) — synthesized engineering roadmap from the gap analysis ──
+let _roadmapData = null;
+const _RM_SEVCOLOR = { critical: '#c02828', major: '#c8861a', moderate: '#5b8a5b', advisory: '#5a7184', minor: '#556' };
+async function _loadRoadmapProjection() {
+  const box = document.getElementById('rpRoadmap');
+  if (!box) return;
+  const gb = document.getElementById('rpRoadmapGroupBy');
+  box.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Synthesizing roadmap from the gap analysis…</div>';
+  try {
+    const q = (gb && gb.value) ? ('?group_by=' + encodeURIComponent(gb.value)) : '';
+    const d = await api('/api/analysis/roadmap' + q);
+    _roadmapData = d;
+    const sc = d.severity_counts || {};
+    const meta = document.getElementById('rpRoadmapMeta');
+    if (meta) meta.textContent = `${d.total_gaps} gaps · ${d.cluster_count} clusters · ${sc.critical || 0} critical`;
+    if (!d.total_gaps) { box.innerHTML = '<div class="empty" style="font-size:11px;">No gaps in scope yet — run an ingestion to populate the roadmap.</div>'; return; }
+    const chip = (s, n) => n ? `<span style="font-size:9px;padding:0 5px;border-radius:8px;margin-left:3px;background:${_RM_SEVCOLOR[s] || '#666'};color:#fff;">${n} ${s}</span>` : '';
+    let h = '';
+    if ((d.critical_gaps || []).length) {
+      h += `<div style="border:1px solid var(--red);border-radius:6px;padding:8px 10px;margin-bottom:10px;background:rgba(200,40,40,.07);">
+        <div style="font-size:11px;font-weight:600;color:var(--red);margin-bottom:4px;">⚠ ${d.critical_gaps.length} critical gap${d.critical_gaps.length === 1 ? '' : 's'} — decide first</div>
+        ${d.critical_gaps.map(g => `<div style="font-size:11px;margin:2px 0;">${esc(g.title)} <span style="color:var(--text-faint);">— ${esc(g.uc_handle || '')}</span></div>`).join('')}
+      </div>`;
+    }
+    for (const t of (d.tiers || [])) {
+      h += `<div style="margin:12px 0 5px;font-size:11px;font-weight:600;color:var(--text-dim);">Tier ${t.tier} — ${esc(t.label)}</div>`;
+      for (const c of (t.clusters || [])) {
+        const cs = c.severity_counts || {};
+        h += `<div style="border:1px solid var(--border);border-radius:6px;padding:7px 10px;margin-bottom:5px;">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <strong style="font-size:12px;">${esc(c.name)}</strong>
+            ${c.foundational ? `<span title="foundational — ${c.transitive_dependents} capabilities depend on it" style="font-size:9px;color:var(--blue);">⚑ foundational</span>` : ''}
+            ${c.disposition ? `<span style="font-size:9px;color:var(--text-faint);">${esc(c.disposition)}</span>` : ''}
+            <span style="flex:1;"></span>
+            <span style="font-size:10px;color:var(--text-faint);">${c.gap_count} gap${c.gap_count === 1 ? '' : 's'} · demand ${c.demand}</span>
+            ${chip('critical', cs.critical)}${chip('major', cs.major)}${chip('moderate', cs.moderate)}
+          </div>
+          <div style="font-size:10px;color:var(--text-dim);margin-top:3px;">${(c.gaps || []).slice(0, 5).map(g => esc(g.title) + ` <span style="color:var(--text-faint);">[${g.severity}]</span>`).join(' · ')}${(c.gaps || []).length > 5 ? ` <span style="color:var(--text-faint);">+${c.gaps.length - 5} more</span>` : ''}</div>
+        </div>`;
+      }
+    }
+    if (d.unmapped_gap_count) h += `<div style="font-size:10px;color:var(--text-faint);margin-top:6px;">${d.unmapped_gap_count} gap(s) not mapped to a capability in this grouping.</div>`;
+    box.innerHTML = h;
+  } catch (e) {
+    box.innerHTML = `<div class="empty" style="color:var(--red);font-size:11px;">${esc(e.message)}</div>`;
+  }
+}
+function _roadmapMarkdown(d) {
+  if (!d) return '';
+  const sc = d.severity_counts || {};
+  const L = ['# Engineering Roadmap (DAV gap synthesis)', '',
+    `_${d.total_gaps} gaps · grouped by ${d.group_by} · ${d.cluster_count} clusters._`, '',
+    'Severity: ' + ['critical', 'major', 'moderate', 'minor', 'advisory'].map(s => `**${sc[s] || 0} ${s}**`).join(' · '), ''];
+  if ((d.critical_gaps || []).length) {
+    L.push(`## Critical gaps (${d.critical_gaps.length}) — decide first`);
+    d.critical_gaps.forEach(g => L.push(`1. **${g.title}** — _${g.uc_handle || ''}_`));
+    L.push('');
+  }
+  (d.tiers || []).forEach(t => {
+    L.push(`## Tier ${t.tier} — ${t.label}`);
+    (t.clusters || []).forEach(c => {
+      const cs = c.severity_counts || {};
+      const sev = ['critical', 'major', 'moderate', 'minor', 'advisory'].filter(s => cs[s]).map(s => `${cs[s]} ${s}`).join(', ');
+      L.push(`### ${c.name}  (${c.gap_count} gaps · demand ${c.demand}${c.foundational ? ' · foundational' : ''})`);
+      if (sev) L.push(`_${sev}_`);
+      (c.gaps || []).slice(0, 8).forEach(g => L.push(`- ${g.title} _[${g.severity}]_ — ${g.uc_handle || ''}`));
+      if ((c.gaps || []).length > 8) L.push(`- …+${c.gaps.length - 8} more`);
+      L.push('');
+    });
+  });
+  return L.join('\n');
+}
+function _downloadRoadmapMd() {
+  const md = _roadmapMarkdown(_roadmapData);
+  if (!md) { try { toast('Nothing to export yet', true); } catch {} return; }
+  const blob = new Blob([md], { type: 'text/markdown' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'engineering-roadmap.md'; a.click();
+  URL.revokeObjectURL(a.href);
+}
+document.getElementById('rpRoadmapExport')?.addEventListener('click', _downloadRoadmapMd);
+document.getElementById('rpRoadmapRefresh')?.addEventListener('click', _loadRoadmapProjection);
+document.getElementById('rpRoadmapGroupBy')?.addEventListener('change', _loadRoadmapProjection);
 
 // ── Customers / Projects domain (customer-demand epic, Phase-2a) ─────────────
 let _customersCache = [];

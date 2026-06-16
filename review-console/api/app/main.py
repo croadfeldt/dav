@@ -9796,6 +9796,143 @@ async def query_gaps(
     }
 
 
+# Keyword themes for the default 'theme' clustering — used when the capability catalog
+# isn't curated (capability_ids are still raw model output). First-match wins.
+_ROADMAP_THEMES = [
+    ('Confidential computing / TEE / attestation', ['attestation', 'tee', 'tcb', 'confidential', 'key release', 'key custody', 'signing key', 'key material', 'secure-model', 'secure model']),
+    ('Encryption & data integrity', ['encrypt', 'aes-gcm', 'per-file', 'file-level', 'integrity', 'decrypt']),
+    ('Cross-cloud residency & data mobility', ['cross-cloud', 'residency', 'data mobility', 'brownfield', 'data-residency']),
+    ('Sovereignty / federation / decommissioning', ['sovereign', 'federation', 'decommission', 'peer']),
+    ('Audit, governance & policy', ['audit', 'governance', 'policy', 'override', 'compliance', 'merkle', 'profile', 'boundary']),
+    ('AI intake / NLP workflows', ['nlp', 'natural language', 'ai-intake', 'ai intake', 'ai model', 'conversational', 'ai-assisted', 'ai workflow']),
+    ('Metering / FinOps / cost', ['metric', 'metering', 'cost', 'billing', 'revenue', 'finops', 'pricing', 'quota', 'currency']),
+    ('Workflow automation & orchestration', ['workflow', 'automation', 'aap', 'ansible', 'eda', 'orchestrat', 'approval gate', 'composite', 'f5', 'vip', 'ebonding', 'itsm', 'cms', 'snow', 'port provisioning', 'branch', 'dynamic inventory', 'ipam', 'cmdb', 'dc-port', 'survey', 'intake server']),
+    ('Compute & storage provisioning', ['vm provision', 'provision', 'storage', 'persistent volume', 'idempoten', 'provider failure', 'requeue', 'orphan', 'partial-realization', 'tenancy', 'indeterminate', 'recovery', 'lifecycle']),
+    ('Identity & drift', ['identity', 'auth-provider', 'drift']),
+]
+_ROADMAP_FOUNDATIONAL_THEMES = {'Audit, governance & policy'}
+
+
+def _roadmap_theme_of(title, handle):
+    t = ((title or '') + ' ' + (handle or '')).lower()
+    for name, kws in _ROADMAP_THEMES:
+        if any(k in t for k in kws):
+            return name
+    return 'Other / unclustered'
+
+
+@app.get("/api/analysis/roadmap")
+async def analysis_roadmap(request: Request,
+                           set_id: Optional[str] = Query(None, description="Scoping Set id, '__all__' (default), or '__unassigned__'"),
+                           group_by: str = Query("theme", description="theme (default) | capability | subdomain")):
+    """Roadmap projection (#141): the engineering-capability roadmap, synthesized from the
+    project's gap analysis. Clusters each gap by `group_by`, ranks clusters by severity-weighted
+    gap load + demand (+ foundational standing for capability mode), and tiers them. Single-source
+    analysis → a reproducible roadmap (replaces the hand/keyword pipeline). `theme` is the default
+    because capability_ids are raw model output until the catalog is curated (#89); `capability`
+    and `subdomain` become the principled modes once it is."""
+    from collections import Counter, defaultdict
+    if group_by not in ("theme", "capability", "subdomain"):
+        group_by = "theme"
+    SEV_W = {"critical": 20, "major": 6, "moderate": 1.5, "advisory": 0.5, "minor": 0.5}
+    SEV_ORDER = {"critical": 0, "major": 1, "moderate": 2, "advisory": 3, "minor": 4}
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        uuids = await _resolve_scope_uc_uuids(conn, pid, set_id, None)
+        if not uuids:
+            return {"project_id": pid, "set_id": set_id, "group_by": group_by, "total_gaps": 0,
+                    "severity_counts": {}, "critical_gaps": [], "tiers": [],
+                    "unmapped_gap_count": 0, "cluster_count": 0}
+        _latest = ("SELECT DISTINCT ON (uc_uuid) id, uc_uuid, run_id, uc_handle FROM uc_analyses "
+                   "WHERE uc_uuid = ANY($1) ORDER BY uc_uuid, ingested_at DESC")
+        latest = await conn.fetch(_latest, uuids)
+        handle = {r["uc_uuid"]: (r["uc_handle"] or r["uc_uuid"]) for r in latest}
+        analysis_ids = [r["id"] for r in latest]
+        gap_rows = await conn.fetch(
+            "SELECT g.uc_uuid, g.gap_id, g.title, g.severity, ua.verdict "
+            "FROM uc_gaps g JOIN uc_analyses ua ON ua.id=g.analysis_id "
+            "WHERE g.analysis_id = ANY($1)", analysis_ids)
+        cap_rows = await conn.fetch(
+            f"SELECT c.capability_id, c.uc_uuid FROM uc_capabilities c "
+            f"JOIN ({_latest}) l ON l.uc_uuid=c.uc_uuid AND l.run_id=c.run_id", uuids)
+        dep_rows = await conn.fetch(
+            f"SELECT d.capability_id, d.depends_on_id FROM uc_capability_deps d "
+            f"JOIN ({_latest}) l ON l.uc_uuid=d.uc_uuid AND l.run_id=d.run_id", uuids)
+        _cat_pid = await _default_project_id(conn)
+        name_map = await _catalog_name_map(conn, _cat_pid)
+        meta_map = await _catalog_meta_map(conn, _cat_pid)
+
+    gaps = [dict(r) for r in gap_rows]
+    sev_counts = dict(Counter(g["severity"] for g in gaps))
+    uc_caps = defaultdict(set)
+    cap_demand = defaultdict(set)
+    for r in cap_rows:
+        uc_caps[r["uc_uuid"]].add(r["capability_id"])
+        cap_demand[r["capability_id"]].add(r["uc_uuid"])
+    found = {f["capability_id"]: f for f in _capability_graph.foundational_ranking(
+        [(r["capability_id"], r["depends_on_id"]) for r in dep_rows],
+        {k: len(v) for k, v in cap_demand.items()})}
+
+    def keys_for(g):
+        if group_by == "theme":
+            return [_roadmap_theme_of(g["title"], handle.get(g["uc_uuid"]))]
+        caps = uc_caps.get(g["uc_uuid"]) or set()
+        if not caps:
+            return []
+        if group_by == "subdomain":
+            return sorted({(meta_map.get(c) or {}).get("subdomain") or "Uncategorized" for c in caps})
+        return sorted(caps)
+
+    cluster_gaps = defaultdict(list)
+    cluster_ucs = defaultdict(set)
+    unmapped = 0
+    for g in gaps:
+        ks = keys_for(g)
+        if not ks:
+            unmapped += 1
+            continue
+        for k in ks:
+            cluster_gaps[k].append(g)
+            cluster_ucs[k].add(g["uc_uuid"])
+
+    clusters = []
+    for k, glist in cluster_gaps.items():
+        sc = Counter(x["severity"] for x in glist)
+        load = sum(SEV_W.get(x["severity"], 0) for x in glist)
+        td = int((found.get(k) or {}).get("transitive_dependents") or 0) if group_by == "capability" else 0
+        demand = len(cluster_ucs[k])
+        has_crit = sc.get("critical", 0) > 0
+        is_found_theme = group_by == "theme" and k in _ROADMAP_FOUNDATIONAL_THEMES
+        tier = 1 if (has_crit or td > 0 or is_found_theme) else (2 if sc.get("major", 0) else 3)
+        clusters.append({
+            "key": k,
+            "name": (name_map.get(k) or k) if group_by == "capability" else k,
+            "disposition": (meta_map.get(k) or {}).get("disposition") if group_by == "capability" else None,
+            "demand": demand, "foundational": td > 0, "transitive_dependents": td,
+            "gap_count": len(glist), "severity_counts": dict(sc),
+            "score": round(load + demand + td * 2.0, 2), "tier": tier,
+            "gaps": sorted(
+                [{"uc": x["uc_uuid"], "uc_handle": handle.get(x["uc_uuid"]),
+                  "gap_id": x["gap_id"], "title": x["title"],
+                  "severity": x["severity"], "verdict": x["verdict"]} for x in glist],
+                key=lambda y: SEV_ORDER.get(y["severity"], 9)),
+        })
+    clusters.sort(key=lambda c: (c["tier"], -c["severity_counts"].get("critical", 0), -c["score"]))
+
+    tier_label = {1: "Security & trust spine (criticals + foundational)",
+                  2: "Majors + broad integration surface", 3: "Domain capabilities"}
+    tiers = [{"tier": t, "label": tier_label[t],
+              "clusters": [c for c in clusters if c["tier"] == t]}
+             for t in (1, 2, 3) if any(c["tier"] == t for c in clusters)]
+    critical_gaps = sorted(
+        [{"uc": g["uc_uuid"], "uc_handle": handle.get(g["uc_uuid"]), "gap_id": g["gap_id"],
+          "title": g["title"], "verdict": g["verdict"]} for g in gaps if g["severity"] == "critical"],
+        key=lambda y: y["uc_handle"] or "")
+    return {"project_id": pid, "set_id": set_id, "group_by": group_by, "total_gaps": len(gaps),
+            "severity_counts": sev_counts, "critical_gaps": critical_gaps,
+            "tiers": tiers, "unmapped_gap_count": unmapped, "cluster_count": len(clusters)}
+
+
 # ========================= SOURCING =========================
 
 
