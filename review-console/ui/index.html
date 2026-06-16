@@ -9495,7 +9495,7 @@ function _biSetSource(mode) {
     mode === 'recording'
       ? 'Audio/video uploads to the homelab worker → transcribed locally (whisper) → UCs. The recording stays in the homelab.'
     : mode === 'browser'
-      ? 'Audio is transcribed IN THIS BROWSER (whisper, WebGPU/WASM) — the recording never leaves your device. Only the transcript text is sent to the homelab model for extraction. First run downloads the speech model (then cached).'
+      ? 'Audio OR video is transcribed IN THIS BROWSER (whisper, WebGPU/WASM; video audio extracted via ffmpeg.wasm) — the recording never leaves your device. Only the transcript text is sent to the homelab model for extraction. First run downloads the model(s) (then cached).'
       : '';
 }
 
@@ -9586,15 +9586,61 @@ const _BS_TJS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
 const _BS_MODEL = 'Xenova/whisper-base.en';   // base.en = good speed/quality for the browser
 let _bsTranscriber = null;
 
-async function _bsDecodeTo16kMono(file) {
+// ffmpeg.wasm (in-browser) — extracts the audio track from any container (video too),
+// single-threaded core so it runs without cross-origin isolation. The file never leaves.
+const _BS_FFMPEG_VER = '0.12.10', _BS_FFMPEG_UTIL_VER = '0.12.1', _BS_FFMPEG_CORE_VER = '0.12.6';
+let _bsFfmpeg = null;
+let _bsFfProgressCb = null;
+async function _bsGetFfmpeg(setProg) {
+  if (_bsFfmpeg) return _bsFfmpeg;
+  if (setProg) setProg('<span class="llm-spinner"></span>loading ffmpeg in-browser (~30 MB first run; cached after)…');
+  const FF = await import(`https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@${_BS_FFMPEG_VER}/dist/esm/index.js`);
+  const U = await import(`https://cdn.jsdelivr.net/npm/@ffmpeg/util@${_BS_FFMPEG_UTIL_VER}/dist/esm/index.js`);
+  const ffmpeg = new FF.FFmpeg();
+  ffmpeg.on('progress', ({ progress }) => { if (_bsFfProgressCb) _bsFfProgressCb(progress); });
+  const base = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${_BS_FFMPEG_CORE_VER}/dist/esm`;
+  await ffmpeg.load({
+    coreURL: await U.toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
+    wasmURL: await U.toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
+  });
+  _bsFfmpeg = ffmpeg;
+  return ffmpeg;
+}
+async function _bsFfmpegExtractWav(file, setProg) {
+  const ffmpeg = await _bsGetFfmpeg(setProg);
+  const ext = (file.name && file.name.includes('.')) ? file.name.split('.').pop().toLowerCase().replace(/[^a-z0-9]/g, '') : 'bin';
+  const inName = 'in.' + (ext || 'bin'), outName = 'out.wav';
+  _bsFfProgressCb = (p) => { if (setProg) setProg(`<span class="llm-spinner"></span>extracting audio from the file (ffmpeg) — ${Math.round((p || 0) * 100)}%…`); };
+  if (setProg) setProg('<span class="llm-spinner"></span>extracting audio from the file (ffmpeg, in-browser)…');
+  try {
+    await ffmpeg.writeFile(inName, new Uint8Array(await file.arrayBuffer()));
+    await ffmpeg.exec(['-i', inName, '-vn', '-ar', '16000', '-ac', '1', '-f', 'wav', outName]);
+    const data = await ffmpeg.readFile(outName);
+    try { await ffmpeg.deleteFile(inName); await ffmpeg.deleteFile(outName); } catch {}
+    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+  } finally { _bsFfProgressCb = null; }
+}
+async function _bsDecodeTo16kMono(file, setProg) {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) throw new Error('Web Audio API not available in this browser.');
-  const buf = await file.arrayBuffer();
+  const isVideo = (file.type && file.type.startsWith('video/')) ||
+    /\.(mp4|mov|mkv|webm|avi|m4v|wmv|flv|ts|mpg|mpeg)$/i.test(file.name || '');
+  let abuf = isVideo ? await _bsFfmpegExtractWav(file, setProg) : await file.arrayBuffer();
   const ac = new AC();
   let decoded;
-  try { decoded = await ac.decodeAudioData(buf.slice(0)); }
-  catch (e) { throw new Error('Could not decode this file in-browser — try the "Upload recording" path (server worker) for this format.'); }
-  finally { try { ac.close(); } catch {} }
+  try {
+    decoded = await ac.decodeAudioData(abuf.slice(0));
+  } catch (e) {
+    if (!isVideo) {
+      // audio codec the browser can't decode natively (e.g. some m4a/opus) → ffmpeg, then retry
+      try { abuf = await _bsFfmpegExtractWav(file, setProg); decoded = await ac.decodeAudioData(abuf.slice(0)); }
+      catch (e2) { try { ac.close(); } catch {} throw new Error('Could not decode this file in-browser. Try the "Upload recording" path (server worker).'); }
+    } else {
+      try { ac.close(); } catch {}
+      throw new Error('Could not decode the extracted audio. Try the "Upload recording" path (server worker).');
+    }
+  }
+  try { ac.close(); } catch {}
   const rate = 16000;
   const frames = Math.max(1, Math.ceil(decoded.duration * rate));
   const off = new OfflineAudioContext(1, frames, rate);
@@ -9605,6 +9651,7 @@ async function _bsDecodeTo16kMono(file) {
   const rendered = await off.startRendering();
   return rendered.getChannelData(0);
 }
+function _bsFmtEta(s) { s = Math.round(s); if (s < 60) return s + 's'; const m = Math.floor(s / 60), r = s % 60; return m + 'm' + (r ? ' ' + r + 's' : ''); }
 
 async function _bsGetTranscriber(setProg) {
   if (_bsTranscriber) return _bsTranscriber;
@@ -9637,11 +9684,31 @@ async function biRunExtractInBrowser() {
   document.getElementById('biStatus').textContent = '';
   try {
     setProg('<span class="llm-spinner"></span>decoding audio locally…');
-    const audio = await _bsDecodeTo16kMono(file);
+    const audio = await _bsDecodeTo16kMono(file, setProg);
     setProg('<span class="llm-spinner"></span>loading the speech model (first run downloads it; cached after)…');
     const transcriber = await _bsGetTranscriber(setProg);
+    const totalSec = audio.length / 16000;
+    const t0 = Date.now();
+    const updateProg = (curSec) => {
+      const frac = Math.max(0, Math.min(0.99, curSec / Math.max(1, totalSec)));
+      const elapsed = (Date.now() - t0) / 1000;
+      const eta = frac > 0.03 ? (elapsed * (1 - frac) / frac) : null;
+      setProg(`<span class="llm-spinner"></span>transcribing in your browser — ${Math.round(frac * 100)}%${eta ? ` · ~${_bsFmtEta(eta)} left` : ''} (audio never leaves this device)`);
+    };
     setProg('<span class="llm-spinner"></span>transcribing in your browser — the recording never leaves this device…');
-    const out = await transcriber(audio, { chunk_length_s: 30, stride_length_s: 5 });
+    let streamer = null;
+    try {
+      const { WhisperTextStreamer } = await import(_BS_TJS_URL);
+      const tp = transcriber.processor.feature_extractor.config.chunk_length / transcriber.model.config.max_source_positions;
+      streamer = new WhisperTextStreamer(transcriber.tokenizer, {
+        time_precision: tp,
+        on_chunk_start: (t) => updateProg(t),
+        on_chunk_end: (t) => updateProg(t),
+      });
+    } catch (_) { streamer = null; }
+    const opts = { chunk_length_s: 30, stride_length_s: 5, return_timestamps: true };
+    if (streamer) opts.streamer = streamer;
+    const out = await transcriber(audio, opts);
     const transcript = ((out && out.text) || '').trim();
     if (!transcript) { setProg('No speech detected in the recording.'); primary.disabled = false; return; }
     document.getElementById('biSourceText').value = transcript;
