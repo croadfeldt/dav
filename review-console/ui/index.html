@@ -9491,12 +9491,13 @@ function _biSetSource(mode) {
   if (t) t.style.display = mode === 'text' ? '' : 'none';
   if (r) r.style.display = (mode === 'recording' || mode === 'browser') ? '' : 'none';
   const note = document.getElementById('biSourceNote');
-  if (note) note.textContent =
-    mode === 'recording'
-      ? 'Audio/video uploads to the homelab worker → transcribed locally (whisper) → UCs. The recording stays in the homelab.'
-    : mode === 'browser'
-      ? 'Audio OR video is transcribed IN THIS BROWSER (whisper, WebGPU/WASM; video audio extracted via ffmpeg.wasm) — the recording never leaves your device. Only the transcript text is sent to the homelab model for extraction. First run downloads the model(s) (then cached).'
-      : '';
+  if (note) {
+    if (mode === 'recording') {
+      note.innerHTML = '<span style="color:var(--orange,#c8861a);">⚠ This uploads the recording to a remote server for transcription.</span> For better privacy &amp; security, prefer <strong>🔒 Transcribe in browser</strong> — that keeps the recording on your device and sends only the transcript text.';
+    } else if (mode === 'browser') {
+      note.innerHTML = 'Audio/video is transcribed <strong>in your browser</strong> (whisper; video audio via ffmpeg.wasm) — the recording never leaves your device. Only the resulting <strong>transcript text</strong> is then sent to the remote model, which creates the UCs. First run downloads the model(s) (then cached).';
+    } else { note.innerHTML = ''; }
+  }
 }
 
 // Shared "drafts → review step" transition, used by both the text and recording paths.
@@ -9580,7 +9581,7 @@ async function biRunExtractFromRecording() {
 
 // ── In-browser transcription (#180) — the audio NEVER leaves the device. ──
 // Whisper runs client-side via Transformers.js (WebGPU, WASM fallback); only the
-// resulting transcript text is sent to the homelab model for extraction. The speech
+// resulting transcript text is sent to the remote model for extraction. The speech
 // model downloads from a CDN on first use and is cached in the browser (no audio uploads).
 const _BS_TJS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
 const _BS_MODEL = 'Xenova/whisper-base.en';   // base.en = good speed/quality for the browser
@@ -9715,7 +9716,7 @@ async function biRunExtractInBrowser() {
     const txtRadio = document.querySelector('input[name="biSource"][value="text"]'); if (txtRadio) txtRadio.checked = true;
     _biSetSource('text');
     setProg(`Transcribed locally (${transcript.length} chars). Only this transcript is sent for extraction.`);
-    await biRunExtract();   // text path — sends just the transcript to the homelab model
+    await biRunExtract();   // text path — sends just the transcript to the remote model
   } catch (e) {
     setProg(`<span style="color:var(--red)">${esc(e.message)}</span>`);
     primary.disabled = false;
