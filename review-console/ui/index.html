@@ -1879,10 +1879,71 @@
 
     <!-- ══════════════ USERS & ROLES (RBAC console) ══════════════ -->
     <section class="pf-view" id="view-users">
-      <div style="padding:18px 22px;overflow-y:auto;height:100%;">
-        <div class="view-title">Users &amp; roles</div>
-        <div class="view-subtitle">Accounts, the role × privilege matrix, and role bindings (incl. LDAP group mappings).</div>
-        <div id="usersViewBody"></div>
+      <div style="display:flex;flex-direction:column;height:100%;">
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 12px 0;border-bottom:1px solid var(--border);flex-shrink:0;">
+          <div class="tabs" style="margin:0;border:none;">
+            <button class="tab active" id="usersTabPeopleBtn" type="button" onclick="_setUsersTab('people')">Users &amp; roles</button>
+            <button class="tab" id="usersTabAgentsBtn" type="button" onclick="_setUsersTab('agents')" data-needs-priv="platform.admin" title="API access tokens for agents &amp; automation (GitHub-style PATs)">🤖 Agents</button>
+          </div>
+        </div>
+        <div id="usersTabPeople" style="flex:1;overflow-y:auto;padding:18px 22px;">
+          <div class="view-title">Users &amp; roles</div>
+          <div class="view-subtitle">Accounts, the role × privilege matrix, and role bindings (incl. LDAP group mappings).</div>
+          <div id="usersViewBody"></div>
+        </div>
+        <div id="usersTabAgents" style="flex:1;overflow-y:auto;padding:18px 22px;display:none;">
+          <div class="view-title">Agents &amp; access tokens</div>
+          <div class="view-subtitle">Personal Access Tokens (PATs) for non-interactive agents &amp; automation. A token acts as an account and inherits that account's roles &amp; privileges. The secret is shown <strong>once</strong> at creation — store it in the agent's secret store. Platform-admin only.</div>
+
+          <div class="cfg-card panel-card" style="margin:14px 0;">
+            <div class="panel-card-header"><div><div class="pc-title">Generate token</div><div class="pc-sub">Create a bearer token for an agent identity.</div></div></div>
+            <div style="padding:12px 14px;display:flex;flex-direction:column;gap:10px;max-width:660px;">
+              <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:600;color:var(--text-dim);">
+                <span>Acts as (account email)</span>
+                <input id="agentEmail" placeholder="agent-name@roadfeldt.com" autocomplete="off" style="font-size:12px;font-weight:400;" />
+                <small style="font-weight:400;color:var(--text-faint);">The token inherits this account's roles &amp; privileges. Prefer a <em>dedicated</em> agent identity (then grant it scoped roles in Users &amp; roles) over a person's account. An identity with no role bindings can authenticate but do nothing.</small>
+              </label>
+              <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:600;color:var(--text-dim);">
+                <span>Label</span>
+                <input id="agentLabel" placeholder="e.g. work-claude-session" autocomplete="off" style="font-size:12px;font-weight:400;" />
+                <small style="font-weight:400;color:var(--text-faint);">What this token is for — shown in the list below.</small>
+              </label>
+              <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:600;color:var(--text-dim);max-width:200px;">
+                <span>Expires</span>
+                <select id="agentExpiry" style="font-size:12px;font-weight:400;">
+                  <option value="30">30 days</option>
+                  <option value="90">90 days</option>
+                  <option value="365" selected>1 year</option>
+                  <option value="0">No expiration</option>
+                </select>
+              </label>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <button class="btn primary" id="agentMintBtn" type="button">Generate token</button>
+                <span id="agentMintMsg" style="font-size:11px;color:var(--text-faint);"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="cfg-card panel-card" id="agentRevealCard" style="display:none;margin:14px 0;border-color:var(--green);">
+            <div class="panel-card-header"><div><div class="pc-title" style="color:var(--green);">✓ Token created — copy it now</div><div class="pc-sub">This is the only time the secret is shown. If you lose it, revoke and generate a new one.</div></div></div>
+            <div style="padding:12px 14px;">
+              <div style="display:flex;gap:8px;align-items:center;">
+                <code id="agentRevealToken" style="flex:1;padding:8px 10px;background:var(--bg-elev,#1a1a1a);border:1px solid var(--border);border-radius:6px;font-size:12px;word-break:break-all;"></code>
+                <button class="btn" id="agentCopyBtn" type="button">Copy</button>
+                <button class="btn ghost" id="agentRevealDismiss" type="button" title="Hide">✕</button>
+              </div>
+              <div id="agentRevealUsage" style="margin-top:10px;font-size:11px;color:var(--text-dim);line-height:1.6;"></div>
+            </div>
+          </div>
+
+          <div class="cfg-card panel-card" style="margin:14px 0;">
+            <div class="panel-card-header">
+              <div><div class="pc-title">Active tokens</div><div class="pc-sub">All issued tokens (the secret is never shown). Revoke to disable a token immediately.</div></div>
+              <button class="btn ghost btn-sm" id="agentRefreshBtn" type="button">↻ Refresh</button>
+            </div>
+            <div id="agentTokenList" style="padding:4px 0;"><div class="empty" style="padding:14px;">Loading…</div></div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -4034,6 +4095,106 @@ function loadAccessPanels() {
   // Projects admin moved to the Customers & Projects → Projects tab (loadProjectsTab).
   if (me && me.is_platform_admin) { loadLdapStatus(); loadUsers(); loadLdapSettings(); loadSmtpSettings(); }
 }
+
+// ── Agents & access tokens (#168) — Users & roles → Agents sub-tab ───────────
+let _agentsLoaded = false;
+function _setUsersTab(which) {
+  const people = which !== 'agents';
+  const p = document.getElementById('usersTabPeople'), a = document.getElementById('usersTabAgents');
+  const pb = document.getElementById('usersTabPeopleBtn'), ab = document.getElementById('usersTabAgentsBtn');
+  if (p) p.style.display = people ? '' : 'none';
+  if (a) a.style.display = people ? 'none' : '';
+  if (pb) pb.classList.toggle('active', people);
+  if (ab) ab.classList.toggle('active', !people);
+  if (!people && !_agentsLoaded) { _agentsLoaded = true; loadAgentTokens(); }
+}
+
+function _agentFmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso); if (isNaN(d.getTime())) return esc(String(iso));
+  return d.toLocaleDateString(undefined, { year:'numeric', month:'short', day:'numeric' });
+}
+
+async function loadAgentTokens() {
+  const box = document.getElementById('agentTokenList');
+  if (!box) return;
+  box.innerHTML = '<div class="empty" style="padding:14px;">Loading…</div>';
+  try {
+    const r = await api('/api/tokens');
+    const toks = (r && r.tokens) || [];
+    if (!toks.length) { box.innerHTML = '<div class="empty" style="padding:14px;">No tokens yet — generate one above.</div>'; return; }
+    const now = Date.now();
+    const rows = toks.map(t => {
+      const revoked = !!t.revoked_at;
+      const exp = t.expires_at ? new Date(t.expires_at).getTime() : 0;
+      const expired = exp && exp < now;
+      const status = revoked ? '<span style="color:var(--red);">revoked</span>'
+        : expired ? '<span style="color:var(--orange,#c8861a);">expired</span>'
+        : '<span style="color:var(--green);">active</span>';
+      const lastUsed = t.last_used_at ? _agentFmtDate(t.last_used_at) : '<span style="color:var(--text-faint);">never</span>';
+      const expTxt = t.expires_at ? _agentFmtDate(t.expires_at) : '<span style="color:var(--text-faint);">no expiry</span>';
+      return `<tr style="border-top:1px solid var(--border);">
+        <td style="padding:8px 10px;">${esc(t.label || '—')}</td>
+        <td style="padding:8px 10px;font-family:monospace;font-size:11px;">${esc(t.email)}</td>
+        <td style="padding:8px 10px;font-size:11px;">${status}</td>
+        <td style="padding:8px 10px;font-size:11px;">${_agentFmtDate(t.created_at)}<div style="color:var(--text-faint);">${esc(t.created_by || '')}</div></td>
+        <td style="padding:8px 10px;font-size:11px;">${lastUsed}</td>
+        <td style="padding:8px 10px;font-size:11px;">${expTxt}</td>
+        <td style="padding:8px 10px;text-align:right;">${revoked ? '' : `<button class="btn ghost btn-sm" type="button" onclick="_revokeAgentToken(${t.id}, this)">Revoke</button>`}</td>
+      </tr>`;
+    }).join('');
+    box.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="text-align:left;color:var(--text-dim);font-size:10px;text-transform:uppercase;letter-spacing:.04em;">
+        <th style="padding:6px 10px;">Label</th><th style="padding:6px 10px;">Acts as</th><th style="padding:6px 10px;">Status</th>
+        <th style="padding:6px 10px;">Created</th><th style="padding:6px 10px;">Last used</th><th style="padding:6px 10px;">Expires</th><th></th>
+      </tr></thead><tbody>${rows}</tbody></table>`;
+  } catch (e) {
+    box.innerHTML = `<div class="empty" style="padding:14px;color:var(--red);">${esc(e.message || 'failed to load tokens')}</div>`;
+  }
+}
+
+async function _revokeAgentToken(id, btn) {
+  if (!confirm('Revoke this token? Any agent using it loses access immediately.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'revoking…'; }
+  try { await api('/api/tokens/' + id, { method: 'DELETE' }); toast('Token revoked'); loadAgentTokens(); }
+  catch (e) { toast(e.message, true); if (btn) { btn.disabled = false; btn.textContent = 'Revoke'; } }
+}
+
+document.getElementById('agentMintBtn')?.addEventListener('click', async () => {
+  const email = (document.getElementById('agentEmail').value || '').trim().toLowerCase();
+  const label = (document.getElementById('agentLabel').value || '').trim();
+  const days = parseInt(document.getElementById('agentExpiry').value, 10);
+  const msg = document.getElementById('agentMintMsg');
+  if (email.length < 2) { msg.textContent = 'Enter the account email the token acts as.'; msg.style.color = 'var(--red)'; return; }
+  let expires_at = null;
+  if (days > 0) expires_at = new Date(Date.now() + days * 864e5).toISOString();
+  msg.textContent = 'generating…'; msg.style.color = 'var(--text-faint)';
+  try {
+    const r = await api('/api/tokens', { method: 'POST', body: JSON.stringify({ email, label, expires_at }) });
+    msg.textContent = '';
+    const card = document.getElementById('agentRevealCard');
+    document.getElementById('agentRevealToken').textContent = r.token;
+    document.getElementById('agentRevealUsage').innerHTML =
+      `Send it as a bearer header on every request:<br>` +
+      `<code>Authorization: Bearer ${esc(r.token)}</code><br>` +
+      `Example: <code>curl -s ${esc(location.origin)}/api/me -H "Authorization: Bearer $DAV_TOKEN"</code><br>` +
+      `Acts as <strong>${esc(r.email)}</strong> — grant it roles in Users &amp; roles if it has none.`;
+    card.style.display = '';
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    document.getElementById('agentLabel').value = '';
+    loadAgentTokens();
+  } catch (e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+});
+
+document.getElementById('agentCopyBtn')?.addEventListener('click', () => {
+  const t = document.getElementById('agentRevealToken').textContent || '';
+  if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => toast('Copied')).catch(() => toast('Copy failed', true));
+  else toast('Copy not available', true);
+});
+document.getElementById('agentRevealDismiss')?.addEventListener('click', () => {
+  const c = document.getElementById('agentRevealCard'); if (c) c.style.display = 'none';
+});
+document.getElementById('agentRefreshBtn')?.addEventListener('click', loadAgentTokens);
 
 async function loadLdapSettings() {
   try {

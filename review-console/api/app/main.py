@@ -1093,14 +1093,15 @@ def get_user(request: Request) -> str:
     sess = local_auth.read_session(request.cookies.get(local_auth.SESSION_COOKIE, ""))
     if sess:
         return _canonical_identity(sess)   # #39: resolve aliases → canonical account
-    user = (
-        request.headers.get("X-Forwarded-User")
-        or request.headers.get("X-Forwarded-Email")
-        or request.headers.get("X-Auth-Request-User")
-        or request.headers.get("X-Auth-Request-Email")
-    )
-    if user:
-        return _canonical_identity(user)
+    # #171 hardening: X-Forwarded / X-Auth-Request identity is trusted ONLY in the
+    # oauth-gated /api/auth/sso bootstrap (which validates them via oauth-proxy and
+    # mints the app session cookie) — NOT in this general dependency. nginx already
+    # scrubs these headers on /api/, so trusting them here bought nothing but a
+    # latent admin-impersonation bypass should that single scrub ever regress (or
+    # should the API ever be reached off the nginx path). Steady-state auth for
+    # OCP/FreeIPA users is the app session cookie established via /sso; agents use a
+    # PAT (handled above). This makes the nginx scrub defense-in-depth, not the sole
+    # control.
     if ALLOW_ANON_WRITES:
         return ANON_REVIEWER
     raise HTTPException(status_code=401, detail="reviewer identity not provided")
