@@ -2796,8 +2796,18 @@
     <div class="modal-body" style="display:flex; flex-direction:column; gap:12px; padding:14px 18px;">
       <!-- Step 1: paste -->
       <div id="biStep1">
-        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:6px;">Step 1 — paste source text</div>
-        <div class="form-field">
+        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:6px;">Step 1 — source</div>
+        <div style="display:flex;gap:14px;align-items:center;margin-bottom:8px;font-size:11px;flex-wrap:wrap;">
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="radio" name="biSource" value="text" checked style="width:auto;height:auto;accent-color:var(--accent);" onchange="_biSetSource('text')"/> Paste text</label>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;"><input type="radio" name="biSource" value="recording" style="width:auto;height:auto;accent-color:var(--accent);" onchange="_biSetSource('recording')"/> 🎙 Upload recording</label>
+          <span style="color:var(--text-faint);font-size:10px;">audio/video → transcribed locally (whisper) → UCs. Nothing leaves the homelab.</span>
+        </div>
+        <div id="biRecordingRow" class="form-field" style="display:none;">
+          <label>Recording file (audio or video, ≤200MB)</label>
+          <input type="file" id="biRecordingFile" accept="audio/*,video/*,.m4a,.mp3,.wav,.mp4,.mov,.webm,.mkv,.ogg" style="width:100%;font-size:11px;" />
+          <div id="biRecordingProgress" style="font-size:11px;color:var(--text-faint);margin-top:6px;"></div>
+        </div>
+        <div id="biTextRow" class="form-field">
           <label>Transcript / notes / requirements text</label>
           <textarea id="biSourceText" rows="10" spellcheck="false" placeholder="Paste a conversation transcript, meeting notes, or any text containing latent use cases. The LLM will read the whole thing and propose one UC per distinct scenario." style="width:100%; font-family:inherit; resize:vertical; line-height:1.5;"></textarea>
         </div>
@@ -9460,13 +9470,108 @@ function openBulkImport() {
   _biExtracted = [];
   _biSavedUCs = [];
   _populateOverrideSel('biModelSel', 'uc-authoring');
+  const txtRadio = document.querySelector('input[name="biSource"][value="text"]'); if (txtRadio) txtRadio.checked = true;
+  const recFile = document.getElementById('biRecordingFile'); if (recFile) recFile.value = '';
+  const recProg = document.getElementById('biRecordingProgress'); if (recProg) recProg.innerHTML = '';
+  _biSetSource('text');
 }
 
 function closeBulkImport() {
   document.getElementById('bulkImportModal').classList.remove('open');
 }
 
+// Source toggle: paste text vs upload a recording (#176). The recording path uploads to
+// the dav-recording-worker (local transcribe + extract) and funnels drafts into the same
+// review step. (Browser-side transcription is the privacy-preferred enhancement — #180.)
+let _biMode = 'text';
+function _biSetSource(mode) {
+  _biMode = mode;
+  const t = document.getElementById('biTextRow'), r = document.getElementById('biRecordingRow');
+  if (t) t.style.display = mode === 'text' ? '' : 'none';
+  if (r) r.style.display = mode === 'recording' ? '' : 'none';
+}
+
+// Shared "drafts → review step" transition, used by both the text and recording paths.
+function _biShowDrafts(items) {
+  const primary = document.getElementById('biPrimaryBtn');
+  _biExtracted = items.map(it => ({ ...it, _keep: true }));
+  biRenderResults();
+  document.getElementById('biStep1').style.display = 'none';
+  document.getElementById('biStep2').style.display = '';
+  document.getElementById('biBackBtn').style.display = '';
+  document.getElementById('biBackBtn').onclick = () => {
+    document.getElementById('biStep1').style.display = '';
+    document.getElementById('biStep2').style.display = 'none';
+    document.getElementById('biBackBtn').style.display = 'none';
+    primary.textContent = 'Extract UCs';
+    primary.onclick = biRunExtract;
+  };
+  primary.textContent = 'Save selected →';
+  primary.disabled = false;
+  primary.onclick = biSaveSelected;
+  document.getElementById('biStatus').textContent = '';
+  document.getElementById('biExtractStatus').textContent =
+    `${items.length} draft${items.length === 1 ? '' : 's'} proposed — uncheck the ones to skip, then click Save selected.`;
+}
+
+async function biRunExtractFromRecording() {
+  const fileEl = document.getElementById('biRecordingFile');
+  const file = fileEl && fileEl.files && fileEl.files[0];
+  if (!file) { toast('Choose a recording file first', true); return; }
+  const primary = document.getElementById('biPrimaryBtn');
+  primary.disabled = true;
+  const prog = document.getElementById('biRecordingProgress');
+  const setProg = (m) => { if (prog) prog.innerHTML = m; };
+  document.getElementById('biStatus').textContent = '';
+  setProg('<span class="llm-spinner"></span>uploading…');
+  const PHASE = {
+    queued: 'queued…', claimed: 'starting…', transcribing: 'transcribing audio locally (whisper)…',
+    'extracting-ucs': 'extracting use cases…', done: 'done', failed: 'failed',
+  };
+  try {
+    const mb = _overrideModelBody('biModelSel');
+    const fd = new FormData();
+    fd.append('file', file);
+    const ctx = document.getElementById('biContext').value.trim();
+    if (ctx) fd.append('context', ctx);
+    if (mb.model_config_id) fd.append('model_config_id', mb.model_config_id);
+    const res = await fetch(API + '/api/use-cases/from-recording', {
+      method: 'POST',
+      headers: { ...(typeof _activeProject !== 'undefined' && _activeProject ? { 'X-DAV-Project': _activeProject } : {}) },
+      body: fd,
+    });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+    const { job_id } = await res.json();
+    let tries = 0;
+    for (;;) {
+      await new Promise(r => setTimeout(r, 4000));
+      let j;
+      try { j = await api('/api/use-cases/from-recording/' + job_id); }
+      catch (e) { setProg(`<span style="color:var(--red)">${esc(e.message)}</span>`); primary.disabled = false; return; }
+      const ph = j.phase || j.status;
+      setProg(`<span class="llm-spinner"></span>${esc(PHASE[ph] || ph)}${j.transcript_ready ? ' · transcript ready' : ''}`);
+      if (j.status === 'done') {
+        const items = j.items || [];
+        if (!items.length) { setProg('Transcribed, but the model found nothing UC-shaped in it.'); primary.disabled = false; return; }
+        setProg(`Transcribed + extracted ${items.length} draft${items.length === 1 ? '' : 's'}.`);
+        _biShowDrafts(items);
+        return;
+      }
+      if (j.status === 'failed' || j.status === 'cancelled') {
+        setProg(`<span style="color:var(--red)">${esc(j.error || j.status)}</span>`);
+        primary.disabled = false;
+        return;
+      }
+      if (++tries > 450) { setProg('<span style="color:var(--red)">timed out waiting for the worker</span>'); primary.disabled = false; return; }
+    }
+  } catch (e) {
+    setProg(`<span style="color:var(--red)">${esc(e.message)}</span>`);
+    primary.disabled = false;
+  }
+}
+
 async function biRunExtract() {
+  if (_biMode === 'recording') return biRunExtractFromRecording();
   const text = document.getElementById('biSourceText').value.trim();
   if (!text) { toast('Paste some text first', true); return; }
   const primary = document.getElementById('biPrimaryBtn');
@@ -9492,24 +9597,7 @@ async function biRunExtract() {
       primary.disabled = false;
       return;
     }
-    _biExtracted = items.map(it => ({...it, _keep: true}));
-    biRenderResults();
-    document.getElementById('biStep1').style.display = 'none';
-    document.getElementById('biStep2').style.display = '';
-    document.getElementById('biBackBtn').style.display = '';
-    document.getElementById('biBackBtn').onclick = () => {
-      document.getElementById('biStep1').style.display = '';
-      document.getElementById('biStep2').style.display = 'none';
-      document.getElementById('biBackBtn').style.display = 'none';
-      primary.textContent = 'Extract UCs';
-      primary.onclick = biRunExtract;
-    };
-    primary.textContent = 'Save selected →';
-    primary.disabled = false;
-    primary.onclick = biSaveSelected;
-    document.getElementById('biStatus').textContent = '';
-    document.getElementById('biExtractStatus').textContent =
-      `${items.length} draft${items.length===1?'':'s'} proposed — uncheck the ones to skip, then click Save selected.`;
+    _biShowDrafts(items);
   } catch (e) {
     document.getElementById('biStatus').innerHTML =
       `<span style="color:var(--red)">${esc(e.message)}</span>`;
