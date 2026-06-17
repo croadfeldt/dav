@@ -3376,7 +3376,7 @@ function toast(msg, isError) {
 }
 
 // ── Utilities ────────────────────────────────────────────────
-function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 // Canonical tab wiring (docs/ui-style-guide.md). Within `container`, clicking a
 // .tab[data-tab=X] activates it + the .tabpanel[data-tabpanel=X] sibling, hiding the
 // rest. Idempotent; call after rendering the tab strip. `onChange(key)` is optional.

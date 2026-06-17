@@ -3575,6 +3575,7 @@ async def runs_stats():
 @app.get("/api/runs/{name}/turns")
 async def get_run_turns(
     name: str,
+    request: Request,
     file: Optional[str] = Query(None, description="specific turns file (e.g. <uuid>.seed-0.jsonl); when None, lists available files"),
     since: int = Query(0, ge=0, description="byte offset returned by previous call's next_offset"),
     max_records: int = Query(500, ge=1, le=2000),
@@ -3586,6 +3587,12 @@ async def get_run_turns(
     """
     if not validations.ENABLED:
         raise HTTPException(403, "pipeline trigger disabled")
+    # #186: turns JSONL carries NDA prompt content — require an authenticated user
+    # with read on the active project (was unauthenticated). Cross-project run IDOR
+    # is the tracked P1 tenancy item.
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
     # Resolve PipelineRun → workspace run_id via timestamp correlation
     try:
         detail = await asyncio.to_thread(validations.get_run_detail, name)
@@ -9472,12 +9479,15 @@ async def update_credential_api(
 
 
 @app.delete("/api/credentials/{uuid_or_name}")
-async def delete_credential_api(uuid_or_name: str):
+async def delete_credential_api(uuid_or_name: str, request: Request):
     """Delete a credential. Refuses with 409 if any repo references it;
     response body lists the dependent repos so the operator can
-    reassign or unlink first."""
+    reassign or unlink first. Requires the repo-management privilege on the
+    active project (was unauthenticated — security remediation #186)."""
     try:
         async with pool.acquire() as conn:
+            pid = await _active_project_id(request, conn)
+            await _require_priv_conn(conn, request, rbac.P_PROJECT_REPOS, pid)
             ok = await _credentials.delete_credential(conn, uuid_or_name)
     except _credentials.CredentialInUseError as e:
         raise HTTPException(
@@ -9844,6 +9854,7 @@ async def analysis_roadmap(request: Request,
     SEV_ORDER = {"critical": 0, "major": 1, "moderate": 2, "advisory": 3, "minor": 4}
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)  # #186: was unguarded
         uuids = await _resolve_scope_uc_uuids(conn, pid, set_id, None)
         if not uuids:
             return {"project_id": pid, "set_id": set_id, "group_by": group_by, "total_gaps": 0,
@@ -10636,7 +10647,6 @@ async def publish_bundle(bid: int, request: Request):
     return result
 
 
-@app.post("/api/bundles/{bid}/attach", status_code=201)
 async def _materialize_attachment(conn, aid: int, version_id: int, pid, cat) -> int:
     """Phase 4d — (re)materialize an attachment's config items into real scoped registry
     rows so runs actually consume them via the normal scope resolvers. Idempotent: clears
@@ -10683,6 +10693,7 @@ async def _materialize_attachment(conn, aid: int, version_id: int, pid, cat) -> 
     return n
 
 
+@app.post("/api/bundles/{bid}/attach", status_code=201)
 async def attach_bundle(bid: int, payload: BundleAttachIn, request: Request):
     """Pin the bundle's current published version at a (project × use-category) scope.
     Attach-to-project → project.integrations; platform/use-category → usecat.manage."""
@@ -12903,6 +12914,17 @@ async def _apply_to_one_repo(
     files_changed: list[dict] = []
     for target_handle, file_enhs in by_file.items():
         rel_path = file_enhs[0].target_path
+        # #186: the enhancement target becomes a real file commit that triggers the repo's
+        # CI — an arbitrary-write → RCE path. Reject traversal / absolute paths; allowlist
+        # doc extensions; deny CI-control files even when they carry an allowed extension.
+        _norm = (rel_path or "").strip()
+        _low = _norm.lower()
+        _ci_deny = (".github/", ".gitlab-ci", ".gitea/", "jenkinsfile", "makefile", "dockerfile")
+        if (not _norm or _norm.startswith("/") or "\\" in _norm
+                or ".." in _norm.split("/")
+                or not _low.endswith((".md", ".yaml", ".yml", ".txt", ".rst"))
+                or any(tok in _low for tok in _ci_deny)):
+            raise HTTPException(400, f"enhancement target path not allowed: {rel_path!r}")
         repo_path = f"{root_path}/{rel_path}".lstrip("/") if root_path else rel_path
         try:
             existing = await corpus_push.fetch_file_content(
