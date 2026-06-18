@@ -2085,8 +2085,14 @@ async def delete_account(reviewer: str, request: Request):
                 "warning": warn or "The default admin is the break-glass account — deactivated, not deleted."}
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM rbac_account_roles WHERE lower(reviewer)=$1", r)
+        # #186 (Chain C): a deleted account must NOT retain API access via a still-valid PAT.
+        # Revoke every PAT minted for this email before removing the user, then refresh the
+        # in-memory token cache so the revocation takes effect immediately (not on next reload).
+        await conn.execute(
+            "UPDATE api_tokens SET revoked_at=now() WHERE lower(email)=$1 AND revoked_at IS NULL", r)
         await conn.execute("DELETE FROM users WHERE lower(reviewer)=$1", r)
         warn = await _reconcile_admin(conn)
+    await api_tokens.load_cache(pool)
     await _reload_approved()
     return {"ok": True, "warning": warn} if warn else {"ok": True}
 
