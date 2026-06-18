@@ -43,6 +43,7 @@ from . import capability_catalog as _capability_catalog
 from . import assessment_ingest as _assessment_ingest
 from . import api_tokens
 from . import maturity_seed as _maturity_seed
+from . import maturity_scoring as _maturity_scoring
 from . import prompts_registry as _prompts_registry
 from . import analysis_compare as _analysis_compare
 from . import uc_readiness as _uc_readiness
@@ -7817,6 +7818,308 @@ async def assessment_maturity_wall(assessment_id: str, request: Request, state: 
     struct["overall"] = round(sum(all_vals) / len(all_vals), 1) if all_vals else None
     struct["assessed"] = len(all_vals)
     return struct
+
+
+# ══════════════ Maturity Wall (#147) — write side (slice 2) ══════════════
+# Framework CRUD + LLM scoring + human override. Reads live above (_framework_structure,
+# _findings_wall, GET /maturity-wall). All writes are gated by assessment.edit in the
+# OWNING project (a seed template, project_id NULL, is read-only — projects clone + edit).
+# Scoring reuses the EXISTING model call path (_make_diagnosis_call_fn over a model_configs
+# row); human overrides carry provenance (source='human', updated_by, updated_at) so they're
+# always distinguishable from LLM scores and survive the next LLM pass. See maturity-scoring logic
+# in maturity_scoring.py and docs/maturity-wall-design.md.
+
+async def _gate_framework_edit(conn, request: Request, fid: str) -> int:
+    """Resolve a framework's owning project, forbid editing a seed template (project_id NULL),
+    and require assessment.edit in that project. Returns the project_id. 404 on missing/unseen."""
+    row = await conn.fetchrow(
+        "SELECT project_id, is_seed FROM assessment_frameworks WHERE id=$1::uuid", fid)
+    if row is None:
+        raise HTTPException(404, "framework not found")
+    if row["project_id"] is None or row["is_seed"]:
+        raise HTTPException(403, "seed templates are read-only — clone into your project to edit")
+    await _require_priv_conn(conn, request, rbac.P_ASSESSMENT_EDIT, row["project_id"])
+    return row["project_id"]
+
+
+async def _gate_assessment_edit(conn, request: Request, assessment_id: str) -> int:
+    """Resolve an assessment's owning project + require assessment.edit there. 404 if unseen."""
+    pid = await conn.fetchval(
+        "SELECT project_id FROM assessments WHERE id=$1::uuid", assessment_id)
+    if pid is None:
+        # An assessment may legitimately have a NULL project_id (legacy/global); fall back to
+        # the active project so the platform admin / project editor can still score it.
+        if not await conn.fetchval("SELECT 1 FROM assessments WHERE id=$1::uuid", assessment_id):
+            raise HTTPException(404, "assessment not found")
+        pid = await _active_project_id(request, conn)
+    await _require_priv_conn(conn, request, rbac.P_ASSESSMENT_EDIT, pid)
+    return pid
+
+
+class FrameworkIn(BaseModel):
+    name: str
+    key: Optional[str] = None
+    scale: Optional[list] = None
+    status: Optional[str] = None
+    clone_from: Optional[str] = None     # a framework id (e.g. a seed) to deep-copy structure from
+
+
+class FrameworkPatchIn(BaseModel):
+    name: Optional[str] = None
+    scale: Optional[list] = None
+    status: Optional[str] = None
+
+
+class CategoryIn(BaseModel):
+    label: str
+    key: Optional[str] = None
+    band: Optional[str] = None
+    ord: int = 0
+    inflection_side: str = "pre"
+
+
+class CategoryPatchIn(BaseModel):
+    label: Optional[str] = None
+    band: Optional[str] = None
+    ord: Optional[int] = None
+    inflection_side: Optional[str] = None
+
+
+class CapabilityIn(BaseModel):
+    label: str
+    key: Optional[str] = None
+    ord: int = 0
+    catalog_capability_id: Optional[int] = None
+
+
+class CapabilityPatchIn(BaseModel):
+    label: Optional[str] = None
+    ord: Optional[int] = None
+    catalog_capability_id: Optional[int] = None
+
+
+class StateIn(BaseModel):
+    label: str
+    key: Optional[str] = None
+    ord: int = 0
+    kind: str = "target"
+
+
+class ScoreOverrideIn(BaseModel):
+    capability_id: str
+    state: str
+    maturity: Optional[int] = None       # 0..5, or null = '-' Not Assessed (a deliberate human one)
+    rationale: Optional[str] = None
+
+
+class ScoresPutIn(BaseModel):
+    overrides: list[ScoreOverrideIn]
+
+
+@app.post("/api/assessment-frameworks")
+async def assessment_framework_create(payload: FrameworkIn, request: Request):
+    """Create a PROJECT-scoped maturity framework. Pass `clone_from` (a seed/template framework id)
+    to deep-copy its scale + states + categories + capabilities into an editable project copy
+    (reuse-first; the platform-maturity seed is the suggested starting point). Requires assessment.edit."""
+    actor = get_user(request)
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        if pid is None:
+            raise HTTPException(400, "select a project before creating a framework")
+        await _require_priv_conn(conn, request, rbac.P_ASSESSMENT_EDIT, pid)
+        try:
+            return await _maturity_scoring.create_framework(
+                conn, project_id=pid, name=payload.name, key=payload.key, scale=payload.scale,
+                status=payload.status or "active", created_by=actor, clone_from=payload.clone_from)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(409, "a framework with that key already exists in this project")
+
+
+@app.put("/api/assessment-frameworks/{framework_id}")
+async def assessment_framework_update(framework_id: str, payload: FrameworkPatchIn, request: Request):
+    """Edit a project framework's name / scale / status. Requires assessment.edit (owning project)."""
+    async with pool.acquire() as conn:
+        await _gate_framework_edit(conn, request, framework_id)
+        await _maturity_scoring.update_framework(
+            conn, framework_id, name=payload.name, scale=payload.scale, status=payload.status)
+        return await _framework_structure(conn, framework_id)
+
+
+@app.delete("/api/assessment-frameworks/{framework_id}")
+async def assessment_framework_delete(framework_id: str, request: Request):
+    """Delete a project framework (categories/capabilities/states cascade). Seeds are protected."""
+    async with pool.acquire() as conn:
+        await _gate_framework_edit(conn, request, framework_id)
+        await conn.execute("DELETE FROM assessment_frameworks WHERE id=$1::uuid", framework_id)
+    return {"ok": True}
+
+
+@app.post("/api/assessment-frameworks/{framework_id}/categories")
+async def assessment_category_create(framework_id: str, payload: CategoryIn, request: Request):
+    async with pool.acquire() as conn:
+        await _gate_framework_edit(conn, request, framework_id)
+        try:
+            return await _maturity_scoring.add_category(
+                conn, framework_id, label=payload.label, key=payload.key, band=payload.band,
+                ord=payload.ord, inflection_side=payload.inflection_side)
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(409, "a category with that key already exists in this framework")
+
+
+@app.put("/api/assessment-frameworks/{framework_id}/categories/{category_id}")
+async def assessment_category_update(framework_id: str, category_id: str,
+                                     payload: CategoryPatchIn, request: Request):
+    async with pool.acquire() as conn:
+        await _gate_framework_edit(conn, request, framework_id)
+        await _maturity_scoring.update_category(
+            conn, category_id, label=payload.label, band=payload.band, ord=payload.ord,
+            inflection_side=payload.inflection_side)
+    return {"ok": True}
+
+
+@app.delete("/api/assessment-frameworks/{framework_id}/categories/{category_id}")
+async def assessment_category_delete(framework_id: str, category_id: str, request: Request):
+    async with pool.acquire() as conn:
+        await _gate_framework_edit(conn, request, framework_id)
+        await conn.execute(
+            "DELETE FROM framework_categories WHERE id=$1::uuid AND framework_id=$2::uuid",
+            category_id, framework_id)
+    return {"ok": True}
+
+
+@app.post("/api/assessment-frameworks/{framework_id}/categories/{category_id}/capabilities")
+async def assessment_capability_create(framework_id: str, category_id: str,
+                                       payload: CapabilityIn, request: Request):
+    async with pool.acquire() as conn:
+        await _gate_framework_edit(conn, request, framework_id)
+        # The category must belong to this framework (path integrity).
+        if not await conn.fetchval(
+                "SELECT 1 FROM framework_categories WHERE id=$1::uuid AND framework_id=$2::uuid",
+                category_id, framework_id):
+            raise HTTPException(404, "category not found in this framework")
+        try:
+            return await _maturity_scoring.add_capability(
+                conn, category_id, label=payload.label, key=payload.key, ord=payload.ord,
+                catalog_capability_id=payload.catalog_capability_id)
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(409, "a capability with that key already exists in this category")
+
+
+@app.put("/api/assessment-frameworks/{framework_id}/capabilities/{capability_id}")
+async def assessment_capability_update(framework_id: str, capability_id: str,
+                                       payload: CapabilityPatchIn, request: Request):
+    async with pool.acquire() as conn:
+        await _gate_framework_edit(conn, request, framework_id)
+        await _maturity_scoring.update_capability(
+            conn, capability_id, label=payload.label, ord=payload.ord,
+            catalog_capability_id=payload.catalog_capability_id)
+    return {"ok": True}
+
+
+@app.delete("/api/assessment-frameworks/{framework_id}/capabilities/{capability_id}")
+async def assessment_capability_delete(framework_id: str, capability_id: str, request: Request):
+    async with pool.acquire() as conn:
+        await _gate_framework_edit(conn, request, framework_id)
+        await conn.execute(
+            """DELETE FROM framework_capabilities fc USING framework_categories c
+               WHERE fc.id=$1::uuid AND fc.category_id=c.id AND c.framework_id=$2::uuid""",
+            capability_id, framework_id)
+    return {"ok": True}
+
+
+@app.post("/api/assessment-frameworks/{framework_id}/states")
+async def assessment_state_create(framework_id: str, payload: StateIn, request: Request):
+    async with pool.acquire() as conn:
+        await _gate_framework_edit(conn, request, framework_id)
+        return await _maturity_scoring.add_state(
+            conn, framework_id, label=payload.label, key=payload.key, ord=payload.ord,
+            kind=payload.kind)
+
+
+@app.delete("/api/assessment-frameworks/{framework_id}/states/{state_key}")
+async def assessment_state_delete(framework_id: str, state_key: str, request: Request):
+    async with pool.acquire() as conn:
+        await _gate_framework_edit(conn, request, framework_id)
+        await conn.execute(
+            "DELETE FROM framework_states WHERE framework_id=$1::uuid AND key=$2",
+            framework_id, state_key)
+    return {"ok": True}
+
+
+async def _assessment_framework_id(conn, assessment_id: str, pid: int) -> Optional[str]:
+    """The framework an assessment is scored against: its explicit link, else the project's
+    own platform-maturity framework, else the global seed template. None if nothing seeded."""
+    fid = await conn.fetchval(
+        "SELECT framework_id FROM assessment_framework_link WHERE assessment_id=$1::uuid", assessment_id)
+    if fid is None and pid is not None:
+        fid = await conn.fetchval(
+            "SELECT id FROM assessment_frameworks WHERE key='platform-maturity-v1' AND project_id=$1", pid)
+    if fid is None:
+        fid = await conn.fetchval(
+            "SELECT id FROM assessment_frameworks WHERE key='platform-maturity-v1' AND project_id IS NULL")
+    return str(fid) if fid is not None else None
+
+
+@app.post("/api/assessments/{assessment_id}/score")
+async def assessment_score(assessment_id: str, request: Request):
+    """LLM scoring pass (#147 slice 2): read the assessment's findings + the linked framework, ask
+    the project's model (the SAME call path arch-review / assessment-ingest use — resolved via the
+    assessment-ingest → arch-review → evaluation default chain) to propose 0..5 scores for each
+    capability in each TARGET state, and persist as source='llm'. Human-curated cells are NEVER
+    clobbered (curated scores are the truth). Requires assessment.edit."""
+    actor = get_user(request)
+    async with pool.acquire() as conn:
+        pid = await _gate_assessment_edit(conn, request, assessment_id)
+        fid = await _assessment_framework_id(conn, assessment_id, pid)
+        if fid is None:
+            raise HTTPException(404, "no maturity framework linked or seeded to score against")
+        struct = await _framework_structure(conn, fid)
+        findings = [dict(r) for r in await conn.fetch(
+            """SELECT capability_handle, category, maturity, state, notes, evidence
+               FROM assessment_findings WHERE assessment_id=$1::uuid""", assessment_id)]
+        if not findings:
+            raise HTTPException(422, "assessment has no findings to score from")
+        cfg = await _model_default_row(
+            conn, "assessment-ingest", "arch-review", "evaluation", project_id=pid)
+    if not cfg:
+        raise HTTPException(400, "no assessment-ingest / arch-review / evaluation model is configured for this project")
+    states = struct.get("states", [])
+    valid_cap_ids = {cap["id"] for b in struct["bands"] for c in b["categories"] for cap in c["capabilities"]}
+    valid_states = {s["key"] for s in states if s.get("kind") in ("target", "desired")}
+    if not valid_states:
+        raise HTTPException(422, "the framework defines no target/desired states to score")
+    system, user = _maturity_scoring.build_scoring_prompt(struct, findings, states)
+    try:
+        raw = await _make_diagnosis_call_fn(cfg)(system, user)
+    except Exception as e:
+        raise HTTPException(502, f"scoring model call failed: {e}")
+    try:
+        scored = _maturity_scoring.parse_scoring_response(raw, valid_cap_ids, valid_states)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    async with pool.acquire() as conn:
+        written = await _maturity_scoring.persist_llm_scores(
+            conn, assessment_id, scored, updated_by=actor)
+    return {"ok": True, "framework_id": fid, "model": cfg.get("model_id"),
+            "proposed": len(scored), "written": written,
+            "skipped_human": len(scored) - written}
+
+
+@app.put("/api/assessments/{assessment_id}/scores")
+async def assessment_scores_override(assessment_id: str, payload: ScoresPutIn, request: Request):
+    """Human override of any wall cell(s). Persists with provenance (source='human', updated_by,
+    updated_at) so a human score is always distinguishable from an LLM one and survives the next
+    LLM pass. maturity=null clears a cell to '-' Not Assessed (a deliberate human 'not assessed').
+    Requires assessment.edit."""
+    actor = get_user(request)
+    overrides = [o.model_dump() for o in payload.overrides]
+    async with pool.acquire() as conn:
+        await _gate_assessment_edit(conn, request, assessment_id)
+        n = await _maturity_scoring.apply_overrides(
+            conn, assessment_id, overrides, updated_by=actor)
+    return {"ok": True, "updated": n}
 
 
 def _strip_code_fences(s: str) -> str:

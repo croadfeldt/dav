@@ -114,16 +114,32 @@ consultant curate, and render the deck-quality views.
 - `assessment_framework_link` — which framework an assessment is scored against
   (`assessment_id → framework_id`), plus the chosen states.
 
-## Backend
-- Framework CRUD: `GET/POST/PUT/DELETE /api/assessment-frameworks[/{id}]` (+ category/capability/
-  state sub-resources), gated by `assessment.edit`. Seed a `flightpath-v1` framework on migrate.
-- **`GET /api/assessments/{id}/maturity-wall?state=current`** — returns the structured wall:
+## Backend  _(slice 2 — BUILT 2026-06-17, #149)_
+Read-side in `main.py` (`_framework_structure`, `_findings_wall`, the GET endpoints below);
+write-side persistence + LLM orchestration in **`app/maturity_scoring.py`** (testable — takes a
+resolved `call_fn`, no HTTP/provider detail). All writes gated by `assessment.edit` in the
+**owning project**; **seed templates (`project_id IS NULL`) are read-only** — projects clone + edit.
+- **Framework CRUD** — `POST /api/assessment-frameworks` (project-scoped; `clone_from=<framework id>`
+  deep-copies scale + states + categories + capabilities from a seed/template, reuse-first),
+  `PUT`/`DELETE /api/assessment-frameworks/{id}`, plus sub-resources:
+  `POST/PUT/DELETE …/categories[/{cid}]`, `POST …/categories/{cid}/capabilities` +
+  `PUT/DELETE …/capabilities/{capid}`, `POST …/states` + `DELETE …/states/{key}`.
+  (`GET /api/assessment-frameworks[/{id}]` already existed.) The seed `platform-maturity-v1`
+  framework is seeded on boot by `maturity_seed.py` (not in the migration — a seed bug can't roll
+  back the DDL).
+- **`GET /api/assessments/{id}/maturity-wall?state=current`** — the structured wall:
   `bands[] → categories[] → capabilities[] {maturity, rationale, source}` + category rollups +
-  overall, for the requested state. One call per rendered state (current / phaseN / desired).
-- **`POST /api/assessments/{id}/score`** — LLM pass: read the assessment findings + linked
-  analysis, propose 0–5 current scores + per-phase targets per capability (foundational-first,
-  bounded by desired), write as `source='llm'`; never clobber `source='human'` cells.
-- **`PUT /api/assessments/{id}/scores`** — human override of any cell (sets `source='human'`).
+  overall, for the requested state. `current` pre-fills straight from the assessment's findings.
+- **`POST /api/assessments/{id}/score`** — LLM pass through DAV's **existing** model call path
+  (`_make_diagnosis_call_fn` over a `model_configs` row; default chain
+  assessment-ingest → arch-review → evaluation). Reads findings + the linked framework, proposes
+  0–5 per capability × **target/desired** state (foundational-first), writes `source='llm'`;
+  **never clobbers `source='human'`** (`DO UPDATE … WHERE source <> 'human'`). Returns
+  `{proposed, written, skipped_human}`. Framework link resolution: explicit
+  `assessment_framework_link` → the project's `platform-maturity-v1` → the global seed.
+- **`PUT /api/assessments/{id}/scores`** — human override of any cell(s) with provenance
+  (`source='human'`, `updated_by`, `updated_at`); `maturity=null` clears a cell to '-' Not Assessed.
+  A human score always wins and survives the next LLM pass.
 
 ## UI (Assessments domain → new "Maturity Wall" sub-view)
 - Render the heat-mapped wall: bands as lane labels, categories as columns (ordered, with the

@@ -31,10 +31,33 @@ roadmap) as a first-class, **configurable** capability in the **Assessments** do
   (capability×state→0–5, source llm|human). Migration wrapped in try/except (can't crash boot);
   applied + verified via API boot logs. **Deferred (slice 1b):** FlightPath framework data seed +
   back-fill `current` from findings (separate verifiable pass).
-- **NEXT:** slice 1b seed → slice 2 backend (framework CRUD · `GET /maturity-wall?state=` ·
-  LLM score + human override) → slice 3 UI (heat-mapped wall + state switcher) → per-phase
-  targets · Recommendations-per-Phase · High-Level Roadmap Gantt · export (feeds SOW #142).
-  Tasks #147–#150.
+- **✅ SHIPPED slice 1b (seed):** `maturity_seed.py` — the global `platform-maturity-v1` template
+  (0–5 scale + 5 states + bands→categories→capabilities), idempotent, seeded on boot.
+- **✅ SHIPPED slice 3 (UI):** Assessments → Maturity Wall heat-map + state switcher (reads
+  `/api/assessments/{id}/maturity-wall?state=` / the framework skeleton).
+- **✅ SHIPPED slice 2 (backend) 2026-06-17 (#149):** the write-side the UI consumes —
+  - **Framework CRUD** (`app/maturity_scoring.py` + thin endpoints): `POST /api/assessment-frameworks`
+    (project-scoped; `clone_from=<seed id>` deep-copies scale + states + categories + capabilities,
+    reuse-first), `PUT`/`DELETE /api/assessment-frameworks/{id}`, and category / capability / state
+    sub-resources (`…/categories[/{cid}]`, `…/categories/{cid}/capabilities`, `…/capabilities/{capid}`,
+    `…/states[/{key}]`). **Seed templates (`project_id IS NULL`) are read-only** — projects clone +
+    edit. All gated by `assessment.edit` in the owning project (`_gate_framework_edit`).
+  - **`POST /api/assessments/{id}/score`** — LLM scoring through DAV's **existing** model call path
+    (`_make_diagnosis_call_fn` over a `model_configs` row, resolved via the
+    assessment-ingest → arch-review → evaluation default chain — the same path assessment-ingest uses).
+    Reads findings + the linked framework, proposes 0–5 per capability × **target/desired** state,
+    persists as `source='llm'`. **Never clobbers a `source='human'` cell** (curated scores are the
+    truth — the conflict `DO UPDATE … WHERE source <> 'human'` enforces it). Returns
+    `{proposed, written, skipped_human}`.
+  - **`PUT /api/assessments/{id}/scores`** — human override of any cell(s) with **provenance**
+    (`source='human'`, `updated_by`, `updated_at`); `maturity=null` deliberately clears to '-' Not
+    Assessed. A human score always wins and survives the next LLM pass.
+  - **Tests:** `test_maturity_scoring.py` (8) — maturity coercion, prompt build (targets-only +
+    cap-id listing), response parse/validation (drops out-of-range / unknown-cap / non-target,
+    strips code fences, rejects non-JSON), and the LLM-vs-human provenance rules via a fake conn.
+    Route-shadow + migration-wiring guards pass (272 routes / 22 migrations).
+- **NEXT:** per-phase targets · Recommendations-per-Phase · High-Level Roadmap Gantt · export
+  (feeds SOW #142). Tasks #150+.
 
 ## ✅ SHIPPED 2026-06-13 — Roadmaps IA + Enhancement/PR Workbench (#140 · #138 · #145)
 Deployed to ns `dav` (gate: compile · route-shadow 249 · UI e2e 60/0). Commits on
