@@ -21,6 +21,10 @@ Fork, branch, PR against `main`. Each PR should:
 - Update relevant specifications if the change affects a consumer contract
 - Update the ADR log if the change is architectural
 
+### Subject-scoped pull requests (default)
+
+The default unit of contribution is **one subject per PR** — a single, complete logical change, titled by its subject (e.g. "Enable client-side transcription", "Schema-constrained UC extraction"). Keep PRs to roughly ≤2–3k lines; if a subject is larger, split it along logical boundaries into a sequence of independently reviewable, subject-scoped PRs rather than forcing one oversized change. Prefer logical boundaries over size-driven cuts, and never bundle unrelated subjects. Lead every PR description with a short **Why** (the rationale), linking the ADR or design doc when one exists.
+
 ### Spec changes
 
 Changes to specifications in `specs/` are consumer-breaking by default. Spec changes should:
