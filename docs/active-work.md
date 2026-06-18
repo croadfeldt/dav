@@ -1,5 +1,15 @@
 # DAV — active work (session checkpoint 2026-06-13)
 
+## ✅ SHIPPED 2026-06-17 — #173 Created + last-modified timestamps in Authoring views
+**Why:** authors need to see when a UC / Scoping Set was created and last touched, unobtrusively,
+to gauge freshness and ownership. The data was already captured (`managed_use_cases` and
+`use_case_sets` both carry `created_at`/`updated_at`, all writes set `updated_at=now()`) and the
+API already exposes both on `/api/use-cases[/{uuid}]` and `/api/sets[/{id}]`. The UC **detail**
+Provenance block already rendered created/updated by + timestamps. The only gap was the
+**Scoping Sets** Authoring accordion, which showed description + member count but no timestamps —
+added an unobtrusive `created … · updated …` metadata line (`fmtTs`, `--text-faint`, full
+timestamps on hover) matching the existing metadata styling. UI-only change; no migration needed.
+
 ## 🔭 NEW EPIC 2026-06-13 — Maturity Wall: goal-driven, backward-chained assessment (#147)
 Design + requirements: **`docs/maturity-wall-design.md`**. Models the Red Hat **FlightPath**
 assessment (Function Appraisal maturity wall + per-phase recommended states + high-level

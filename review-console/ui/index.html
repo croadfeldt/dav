@@ -10870,6 +10870,9 @@ function _renderSetMgmtInto(elId) {
           <div style="font-size:11px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
             ${esc(s.description || '—')} · ${s.member_count} UC${s.member_count !== 1 ? 's' : ''}
           </div>
+          ${(s.created_at || s.updated_at) ? `<div style="font-size:9px;color:var(--text-faint);margin-top:2px;" title="${esc((s.created_by ? 'created by ' + s.created_by + ' · ' : '') + (s.created_at ? new Date(s.created_at).toLocaleString() : '') + (s.updated_at ? ' · updated ' + new Date(s.updated_at).toLocaleString() : ''))}">
+            ${s.created_at ? 'created ' + esc(fmtTs(s.created_at)) : ''}${s.updated_at ? ' · updated ' + esc(fmtTs(s.updated_at)) : ''}
+          </div>` : ''}
         </div>
         <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${attrJson(s.name)})">▶ Ingest</button>
         ${defBtn}
