@@ -31,3 +31,6 @@ Thumbs.db
 # Ansible
 .vault_pass
 ansible/inventory/group_vars/all/vars.local.yaml
+
+# Internal / sensitive docs (transcripts, exec summaries, customer notes)
+docs/internal/
