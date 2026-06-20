@@ -102,6 +102,7 @@ MIGRATE_021_PATH = Path(__file__).parent / "migrate_021_maturity_wall.sql"
 MIGRATE_022_PATH = Path(__file__).parent / "migrate_022_api_tokens.sql"
 MIGRATE_023_PATH = Path(__file__).parent / "migrate_023_recording_jobs.sql"
 MIGRATE_024_PATH = Path(__file__).parent / "migrate_024_branch_tracking.sql"
+MIGRATE_025_PATH = Path(__file__).parent / "migrate_025_agent_accounts.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 # Secured dav-docs-mcp self-registration (its LoadBalancer SSE URL + bearer token).
@@ -398,6 +399,11 @@ async def lifespan(app: FastAPI):
             await conn.execute(MIGRATE_024_PATH.read_text())
         except Exception:
             log.exception("migration 024 (branch tracking) FAILED — continuing boot without it")
+        try:
+            log.info("Applying migration 025 (agent account kind)...")
+            await conn.execute(MIGRATE_025_PATH.read_text())
+        except Exception:
+            log.exception("migration 025 (agent accounts) FAILED — continuing boot without it")
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -1827,6 +1833,7 @@ class AccountCreateIn(BaseModel):
     display_name: Optional[str] = ""
     password: Optional[str] = None
     enabled: bool = True
+    kind: str = "person"   # 'person' | 'agent' — agents are login-less (PAT-only) identities
 
 
 class AccountPatchIn(BaseModel):
@@ -1867,6 +1874,7 @@ async def list_accounts(request: Request):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT reviewer, email, display_name, enabled, source, last_seen, "
+            "       COALESCE(kind, 'person') AS kind, "
             "       (password_hash IS NOT NULL) AS has_password "
             "FROM users ORDER BY enabled DESC, reviewer")
         # #39: aliases per account, one grouped query (no N+1).
@@ -1881,6 +1889,7 @@ async def list_accounts(request: Request):
                 "reviewer": r["reviewer"], "email": r["email"],
                 "display_name": r["display_name"], "enabled": r["enabled"],
                 "source": r["source"], "has_password": r["has_password"],
+                "kind": r["kind"],
                 "last_seen": r["last_seen"].isoformat() if r["last_seen"] else None,
                 "is_default_admin": r["reviewer"].lower() == _DEFAULT_ADMIN_EMAIL,
                 "roles": _acct_roles_out(roles),
@@ -1962,19 +1971,25 @@ async def create_account(payload: AccountCreateIn, request: Request):
     email = (payload.email or "").strip().lower()
     if len(email) < 2:
         raise HTTPException(400, "valid email/username required")
-    pw_hash = local_auth.hash_password(payload.password) if payload.password else None
+    is_agent = (payload.kind or "person").strip().lower() == "agent"
+    # Agents are login-less identities — never take a password and never get a human
+    # activation invite; they authenticate only via a PAT minted against this account.
+    pw_hash = None if is_agent else (local_auth.hash_password(payload.password) if payload.password else None)
+    _source = "agent" if is_agent else ("internal" if pw_hash else "manual")
+    _kind = "agent" if is_agent else "person"
     invite = None
     async with pool.acquire() as conn:
         if await conn.fetchval("SELECT 1 FROM users WHERE lower(reviewer)=$1 OR lower(email)=$1", email):
             raise HTTPException(409, "account already exists")
         await conn.execute(
             "INSERT INTO users (reviewer, email, display_name, role, approved, source, enabled, "
-            "                   password_hash, must_change_password) "
-            "VALUES ($1,$1,$2,'viewer',true,$3,$4,$5,$6)",
-            email, payload.display_name or "", "internal" if pw_hash else "manual",
-            payload.enabled, pw_hash, bool(pw_hash))
-        # No password → email an activation invite so they set their own.
-        if not pw_hash and "@" in email:
+            "                   password_hash, must_change_password, kind) "
+            "VALUES ($1,$1,$2,'viewer',true,$3,$4,$5,$6,$7)",
+            email, payload.display_name or "", _source,
+            payload.enabled, pw_hash, bool(pw_hash), _kind)
+        # No password → email an activation invite so they set their own. Agents are
+        # login-less, so they get no invite (the admin mints a PAT for them instead).
+        if not is_agent and not pw_hash and "@" in email:
             invite = await _create_account_invite(conn, email, inviter, _public_base(request))
     await _reload_approved()
     emailed, email_error = False, ""
@@ -1984,7 +1999,7 @@ async def create_account(payload: AccountCreateIn, request: Request):
             f"You've been added to DAV. Open this link to set your password and sign in:\n\n"
             f"{invite['link']}\n\nThis link expires in 7 days.",
             actor=inviter, action="invite.email")
-    return {"ok": True, "reviewer": email,
+    return {"ok": True, "reviewer": email, "kind": _kind,
             "invited": bool(invite), "emailed": emailed, "email_error": email_error,
             "link": invite["link"] if invite else None}
 

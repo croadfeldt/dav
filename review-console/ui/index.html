@@ -2534,8 +2534,20 @@
       </div>
 
       <div class="cfg-card panel-card" id="configAgentsPanel" style="display:none;">
-        <div class="panel-card-header"><div><div class="pc-title">Agents &amp; access tokens</div><div class="pc-sub">Personal Access Tokens (PATs) for non-interactive agents &amp; automation. A token acts as an account and inherits that account's roles &amp; privileges. The secret is shown <strong>once</strong> at creation — store it in the agent's secret store.</div></div></div>
+        <div class="panel-card-header"><div><div class="pc-title">Agents &amp; access tokens</div><div class="pc-sub">Agent identities are login-less accounts (no password / SSO) that authenticate only via a Personal Access Token and carry their <em>own</em> roles — bound in Users &amp; roles, exactly like a person. Create one here, grant it scoped roles, then mint a token for it. The secret is shown <strong>once</strong>.</div></div></div>
         <div class="panel-card-body">
+          <div style="display:flex;flex-direction:column;gap:8px;max-width:660px;margin-bottom:6px;">
+            <div class="pc-title" style="font-size:13px;">Create agent identity</div>
+            <div class="pc-sub">A dedicated, login-less account — separate from people. Grant it scoped roles in the Users &amp; roles panel above, then mint a token for it below.</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+              <input id="newAgentEmail" placeholder="pipeline-agent@roadfeldt.com" autocomplete="off" style="font-size:12px;flex:1;min-width:210px;" />
+              <input id="newAgentName" placeholder="display name (optional)" autocomplete="off" style="font-size:12px;width:170px;" />
+              <button class="btn primary btn-sm" id="agentCreateBtn" type="button">Create agent</button>
+              <span id="agentCreateMsg" style="font-size:11px;color:var(--text-faint);"></span>
+            </div>
+          </div>
+          <hr style="margin:6px 0 12px;border:none;border-top:1px solid var(--border);">
+          <div class="pc-title" style="font-size:13px;margin-bottom:8px;">Mint a token</div>
           <div style="display:flex;flex-direction:column;gap:10px;max-width:660px;">
             <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:600;color:var(--text-dim);">
               <span>Acts as (account email)</span>
@@ -4187,6 +4199,25 @@ document.getElementById('agentRevealDismiss')?.addEventListener('click', () => {
   const c = document.getElementById('agentRevealCard'); if (c) c.style.display = 'none';
 });
 document.getElementById('agentRefreshBtn')?.addEventListener('click', loadAgentTokens);
+
+// Create a login-less AGENT identity (kind='agent') — a real account, separate from
+// people, that carries its own roles (granted in Users & roles) and authenticates only
+// via a PAT. After creation we pre-fill the mint form's "Acts as" with it.
+document.getElementById('agentCreateBtn')?.addEventListener('click', async () => {
+  const email = (document.getElementById('newAgentEmail').value || '').trim().toLowerCase();
+  const name  = (document.getElementById('newAgentName').value || '').trim();
+  const msg = document.getElementById('agentCreateMsg');
+  if (email.length < 2) { msg.textContent = 'Enter an identifier for the agent.'; msg.style.color = 'var(--red)'; return; }
+  msg.textContent = 'creating…'; msg.style.color = 'var(--text-faint)';
+  try {
+    await api('/api/accounts', { method: 'POST', body: JSON.stringify({ email, display_name: name, kind: 'agent' }) });
+    msg.textContent = ''; toast('Agent identity created — grant it roles in Users & roles, then mint a token');
+    document.getElementById('newAgentEmail').value = '';
+    document.getElementById('newAgentName').value = '';
+    const acts = document.getElementById('agentEmail'); if (acts) acts.value = email;   // prefill the mint form
+    try { loadAccounts(); loadRolesMatrix(); } catch {}   // refresh the people/roles panel so the agent shows
+  } catch (e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+});
 
 async function loadLdapSettings() {
   try {

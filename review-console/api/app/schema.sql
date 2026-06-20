@@ -866,6 +866,9 @@ CREATE INDEX IF NOT EXISTS idx_muc_source_repo ON managed_use_cases(source_repo_
 ALTER TABLE users ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true;
 -- Per-user default project (the one selected on login when none is set client-side).
 ALTER TABLE users ADD COLUMN IF NOT EXISTS default_project_id BIGINT;
+-- Account kind: 'person' (interactive) | 'agent' (login-less, PAT-only). Agents bind
+-- roles via the same rbac_account_roles matrix as people. See migrate_025.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'person';
 
 CREATE TABLE IF NOT EXISTS rbac_privileges (
   key         TEXT PRIMARY KEY,
