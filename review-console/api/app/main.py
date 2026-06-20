@@ -101,6 +101,7 @@ MIGRATE_020_PATH = Path(__file__).parent / "migrate_020_reconcile_catalog.sql"
 MIGRATE_021_PATH = Path(__file__).parent / "migrate_021_maturity_wall.sql"
 MIGRATE_022_PATH = Path(__file__).parent / "migrate_022_api_tokens.sql"
 MIGRATE_023_PATH = Path(__file__).parent / "migrate_023_recording_jobs.sql"
+MIGRATE_024_PATH = Path(__file__).parent / "migrate_024_branch_tracking.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 # Secured dav-docs-mcp self-registration (its LoadBalancer SSE URL + bearer token).
@@ -392,6 +393,11 @@ async def lifespan(app: FastAPI):
             await conn.execute(MIGRATE_023_PATH.read_text())
         except Exception:
             log.exception("migration 023 (recording_jobs) FAILED — continuing boot without it")
+        try:
+            log.info("Applying migration 024 (branch tracking on run_sessions)...")
+            await conn.execute(MIGRATE_024_PATH.read_text())
+        except Exception:
+            log.exception("migration 024 (branch tracking) FAILED — continuing boot without it")
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)
@@ -3066,7 +3072,8 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
                     "SELECT run_name, name, description, category, tags, "
                     "gpu_energy_joules, total_gen_tokens, total_prompt_tokens, "
                     "set_id, set_name, selection_mode, "
-                    "uc_total, uc_succeeded, uc_failed, archived, project_id "
+                    "uc_total, uc_succeeded, uc_failed, archived, project_id, "
+                    "corpus_repo_branch, spec_repo_branch, corpus_repo_sha, spec_repo_sha "
                     "FROM run_sessions WHERE run_name = ANY($1::text[])",
                     names,
                 )
@@ -3105,6 +3112,11 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
             r["uc_failed"]     = s.get("uc_failed")    if s.get("uc_failed")    is not None else ar.get("failed")
             r["archived"]      = bool(s.get("archived"))
             r["project_id"]    = s.get("project_id")
+            # #branch-targeting: evaluated git ref provenance for results + decisions.
+            r["corpus_repo_branch"] = s.get("corpus_repo_branch")
+            r["spec_repo_branch"]   = s.get("spec_repo_branch")
+            r["corpus_repo_sha"]    = s.get("corpus_repo_sha")
+            r["spec_repo_sha"]      = s.get("spec_repo_sha")
         else:
             r["project_id"] = None
             r["uc_total"]     = ar.get("total_ucs")
@@ -3444,10 +3456,10 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                     baseline_gen_tokens, baseline_prompt_tokens,
                     set_id, set_name, selection_mode, uc_state_snapshot,
                     spec_namespaces, corpus_namespaces, project_id,
-                    trigger_payload)
+                    trigger_payload, corpus_repo_branch, spec_repo_branch)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9,
                            $10, $11, $12, $13::jsonb, $14, $15, $16,
-                           $17::jsonb)""",
+                           $17::jsonb, $18, $19)""",
                 result["name"], payload.name, payload.description,
                 payload.category or "ad-hoc", payload.tags or [],
                 payload.mode, reviewer,
@@ -3463,6 +3475,9 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                 payload.spec_namespaces, payload.corpus_namespaces, _run_pid,
                 # Durable rerun record — survives Tekton PipelineRun pruning.
                 json.dumps(payload.model_dump()),
+                # Evaluated branch (resolved override → registry default); the HEAD
+                # SHA is filled in at ingest once the repos are actually cloned.
+                params.get("corpus_repo_branch"), params.get("spec_repo_branch"),
             )
     except Exception as e:
         log.warning("run_sessions insert failed for %s: %s", result.get("name"), e)
@@ -6867,6 +6882,22 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
         # Step 1b: resolve the project's spec/corpus repo HEAD SHAs ONCE per ingest, for the eval
         # fingerprint (a repo change then makes the cache stale). Best-effort, guarded.
         _run_repo_shas = await _resolve_project_repo_shas(conn, _ar_pid)
+
+        # #branch-targeting: roll the cloned HEAD SHAs up to the run so the run row,
+        # results, and the decision/roadmap pipeline can show "evaluated against
+        # <branch>@<sha>". Keys are "<role>:<namespace>"; take the first of each role.
+        if run_name_for_analysis and _run_repo_shas:
+            try:
+                _corpus_sha = next((v for k, v in _run_repo_shas.items() if k.startswith("corpus:")), None)
+                _spec_sha   = next((v for k, v in _run_repo_shas.items() if k.startswith("spec:")), None)
+                if _corpus_sha or _spec_sha:
+                    await conn.execute(
+                        "UPDATE run_sessions SET corpus_repo_sha = COALESCE($2, corpus_repo_sha), "
+                        "spec_repo_sha = COALESCE($3, spec_repo_sha) WHERE run_name = $1",
+                        run_name_for_analysis, _corpus_sha, _spec_sha,
+                    )
+            except Exception:
+                log.warning("run-level repo SHA rollup failed for %s", run_name_for_analysis)
 
         ingested_ucs = 0
         ingested_gaps = 0

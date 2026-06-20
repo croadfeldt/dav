@@ -186,6 +186,14 @@ CREATE TABLE IF NOT EXISTS run_sessions (
   uc_failed             INTEGER,
   finalized_at          TIMESTAMPTZ        -- when stats were computed
 );
+-- Evaluated git ref (#branch-targeting): the branch chosen for the run (resolved at
+-- trigger from the payload override or the managed_repos registry default) + the cloned
+-- HEAD SHA (captured at ingest). Promoted out of trigger_payload so runs/results/decisions
+-- can surface "evaluated against <branch>@<sha>" provenance. See migrate_024.
+ALTER TABLE run_sessions ADD COLUMN IF NOT EXISTS corpus_repo_branch TEXT;
+ALTER TABLE run_sessions ADD COLUMN IF NOT EXISTS spec_repo_branch   TEXT;
+ALTER TABLE run_sessions ADD COLUMN IF NOT EXISTS corpus_repo_sha    TEXT;
+ALTER TABLE run_sessions ADD COLUMN IF NOT EXISTS spec_repo_sha      TEXT;
 -- Add baseline columns to existing tables that predate them.
 ALTER TABLE run_sessions ADD COLUMN IF NOT EXISTS baseline_gen_tokens DOUBLE PRECISION;
 ALTER TABLE run_sessions ADD COLUMN IF NOT EXISTS baseline_prompt_tokens DOUBLE PRECISION;
