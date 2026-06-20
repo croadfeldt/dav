@@ -18,6 +18,14 @@
 > design/requirements doc). That doc reframes #2/#3 below as engineering-roadmap pieces to
 > be consolidated; this roadmap records what shipped, the design doc records where it's going.
 
+> **Findings & Resolutions (2026-06-19):** DAV gains a systemic loop to **find · track · organize · enable
+> resolution** of architecture questions & feedback (seeded by the `dcm-project` PR reviews). Findings unify across
+> sources onto one spine; each anchors to a **capability** (P1); a candidate resolution is **validated by use-case
+> evaluation — submitted *and* generated-with-variance — on the same engine that does gap analysis** (target
+> parameterized: spec→gaps, resolution→validation); the durable, validation-backed write-up is a **DecisionRecord**
+> (the queryable "WHY"). Decisions locked 2026-06-19. Living design + requirements:
+> **`docs/findings-resolution-design.md`**. P1 builds on the existing `pr_comments` + Enhancement/PR Workbench (#138).
+
 This roadmap captures the agreed sequence for evolving DAV beyond its current "produces baseline reports" state into "actively gates spec changes and proposes UCs the architect didn't think of." Each item is its own focused session; the order matters because earlier items provide foundation for later ones.
 
 ---

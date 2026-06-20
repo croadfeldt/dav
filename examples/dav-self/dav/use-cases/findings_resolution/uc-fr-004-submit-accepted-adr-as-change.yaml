@@ -1,0 +1,57 @@
+use_case_uuid: uc-fr-004
+uc_type: analytical
+domain: findings_resolution
+description: An accepted ADR drives the change — a spec/enhancement PR — posted back human-gated.
+gate_class: advisory
+
+metadata:
+  author: dav-self
+  created: 2026-06-19
+  tags: [change-submission, primary-goal, enhancement-pr, human-gated, post-back]
+  references:
+    - "findings-resolution-design.md"
+
+analytical:
+  scenario: |
+    This is the primary goal: submit changes to the architecture *as* ADRs. Once a DecisionRecord is
+    accepted (CANONICAL, with passing validation attached where applicable), it drives the actual
+    change — it produces a spec/enhancement change submission (an improvement_proposal / PR), the same
+    shape as a dcm-project enhancement proposal or a KEP, surfaced in the Enhancement/PR Workbench.
+
+    The architect dispositions in the workbench; nothing auto-resolves. Post-back to the source (the
+    originating GitHub PR/issue) is human-gated and flows through the outbound message queue — DAV
+    drafts, a human approves, the queue posts. Acceptance is the quality gate: the change is validated
+    before it is submitted. The DecisionRecord remains the durable WHY linking the submitted change
+    back to the finding it resolved.
+
+  success_criteria:
+    - free_form: >
+        An accepted DecisionRecord produces a concrete change submission (spec/enhancement PR /
+        improvement_proposal) carrying the decision, anchor, and rationale — the ADR is the unit of
+        change, not a retrospective note.
+    - free_form: >
+        Post-back to the source is human-gated through the outbound queue: DAV drafts, a human
+        approves, then it posts; nothing posts automatically.
+    - free_form: >
+        The submitted change is traceable both ways — from finding to DecisionRecord to PR, and back —
+        so the WHY survives with the change.
+    - free_form: >
+        A change only reaches submission after acceptance, i.e. after validation passed (where the
+        decision was testable).
+    - visible_to:
+        actors: [architect, reviewer]
+
+  expected_capabilities:
+    - produce_change_submission
+    - human_gated_post_back
+    - link_decision_to_change
+  expected_components:
+    - enhancement_pr_workbench
+    - outbound_message_queue
+    - decision_record_store
+  expected_gaps:
+    - "Generalized ingest/round-trip adapters (issues, recordings) and agent first-pass triage are P3"
+  focus_areas:
+    - adr_is_the_change_unit
+    - validate_before_submit
+    - human_gated_outbound

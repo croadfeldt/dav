@@ -1,0 +1,58 @@
+use_case_uuid: uc-fr-006
+uc_type: analytical
+domain: findings_resolution
+description: When a premise an ADR justified changes, the decision re-enters review (drift detection).
+gate_class: advisory
+
+metadata:
+  author: dav-self
+  created: 2026-06-19
+  tags: [drift, re-validation, observed, dcm, consume-time]
+  references:
+    - "findings-resolution-design.md"
+    - "knowledge-family.md"
+
+analytical:
+  scenario: |
+    A DecisionRecord is not write-once-forget. It is a UDLM Knowledge entity with the curation
+    lifecycle PROPOSED → UNDER_REVIEW → CANONICAL, plus an OBSERVED state that captures what is seen
+    in the field. When a capability, dependency, or spec section that a CANONICAL DecisionRecord
+    justified changes — the SHA moves, the capability is re-shaped, a dependency is added — DAV
+    re-checks the record's premises against the freshness substrate (the per-UC staleness / repo-SHA
+    fingerprinting). If the premises no longer hold, the record re-enters OBSERVED / re-validation:
+    its decision may have drifted from reality.
+
+    This is the consume-time duty, distinct from the produce-time gate (uc-fr-003): the same WHY store
+    is what DCM consumes to track changes and detect drift across the architecture — an ADR whose
+    implementation has diverged is surfaced, not silently stale. ADR's "never edit, supersede" rule is
+    UDLM immutability + versioning + supersedes; a superseding record replaces, it does not mutate.
+
+  success_criteria:
+    - free_form: >
+        A change to a capability/dependency/spec a CANONICAL DecisionRecord justified triggers a
+        re-check of that record's premises (reusing the freshness/staleness substrate).
+    - free_form: >
+        When premises no longer hold, the record is surfaced as drifted (re-OBSERVED / due for
+        re-validation), not left silently canonical.
+    - free_form: >
+        Superseding a decision creates a new record linked by supersedes; the prior record is never
+        edited in place (immutability + versioning).
+    - free_form: >
+        The same WHY store is consumable by DCM for change-tracking and drift across the architecture.
+    - visible_to:
+        actors: [architect, dcm_consumer]
+
+  expected_capabilities:
+    - re_validate_on_drift
+    - detect_decision_drift
+    - supersede_not_edit
+    - expose_why_store_to_consumers
+  expected_components:
+    - freshness_substrate
+    - decision_record_store
+  expected_gaps:
+    - "Change-queued rebuild worker (#119) and combined-outcomes synthesis (#120) deepen this"
+  focus_areas:
+    - produce_time_vs_consume_time_validation
+    - observed_state_is_drift
+    - dcm_consumes_the_why

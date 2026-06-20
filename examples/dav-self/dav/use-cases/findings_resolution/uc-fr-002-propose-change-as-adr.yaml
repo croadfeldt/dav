@@ -1,0 +1,58 @@
+use_case_uuid: uc-fr-002
+uc_type: analytical
+domain: findings_resolution
+description: From a Finding, DAV drafts a candidate change as an ADR / DecisionRecord (assist).
+gate_class: advisory
+
+metadata:
+  author: dav-self
+  created: 2026-06-19
+  tags: [resolution-assist, adr, decision-record, change-submission]
+  references:
+    - "findings-resolution-design.md"
+    - "knowledge-family.md"
+
+analytical:
+  scenario: |
+    Given an anchored Finding, DAV's resolution-assist stage proposes a candidate resolution as a
+    DecisionRecord — the established ADR / MADR format adopted by reference, not a new bespoke form.
+    The draft carries: the finding(s) it decides, the options considered, the decision and its prose
+    rationale (the WHY, kept first-class), an action_type (answer | clarify | change-spec | defer |
+    wontfix), the capability/dependency/spec anchor it justifies, and an already-addressed citation
+    if an existing CANONICAL DecisionRecord already covers the class.
+
+    The ADR is the *unit of change proposal*: for the "depends_on needs the WHY" finding the assist
+    proposes action_type=change-spec with the rationale that becomes the dependency's recorded WHY.
+    The framework proposes; the architect disposes — nothing auto-resolves and nothing posts back at
+    this stage. The DecisionRecord enters PROPOSED.
+
+  success_criteria:
+    - free_form: >
+        DAV drafts a DecisionRecord in the adopted ADR/MADR shape — decision + first-class prose
+        rationale + options considered — not a free-text blob and not an invented schema.
+    - free_form: >
+        The draft selects an explicit action_type and binds the same capability/dep/spec anchor as
+        its Finding, so the proposed change has a target.
+    - free_form: >
+        If an existing CANONICAL DecisionRecord already addresses the class, the assist cites it
+        (already-addressed) instead of drafting a duplicate.
+    - free_form: >
+        The draft is a proposal only (state PROPOSED); it neither auto-accepts nor posts back.
+    - visible_to:
+        actors: [architect, agent_triage]
+
+  expected_capabilities:
+    - draft_resolution
+    - select_action_type
+    - propose_anchor
+    - already_addressed_match
+    - author_decision_record
+  expected_components:
+    - resolution_assist
+    - decision_record_store
+  expected_gaps:
+    - "Consolidation onto one target-parameterized Resolution/DR (with improvement_proposals) is a follow-on"
+  focus_areas:
+    - adopt_adr_format_not_invent
+    - rationale_is_first_class
+    - framework_proposes_architect_disposes
