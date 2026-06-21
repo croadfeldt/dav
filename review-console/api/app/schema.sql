@@ -503,6 +503,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_servers_scope_name   ON mcp_server_con
 CREATE INDEX IF NOT EXISTS idx_model_configs_project ON model_configs(project_id);
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_project   ON mcp_server_configs(project_id);
 CREATE INDEX IF NOT EXISTS idx_managed_repos_project ON managed_repos(project_id);
+-- Repo namespaces are unique PER PROJECT (tenancy Phase 0), not globally — so the same
+-- definition (e.g. `dav`) can be registered in more than one project. See migrate_026.
+ALTER TABLE managed_repos DROP CONSTRAINT IF EXISTS managed_repos_namespace_key;
+CREATE UNIQUE INDEX IF NOT EXISTS managed_repos_project_namespace_key
+    ON managed_repos (COALESCE(project_id, 0), namespace);
 
 -- ── Scope & bundles (#107): use-category vocabulary + output templates ───────────
 -- Controlled vocabulary for the use_category axis (admin-extensible later under

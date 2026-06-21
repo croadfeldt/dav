@@ -103,6 +103,7 @@ MIGRATE_022_PATH = Path(__file__).parent / "migrate_022_api_tokens.sql"
 MIGRATE_023_PATH = Path(__file__).parent / "migrate_023_recording_jobs.sql"
 MIGRATE_024_PATH = Path(__file__).parent / "migrate_024_branch_tracking.sql"
 MIGRATE_025_PATH = Path(__file__).parent / "migrate_025_agent_accounts.sql"
+MIGRATE_026_PATH = Path(__file__).parent / "migrate_026_repos_project_unique.sql"
 ANON_REVIEWER = os.environ.get("ANONYMOUS_REVIEWER", "anonymous")
 ALLOW_ANON_WRITES = os.environ.get("ALLOW_ANON_WRITES", "false").lower() == "true"
 # Secured dav-docs-mcp self-registration (its LoadBalancer SSE URL + bearer token).
@@ -404,6 +405,11 @@ async def lifespan(app: FastAPI):
             await conn.execute(MIGRATE_025_PATH.read_text())
         except Exception:
             log.exception("migration 025 (agent accounts) FAILED — continuing boot without it")
+        try:
+            log.info("Applying migration 026 (per-project repo namespace uniqueness)...")
+            await conn.execute(MIGRATE_026_PATH.read_text())
+        except Exception:
+            log.exception("migration 026 (repos project-scope) FAILED — continuing boot without it")
         log.info("Applying schema...")
         await conn.execute(SCHEMA_PATH.read_text())
         await _seed_corpus(conn)

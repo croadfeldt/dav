@@ -20,6 +20,7 @@ sibling lands here.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 
 import asyncpg
@@ -30,6 +31,25 @@ from . import repos as _repos
 from . import sources as _sources
 
 log = logging.getLogger("dav-review-api.projector")
+
+
+async def _mcp_source_project_id(conn: asyncpg.Connection) -> "int | None":
+    """The single project whose repos feed the shared dav-docs-mcp / source ConfigMaps
+    (tenancy Phase 0). Until per-project MCP serving lands (Phase 3) there is ONE shared
+    MCP, so we project exactly one 'source' project's repos into it — preventing other
+    projects' newly-registered repos from polluting the shared ConfigMap that existing
+    runs depend on. Resolution: env DAV_MCP_SOURCE_PROJECT_SLUG (default 'dcm') → its id;
+    else the project that already owns spec/corpus repos (the current source). None only
+    if neither resolves (then projection falls back to all repos = legacy behavior)."""
+    slug = os.environ.get("DAV_MCP_SOURCE_PROJECT_SLUG", "dcm")
+    pid = await conn.fetchval("SELECT id FROM projects WHERE slug=$1", slug)
+    if pid is not None:
+        return pid
+    return await conn.fetchval(
+        "SELECT project_id FROM managed_repos "
+        "WHERE ('spec' = ANY(roles) OR 'corpus' = ANY(roles)) AND project_id IS NOT NULL "
+        "ORDER BY project_id LIMIT 1"
+    )
 
 SPEC_CONFIGMAP = "dav-source-spec"
 MCP_DEPLOYMENT = "dav-docs-mcp"
@@ -83,7 +103,10 @@ async def project_spec_sources(
     so the caller (API endpoint) can surface a 5xx.
     """
     now = _now_iso()
-    rows = await _repos.list_repos(conn, role="spec")
+    # Phase 0: project only the shared MCP's source project's spec repos, so a repo
+    # registered for a different project can't pollute the one shared ConfigMap.
+    _src_pid = await _mcp_source_project_id(conn)
+    rows = await _repos.list_repos(conn, role="spec", project_id=_src_pid)
     new_sources = _render_sources_yaml(rows, role="spec")
 
     # Read the current ConfigMap to detect drift.
@@ -260,7 +283,9 @@ async def project_corpus_sources(
     new run picks up the current ConfigMap automatically.
     """
     now = _now_iso()
-    rows = await _repos.list_repos(conn, role="corpus")
+    # Phase 0: scope to the shared MCP's source project (see project_spec_sources).
+    _src_pid = await _mcp_source_project_id(conn)
+    rows = await _repos.list_repos(conn, role="corpus", project_id=_src_pid)
     new_sources = _render_sources_yaml(rows, role="corpus")
 
     try:
