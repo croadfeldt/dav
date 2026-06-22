@@ -169,6 +169,8 @@ async function runRole(role) {
     ck('LDAP panel visible', disp('configLdapPanel') !== 'none', 'display=' + disp('configLdapPanel'));
     ck('Users & roles panel visible', disp('configUsersPanel') !== 'none', 'display=' + disp('configUsersPanel'));
     ck('Agents & tokens panel visible', disp('configAgentsPanel') !== 'none', 'display=' + disp('configAgentsPanel'));
+    ck('Tenants panel visible', disp('configTenantsPanel') !== 'none', 'display=' + disp('configTenantsPanel'));
+    ck('Groups panel visible', disp('configGroupsPanel') !== 'none', 'display=' + disp('configGroupsPanel'));
     ck('Bundles panel visible (usecat.manage)', disp('configBundlesPanel') !== 'none', 'display=' + disp('configBundlesPanel'));
   } else if (role === 'project-admin') {
     // project admin: manages projects in the Customers & Projects → Projects tab now; the
@@ -180,6 +182,8 @@ async function runRole(role) {
     ck('LDAP panel hidden', disp('configLdapPanel') === 'none', 'display=' + disp('configLdapPanel'));
     ck('Users & roles panel hidden', disp('configUsersPanel') === 'none', 'display=' + disp('configUsersPanel'));
     ck('Agents & tokens panel hidden', disp('configAgentsPanel') === 'none', 'display=' + disp('configAgentsPanel'));
+    ck('Tenants panel hidden', disp('configTenantsPanel') === 'none', 'display=' + disp('configTenantsPanel'));
+    ck('Groups panel hidden', disp('configGroupsPanel') === 'none', 'display=' + disp('configGroupsPanel'));
     ck('Bundles panel hidden (no usecat.manage)', disp('configBundlesPanel') === 'none', 'display=' + disp('configBundlesPanel'));
   } else {
     ck('presence chip hidden', disp('presenceWrap') === 'none', 'display=' + disp('presenceWrap'));

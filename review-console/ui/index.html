@@ -2594,6 +2594,42 @@
         </div>
       </div>
 
+      <div class="cfg-card panel-card" id="configTenantsPanel" style="display:none;">
+        <div class="panel-card-header"><div><div class="pc-title">Tenants</div><div class="pc-sub">The hard isolation owner — 1 tenant → N projects; nothing crosses a tenant (project + customer are tenant-scoped). Phase 1 = the logical tenant + RBAC tier.</div></div></div>
+        <div class="panel-card-body">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <input id="tenantNewSlug" placeholder="slug (e.g. acme)" style="font-size:12px;width:150px;">
+            <input id="tenantNewName" placeholder="display name" style="font-size:12px;flex:1;min-width:140px;">
+            <select id="tenantNewRegime" style="font-size:12px;" title="Declared sovereign-cloud certification regime">
+              <option value="none">regime: none</option>
+              <option value="secnumcloud">SecNumCloud</option>
+              <option value="bsi_c5">BSI C5</option>
+              <option value="eu_data_boundary">EU Data Boundary</option>
+            </select>
+            <button class="btn primary btn-sm" id="tenantCreateBtn" type="button">Create tenant</button>
+            <span id="tenantCreateMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div id="tenantList" style="font-size:12px;">Loading…</div>
+        </div>
+      </div>
+
+      <div class="cfg-card panel-card" id="configGroupsPanel" style="display:none;">
+        <div class="panel-card-header"><div><div class="pc-title">Groups</div><div class="pc-sub">Users → groups → roles. A group is scoped (platform / tenant / project / customer); add members and bind it to the admin/edit/view role for its scope. Members inherit the group's roles.</div></div></div>
+        <div class="panel-card-body">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <input id="groupNewName" placeholder="group name" style="font-size:12px;flex:1;min-width:150px;">
+            <select id="groupNewScope" style="font-size:12px;" onchange="_onGroupScopeChange()">
+              <option value="platform">platform</option>
+              <option value="tenant">tenant</option>
+            </select>
+            <select id="groupNewTenant" style="font-size:12px;display:none;" title="Tenant for a tenant group"></select>
+            <button class="btn primary btn-sm" id="groupCreateBtn" type="button">Create group</button>
+            <span id="groupCreateMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div id="groupList" style="font-size:12px;">Loading…</div>
+        </div>
+      </div>
+
       </div><!-- /tabpanel access -->
     </div><!-- /config-content -->
   </div><!-- /config-layout -->
@@ -3962,7 +3998,7 @@ function _applyAccessVisibility() {
   // Projects management (now in view-projects): project admins.
   const cp = document.getElementById('configProjectsPanel'); if (cp) cp.style.display = projAdmin ? '' : 'none';
   // Accounts/roles + LDAP + SMTP + Agents (Config → Platform): platform admins only.
-  ['configUsersPanel','configLdapPanel','configSmtpPanel','configAgentsPanel'].forEach(id => {
+  ['configUsersPanel','configLdapPanel','configSmtpPanel','configAgentsPanel','configTenantsPanel','configGroupsPanel'].forEach(id => {
     const el = document.getElementById(id); if (el) el.style.display = platAdmin ? '' : 'none';
   });
   // Bundles (#107) — manage shared/platform/use-category config: usecat.manage holders.
@@ -4199,6 +4235,137 @@ document.getElementById('agentRevealDismiss')?.addEventListener('click', () => {
   const c = document.getElementById('agentRevealCard'); if (c) c.style.display = 'none';
 });
 document.getElementById('agentRefreshBtn')?.addEventListener('click', loadAgentTokens);
+
+// ── Tenants + Groups management (tenancy Phase 1c) — platform-admin ───────────
+let _tenantsCache = [];
+async function loadTenants() {
+  const box = document.getElementById('tenantList');
+  if (!box) return;
+  try {
+    const r = await api('/api/tenants');
+    _tenantsCache = (r && r.tenants) || [];
+    if (!_tenantsCache.length) { box.innerHTML = '<div class="empty" style="padding:10px;">No tenants.</div>'; }
+    else box.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="text-align:left;color:var(--text-dim);font-size:10px;text-transform:uppercase;letter-spacing:.04em;">
+        <th style="padding:6px 8px;">Slug</th><th style="padding:6px 8px;">Name</th><th style="padding:6px 8px;">Isolation</th>
+        <th style="padding:6px 8px;">Regime</th><th style="padding:6px 8px;">Projects</th></tr></thead><tbody>${
+      _tenantsCache.map(t => `<tr style="border-top:1px solid var(--border);">
+        <td style="padding:6px 8px;font-family:var(--mono,monospace);">${esc(t.slug)}</td>
+        <td style="padding:6px 8px;">${esc(t.name)}</td>
+        <td style="padding:6px 8px;">${esc(t.isolation_level)}</td>
+        <td style="padding:6px 8px;">${esc(t.declared_regime)}</td>
+        <td style="padding:6px 8px;">${t.project_count}</td></tr>`).join('')}</tbody></table>`;
+    _populateGroupTenantPicker();
+  } catch (e) { box.innerHTML = `<div class="empty" style="padding:10px;color:var(--red);">${esc(e.message)}</div>`; }
+}
+document.getElementById('tenantCreateBtn')?.addEventListener('click', async () => {
+  const slug = (document.getElementById('tenantNewSlug').value || '').trim().toLowerCase();
+  const name = (document.getElementById('tenantNewName').value || '').trim();
+  const regime = document.getElementById('tenantNewRegime').value;
+  const msg = document.getElementById('tenantCreateMsg');
+  if (slug.length < 2) { msg.textContent = 'slug required'; msg.style.color = 'var(--red)'; return; }
+  msg.textContent = 'creating…'; msg.style.color = 'var(--text-faint)';
+  try {
+    await api('/api/tenants', { method: 'POST', body: JSON.stringify({ slug, name, declared_regime: regime }) });
+    msg.textContent = ''; document.getElementById('tenantNewSlug').value = ''; document.getElementById('tenantNewName').value = '';
+    toast('Tenant created'); loadTenants();
+  } catch (e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+});
+
+function _onGroupScopeChange() {
+  const scope = document.getElementById('groupNewScope').value;
+  const tp = document.getElementById('groupNewTenant');
+  if (tp) tp.style.display = scope === 'tenant' ? '' : 'none';
+}
+function _populateGroupTenantPicker() {
+  const tp = document.getElementById('groupNewTenant');
+  if (tp) tp.innerHTML = _tenantsCache.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('');
+}
+async function loadGroups() {
+  const box = document.getElementById('groupList');
+  if (!box) return;
+  try {
+    const r = await api('/api/groups');
+    const groups = (r && r.groups) || [];
+    if (!groups.length) { box.innerHTML = '<div class="empty" style="padding:10px;">No groups.</div>'; return; }
+    box.innerHTML = groups.map(g => {
+      const scopeLabel = g.scope === 'tenant' ? `tenant:${(_tenantsCache.find(t => t.id === g.tenant_id) || {}).slug || g.tenant_id}` : g.scope;
+      return `<div class="cfg-card" style="margin:6px 0;padding:8px 10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+          <div><b>${esc(g.name)}</b> <span style="font-size:10px;color:var(--text-dim);border:1px solid var(--border);padding:0 4px;border-radius:3px;">${esc(scopeLabel)}</span>
+            <span style="font-size:11px;color:var(--text-faint);"> · ${g.member_count} member${g.member_count===1?'':'s'} · ${g.role_count} role${g.role_count===1?'':'s'}</span></div>
+          <div style="display:flex;gap:4px;">
+            <button class="btn ghost btn-sm" type="button" onclick="_toggleGroupDetail(${g.id})">Manage</button>
+            <button class="btn danger btn-sm" type="button" onclick="_deleteGroup(${g.id}, '${esc(g.name)}')">Delete</button></div>
+        </div>
+        <div id="groupDetail-${g.id}" style="display:none;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;"></div>
+      </div>`;
+    }).join('');
+  } catch (e) { box.innerHTML = `<div class="empty" style="padding:10px;color:var(--red);">${esc(e.message)}</div>`; }
+}
+document.getElementById('groupCreateBtn')?.addEventListener('click', async () => {
+  const name = (document.getElementById('groupNewName').value || '').trim();
+  const scope = document.getElementById('groupNewScope').value;
+  const msg = document.getElementById('groupCreateMsg');
+  if (name.length < 1) { msg.textContent = 'name required'; msg.style.color = 'var(--red)'; return; }
+  const body = { name, scope };
+  if (scope === 'tenant') body.tenant_id = parseInt(document.getElementById('groupNewTenant').value, 10);
+  msg.textContent = 'creating…'; msg.style.color = 'var(--text-faint)';
+  try {
+    await api('/api/groups', { method: 'POST', body: JSON.stringify(body) });
+    msg.textContent = ''; document.getElementById('groupNewName').value = ''; toast('Group created'); loadGroups();
+  } catch (e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+});
+async function _deleteGroup(id, name) {
+  if (!confirm(`Delete group "${name}"? Members lose its roles.`)) return;
+  try { await api('/api/groups/' + id, { method: 'DELETE' }); toast('Group deleted'); loadGroups(); }
+  catch (e) { toast(e.message, true); }
+}
+async function _toggleGroupDetail(id) {
+  const d = document.getElementById('groupDetail-' + id);
+  if (!d) return;
+  if (d.style.display !== 'none') { d.style.display = 'none'; return; }
+  d.style.display = ''; d.innerHTML = 'Loading…';
+  try {
+    const [mres, rres, roles] = await Promise.all([
+      api('/api/groups/' + id + '/members'), api('/api/groups/' + id + '/roles'), api('/api/rbac/roles')]);
+    const members = (mres && mres.members) || [];
+    const bound = (rres && rres.roles) || [];
+    const allRoles = ((roles && roles.roles) || roles || []);
+    d.innerHTML = `
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+        <input id="gm-${id}" placeholder="user email" style="font-size:12px;width:180px;">
+        <button class="btn ghost btn-sm" type="button" onclick="_addGroupMember(${id})">+ Member</button></div>
+      <div style="font-size:11px;margin-bottom:8px;">${members.length ? members.map(m =>
+        `<span style="display:inline-flex;align-items:center;gap:3px;border:1px solid var(--border);border-radius:10px;padding:1px 7px;margin:2px;">${esc(m.reviewer)}<span style="cursor:pointer;color:var(--red);" onclick="_removeGroupMember(${id},'${esc(m.reviewer)}')">✕</span></span>`).join('') : '<span style="color:var(--text-faint);">no members</span>'}</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+        <select id="gr-${id}" style="font-size:12px;">${allRoles.map(r => `<option value="${r.id}">${esc(r.name)} (${esc(r.scope)})</option>`).join('')}</select>
+        <button class="btn ghost btn-sm" type="button" onclick="_bindGroupRole(${id})">+ Role</button></div>
+      <div style="font-size:11px;">${bound.length ? bound.map(r =>
+        `<span style="display:inline-flex;align-items:center;gap:3px;border:1px solid var(--border);border-radius:10px;padding:1px 7px;margin:2px;">${esc(r.name)}<span style="cursor:pointer;color:var(--red);" onclick="_unbindGroupRole(${id},${r.role_id})">✕</span></span>`).join('') : '<span style="color:var(--text-faint);">no roles bound</span>'}</div>`;
+  } catch (e) { d.innerHTML = `<span style="color:var(--red);">${esc(e.message)}</span>`; }
+}
+async function _addGroupMember(id) {
+  const v = (document.getElementById('gm-' + id).value || '').trim();
+  if (v.length < 2) return;
+  try { await api('/api/groups/' + id + '/members', { method: 'POST', body: JSON.stringify({ reviewer: v }) });
+    d_reload(id); } catch (e) { toast(e.message, true); }
+}
+async function _removeGroupMember(id, reviewer) {
+  try { await api('/api/groups/' + id + '/members/' + encodeURIComponent(reviewer), { method: 'DELETE' }); d_reload(id); }
+  catch (e) { toast(e.message, true); }
+}
+async function _bindGroupRole(id) {
+  const rid = parseInt(document.getElementById('gr-' + id).value, 10);
+  try { await api('/api/groups/' + id + '/roles', { method: 'POST', body: JSON.stringify({ role_id: rid }) }); d_reload(id); }
+  catch (e) { toast(e.message, true); }
+}
+async function _unbindGroupRole(id, roleId) {
+  try { await api('/api/groups/' + id + '/roles/' + roleId, { method: 'DELETE' }); d_reload(id); }
+  catch (e) { toast(e.message, true); }
+}
+// Re-open a group's detail (refresh counts + the expanded panel).
+async function d_reload(id) { await loadGroups(); await _toggleGroupDetail(id); }
 
 // Create a login-less AGENT identity (kind='agent') — a real account, separate from
 // people, that carries its own roles (granted in Users & roles) and authenticates only
@@ -5283,7 +5450,7 @@ function switchView(name) {
     // Platform settings now live in Config → Platform (the separate Users/Projects views
     // are retired) — load their data here, gated like the panels.
     if (me && me.is_admin) { loadProjectsAdmin(); loadProjectSwitcher(); }
-    if (me && me.is_platform_admin) { loadAccounts(); loadRolesMatrix(); loadRoleBindings(); loadLdapStatus(); loadLdapSettings(); loadSmtpSettings(); loadAgentTokens(); }
+    if (me && me.is_platform_admin) { loadAccounts(); loadRolesMatrix(); loadRoleBindings(); loadLdapStatus(); loadLdapSettings(); loadSmtpSettings(); loadAgentTokens(); loadTenants(); loadGroups(); }
     if (can('usecat.manage')) loadBundles();
   }
   if (name === 'inbox')    loadInbox();
