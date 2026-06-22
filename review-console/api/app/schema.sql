@@ -972,6 +972,48 @@ DROP INDEX IF EXISTS idx_rbac_acct_role_uniq;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rbac_acct_role_uniq
   ON rbac_account_roles (lower(reviewer), role_id, COALESCE(project_id, 0), COALESCE(customer_id, 0), COALESCE(tenant_id, 0));
 
+-- ── First-class groups (tenancy Phase 1b) — users → groups → roles ───────────
+-- A group is a scoped collection of users (the OpenShift/LDAP pattern, generalized). It carries its
+-- scope (platform | tenant | project | customer) and the matching scope id; binding a group to a role
+-- inherits the group's scope. The resolver UNIONs direct account bindings with group-derived ones.
+CREATE TABLE IF NOT EXISTS rbac_groups (
+  id          BIGSERIAL PRIMARY KEY,
+  name        TEXT   NOT NULL,
+  description TEXT   NOT NULL DEFAULT '',
+  scope       TEXT   NOT NULL,                                   -- platform | tenant | project | customer
+  tenant_id   BIGINT REFERENCES tenants(id)   ON DELETE CASCADE,
+  project_id  BIGINT REFERENCES projects(id)  ON DELETE CASCADE,
+  customer_id BIGINT REFERENCES customers(id) ON DELETE CASCADE,
+  source      TEXT   NOT NULL DEFAULT 'internal',               -- internal | ldap
+  created_by  TEXT   NOT NULL DEFAULT 'system',
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- One group name per scope instance (NULL-safe via COALESCE).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rbac_groups_scope_name
+  ON rbac_groups (scope, COALESCE(tenant_id,0), COALESCE(project_id,0), COALESCE(customer_id,0), lower(name));
+
+-- Group membership: a user belongs to a group. reviewer stored lowercased.
+CREATE TABLE IF NOT EXISTS rbac_group_members (
+  group_id  BIGINT NOT NULL REFERENCES rbac_groups(id) ON DELETE CASCADE,
+  reviewer  TEXT   NOT NULL,
+  added_by  TEXT   NOT NULL DEFAULT 'system',
+  added_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (group_id, reviewer)
+);
+CREATE INDEX IF NOT EXISTS idx_rbac_group_members_reviewer ON rbac_group_members (lower(reviewer));
+
+-- Group → role binding (internal groups). The binding inherits the group's scope id, so the
+-- resolver matches on the group's tenant/project/customer. (LDAP group_key mappings keep using
+-- rbac_group_role_mappings; internal first-class groups use this.)
+CREATE TABLE IF NOT EXISTS rbac_group_roles (
+  id         BIGSERIAL PRIMARY KEY,
+  group_id   BIGINT NOT NULL REFERENCES rbac_groups(id) ON DELETE CASCADE,
+  role_id    BIGINT NOT NULL REFERENCES rbac_roles(id)  ON DELETE CASCADE,
+  granted_by TEXT   NOT NULL DEFAULT 'system',
+  granted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (group_id, role_id)
+);
+
 -- Seed the v1 privilege vocabulary.
 INSERT INTO rbac_privileges (key, name, description, scope) VALUES
   ('platform.admin',     'Platform settings', 'All platform settings (LDAP, SMTP, accounts, roles, repos); see all projects; grant self project roles', 'platform'),

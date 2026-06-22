@@ -195,6 +195,12 @@ meaningful inside a per-tenant schema later), so it's not throwaway.
 - UI: Multi-repo Registry shows the active project's repos (+ "platform default" badge).
 - Verify: register `dav` for project 727 with no collision; run a 727 self-eval branch run.
 
+### Phase 1a — ✅ SHIPPED 2026-06-21 (commits 9f9ed9f + f28a83a, deployed; verified e2e)
+Tenant entity + `projects.tenant_id` (backfilled) + tenant-scoped admin/edit/view roles + resolver
+(privileges_for tenant axis; tenant-admin ⊇ project-admin in-tenant) + tenant-aware `_is_project_member`
++ GET/POST /api/tenants. Next: **1b** groups/memberships + group→role bindings + project-list visibility
+for tenant holders + tenant-admins granting within their tenant; **1c** management UI.
+
 ### Phase 1 — Tenant entity + control plane
 - `tenants` table; `projects.tenant_id` FK (1:N); Customer untouched (M:N). Control schema holds the
   globally-unique identities (tenant, project, user, RBAC) + `tenant → schema/mcp` mapping.

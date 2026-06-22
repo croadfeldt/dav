@@ -80,17 +80,29 @@ async def privileges_for(conn, reviewer: str, project_id: Optional[int] = None,
     # tenant-scoped roles match in a project context (tenant-admin ⊇ project-admin).
     if tenant_id is None and project_id is not None:
         tenant_id = await conn.fetchval("SELECT tenant_id FROM projects WHERE id=$1", project_id)
+    # Phase 1b: a user's roles come from direct account bindings AND from the groups they belong
+    # to (group→role bindings inherit the group's scope). UNION both, then scope-match identically.
+    # Additive: with no groups, the group branch contributes nothing → behavior unchanged.
     rows = await conn.fetch(
         """
         SELECT DISTINCT rp.privilege_key
-        FROM rbac_account_roles ar
-        JOIN rbac_roles ro            ON ro.id = ar.role_id
-        JOIN rbac_role_privileges rp  ON rp.role_id = ar.role_id
-        WHERE lower(ar.reviewer) = lower($1)
-          AND ( ro.scope IN ('platform', 'cross-project')
-                OR ($2::bigint IS NOT NULL AND ar.project_id = $2::bigint)
-                OR ($3::bigint IS NOT NULL AND ar.customer_id = $3::bigint)
-                OR ($4::bigint IS NOT NULL AND ar.tenant_id = $4::bigint) )
+        FROM (
+            SELECT ar.role_id, ar.project_id, ar.customer_id, ar.tenant_id
+            FROM rbac_account_roles ar
+            WHERE lower(ar.reviewer) = lower($1)
+            UNION ALL
+            SELECT gr.role_id, g.project_id, g.customer_id, g.tenant_id
+            FROM rbac_group_members gm
+            JOIN rbac_groups g       ON g.id = gm.group_id
+            JOIN rbac_group_roles gr ON gr.group_id = g.id
+            WHERE lower(gm.reviewer) = lower($1)
+        ) b
+        JOIN rbac_roles ro            ON ro.id = b.role_id
+        JOIN rbac_role_privileges rp  ON rp.role_id = b.role_id
+        WHERE ro.scope IN ('platform', 'cross-project')
+           OR ($2::bigint IS NOT NULL AND b.project_id = $2::bigint)
+           OR ($3::bigint IS NOT NULL AND b.customer_id = $3::bigint)
+           OR ($4::bigint IS NOT NULL AND b.tenant_id = $4::bigint)
         """,
         reviewer, project_id, customer_id, tenant_id,
     )

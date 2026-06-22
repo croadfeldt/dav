@@ -2308,6 +2308,164 @@ async def create_tenant(payload: TenantCreateIn, request: Request):
     return {"ok": True, "id": row["id"], "slug": slug}
 
 
+# ── Groups (tenancy Phase 1b) — users → groups → roles; platform-admin managed ──
+_GROUP_SCOPES = {"platform", "tenant", "project", "customer"}
+
+
+class GroupCreateIn(BaseModel):
+    name: str
+    scope: str                          # platform | tenant | project | customer
+    description: str = ""
+    tenant_id: Optional[int] = None
+    project_id: Optional[int] = None
+    customer_id: Optional[int] = None
+
+
+class GroupMemberIn(BaseModel):
+    reviewer: str
+
+
+class GroupRoleIn(BaseModel):
+    role_id: int
+
+
+@app.get("/api/groups")
+async def list_groups(request: Request, scope: Optional[str] = None,
+                      tenant_id: Optional[int] = None, project_id: Optional[int] = None,
+                      customer_id: Optional[int] = None):
+    """List groups (optionally filtered by scope/scope-id), with member + role counts."""
+    await require_role(request, "admin")
+    where, args = [], []
+    for col, val in (("scope", scope), ("tenant_id", tenant_id),
+                     ("project_id", project_id), ("customer_id", customer_id)):
+        if val is not None:
+            args.append(val); where.append(f"g.{col} = ${len(args)}")
+    wc = (" WHERE " + " AND ".join(where)) if where else ""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT g.id, g.name, g.description, g.scope, g.tenant_id, g.project_id, g.customer_id, "
+            "       g.source, g.created_at, "
+            "       (SELECT count(*) FROM rbac_group_members m WHERE m.group_id=g.id) AS member_count, "
+            "       (SELECT count(*) FROM rbac_group_roles  r WHERE r.group_id=g.id) AS role_count "
+            f"FROM rbac_groups g{wc} ORDER BY g.scope, g.name", *args)
+    return {"groups": [{**dict(r), "created_at": r["created_at"].isoformat()} for r in rows]}
+
+
+@app.post("/api/groups")
+async def create_group(payload: GroupCreateIn, request: Request):
+    creator = await require_role(request, "admin")
+    scope = (payload.scope or "").strip().lower()
+    if scope not in _GROUP_SCOPES:
+        raise HTTPException(400, f"scope must be one of {sorted(_GROUP_SCOPES)}")
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(400, "group name required")
+    # The scope id must match the scope (platform groups carry none).
+    tid = payload.tenant_id if scope == "tenant" else None
+    pid = payload.project_id if scope == "project" else None
+    cid = payload.customer_id if scope == "customer" else None
+    if scope == "tenant" and tid is None: raise HTTPException(400, "tenant_id required for a tenant group")
+    if scope == "project" and pid is None: raise HTTPException(400, "project_id required for a project group")
+    if scope == "customer" and cid is None: raise HTTPException(400, "customer_id required for a customer group")
+    async with pool.acquire() as conn:
+        try:
+            row = await conn.fetchrow(
+                "INSERT INTO rbac_groups (name, description, scope, tenant_id, project_id, customer_id, created_by) "
+                "VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+                name, payload.description or "", scope, tid, pid, cid, creator)
+        except asyncpg.UniqueViolationError:
+            raise HTTPException(409, "a group with this name already exists in this scope")
+    return {"ok": True, "id": row["id"]}
+
+
+@app.delete("/api/groups/{group_id}", status_code=204)
+async def delete_group(group_id: int, request: Request):
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM rbac_groups WHERE id=$1", group_id)  # cascades members+roles
+    await _reload_approved()
+
+
+@app.get("/api/groups/{group_id}/members")
+async def list_group_members(group_id: int, request: Request):
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT reviewer, added_by, added_at FROM rbac_group_members WHERE group_id=$1 ORDER BY reviewer",
+            group_id)
+    return {"members": [{**dict(r), "added_at": r["added_at"].isoformat()} for r in rows]}
+
+
+@app.post("/api/groups/{group_id}/members")
+async def add_group_member(group_id: int, payload: GroupMemberIn, request: Request):
+    adder = await require_role(request, "admin")
+    r = (payload.reviewer or "").strip().lower()
+    if len(r) < 2:
+        raise HTTPException(400, "reviewer required")
+    async with pool.acquire() as conn:
+        if not await conn.fetchval("SELECT 1 FROM rbac_groups WHERE id=$1", group_id):
+            raise HTTPException(404, "group not found")
+        await conn.execute(
+            "INSERT INTO users (reviewer,email,role,approved,source,enabled) "
+            "VALUES ($1,$1,'viewer',true,'manual',true) ON CONFLICT (reviewer) DO NOTHING", r)
+        await conn.execute(
+            "INSERT INTO rbac_group_members (group_id, reviewer, added_by) VALUES ($1,$2,$3) "
+            "ON CONFLICT DO NOTHING", group_id, r, adder)
+    await _reload_approved()
+    return {"ok": True}
+
+
+@app.delete("/api/groups/{group_id}/members/{reviewer}", status_code=204)
+async def remove_group_member(group_id: int, reviewer: str, request: Request):
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM rbac_group_members WHERE group_id=$1 AND lower(reviewer)=lower($2)",
+                           group_id, reviewer)
+    await _reload_approved()
+
+
+@app.get("/api/groups/{group_id}/roles")
+async def list_group_roles(group_id: int, request: Request):
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT gr.role_id, ro.key, ro.name, ro.scope FROM rbac_group_roles gr "
+            "JOIN rbac_roles ro ON ro.id=gr.role_id WHERE gr.group_id=$1 ORDER BY ro.name", group_id)
+    return {"roles": [dict(r) for r in rows]}
+
+
+@app.post("/api/groups/{group_id}/roles")
+async def bind_group_role(group_id: int, payload: GroupRoleIn, request: Request):
+    granter = await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        g = await conn.fetchrow("SELECT scope FROM rbac_groups WHERE id=$1", group_id)
+        if not g:
+            raise HTTPException(404, "group not found")
+        role = await conn.fetchrow("SELECT scope FROM rbac_roles WHERE id=$1", payload.role_id)
+        if not role:
+            raise HTTPException(404, "role not found")
+        # The role's scope must be compatible with the group's: a platform/cross-project role
+        # binds to a platform group; otherwise the role scope must equal the group scope.
+        if role["scope"] in ("platform", "cross-project"):
+            if g["scope"] != "platform":
+                raise HTTPException(400, "platform/cross-project roles bind only to a platform group")
+        elif role["scope"] != g["scope"]:
+            raise HTTPException(400, f"a {g['scope']} group can only bind a {g['scope']}-scoped role")
+        await conn.execute(
+            "INSERT INTO rbac_group_roles (group_id, role_id, granted_by) VALUES ($1,$2,$3) "
+            "ON CONFLICT DO NOTHING", group_id, payload.role_id, granter)
+    await _reload_approved()
+    return {"ok": True}
+
+
+@app.delete("/api/groups/{group_id}/roles/{role_id}", status_code=204)
+async def unbind_group_role(group_id: int, role_id: int, request: Request):
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM rbac_group_roles WHERE group_id=$1 AND role_id=$2", group_id, role_id)
+    await _reload_approved()
+
+
 # ── #39 identity unification: aliases (uid / old key / 2nd email) → one canonical account ──
 class IdentityLinkIn(BaseModel):
     alias: str
@@ -12325,15 +12483,21 @@ def _legacy_proj_role(keys: list) -> Optional[str]:
 
 
 async def _is_project_member(conn, user: str, pid: int) -> bool:
-    # Tenancy Phase 1: membership of a project = a project-scoped binding on it, OR a
-    # tenant-scoped binding on the project's tenant (a tenant role holder is a member of
-    # every project in the tenant — so active-project resolution + guards engage for them).
+    # Tenancy Phase 1: membership of a project = a project-scoped binding on it OR a tenant-scoped
+    # binding on the project's tenant — from a DIRECT account binding OR via a group (Phase 1b).
+    # So a tenant/project role holder (directly or through a group) is a member of the project.
     return bool(await conn.fetchval(
-        "SELECT 1 FROM rbac_account_roles ar JOIN rbac_roles ro ON ro.id=ar.role_id "
-        "WHERE lower(ar.reviewer)=lower($1) AND ( "
-        "  (ro.scope='project' AND ar.project_id=$2) OR "
-        "  (ro.scope='tenant'  AND ar.tenant_id=(SELECT tenant_id FROM projects WHERE id=$2)) "
-        ") LIMIT 1",
+        "SELECT 1 FROM ( "
+        "  SELECT ar.role_id, ar.project_id, ar.tenant_id FROM rbac_account_roles ar "
+        "    WHERE lower(ar.reviewer)=lower($1) "
+        "  UNION ALL "
+        "  SELECT gr.role_id, g.project_id, g.tenant_id FROM rbac_group_members gm "
+        "    JOIN rbac_groups g ON g.id=gm.group_id JOIN rbac_group_roles gr ON gr.group_id=g.id "
+        "    WHERE lower(gm.reviewer)=lower($1) "
+        ") b JOIN rbac_roles ro ON ro.id=b.role_id "
+        "WHERE (ro.scope='project' AND b.project_id=$2) "
+        "   OR (ro.scope='tenant'  AND b.tenant_id=(SELECT tenant_id FROM projects WHERE id=$2)) "
+        "LIMIT 1",
         user, pid))
 
 
