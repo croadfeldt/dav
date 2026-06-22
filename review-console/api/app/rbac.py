@@ -46,7 +46,16 @@ P_PROJECT_EDIT = "project.edit"         # project-axis, edit level
 P_CUSTOMER_VIEW = "customer.view"       # customer-axis, view level
 P_CUSTOMER_EDIT = "customer.edit"       # customer-axis, edit level
 
+# Tenancy Phase 1: the tenant axis (admin/edit/view).
+P_TENANT_VIEW = "tenant.view"
+P_TENANT_EDIT = "tenant.edit"
+P_TENANT_MEMBERS = "tenant.members"
+P_TENANT_ADMIN = "tenant.admin"
+
 ROLE_PLATFORM_ADMIN = "platform-admin"
+ROLE_TENANT_ADMIN = "tenant-admin"
+ROLE_TENANT_EDIT = "tenant-edit"
+ROLE_TENANT_VIEWER = "tenant-viewer"
 ROLE_PROJECT_ADMIN = "project-admin"
 ROLE_PROJECT_EDIT = "project-edit"
 ROLE_PROJECT_VIEWER = "project-viewer"
@@ -55,15 +64,22 @@ ROLE_CUSTOMER_VIEWER = "customer-viewer"
 
 
 async def privileges_for(conn, reviewer: str, project_id: Optional[int] = None,
-                         customer_id: Optional[int] = None) -> set[str]:
+                         customer_id: Optional[int] = None,
+                         tenant_id: Optional[int] = None) -> set[str]:
     """The set of privilege keys `reviewer` holds in the given context.
     Platform/cross-project-role privileges apply regardless of scope id; project-role
     privileges only when their project_id matches; customer-role privileges only when
-    their customer_id matches. Back-compatible: with customer_id=None (every existing
-    caller) the result is identical to before — the customer axis simply contributes
-    nothing, so existing project guards are unaffected."""
+    their customer_id matches; tenant-role privileges only when their tenant_id matches.
+    Tenancy Phase 1: the context tenant is derived from project_id when not passed
+    explicitly, so a tenant-admin (whose role carries the project.* set) is admin of
+    every project in its tenant. Back-compatible: with no tenant roles assigned the
+    tenant axis contributes nothing, so existing guards are unaffected."""
     if not reviewer:
         return set()
+    # Derive the context tenant from the project when the caller didn't pass one, so
+    # tenant-scoped roles match in a project context (tenant-admin ⊇ project-admin).
+    if tenant_id is None and project_id is not None:
+        tenant_id = await conn.fetchval("SELECT tenant_id FROM projects WHERE id=$1", project_id)
     rows = await conn.fetch(
         """
         SELECT DISTINCT rp.privilege_key
@@ -73,9 +89,10 @@ async def privileges_for(conn, reviewer: str, project_id: Optional[int] = None,
         WHERE lower(ar.reviewer) = lower($1)
           AND ( ro.scope IN ('platform', 'cross-project')
                 OR ($2::bigint IS NOT NULL AND ar.project_id = $2::bigint)
-                OR ($3::bigint IS NOT NULL AND ar.customer_id = $3::bigint) )
+                OR ($3::bigint IS NOT NULL AND ar.customer_id = $3::bigint)
+                OR ($4::bigint IS NOT NULL AND ar.tenant_id = $4::bigint) )
         """,
-        reviewer, project_id, customer_id,
+        reviewer, project_id, customer_id, tenant_id,
     )
     privs = {r["privilege_key"] for r in rows}
     # F8: prompt.manage supersedes project.archreview.context. Existing grants of the
@@ -105,10 +122,12 @@ async def roles_for(conn, reviewer: str) -> list[dict]:
     rows = await conn.fetch(
         """
         SELECT ar.id, ar.role_id, ro.key, ro.name, ro.scope, ar.project_id,
-               p.name AS project_name, ar.granted_by, ar.granted_at
+               p.name AS project_name, ar.tenant_id, t.name AS tenant_name,
+               ar.granted_by, ar.granted_at
         FROM rbac_account_roles ar
         JOIN rbac_roles ro     ON ro.id = ar.role_id
         LEFT JOIN projects p   ON p.id = ar.project_id
+        LEFT JOIN tenants  t   ON t.id = ar.tenant_id
         WHERE lower(ar.reviewer) = lower($1)
         ORDER BY ro.scope, ro.name, p.name NULLS FIRST
         """,
@@ -193,29 +212,32 @@ async def set_role_privileges(conn, role_id: int, privilege_keys: list[str]) -> 
 
 async def assign_role(conn, reviewer: str, role_id: int,
                       project_id: Optional[int], granted_by: str,
-                      customer_id: Optional[int] = None, spans_all: bool = False) -> None:
-    # A grant is project-scoped OR customer-scoped (or neither, for platform/cross roles).
-    # spans_all turns it into customer_all_projects / project_all_customers. Bare ON
-    # CONFLICT relies on the 4-col unique index (reviewer, role, project, customer).
+                      customer_id: Optional[int] = None, spans_all: bool = False,
+                      tenant_id: Optional[int] = None) -> None:
+    # A grant is project-scoped OR customer-scoped OR tenant-scoped (or none, for
+    # platform/cross roles). spans_all turns it into customer_all_projects /
+    # project_all_customers. ON CONFLICT relies on the 5-col unique index
+    # (reviewer, role, project, customer, tenant).
     await conn.execute(
         """
-        INSERT INTO rbac_account_roles (reviewer, role_id, project_id, customer_id, spans_all, granted_by)
-        VALUES (lower($1), $2, $3, $4, $5, $6)
+        INSERT INTO rbac_account_roles (reviewer, role_id, project_id, customer_id, spans_all, granted_by, tenant_id)
+        VALUES (lower($1), $2, $3, $4, $5, $6, $7)
         ON CONFLICT DO NOTHING
         """,
-        reviewer, role_id, project_id, customer_id, spans_all, granted_by,
+        reviewer, role_id, project_id, customer_id, spans_all, granted_by, tenant_id,
     )
 
 
 async def revoke_role(conn, reviewer: str, role_id: int,
-                      project_id: Optional[int]) -> None:
+                      project_id: Optional[int], tenant_id: Optional[int] = None) -> None:
     await conn.execute(
         """
         DELETE FROM rbac_account_roles
         WHERE lower(reviewer) = lower($1) AND role_id = $2
           AND COALESCE(project_id, 0) = COALESCE($3::bigint, 0)
+          AND COALESCE(tenant_id, 0)  = COALESCE($4::bigint, 0)
         """,
-        reviewer, role_id, project_id,
+        reviewer, role_id, project_id, tenant_id,
     )
 
 

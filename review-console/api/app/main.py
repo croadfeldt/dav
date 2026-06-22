@@ -1865,6 +1865,7 @@ class RolePatchIn(BaseModel):
 class RoleAssignIn(BaseModel):
     role_id: int
     project_id: Optional[int] = None
+    tenant_id: Optional[int] = None   # tenancy Phase 1: required for tenant-scoped roles
 
 
 def _acct_roles_out(roles: list) -> list:
@@ -2199,11 +2200,20 @@ async def assign_account_role(reviewer: str, payload: RoleAssignIn, request: Req
         role = await conn.fetchrow("SELECT scope FROM rbac_roles WHERE id=$1", payload.role_id)
     if not role:
         raise HTTPException(404, "role not found")
+    tenant_id = None
     if role["scope"] in ("platform", "cross-project"):
         # Platform & cross-project roles bind globally (no project) and are
         # granted by a platform admin.
         granter = await require_role(request, "admin")
         project_id = None
+    elif role["scope"] == "tenant":
+        # Tenancy Phase 1: tenant roles bind to a tenant. Granted by platform admin for now
+        # (tenant-admins granting within their own tenant lands with the management UI).
+        if payload.tenant_id is None:
+            raise HTTPException(400, "tenant_id required for a tenant-scoped role")
+        granter = await require_role(request, "admin")
+        project_id = None
+        tenant_id = payload.tenant_id
     else:
         if payload.project_id is None:
             raise HTTPException(400, "project_id required for a project-scoped role")
@@ -2227,7 +2237,7 @@ async def assign_account_role(reviewer: str, payload: RoleAssignIn, request: Req
         await conn.execute(
             "INSERT INTO users (reviewer,email,role,approved,source,enabled) "
             "VALUES ($1,$1,'viewer',true,'manual',true) ON CONFLICT (reviewer) DO NOTHING", r)
-        await rbac.assign_role(conn, r, payload.role_id, project_id, granter)
+        await rbac.assign_role(conn, r, payload.role_id, project_id, granter, tenant_id=tenant_id)
         await _reconcile_admin(conn)
     await _reload_approved()
     return {"ok": True}
@@ -2236,7 +2246,8 @@ async def assign_account_role(reviewer: str, payload: RoleAssignIn, request: Req
 @app.delete("/api/accounts/{reviewer}/roles", status_code=204)
 async def revoke_account_role(reviewer: str, request: Request,
                               role_id: int = Query(...),
-                              project_id: Optional[int] = Query(None)):
+                              project_id: Optional[int] = Query(None),
+                              tenant_id: Optional[int] = Query(None)):
     async with pool.acquire() as conn:
         role = await conn.fetchrow("SELECT scope FROM rbac_roles WHERE id=$1", role_id)
     if not role:
@@ -2244,12 +2255,57 @@ async def revoke_account_role(reviewer: str, request: Request,
     if role["scope"] in ("platform", "cross-project"):
         await require_role(request, "admin")
         project_id = None
+    elif role["scope"] == "tenant":
+        await require_role(request, "admin")
+        project_id = None
     else:
         await require_project_admin(request, project_id)
     async with pool.acquire() as conn:
-        await rbac.revoke_role(conn, reviewer.strip().lower(), role_id, project_id)
+        await rbac.revoke_role(conn, reviewer.strip().lower(), role_id, project_id, tenant_id=tenant_id)
         await _reconcile_admin(conn)
     await _reload_approved()
+
+
+# ── Tenants (tenancy Phase 1) — the hard isolation owner; platform-admin managed ──
+class TenantCreateIn(BaseModel):
+    slug: str
+    name: str = ""
+    description: str = ""
+    isolation_level: str = "hard"     # hard (schema-per-tenant target) | soft
+    declared_regime: str = "none"     # none | secnumcloud | bsi_c5 | eu_data_boundary | ...
+
+
+@app.get("/api/tenants")
+async def list_tenants(request: Request):
+    """All tenants with project counts (platform admin)."""
+    await require_role(request, "admin")
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT t.id, t.slug, t.name, t.description, t.isolation_level, t.declared_regime, "
+            "       t.archived, t.created_at, "
+            "       (SELECT count(*) FROM projects p WHERE p.tenant_id = t.id) AS project_count "
+            "FROM tenants t ORDER BY t.name")
+    return {"tenants": [
+        {**dict(r), "created_at": r["created_at"].isoformat()} for r in rows]}
+
+
+@app.post("/api/tenants")
+async def create_tenant(payload: TenantCreateIn, request: Request):
+    """Create a tenant (the hard isolation owner). Phase 1 = logical entity + RBAC tier;
+    the schema-per-tenant data plane (Phase 2) provisions later."""
+    creator = await require_role(request, "admin")
+    slug = (payload.slug or "").strip().lower()
+    if not re.match(r'^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$', slug):
+        raise HTTPException(400, "invalid tenant slug (lowercase alphanumeric + hyphens, 2-63 chars)")
+    async with pool.acquire() as conn:
+        if await conn.fetchval("SELECT 1 FROM tenants WHERE slug=$1", slug):
+            raise HTTPException(409, "tenant slug already exists")
+        row = await conn.fetchrow(
+            "INSERT INTO tenants (slug, name, description, isolation_level, declared_regime, created_by) "
+            "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+            slug, (payload.name or slug), payload.description or "",
+            payload.isolation_level or "hard", payload.declared_regime or "none", creator)
+    return {"ok": True, "id": row["id"], "slug": slug}
 
 
 # ── #39 identity unification: aliases (uid / old key / 2nd email) → one canonical account ──

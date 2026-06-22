@@ -380,6 +380,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_code_repos_name ON code_repo_configs(lower
 -- MCP servers are not statically seeded; dav-docs-mcp self-registers at boot
 -- (see _seed_docs_mcp). openshift-mcp / frc-scheduler-mcp are not used by DAV.
 
+-- ── Tenants (the hard isolation owner — tenancy Phase 1; project-scoping-design.md) ──
+-- The tenant is the ONLY hard isolation boundary: 1 tenant → N projects; nothing crosses a
+-- tenant except an explicit audited operator delegation (deferred). A 'default' tenant homes
+-- all pre-tenancy data. isolation_level documents the intended data-plane isolation (hard =
+-- schema-per-tenant target, Phase 2); Phase 1 is the logical tenant entity + RBAC tier only.
+-- declared_regime drives enforced controls later (uc-sov-007). Research-backed: project +
+-- customer are strictly tenant-scoped (deep-research/tenancy-sovereignty-2026-06-21).
+CREATE TABLE IF NOT EXISTS tenants (
+  id              BIGSERIAL PRIMARY KEY,
+  slug            TEXT UNIQUE NOT NULL,
+  name            TEXT NOT NULL,
+  description     TEXT NOT NULL DEFAULT '',
+  isolation_level TEXT NOT NULL DEFAULT 'hard',     -- hard (schema-per-tenant target) | soft
+  declared_regime TEXT NOT NULL DEFAULT 'none',     -- none | secnumcloud | bsi_c5 | eu_data_boundary | ...
+  archived        BOOLEAN NOT NULL DEFAULT false,
+  created_by      TEXT NOT NULL DEFAULT 'system',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO tenants (slug, name, description, created_by)
+  VALUES ('default', 'Default', 'Default tenant (homes pre-tenancy data)', 'system')
+  ON CONFLICT (slug) DO NOTHING;
+
 -- ── Projects (tenancy foundation — uc-driven-roadmaps-design.md §9) ──────────
 -- A project is a user-defined analysis scope. Tenancy-ready from birth: new
 -- entities carry project_id. A 'default' project gives existing single-project
@@ -396,6 +418,11 @@ CREATE TABLE IF NOT EXISTS projects (
 INSERT INTO projects (slug, name, description, created_by)
   VALUES ('default', 'Default', 'Default project (auto-created)', 'system')
   ON CONFLICT (slug) DO NOTHING;
+-- Tenancy Phase 1: every project belongs to exactly ONE tenant (1:N). Nullable + backfilled to
+-- the default tenant. Nothing crosses a tenant (research: project is strictly tenant-scoped).
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS tenant_id BIGINT REFERENCES tenants(id);
+UPDATE projects SET tenant_id = (SELECT id FROM tenants WHERE slug='default') WHERE tenant_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_projects_tenant ON projects(tenant_id);
 
 -- ── Customers (first-class entity, orthogonal to projects — M:N) ─────────────
 -- docs/customer-demand-dedup-design.md. Customers + projects are PEER scopes; access to
@@ -937,9 +964,13 @@ ALTER TABLE rbac_account_roles      ADD COLUMN IF NOT EXISTS customer_id BIGINT 
 ALTER TABLE rbac_account_roles      ADD COLUMN IF NOT EXISTS spans_all   BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE rbac_group_role_mappings ADD COLUMN IF NOT EXISTS customer_id BIGINT REFERENCES customers(id) ON DELETE CASCADE;
 ALTER TABLE rbac_group_role_mappings ADD COLUMN IF NOT EXISTS spans_all   BOOLEAN NOT NULL DEFAULT false;
+-- Tenancy Phase 1: a binding can be tenant-scoped (a tenant role on a tenant). Same shape as the
+-- project/customer axes. The resolver matches ar.tenant_id against the context tenant.
+ALTER TABLE rbac_account_roles       ADD COLUMN IF NOT EXISTS tenant_id BIGINT REFERENCES tenants(id) ON DELETE CASCADE;
+ALTER TABLE rbac_group_role_mappings ADD COLUMN IF NOT EXISTS tenant_id BIGINT REFERENCES tenants(id) ON DELETE CASCADE;
 DROP INDEX IF EXISTS idx_rbac_acct_role_uniq;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rbac_acct_role_uniq
-  ON rbac_account_roles (lower(reviewer), role_id, COALESCE(project_id, 0), COALESCE(customer_id, 0));
+  ON rbac_account_roles (lower(reviewer), role_id, COALESCE(project_id, 0), COALESCE(customer_id, 0), COALESCE(tenant_id, 0));
 
 -- Seed the v1 privilege vocabulary.
 INSERT INTO rbac_privileges (key, name, description, scope) VALUES
@@ -976,7 +1007,13 @@ INSERT INTO rbac_privileges (key, name, description, scope) VALUES
   ('project.view',               'View project',           'View a project (membership for the project axis of the access matrix)', 'project'),
   ('project.edit',               'Edit project',           'Edit a project''s settings + data (project axis, edit level)', 'project'),
   ('customer.view',              'View customer',          'View a customer, its project associations and demand (customer axis)', 'customer'),
-  ('customer.edit',              'Edit customer',          'Manage a customer: settings, project associations, exclusivity (customer axis, edit level)', 'customer')
+  ('customer.edit',              'Edit customer',          'Manage a customer: settings, project associations, exclusivity (customer axis, edit level)', 'customer'),
+  -- Tenancy Phase 1: the tenant axis (admin/edit/view). A tenant admin subsumes project admin
+  -- across all the tenant's projects (the role carries the project.* set too; see the matrix).
+  ('tenant.view',                'View tenant',            'View a tenant and its projects (tenant axis, view level)', 'tenant'),
+  ('tenant.edit',                'Edit tenant',            'Edit a tenant''s settings (tenant axis, edit level)', 'tenant'),
+  ('tenant.members',             'Tenant members',         'Manage membership and role assignments within a tenant', 'tenant'),
+  ('tenant.admin',               'Administer tenant',      'Full administration of a tenant and all its projects', 'tenant')
 ON CONFLICT (key) DO NOTHING;
 -- Reclassify project.create from its original 'platform' scope to 'cross-project'
 -- (project-related but not tied to a specific project). Idempotent.
@@ -989,7 +1026,10 @@ INSERT INTO rbac_roles (key, name, description, scope, is_system) VALUES
   ('project-edit',   'Project Edit',   'Edit access to a project''s data', 'project', true),
   ('project-viewer', 'Project Viewer', 'Read-only access to a project''s data', 'project', true),
   ('customer-edit',  'Customer Edit',  'Manage a customer (settings, associations, exclusivity)', 'customer', true),
-  ('customer-viewer','Customer Viewer','Read-only access to a customer + its demand', 'customer', true)
+  ('customer-viewer','Customer Viewer','Read-only access to a customer + its demand', 'customer', true),
+  ('tenant-admin',   'Tenant Admin',   'Full administration of a tenant and all its projects', 'tenant', true),
+  ('tenant-edit',    'Tenant Edit',    'Edit access across a tenant''s projects', 'tenant', true),
+  ('tenant-viewer',  'Tenant Viewer',  'Read-only access across a tenant''s projects', 'tenant', true)
 ON CONFLICT (key) DO NOTHING;
 
 -- Seed the role × privilege matrix for the built-in roles. Re-runs every boot
@@ -1014,6 +1054,23 @@ INSERT INTO rbac_role_privileges (role_id, privilege_key)
      OR (r.key='project-edit'   AND p.key IN ('project.view','project.edit'))
      OR (r.key='customer-edit'   AND p.key IN ('customer.view','customer.edit'))
      OR (r.key='customer-viewer' AND p.key IN ('customer.view'))
+     -- Tenant triad. tenant-admin subsumes project-admin across the tenant's projects (carries the
+     -- full project.* set); tenant-edit ~ project-edit; tenant-viewer ~ project-viewer. The resolver
+     -- contributes these when ar.tenant_id matches the context project's tenant.
+     OR (r.key='tenant-admin' AND p.key IN (
+            'tenant.view','tenant.edit','tenant.members','tenant.admin',
+            'project.settings','project.members','project.delete','project.data.read','project.view','project.edit',
+            'project.usecases','project.runs.manage','project.runs.execute',
+            'project.archreview.execute','project.archreview.context','prompt.manage',
+            'project.enhancement.execute','project.enhancement.pr','project.catalog',
+            'project.models','project.integrations','project.repos',
+            'assessment.view','assessment.edit','blueprint.view','blueprint.edit'))
+     OR (r.key='tenant-edit' AND p.key IN (
+            'tenant.view','project.data.read','project.view','project.edit','project.usecases',
+            'project.runs.manage','project.runs.execute','project.archreview.execute',
+            'project.archreview.context','prompt.manage','project.enhancement.execute','project.catalog',
+            'assessment.view','assessment.edit','blueprint.view'))
+     OR (r.key='tenant-viewer' AND p.key IN ('tenant.view','project.data.read','project.view','assessment.view','blueprint.view'))
 ON CONFLICT DO NOTHING;
 
 -- Retire the legacy umbrella `project.data.write` from the BUILT-IN roles (custom

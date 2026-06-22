@@ -85,6 +85,38 @@ defaults, and removes the global-uniqueness blocker. Alternative — *strict per
 is simpler conceptually but loses platform defaults and diverges from the rest of the system; not
 recommended.
 
+## Boundary rules (the tenant is the only hard wall) — RESOLVED 2026-06-21
+Backed by deep research (sovereignty + SaaS practice; 22/25 claims adversarially confirmed). Full
+report in this session; key cites inline.
+- **Project ↔ tenant: STRICTLY TENANT-SCOPED, no crossing.** A project shared across two regulated-client
+  tenants is prohibited under both sovereignty and standard SaaS practice — it commingles separately
+  regulated clients' confidential engagement data, defeating hard isolation. (flightcontrol; Salesforce
+  multi-org; AWS SaaS Lens.)
+- **Customer ↔ tenant: STRICTLY TENANT-SCOPED, NO shared global customer directory.** The same real-world
+  customer engaged under two tenants = two separate records. Critically, the *existence/name* of a customer
+  in a tenant is itself confidential (bank-secrecy / who-works-with-whom), so a cross-tenant directory leaks
+  client relationships between competing regulated institutions. DAV's existing Customer↔project M:N stays
+  **within** a tenant. (Microsoft SaaS guidance; OWASP multi-tenant; Salesforce.)
+- **Cross-project linking: ALLOWED within a tenant, never across.** Projects in the same tenant can
+  reference/share UCs+repos/fork (#95/#43).
+- **Sovereignty OVERRIDES convenience.** Jurisdiction follows corporate domicile, not server location
+  (US CLOUD Act) — a shared cross-tenant object means a compelled disclosure or jurisdictional flaw on one
+  client can expose another. Residency ≠ sovereignty; in-region storage doesn't cure commingling.
+- **The ONLY cross-tenant mechanism = an MSP/parent delegated-access pattern**, NOT a shared data entity:
+  the consultancy-vendor holds a parent role with explicit, audited, credential-mediated delegated access
+  into each child tenant; project/customer DATA stays in the child. (F5 MSP; JumpCloud; AWS bridge model.)
+- **Platform "shared-services" layer = de-identified vendor IP ONLY.** Taxonomy, prompt libraries, and
+  assessment frameworks may live as platform defaults (project_id NULL) shared across tenants **iff** they
+  carry no client-identifying data. Client data (customers, projects, UCs, assessments, findings) never
+  pools. This is the safe reading of the "platform default + override" inheritance for a regulated context.
+
+### Follow-ups flagged by the research (not blockers, but track)
+- Confirm specific cert clauses (SecNumCloud / BSI C5 / EU Data Boundary) on operator/admin cross-tenant
+  access — they may further constrain even the audited MSP delegated-access path. (Counsel per jurisdiction.)
+- Define the **break-glass + audit** controls wrapping the vendor's delegated-access path so the
+  consultancy's own cross-tenant reach isn't itself a sovereignty finding.
+- Decide whether even a hashed/opaque cross-tenant customer reference is acceptable (likely not, by default).
+
 ## Access control — admin/edit/view at every scope (decided 2026-06-21)
 A consistent **admin / edit / view** triad at each scope tier, extending the existing RBAC
 (roles × privileges × bindings, #44–54) — not a new system. The substrate already has scope-nesting
@@ -109,22 +141,50 @@ Platform-admin manages any user; **tenant-admin manages users/memberships within
 project-admin manages project membership. No separate "user-admin" tier — it's the admin role's
 member-management privilege, scoped. (Self-service create + escalation-bounded grants already exist.)
 
-### Implementation (RBAC extension)
-- `rbac_account_roles` already carries `project_id` + `customer_id`; **add `tenant_id`** (same pattern).
+### Group-based RBAC (decided 2026-06-21) — users → groups → roles, at each scope
+We don't bind users to roles directly (except as an admin convenience). The model is **groups**,
+scoped per tier, mapped to the admin/edit/view roles — the OpenShift/LDAP pattern, which DAV already
+half-has (`rbac_group_role_mappings` maps LDAP group keys → roles today). Generalize it to first-class
+internal groups:
+
+- **Groups** (`groups` table): `id, name, scope ∈ {platform,tenant,project,customer}, scope_id
+  (tenant/project/customer id; NULL for platform), source ∈ {internal,ldap}, created_by`. So you get
+  **Tenant groups, Project groups, Customer groups** (+ platform groups), each owned by its scope.
+- **Membership** (`group_members`: group_id, reviewer): users belong to groups. (Optional later:
+  group-in-group nesting.)
+- **Binding** (generalize `rbac_group_role_mappings`): a group → a role (admin/edit/view) at the
+  group's scope. e.g. group "acme-tenant-admins" (scope=tenant, scope_id=acme) → role `tenant-admin`.
+- **Resolution** (`rbac.privileges_for`): a user's privileges in a context = UNION of
+  (a) direct `rbac_account_roles` bindings (kept, admin convenience) **+**
+  (b) roles via every group the user is a member of, whose group→role binding matches the context's
+      tenant/project/customer. Higher-scope admin still subsumes lower (platform ⊇ tenant ⊇ project).
+
+"Then we start mapping appropriately" = the flows to create groups at each scope, add users to them,
+and bind groups → admin/edit/view. The existing Users & roles + bindings matrix becomes a **groups +
+memberships + bindings** surface with the tenant/project/customer axes.
+
+### Implementation (RBAC extension, group-based)
+- New `groups` + `group_members`; add `tenant_id` to `rbac_account_roles` AND to the group-binding
+  table (it already has `project_id`; add `tenant_id` + `customer_id` so a group binds at any scope).
 - Add `scope='tenant'`; seed `tenant-admin/edit/view`; add `platform-edit/view`.
-- Extend `rbac.privileges_for()` OR-chain with the tenant match (`ar.tenant_id = $tenant`), and make
-  higher-scope admin subsume lower (platform ⊇ tenant ⊇ project) — DAV already does "platform roles
-  apply everywhere"; tenant slots in between.
-- UI: the existing Users & roles + role-bindings matrix gains the **tenant axis**; a unified
-  **Access** surface manages users · tenants · projects · bindings with the triads.
-- Lands with **Phase 1** (the tenant entity); the tenant roles ship with the tenant.
+- Extend `rbac.privileges_for()` to UNION direct + group-derived roles, matching on
+  tenant/project/customer; higher-scope admin subsumes lower.
+- UI: groups-and-memberships management at each scope + group→role bindings matrix.
+- Lands across **Phase 1** sub-slices (1a tenant entity + roles + resolver; 1b groups + membership;
+  1c management UI), each independently shippable.
 
 > Assumption (confirm): **admin nests downward** — a tenant-admin is implicitly admin of every project
 > in the tenant; platform-admin is admin everywhere. (Standard; matches existing behavior.)
 
 ## Phase plan (sequenced so the immediate need isn't blocked on the full hard-tenancy build)
 
-### Phase 0 — Project-scoped repos *within the current shared schema* (unblocks now; forward-compatible)
+### Phase 0 — Project-scoped repos *within the current shared schema* — ✅ SHIPPED 2026-06-21 (commit b55650f, API build deployed)
+Done: migrate_026 (per-(project,namespace) unique); projector scoped to the shared-MCP source
+project (env `DAV_MCP_SOURCE_PROJECT_SLUG`=dcm) so other projects can't pollute the shared ConfigMap.
+Verified: `dav` registered for project 727 alongside project 20's `dav` (no collision); shared
+spec ConfigMap md5 unchanged (DCM unaffected); 727 registry shows only its repos. Deferred to Phase 1:
+`repos.get_repo` namespace-string lookups are still global (UI uses uuid, so no impact today).
+Original plan retained below for reference:
 The dav-repo-in-two-projects need and the branch test don't need physical isolation — they need
 project-unique repo names. This slice is a strict subset of the hard-tenancy target (project_id stays
 meaningful inside a per-tenant schema later), so it's not throwaway.
