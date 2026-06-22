@@ -1512,6 +1512,34 @@ async def require_project_admin(request: Request, project_id: Optional[int]) -> 
     raise HTTPException(403, "requires project admin")
 
 
+async def require_tenant_admin(request: Request, tenant_id: Optional[int]) -> str:
+    """Administer a tenant: platform.admin (any tenant), or tenant.admin on THIS tenant.
+    Tenancy Phase 1b — delegates tenant/group/role management to a tenant's own admin."""
+    user = get_user(request)
+    if _service_token_ok(request) or not _multiuser():
+        return user
+    if await _has_priv(user, rbac.P_PLATFORM_ADMIN):
+        return user
+    if tenant_id is not None:
+        async with pool.acquire() as conn:
+            privs = await rbac.privileges_for(conn, user, tenant_id=tenant_id)
+        if rbac.P_TENANT_ADMIN in privs:
+            return user
+    raise HTTPException(403, "requires tenant admin")
+
+
+async def _require_group_admin(request: Request, group_id: int) -> str:
+    """Gate a mutation on an existing group by its scope: a tenant group → tenant-admin of its
+    tenant (or platform admin); any other scope → platform admin (for now)."""
+    async with pool.acquire() as conn:
+        g = await conn.fetchrow("SELECT scope, tenant_id FROM rbac_groups WHERE id=$1", group_id)
+    if not g:
+        raise HTTPException(404, "group not found")
+    if g["scope"] == "tenant":
+        return await require_tenant_admin(request, g["tenant_id"])
+    return await require_role(request, "admin")
+
+
 async def _require_customer_priv_conn(conn, request: Request, privilege: str,
                                       customer_id: Optional[int] = None) -> str:
     """Customer-axis guard: require a customer-scoped privilege on `customer_id`.
@@ -2207,11 +2235,12 @@ async def assign_account_role(reviewer: str, payload: RoleAssignIn, request: Req
         granter = await require_role(request, "admin")
         project_id = None
     elif role["scope"] == "tenant":
-        # Tenancy Phase 1: tenant roles bind to a tenant. Granted by platform admin for now
-        # (tenant-admins granting within their own tenant lands with the management UI).
+        # Tenancy Phase 1b: tenant roles bind to a tenant; a tenant-admin of THAT tenant (or a
+        # platform admin) may grant within it. The escalation guard below still blocks granting
+        # privileges the granter doesn't already hold in the tenant.
         if payload.tenant_id is None:
             raise HTTPException(400, "tenant_id required for a tenant-scoped role")
-        granter = await require_role(request, "admin")
+        granter = await require_tenant_admin(request, payload.tenant_id)
         project_id = None
         tenant_id = payload.tenant_id
     else:
@@ -2225,7 +2254,7 @@ async def assign_account_role(reviewer: str, payload: RoleAssignIn, request: Req
         # hold in this scope — never a higher level of control than your own.
         # Platform admins hold everything, so they bypass. Example: a project
         # editor who also has project.members can grant editor/viewer, not admin.
-        granter_privs = await rbac.privileges_for(conn, granter, project_id)
+        granter_privs = await rbac.privileges_for(conn, granter, project_id, tenant_id=tenant_id)
         if rbac.P_PLATFORM_ADMIN not in granter_privs:
             role_privs = {x["privilege_key"] for x in await conn.fetch(
                 "SELECT privilege_key FROM rbac_role_privileges WHERE role_id=$1", payload.role_id)}
@@ -2353,7 +2382,6 @@ async def list_groups(request: Request, scope: Optional[str] = None,
 
 @app.post("/api/groups")
 async def create_group(payload: GroupCreateIn, request: Request):
-    creator = await require_role(request, "admin")
     scope = (payload.scope or "").strip().lower()
     if scope not in _GROUP_SCOPES:
         raise HTTPException(400, f"scope must be one of {sorted(_GROUP_SCOPES)}")
@@ -2367,6 +2395,8 @@ async def create_group(payload: GroupCreateIn, request: Request):
     if scope == "tenant" and tid is None: raise HTTPException(400, "tenant_id required for a tenant group")
     if scope == "project" and pid is None: raise HTTPException(400, "project_id required for a project group")
     if scope == "customer" and cid is None: raise HTTPException(400, "customer_id required for a customer group")
+    # Phase 1b: a tenant-admin may create groups within their tenant; else platform admin.
+    creator = await require_tenant_admin(request, tid) if scope == "tenant" else await require_role(request, "admin")
     async with pool.acquire() as conn:
         try:
             row = await conn.fetchrow(
@@ -2380,7 +2410,7 @@ async def create_group(payload: GroupCreateIn, request: Request):
 
 @app.delete("/api/groups/{group_id}", status_code=204)
 async def delete_group(group_id: int, request: Request):
-    await require_role(request, "admin")
+    await _require_group_admin(request, group_id)
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM rbac_groups WHERE id=$1", group_id)  # cascades members+roles
     await _reload_approved()
@@ -2398,7 +2428,7 @@ async def list_group_members(group_id: int, request: Request):
 
 @app.post("/api/groups/{group_id}/members")
 async def add_group_member(group_id: int, payload: GroupMemberIn, request: Request):
-    adder = await require_role(request, "admin")
+    adder = await _require_group_admin(request, group_id)
     r = (payload.reviewer or "").strip().lower()
     if len(r) < 2:
         raise HTTPException(400, "reviewer required")
@@ -2417,7 +2447,7 @@ async def add_group_member(group_id: int, payload: GroupMemberIn, request: Reque
 
 @app.delete("/api/groups/{group_id}/members/{reviewer}", status_code=204)
 async def remove_group_member(group_id: int, reviewer: str, request: Request):
-    await require_role(request, "admin")
+    await _require_group_admin(request, group_id)
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM rbac_group_members WHERE group_id=$1 AND lower(reviewer)=lower($2)",
                            group_id, reviewer)
@@ -2436,7 +2466,7 @@ async def list_group_roles(group_id: int, request: Request):
 
 @app.post("/api/groups/{group_id}/roles")
 async def bind_group_role(group_id: int, payload: GroupRoleIn, request: Request):
-    granter = await require_role(request, "admin")
+    granter = await _require_group_admin(request, group_id)
     async with pool.acquire() as conn:
         g = await conn.fetchrow("SELECT scope FROM rbac_groups WHERE id=$1", group_id)
         if not g:
@@ -2460,7 +2490,7 @@ async def bind_group_role(group_id: int, payload: GroupRoleIn, request: Request)
 
 @app.delete("/api/groups/{group_id}/roles/{role_id}", status_code=204)
 async def unbind_group_role(group_id: int, role_id: int, request: Request):
-    await require_role(request, "admin")
+    await _require_group_admin(request, group_id)
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM rbac_group_roles WHERE group_id=$1 AND role_id=$2", group_id, role_id)
     await _reload_approved()
