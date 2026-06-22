@@ -11859,7 +11859,8 @@ async def list_projects(request: Request, show_archived: bool = Query(False)):
     user = get_user(request)
     platform = (not _multiuser()) or await _has_priv(user, rbac.P_PLATFORM_ADMIN)
     async with pool.acquire() as conn:
-        myroles = await _user_project_roles(conn, user)
+        myroles = await _user_project_roles(conn, user)          # direct project roles (for my_role display)
+        accessible = await _accessible_project_ids(conn, user)   # direct + tenant + group (visibility)
         cols = ("p.id, p.slug, p.name, p.description, p.created_by, p.created_at, p.archived, "
                 "p.is_exclusive, "
                 + _PROJECT_MEMBER_COUNT_SQL)
@@ -11870,10 +11871,10 @@ async def list_projects(request: Request, show_archived: bool = Query(False)):
         else:
             rows = await conn.fetch(
                 f"SELECT {cols} FROM projects p WHERE p.id = ANY($1::bigint[]) AND ($2 OR NOT p.archived) "
-                "ORDER BY (p.slug='default') DESC, p.name", list(myroles.keys()), show_archived)
+                "ORDER BY (p.slug='default') DESC, p.name", list(accessible), show_archived)
     return {"projects": [{**dict(r), "created_at": r["created_at"].isoformat(),
                           "my_role": _legacy_proj_role(myroles.get(r["id"], [])),
-                          "is_member": r["id"] in myroles} for r in rows]}
+                          "is_member": r["id"] in accessible} for r in rows]}
 
 
 @app.get("/api/projects/mine")
@@ -11887,13 +11888,13 @@ async def my_projects(request: Request):
             rows = await conn.fetch(
                 "SELECT id, slug, name FROM projects WHERE NOT archived ORDER BY (slug='default') DESC, name")
         else:
+            # Phase 1b-2: include projects reachable via a tenant/group role, not just direct
+            # project bindings — so a tenant-viewer/admin sees the tenant's projects in the switcher.
+            accessible = await _accessible_project_ids(conn, user)
             rows = await conn.fetch(
                 "SELECT p.id, p.slug, p.name FROM projects p "
-                "JOIN rbac_account_roles ar ON ar.project_id=p.id "
-                "JOIN rbac_roles ro ON ro.id=ar.role_id AND ro.scope='project' "
-                "WHERE lower(ar.reviewer)=lower($1) AND NOT p.archived "
-                "GROUP BY p.id, p.slug, p.name "
-                "ORDER BY (p.slug='default') DESC, p.name", user)
+                "WHERE NOT p.archived AND p.id = ANY($1::bigint[]) "
+                "ORDER BY (p.slug='default') DESC, p.name", list(accessible))
         member_ids = [r["id"] for r in rows]
         default_pid = await _resolve_default_project(conn, user, member_ids) if _multiuser() else None
     return {"projects": [dict(r) for r in rows], "default_project_id": default_pid}
@@ -12461,7 +12462,7 @@ async def remove_project_member(pid: int, reviewer: str, request: Request,
 
 
 async def _user_project_roles(conn, user: str) -> dict:
-    """{project_id: [project-role-keys]} the user holds (RBAC)."""
+    """{project_id: [project-role-keys]} the user holds DIRECTLY (RBAC project bindings)."""
     rows = await conn.fetch(
         "SELECT ar.project_id, ro.key FROM rbac_account_roles ar "
         "JOIN rbac_roles ro ON ro.id=ar.role_id AND ro.scope='project' "
@@ -12470,6 +12471,30 @@ async def _user_project_roles(conn, user: str) -> dict:
     for r in rows:
         out.setdefault(r["project_id"], []).append(r["key"])
     return out
+
+
+async def _accessible_project_ids(conn, user: str) -> set:
+    """Project ids the user can reach (tenancy Phase 1b-2): a DIRECT project-role binding, a TENANT
+    role on the project's tenant, OR either reached via a group. Set-wide mirror of _is_project_member
+    — so tenant/group role holders see their projects in the switcher + admin list."""
+    rows = await conn.fetch(
+        """
+        SELECT p.id FROM projects p
+        WHERE EXISTS (
+          SELECT 1 FROM (
+            SELECT ar.role_id, ar.project_id, ar.tenant_id FROM rbac_account_roles ar
+              WHERE lower(ar.reviewer) = lower($1)
+            UNION ALL
+            SELECT gr.role_id, g.project_id, g.tenant_id FROM rbac_group_members gm
+              JOIN rbac_groups g       ON g.id = gm.group_id
+              JOIN rbac_group_roles gr ON gr.group_id = g.id
+              WHERE lower(gm.reviewer) = lower($1)
+          ) b JOIN rbac_roles ro ON ro.id = b.role_id
+          WHERE (ro.scope = 'project' AND b.project_id = p.id)
+             OR (ro.scope = 'tenant'  AND b.tenant_id  = p.tenant_id)
+        )
+        """, user)
+    return {r["id"] for r in rows}
 
 
 _PROJ_ROLE_RANK = {"project-admin": 3, "project-edit": 2, "project-viewer": 1}
