@@ -1,6 +1,65 @@
-# Project-scoping of repos and settings — design
+# DAV tenancy & project-scoping — design + as-built record
 
-## Context / problem
+## STATUS — AS-BUILT 2026-06-22 (all shipped, deployed, verified on prod)
+This doc began as "scope repos per project" and grew into DAV's full **multi-tenancy** design. Everything
+below is now **built and live**. Read this section for the what/why/state; the rest is the detailed design.
+
+**Why this exists.** DAV is a consulting/assessment tool serving regulated FSI / sovereign-cloud
+engagements. It needed (a) the same definition (e.g. the `dav` repo) usable in more than one project,
+(b) per-tenant/project/role access management with admin/edit/view, and (c) — for regulated clients —
+**hard data isolation**. Research (deep-research/tenancy-sovereignty-2026-06-21, 22/25 claims
+adversarially confirmed) established the rules: **project + customer are strictly tenant-scoped; the
+tenant is the only hard wall; sovereignty (jurisdiction-follows-operator-domicile, CLOUD Act) OVERRIDES
+convenience; the only sanctioned cross-tenant mechanism is an audited operator delegation, never a shared
+data object; de-identified vendor IP may be a shared platform default, client data never pools.**
+
+**The model (decided + built).** Tenant (the hard isolation owner, 1→N projects) ⊃ Projects (the working
+/ Kubernetes-namespace boundary; resource names unique *within* a project) ; Customers are tenant-scoped
+M:N demand attribution; cross-project linking allowed *within* a tenant only. Access = **admin/edit/view
+at every scope (platform · tenant · project)** via **groups** (users→groups→roles), extending the
+existing RBAC. Isolation = **hard, schema-per-tenant** physical separation.
+
+**As-built phases (all DONE, deployed, verified):**
+| Phase | What | Key commits |
+|---|---|---|
+| **0** | Repos project-scoped (per-`(project,namespace)` unique; projector scoped to the MCP source project) | b55650f |
+| **1a** | Tenant entity + `projects.tenant_id` + tenant admin/edit/view roles + resolver (tenant-admin ⊇ project-admin in-tenant) | 9f9ed9f, f28a83a |
+| **1b** | First-class groups + memberships + group→role bindings; `privileges_for` UNIONs direct+group | 4167b55 |
+| **1c** | Tenants + Groups management UI (Config → Platform, platform-admin) | 7ca2cbe |
+| **1b-2** | Projects-list/switcher visibility for tenant/group holders | a5f2af0 |
+| **delegation** | `require_tenant_admin`: tenant-admins manage groups + grant roles within their tenant; cross-tenant 403 | abe75b9 |
+| **FlightPath tenant** | The real first tenant; owns the `dav` + `dcm` projects | (db) |
+| **2 — physical isolation** | Schema-per-tenant: FlightPath's 36 client-data tables → `tenant_flightpath`; control+platform stay in `public`; runtime `search_path=tenant_flightpath,public`; boot DDL forced `public` | fb497eb |
+
+**The Phase-2 hard lesson (documented so it isn't relearned):** `CREATE TABLE IF NOT EXISTS` only checks
+the FIRST `search_path` schema — so the naive "move client tables + tenant-first search_path" would, on
+the next API boot, recreate **empty shadow `users`/`projects`/`rbac` tables in the tenant schema → auth
+outage.** A dry-run on a restored copy (podman postgres + prod dump) caught this **before prod**. Fix:
+**boot runs DDL in `public`; runtime resolves via `DAV_RUNTIME_SEARCH_PATH`** (default `public` = no
+change; set to `tenant_flightpath, public` post-migration). Full procedure + proof:
+`docs/tenancy-phase2-runbook.md`. Backup: `/Users/chris/dav-backups/dav-pretenancy-20260622-030403.dump`.
+
+**How tenant context works (and "switching tenants").** There is **no separate tenant switcher**, by
+design: the active tenant is **derived from the active project** (`projects.tenant_id`). You switch the
+**project** in the masthead switcher (`/api/projects/mine` — which now lists every project you can reach
+via a direct, tenant, or group role); the tenant follows. RBAC resolves the tenant from the project, so a
+tenant-admin/edit/viewer's access applies across all that tenant's projects automatically. At the **data
+layer**, isolation is currently a single global `search_path` (correct while FlightPath is the only
+tenant) — so today every request resolves to `tenant_flightpath`. **When tenant #2 onboards**, "switching
+tenants" becomes meaningful at the connection level and is enforced by the deferred **per-request
+`search_path` routing** (set `search_path = tenant_<active>, public` per request from the active project's
+tenant). Admins manage tenants/groups/roles in **Config → Platform** (Tenants + Groups panels), which is
+administration, not "operating as" a tenant. Net: **switch projects, not tenants.**
+
+**What remains (only when tenant #2 onboards):** per-request `search_path` routing (today a single global
+path, correct for one tenant) to enforce cross-tenant isolation at the connection level; a tenant-admin-
+facing UI (mgmt panels are platform-admin-only); LDAP group_key→internal-group reconciliation. Sovereignty
+demand is captured as DCM use cases (`dcm/dav/use-cases/sovereignty/`) + UDLM modeling
+(`udlm/foundations/tenancy-sovereignty-demands.md`).
+
+---
+
+## Context / problem (original — the repo-scoping trigger)
 Settings must be **scoped per project**, with the same *definition* (e.g. the `dav` repo) usable
 independently in more than one project. Today you can't: the `dav` repo namespace is registered
 once (owned by project 20/DCM) and `managed_repos.namespace` is **globally UNIQUE**, so registering

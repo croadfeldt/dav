@@ -258,6 +258,13 @@ product specs. Both are analysis-flow variants; lower near-term priority.
 
 ### Operational follow-ups
 
+- **Multi-tenancy — SHIPPED 2026-06-22** (hard schema-per-tenant isolation; tenants/projects/groups +
+  admin/edit/view RBAC; FlightPath tenant owns dav+dcm). Research-grounded (project+customer strictly
+  tenant-scoped; sovereignty overrides convenience). As-built record + the Phase-2 dry-run finding (the
+  CREATE-TABLE-shadow trap that would have caused an auth outage, caught before prod):
+  **`docs/project-scoping-design.md`** (authoritative) + **`docs/tenancy-phase2-runbook.md`**. Remaining:
+  per-request `search_path` routing (only needed at tenant #2) + a tenant-admin-facing UI. Tenant context
+  is derived from the active project — **switch projects, not tenants**.
 - **Multi-user auth** — Pau needs access; DAV runs behind OCP oauth-proxy with no
   multi-user model. Needs external access story (public route + OIDC, VPN, or similar).
 - **Onboard cost-mgmt spec repos** — add koku, cost-mgmt-operator, integrations/sources

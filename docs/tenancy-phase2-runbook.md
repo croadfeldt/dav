@@ -1,6 +1,10 @@
 # Tenancy Phase 2 — hard schema-per-tenant data plane (execution runbook)
 
-**Status: PLAN — not executed. Needs Chris's go/no-go on the destructive data migration.**
+**Status: ✅ APPLIED + VERIFIED LIVE 2026-06-22 (commit fb497eb).** FlightPath's 36 client tables moved
+to `tenant_flightpath`; control/platform stay in `public`; runtime routes via
+`DAV_RUNTIME_SEARCH_PATH='tenant_flightpath, public'`; boot forces `public` (no shadow). Verified: auth,
+727=18 UCs, DCM=85 UCs, runs, writes, 0 data loss, 0 errors. Dry-run on a restored copy (podman) caught
++ fixed the CREATE-TABLE-shadow flaw before prod. Remaining: per-request search_path routing for tenant #2.
 Phase 1 (logical tenant + groups + RBAC + UI) is shipped/verified. Phase 2 makes the isolation
 *physical* (schema-per-tenant). This is a high-blast-radius migration of the live production DB that
 DCM depends on (uc_analyses 753, uc_capabilities 1971, uc_gaps 1354, run_sessions 88, etc.), so it is
