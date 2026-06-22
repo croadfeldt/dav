@@ -333,12 +333,34 @@ async def _backfill_uc_projections(conn: "asyncpg.Connection") -> int:
     return n
 
 
+# Tenancy Phase 2: runtime connections resolve tables via this search_path. Default 'public' = the
+# pre-tenancy single-schema layout (no behavior change). After the schema-per-tenant migration, set
+# DAV_RUNTIME_SEARCH_PATH='tenant_flightpath, public' so client tables resolve to the tenant schema and
+# control/platform tables fall through to public. Validated by dry-run: boot MUST run DDL in `public`
+# (CREATE TABLE IF NOT EXISTS only checks the FIRST search_path schema, so a tenant-first path would
+# shadow control tables) — the boot conn below forces search_path=public for migrations/schema.
+import re as _re_sp
+_DEFAULT_SEARCH_PATH = (os.environ.get("DAV_RUNTIME_SEARCH_PATH", "public") or "public").strip()
+if not _re_sp.match(r'^[A-Za-z0-9_,\s]+$', _DEFAULT_SEARCH_PATH):
+    log.warning("DAV_RUNTIME_SEARCH_PATH %r is invalid; falling back to 'public'", _DEFAULT_SEARCH_PATH)
+    _DEFAULT_SEARCH_PATH = "public"
+
+
+async def _pool_setup(conn):
+    """Runs on every pool.acquire(): pin the runtime search_path so client/control tables resolve
+    to the right schema. The boot overrides to 'public' for DDL (see lifespan)."""
+    await conn.execute(f"SET search_path = {_DEFAULT_SEARCH_PATH}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pool
     log.info("Connecting to Postgres...")
-    pool = await asyncpg.create_pool(DB_DSN, min_size=1, max_size=8, command_timeout=30)
+    pool = await asyncpg.create_pool(DB_DSN, min_size=1, max_size=8, command_timeout=30, setup=_pool_setup)
     async with pool.acquire() as conn:
+        # DDL/schema/seeds run in `public` so CREATE TABLE IF NOT EXISTS can't shadow control tables
+        # into a tenant schema (dry-run-proven). Runtime conns keep _DEFAULT_SEARCH_PATH via _pool_setup.
+        await conn.execute("SET search_path = public")
         log.info("Applying migration 002 (model_configs consolidation)...")
         await conn.execute(MIGRATE_002_PATH.read_text())
         log.info("Applying migration 003 (model_defaults)...")
