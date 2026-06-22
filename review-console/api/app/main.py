@@ -12325,9 +12325,15 @@ def _legacy_proj_role(keys: list) -> Optional[str]:
 
 
 async def _is_project_member(conn, user: str, pid: int) -> bool:
+    # Tenancy Phase 1: membership of a project = a project-scoped binding on it, OR a
+    # tenant-scoped binding on the project's tenant (a tenant role holder is a member of
+    # every project in the tenant — so active-project resolution + guards engage for them).
     return bool(await conn.fetchval(
         "SELECT 1 FROM rbac_account_roles ar JOIN rbac_roles ro ON ro.id=ar.role_id "
-        "AND ro.scope='project' WHERE lower(ar.reviewer)=lower($1) AND ar.project_id=$2 LIMIT 1",
+        "WHERE lower(ar.reviewer)=lower($1) AND ( "
+        "  (ro.scope='project' AND ar.project_id=$2) OR "
+        "  (ro.scope='tenant'  AND ar.tenant_id=(SELECT tenant_id FROM projects WHERE id=$2)) "
+        ") LIMIT 1",
         user, pid))
 
 
