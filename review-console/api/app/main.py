@@ -43,6 +43,7 @@ from . import capability_catalog as _capability_catalog
 from . import assessment_ingest as _assessment_ingest
 from . import api_tokens
 from . import maturity_seed as _maturity_seed
+from . import db_bootstrap as _db_bootstrap
 from . import maturity_scoring as _maturity_scoring
 from . import prompts_registry as _prompts_registry
 from . import analysis_compare as _analysis_compare
@@ -352,101 +353,39 @@ async def _pool_setup(conn):
     await conn.execute(f"SET search_path = {_DEFAULT_SEARCH_PATH}")
 
 
+async def _control_seeds(conn) -> None:
+    """Control-plane seeds — run once in `public` (search_path set by _db_bootstrap)."""
+    await _seed_docs_mcp(conn)
+    try:
+        await _capability_catalog.seed_dcm_taxonomy(conn)
+    except Exception:
+        log.exception("DCM taxonomy seed failed (non-fatal)")
+    try:
+        await _maturity_seed.seed_default_framework(conn)
+    except Exception:
+        log.exception("default maturity framework seed failed (non-fatal)")
+    await _migrate_code_repo_configs(conn)
+
+
+async def _client_seeds(conn, schema: str) -> None:
+    """Per-tenant client seeds — run per tenant schema (search_path=<schema>,public, set by _db_bootstrap)."""
+    await _seed_corpus(conn)
+    await _seed_managed_repos(conn)
+    await _backfill_uc_projections(conn)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pool
     log.info("Connecting to Postgres...")
     pool = await asyncpg.create_pool(DB_DSN, min_size=1, max_size=8, command_timeout=30, setup=_pool_setup)
     async with pool.acquire() as conn:
-        # DDL/schema/seeds run in `public` so CREATE TABLE IF NOT EXISTS can't shadow control tables
-        # into a tenant schema (dry-run-proven). Runtime conns keep _DEFAULT_SEARCH_PATH via _pool_setup.
-        await conn.execute("SET search_path = public")
-        log.info("Applying migration 002 (model_configs consolidation)...")
-        await conn.execute(MIGRATE_002_PATH.read_text())
-        log.info("Applying migration 003 (model_defaults)...")
-        await conn.execute(MIGRATE_003_PATH.read_text())
-        log.info("Applying migration 004 (default set marker)...")
-        await conn.execute(MIGRATE_004_PATH.read_text())
-        log.info("Applying migration 005 (corpus push state)...")
-        await conn.execute(MIGRATE_005_PATH.read_text())
-        log.info("Applying migration 006 (run lineage + state)...")
-        await conn.execute(MIGRATE_006_PATH.read_text())
-        log.info("Applying migration 007 (managed_repos registry)...")
-        await conn.execute(MIGRATE_007_PATH.read_text())
-        log.info("Applying migration 008 (pr_comments + poll_state)...")
-        await conn.execute(MIGRATE_008_PATH.read_text())
-        log.info("Applying migration 009 (per-repo credentials)...")
-        await conn.execute(MIGRATE_009_PATH.read_text())
-        log.info("Applying migration 010 (shared credentials)...")
-        await conn.execute(MIGRATE_010_PATH.read_text())
-        log.info("Applying migration 011 (consolidate code_repo_configs)...")
-        await conn.execute(MIGRATE_011_PATH.read_text())
-        log.info("Applying migration 012 (namespace first-class on run_sessions + uc_gaps)...")
-        await conn.execute(MIGRATE_012_PATH.read_text())
-        log.info("Applying migration 013 (infrastructure_confidence on uc_analyses)...")
-        await conn.execute(MIGRATE_013_PATH.read_text())
-        log.info("Applying migration 014 (model capabilities + per-use sampling profiles)...")
-        await conn.execute(MIGRATE_014_PATH.read_text())
-        log.info("Applying migration 015 (self-improvement: diagnose & propose)...")
-        await conn.execute(MIGRATE_015_PATH.read_text())
-        log.info("Applying migration 016 (self-improvement: A/B experiments)...")
-        await conn.execute(MIGRATE_016_PATH.read_text())
-        log.info("Applying migration 017 (capability catalog — UDLM Knowledge family)...")
-        await conn.execute(MIGRATE_017_PATH.read_text())
-        log.info("Applying migration 018 (audit log)...")
-        await conn.execute(MIGRATE_018_PATH.read_text())
-        log.info("Applying migration 019 (assessment ingestion — UDLM Knowledge family)...")
-        await conn.execute(MIGRATE_019_PATH.read_text())
-        log.info("Applying migration 020 (reconcile capability catalogs into one)...")
-        await conn.execute(MIGRATE_020_PATH.read_text())
-        # Migration 021 (maturity wall) is new + DB-verified post-deploy via boot logs; wrap it
-        # so a structural-DDL surprise can never crash API startup (worst case: tables absent,
-        # the feature is unavailable but the rest of the app boots). Remove the guard once proven.
-        try:
-            log.info("Applying migration 021 (maturity wall — goal-driven assessment substrate)...")
-            await conn.execute(MIGRATE_021_PATH.read_text())
-        except Exception:
-            log.exception("migration 021 (maturity wall) FAILED — continuing boot without it")
-        try:
-            log.info("Applying migration 022 (api_tokens — agent/pipeline PATs)...")
-            await conn.execute(MIGRATE_022_PATH.read_text())
-        except Exception:
-            log.exception("migration 022 (api_tokens) FAILED — continuing boot without it")
-        try:
-            log.info("Applying migration 023 (recording_jobs — audio/video → UC pipeline)...")
-            await conn.execute(MIGRATE_023_PATH.read_text())
-        except Exception:
-            log.exception("migration 023 (recording_jobs) FAILED — continuing boot without it")
-        try:
-            log.info("Applying migration 024 (branch tracking on run_sessions)...")
-            await conn.execute(MIGRATE_024_PATH.read_text())
-        except Exception:
-            log.exception("migration 024 (branch tracking) FAILED — continuing boot without it")
-        try:
-            log.info("Applying migration 025 (agent account kind)...")
-            await conn.execute(MIGRATE_025_PATH.read_text())
-        except Exception:
-            log.exception("migration 025 (agent accounts) FAILED — continuing boot without it")
-        try:
-            log.info("Applying migration 026 (per-project repo namespace uniqueness)...")
-            await conn.execute(MIGRATE_026_PATH.read_text())
-        except Exception:
-            log.exception("migration 026 (repos project-scope) FAILED — continuing boot without it")
-        log.info("Applying schema...")
-        await conn.execute(SCHEMA_PATH.read_text())
-        await _seed_corpus(conn)
-        await _seed_managed_repos(conn)
-        await _seed_docs_mcp(conn)
-        try:
-            await _capability_catalog.seed_dcm_taxonomy(conn)
-        except Exception:
-            log.exception("DCM taxonomy seed failed (non-fatal)")
-        try:
-            await _maturity_seed.seed_default_framework(conn)
-        except Exception:
-            log.exception("default maturity framework seed failed (non-fatal)")
-        await _migrate_code_repo_configs(conn)
-        await _backfill_uc_projections(conn)
+        # Tenancy Phase 2: schema-aware bootstrap. Control DDL/seeds -> public; client DDL/seeds ->
+        # each tenant schema (search_path managed by _db_bootstrap). The legacy flat MIGRATE_0xx +
+        # SCHEMA_PATH list is folded into the generated base schemas (schema_control/client.sql);
+        # existing schemas are adopted (not re-run), empty ones get the base. See
+        # docs/tenancy-phase2-tenant-aware-runner.md.
+        await _db_bootstrap.bootstrap(conn, control_seeds=_control_seeds, client_seeds=_client_seeds)
     await _load_ldap_cfg()
     await _load_smtp_cfg()
     await _seed_default_admin()
