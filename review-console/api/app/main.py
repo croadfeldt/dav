@@ -5053,7 +5053,7 @@ def _derive_uc_handle(parsed: dict) -> str:
 async def list_use_cases(
     request: Request,
     source: Optional[str] = Query(None, description="'managed', 'corpus', or None for both"),
-    applied: Optional[int] = Query(None, description="corpus scoping (#199): 1/None = corpus UCs applied to the active project; 0 = corpus UCs available to apply (not yet applied)"),
+    applied: Optional[int] = Query(None, description="managed-UC project scoping (#43): None/1 = UCs in the active project (home OR referenced via use_case_projects); 0 = the 'available to apply' pool (managed UCs from other projects in this tenant, not yet referenced here)"),
     sort: Optional[str] = Query(None, description="'priority' to order by roadmap weight; default is most-recently-updated"),
     priority: Optional[str] = Query(None, description="filter to a single priority label (critical/high/medium/low)"),
     customer_id: Optional[str] = Query(None, description="matrix #130: filter to managed UCs this customer has requested (corpus UCs carry no demand, so omitted when set)"),
@@ -5104,7 +5104,19 @@ async def list_use_cases(
             pid = await _active_project_id(request, conn)
             conds, params = [], []
             if pid is not None:
-                params.append(pid); conds.append(f"project_id = ${len(params)}")
+                if applied == 0:
+                    # "available to apply" pool (#43): managed UCs NOT in this project — neither
+                    # home here nor already referenced. Same tenant (one schema), free to reference in.
+                    params.append(pid)
+                    conds.append(
+                        f"(project_id IS DISTINCT FROM ${len(params)} "
+                        f"AND uuid NOT IN (SELECT uc_uuid FROM use_case_projects WHERE project_id = ${len(params)}))")
+                else:
+                    # In this project = its home project OR referenced via use_case_projects (#199/#43).
+                    params.append(pid)
+                    conds.append(
+                        f"(project_id = ${len(params)} "
+                        f"OR uuid IN (SELECT uc_uuid FROM use_case_projects WHERE project_id = ${len(params)}))")
             if prio_filter:
                 params.append(prio_filter); conds.append(f"priority = ${len(params)}")
             if cust_filter is not None:
@@ -5113,7 +5125,7 @@ async def list_use_cases(
             where = ("WHERE " + " AND ".join(conds)) if conds else ""
             sql = (
                 "SELECT uuid, title, tags, lifecycle_state, priority, priority_score, readiness_score, "
-                "customer_requests, created_by, created_at, updated_by, updated_at "
+                "customer_requests, created_by, created_at, updated_by, updated_at, project_id "
                 f"FROM managed_use_cases {where} ORDER BY {order}"
             )
             rows = await conn.fetch(sql, *params)
@@ -5126,6 +5138,10 @@ async def list_use_cases(
                 "set_ids": set_ids_by_uuid.get(r["uuid"], []),
                 "distinct_customers": distinct_customers_by_uuid.get(r["uuid"], 0),
                 "customers": customer_names_by_uuid.get(r["uuid"], []),
+                # home project (managed_use_cases.project_id); when != active project this UC is
+                # REFERENCED here via use_case_projects (#43) — UI shows Remove vs native (no Remove).
+                "home_project_id": r["project_id"],
+                "referenced": (pid is not None and r["project_id"] != pid),
             }
             for r in rows
         ]

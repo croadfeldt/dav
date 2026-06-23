@@ -1365,6 +1365,10 @@
           <option value="managed">managed</option>
           <option value="corpus">corpus</option>
         </select>
+        <select id="ucScopeFilter" onchange="loadUCs()" title="Project scope (#43): UCs in this project (home or referenced) vs the pool of managed UCs from other projects in this tenant, available to reference in" style="flex:1;">
+          <option value="">in this project</option>
+          <option value="pool">available to apply</option>
+        </select>
         <select id="ucStateFilter" title="Lifecycle state — 'active' hides deprecated UCs" style="flex:1;">
           <option value="">active (no deprecated)</option>
           <option value="__all__">all (incl. deprecated)</option>
@@ -3657,6 +3661,7 @@ let ucAssignFilter = '';        // '' | 'unassigned' | 'assigned' (unified with 
 let ucHealthFilter = '';        // '' | 'invalid' | 'valid' (#122 — flags UCs failing engine validation)
 let ucSortByPriority = false;   // DCM feature #1: toggle roadmap-weight ordering
 let ucPriorityFilter = '';      // '' = all; else critical/high/medium/low
+let _ucPoolMode = false;        // #43: list is showing the "available to apply" pool (managed UCs from other projects)
 
 // ── Init ─────────────────────────────────────────────────────
 // If the URL carries ?invite=<token>, show the accept overlay and short-circuit
@@ -8372,12 +8377,17 @@ function renderExploreAnalysis(data, ucUuid) {
 async function loadUCs() {
   document.getElementById('ucList').innerHTML = '<div class="empty">loading…</div>';
   const src = document.getElementById('ucSourceFilter').value;
+  const scope = (document.getElementById('ucScopeFilter') || {}).value || '';
+  _ucPoolMode = (scope === 'pool');
   // Lazy-fetch corpus-push status once per tab session so the Push button
   // can render with the right disabled/tooltip state.
   if (_corpusPushStatus === null) _loadCorpusPushStatus();
   try {
     const qp = [];
     if (src) qp.push('source=' + src);
+    // #43 "available to apply" pool = managed UCs from other projects in this tenant, not referenced
+    // here. Force source=managed (corpus is repo-driven, not appliable) and request applied=0.
+    if (_ucPoolMode) { qp.length = 0; qp.push('source=managed', 'applied=0'); }
     if (_activeCustomer) qp.push(customerQuery());   // matrix #130: filter to this customer's requested UCs
     const q = qp.length ? '?' + qp.join('&') : '';
     const resp = await api('/api/use-cases' + q);
@@ -8392,6 +8402,25 @@ async function loadUCs() {
     document.getElementById('ucList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
   }
 }
+// #43 — reference a managed UC into the active project (use_case_projects M:N). From the
+// "available to apply" pool; on success it leaves the pool and appears in the project list.
+async function applyUCToProject(uuid) {
+  try {
+    await api('/api/use-case-projects', { method: 'POST', body: JSON.stringify({ uc_uuids: [uuid] }) });
+    toast('Applied to this project');
+    await loadUCs(); loadFreshness();
+  } catch (e) { toast('Apply failed: ' + e.message, true); }
+}
+// Remove a referenced UC from the active project (un-apply the M:N; the UC itself is untouched).
+async function removeUCFromProject(uuid) {
+  if (!confirm('Remove this referenced use case from the active project? The use case itself is not deleted.')) return;
+  try {
+    await api('/api/use-case-projects/remove', { method: 'POST', body: JSON.stringify({ uc_uuids: [uuid] }) });
+    toast('Removed from this project');
+    await loadUCs(); loadFreshness();
+  } catch (e) { toast('Remove failed: ' + e.message, true); }
+}
+
 // #122 — UC health: per-UC validity (managed UCs), used to flag invalid UCs in the list + offer repair.
 let _ucHealth = {};   // uuid -> {valid, errors[], repairable}
 async function _loadUCHealth() {
@@ -8428,12 +8457,15 @@ async function _repairAllUCs() {
 
 function renderUCList() {
   const el = document.getElementById('ucList');
-  // Set-membership filter from the left rail
+  // Set-membership filter from the left rail (skipped in the #43 "available to apply" pool —
+  // pool UCs belong to other projects, so set-rail filtering would spuriously empty it).
   let setFiltered = allUCs;
-  if (activeSetId === '__none__') {
-    setFiltered = allUCs.filter(u => !u.set_ids || !u.set_ids.length);
-  } else if (typeof activeSetId === 'number') {
-    setFiltered = allUCs.filter(u => (u.set_ids || []).includes(activeSetId));
+  if (!_ucPoolMode) {
+    if (activeSetId === '__none__') {
+      setFiltered = allUCs.filter(u => !u.set_ids || !u.set_ids.length);
+    } else if (typeof activeSetId === 'number') {
+      setFiltered = allUCs.filter(u => (u.set_ids || []).includes(activeSetId));
+    }
   }
   const filter = (document.getElementById('ucFilter').value||'').toLowerCase();
   let filtered = setFiltered.filter(u =>
@@ -8466,8 +8498,14 @@ function renderUCList() {
   const _ucCnt = document.getElementById('ucCount');
   if (_ucCnt) _ucCnt.textContent = `${filtered.length} / ${(allUCs || []).length}`;
 
-  if (!filtered.length) { el.innerHTML = '<div class="empty">No use cases match.</div>'; return; }
+  if (!filtered.length) { el.innerHTML = `<div class="empty">${_ucPoolMode ? 'No other-project use cases available to apply.' : 'No use cases match.'}</div>`; return; }
   el.innerHTML = '';
+  if (_ucPoolMode) {
+    const b = document.createElement('div');
+    b.style.cssText = 'font-size:10px;color:var(--text-dim);padding:4px 8px;border-bottom:1px solid var(--border);margin-bottom:4px;';
+    b.textContent = 'Available to apply — managed use cases from other projects in this tenant. Apply to reference one into this project.';
+    el.appendChild(b);
+  }
 
   const managed = filtered.filter(u => u.source==='managed');
   const corpus  = filtered.filter(u => u.source==='corpus');
@@ -8498,6 +8536,15 @@ function renderUCList() {
                    onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'"
            >×</button>`
         : '';
+      // #43 cross-project reference: Apply (pool mode) / Remove (a UC referenced from another project).
+      const applyCtl = (canEdit('project.usecases') && u.source === 'managed')
+        ? (_ucPoolMode
+            ? `<button class="btn ghost btn-sm" style="font-size:9px;padding:0 7px;border-radius:999px;" onclick="event.stopPropagation();applyUCToProject('${esc(u.uuid)}')" title="Reference this use case into the active project">+ Apply</button>`
+            : (u.referenced
+                ? `<span title="Referenced from another project in this tenant — not authored here" style="font-size:8px;background:var(--surface-2,#2a2a2a);color:var(--text-dim);border-radius:2px;padding:0 4px;">↪ ref</span>
+                   <button class="btn ghost btn-sm" style="font-size:9px;padding:0 7px;border-radius:999px;color:var(--red);" onclick="event.stopPropagation();removeUCFromProject('${esc(u.uuid)}')" title="Remove this referenced UC from the active project (the use case itself is untouched)">Remove</button>`
+                : ''))
+        : '';
       item.innerHTML = `
         <input type="checkbox" class="uc-sel-cb" ${isChecked ? 'checked' : ''}
                style="margin:2px 6px 0 0;width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;align-self:flex-start;cursor:pointer;"
@@ -8520,6 +8567,7 @@ function renderUCList() {
           ${readinessHtml(u.readiness_score)}
           ${demandHtml(u)}
           ${dupHtml(u)}
+          ${applyCtl}
         </div>
         ${setRemoveBtn}`;
       // Row click selects/opens the UC; checkbox toggles batch selection
