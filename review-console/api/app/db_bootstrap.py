@@ -53,6 +53,16 @@ CLIENT_BASE = _APP / "schema_client.sql"
 CONTROL_VERSION = "control-base@2026-06-23"
 CLIENT_VERSION = "client-base@2026-06-23"
 
+# Incremental routed migrations applied AFTER the base, per schema, tracked individually in
+# public.schema_migrations. CONTROL_MIGRATIONS run once in `public`; CLIENT_MIGRATIONS run once per
+# tenant schema (search_path=tenant_<x>,public). Each MUST be idempotent (CREATE TABLE IF NOT EXISTS /
+# INSERT ... ON CONFLICT) since it can run against a base-adopted schema that already has the table.
+# Ordered: append new migrations at the end; never reorder/edit a shipped one.
+CONTROL_MIGRATIONS: list[tuple[str, Path]] = []
+CLIENT_MIGRATIONS: list[tuple[str, Path]] = [
+    ("t001-use-case-projects", _APP / "migrate_t001_use_case_projects.sql"),
+]
+
 _SLUG_BAD = re.compile(r"[^a-z0-9_]+")
 
 
@@ -120,6 +130,17 @@ async def _apply_base(conn, schema: str, version: str, base_path: Path, label: s
     await _mark(conn, schema, version)
 
 
+async def _apply_migrations(conn, schema: str, migrations: "list[tuple[str, Path]]") -> None:
+    """Apply each not-yet-recorded incremental migration to ``schema`` (search_path already set),
+    tracked once in public.schema_migrations. Idempotent migrations only."""
+    for version, path in migrations:
+        if await _applied(conn, schema, version):
+            continue
+        log.info("bootstrap: applying migration %s to %s", version, schema)
+        await conn.execute(path.read_text())
+        await _mark(conn, schema, version)
+
+
 SeedFn = Callable[..., Awaitable[None]]
 
 
@@ -139,6 +160,7 @@ async def bootstrap(
     # ── control pass (public) ───────────────────────────────────────────────
     await conn.execute("SET search_path = public")
     await _apply_base(conn, "public", CONTROL_VERSION, CONTROL_BASE, "control-base")
+    await _apply_migrations(conn, "public", CONTROL_MIGRATIONS)
     if control_seeds is not None:
         await control_seeds(conn)
 
@@ -151,6 +173,7 @@ async def bootstrap(
         await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
         await conn.execute(f'SET search_path = "{schema}", public')
         await _apply_base(conn, schema, CLIENT_VERSION, CLIENT_BASE, "client-base")
+        await _apply_migrations(conn, schema, CLIENT_MIGRATIONS)
         if client_seeds is not None:
             await client_seeds(conn, schema)
 
@@ -165,6 +188,7 @@ async def provision_tenant(conn, slug: str, *, client_seeds: Optional[SeedFn] = 
     await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
     await conn.execute(f'SET search_path = "{schema}", public')
     await _apply_base(conn, schema, CLIENT_VERSION, CLIENT_BASE, "client-base")
+    await _apply_migrations(conn, schema, CLIENT_MIGRATIONS)
     if client_seeds is not None:
         await client_seeds(conn, schema)
     await conn.execute("SET search_path = public")
