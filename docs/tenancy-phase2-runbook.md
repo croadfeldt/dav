@@ -1,10 +1,56 @@
 # Tenancy Phase 2 — hard schema-per-tenant data plane (execution runbook)
 
-**Status: ✅ APPLIED + VERIFIED LIVE 2026-06-22 (commit fb497eb).** FlightPath's 36 client tables moved
-to `tenant_flightpath`; control/platform stay in `public`; runtime routes via
-`DAV_RUNTIME_SEARCH_PATH='tenant_flightpath, public'`; boot forces `public` (no shadow). Verified: auth,
-727=18 UCs, DCM=85 UCs, runs, writes, 0 data loss, 0 errors. Dry-run on a restored copy (podman) caught
-+ fixed the CREATE-TABLE-shadow flaw before prod. Remaining: per-request search_path routing for tenant #2.
+**Status: ✅ RESOLVED 2026-06-23 — boot is now restart-safe via the tenant-aware runner.**
+Neither revert (A) nor schema-qualify-in-place (B) below was taken; instead the boot path was rebuilt
+to be schema-aware (control pass in `public` + per-tenant pass under `search_path=<tenant>,public`,
+each tracked once in `public.schema_migrations`; existing schemas are *adopted* without re-running base
+DDL). Deployed build #341+; DAV restarts cleanly against the post-move schema; pg_dump backup CronJob
+live. See **`tenancy-phase2-tenant-aware-runner.md`** and `review-console/api/app/db_bootstrap.py`. The
+landmine writeup below is retained for history — it is the problem this runner fixed.
+
+---
+
+**Historical (the landmine, 2026-06-21): ⛔ APPLIED BUT NOT RESTART-SAFE — REVERT RECOMMENDED.**
+The 36 client tables ARE in `tenant_flightpath` and runtime queries work (the live pod routes via
+`DAV_RUNTIME_SEARCH_PATH='tenant_flightpath, public'`). BUT the "verified live" was only ever tested on
+the pod that booted *before* the table move (seamless cutover, no restart). The boot path was never
+re-run against the post-move schema — and **it crashes when it is.** First post-move deploy (build #340,
+2026-06-21) CrashLoopBackOff: `lifespan` runs all migrations + `schema.sql` under `search_path=public`
+(the anti-shadow choice), but migrations 002-020 + schema.sql + seeds reference CLIENT tables
+(`use_case_sets`, `run_sessions`, …) that now live in `tenant_flightpath` → `UndefinedTableError:
+relation "use_case_sets" does not exist`. Worse, had it reached `schema.sql` line 436, its
+`CREATE TABLE IF NOT EXISTS <client_table>` would have recreated EMPTY client shadows in `public`
+(the same shadow flaw, mirrored). **Net: the API cannot restart.** Only the pre-move pod (`#339`,
+`maxUnavailable=0` protects it) keeps it up; any eviction → unrecoverable boot crash.
+
+This is precisely the state the DRY-RUN FINDING below said "must NOT run until schema.sql is
+schema-qualified." The move got applied anyway; the boot-qualification work was not. **Two ways out:**
+- **(A) Revert the data move** (recommended now): `ALTER TABLE tenant_flightpath.<t> SET SCHEMA public`
+  for all 36, then `DAV_RUNTIME_SEARCH_PATH=public`. Mechanical, reversible (inverse of a validated
+  move), removes the landmine, costs nothing (ONE tenant → physical isolation has nothing to isolate
+  yet). Phase 1 logical tenancy (tenant entity, RBAC tier, groups, FlightPath owns dav+dcm) stays
+  intact. Ready SQL + fresh backup below. Blocked from autonomous apply by the safety classifier
+  (correct — needs eyes-on or a dry-run-on-restored-copy); Chris runs it eyes-on.
+- **(B) Make boot schema-aware** (the genuine Phase 2 work, defer to tenant #2): add a
+  `schema_migrations` tracking table so applied migrations don't re-run, AND split/schema-qualify
+  `schema.sql` (control DDL → `public`/`control`, client DDL → `tenant_<id>`) so no single search_path
+  can shadow either category. Only then is the physical split restart-safe.
+
+**Fresh pre-revert backup:** `/Users/chris/dav-backups/dav-prerevert-20260621-231739.dump` (1.1M, -Fc).
+**Ingest unblock (already live, independent of all the above):** the spec-decode 400 that started this
+was fixed by inserting a project-727 `model_configs` row with `{"speculative_decoding":true}` (id=8) +
+a platform-default NULL row (id=9); the running #339 pod's exact-match caps lookup now succeeds, so
+re-running the DAV-project ingest works today. (A resolver NULL-fallback fix at `main.py:~3614` is
+committed in the working tree but can only deploy once the boot landmine above is resolved.)
+
+### (Original status, now historical) ✅ data move applied 2026-06-22 (commit fb497eb)
+FlightPath's 36 client tables moved to `tenant_flightpath`; control/platform stay in `public`; runtime
+routes via `DAV_RUNTIME_SEARCH_PATH='tenant_flightpath, public'`; boot forces `public` (no shadow).
+Verified at the time: auth, 727=18 UCs, DCM=85 UCs, runs, writes, 0 data loss, 0 errors — but ONLY on
+the pre-move-booted pod (the restart-safety gap above was not exercised). Dry-run on a restored copy
+(podman) caught + fixed the boot-time CREATE-TABLE-shadow flaw for the control tables, but the
+*symmetric* client-table shadow + the migration-references-client-table crash on a fresh boot were not
+covered. Remaining: per-request search_path routing for tenant #2.
 Phase 1 (logical tenant + groups + RBAC + UI) is shipped/verified. Phase 2 makes the isolation
 *physical* (schema-per-tenant). This is a high-blast-radius migration of the live production DB that
 DCM depends on (uc_analyses 753, uc_capabilities 1971, uc_gaps 1354, run_sessions 88, etc.), so it is
