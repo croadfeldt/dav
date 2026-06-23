@@ -3728,7 +3728,8 @@ async def get_rerun_config(name: str):
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT trigger_payload, name, description, category, set_id, "
-            "set_name, selection_mode FROM run_sessions WHERE run_name=$1", name)
+            "set_name, (SELECT name FROM use_case_sets WHERE id = run_sessions.set_id) AS set_live_name, "
+            "selection_mode FROM run_sessions WHERE run_name=$1", name)
     if not row:
         raise HTTPException(404, f"run {name!r} not found")
     cfg = _parse_jsonb(row["trigger_payload"]) if row["trigger_payload"] else None
@@ -3745,7 +3746,7 @@ async def get_rerun_config(name: str):
         "params": params,                    # legacy fallback, or null
         "session": {"name": row["name"], "description": row["description"],
                      "category": row["category"], "set_id": row["set_id"],
-                     "set_name": row["set_name"],
+                     "set_name": row["set_live_name"] or row["set_name"],
                      "selection_mode": row["selection_mode"]},
     }
 
@@ -5629,22 +5630,76 @@ async def delete_uc_customer_request(uuid: str, rid: int, request: Request):
     return {"ok": True, "uuid": uuid, **summary}
 
 
+async def _uc_delete_impact(conn, uuid: str) -> dict:
+    """What a managed-UC delete propagates to. `removed` = gone with the UC (FK cascade for
+    lifecycle/customer_requests; the join rows we clean explicitly). `retained` = historical records
+    kept for provenance (keyed by uc_uuid, no FK — corpus UCs share these tables)."""
+    async def n(sql: str) -> int:
+        return int(await conn.fetchval(sql, uuid) or 0)
+    return {
+        "removed": {
+            "set_memberships":   await n("SELECT count(*) FROM use_case_set_members WHERE uc_uuid=$1"),
+            "project_refs":      await n("SELECT count(*) FROM use_case_projects WHERE uc_uuid=$1"),
+            "customer_requests": await n("SELECT count(*) FROM uc_customer_requests WHERE uc_uuid=$1"),
+            "lifecycle_events":  await n("SELECT count(*) FROM lifecycle_events WHERE uc_uuid=$1"),
+        },
+        "retained": {
+            "past_analyses":     await n("SELECT count(*) FROM uc_analyses WHERE uc_uuid=$1"),
+        },
+    }
+
+
+async def _set_delete_impact(conn, set_id: int) -> dict:
+    """What a scoping-set delete propagates to. Members are detached (the UCs themselves are kept);
+    past runs keep their recorded set name as provenance but lose the live link (set_id → NULL)."""
+    async def n(sql: str) -> int:
+        return int(await conn.fetchval(sql, set_id) or 0)
+    return {
+        "removed":  {"memberships": await n("SELECT count(*) FROM use_case_set_members WHERE set_id=$1")},
+        "detached": {"past_runs":   await n("SELECT count(*) FROM run_sessions WHERE set_id=$1")},
+    }
+
+
+@app.get("/api/use-cases/{uuid}/delete-impact")
+async def use_case_delete_impact(uuid: str, request: Request):
+    """Preview the propagation of deleting this managed UC (powers the delete-confirm warning)."""
+    async with pool.acquire() as conn:
+        owner = await conn.fetchval("SELECT project_id FROM managed_use_cases WHERE uuid=$1", uuid)
+        if owner is None:
+            raise HTTPException(404, f"use case {uuid!r} not found")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, owner)
+        return {"uuid": uuid, "impact": await _uc_delete_impact(conn, uuid)}
+
+
 @app.delete("/api/use-cases/{uuid}")
 async def delete_use_case(uuid: str, request: Request):
-    """Delete a managed use case."""
+    """Delete a managed use case. Right-to-erase (sovereignty/security) is honoured — the delete is
+    allowed — but the propagation is computed, audited for visibility, and the dangling join rows
+    (set memberships + project references, which have NO FK to managed_use_cases) are removed
+    explicitly so nothing orphans. Historical analyses are retained (provenance) and surfaced."""
     user = get_user(request)
     async with pool.acquire() as conn:
         owner = await conn.fetchval("SELECT project_id FROM managed_use_cases WHERE uuid=$1", uuid)
         if owner is None:
             raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
         await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, owner)
-        result = await conn.execute(
-            "DELETE FROM managed_use_cases WHERE uuid = $1 AND project_id = $2", uuid, owner
-        )
+        impact = await _uc_delete_impact(conn, uuid)
+        async with conn.transaction():
+            # No FK to managed_use_cases (corpus UCs share these tables) — clean explicitly.
+            await conn.execute("DELETE FROM use_case_set_members WHERE uc_uuid=$1", uuid)
+            await conn.execute("DELETE FROM use_case_projects   WHERE uc_uuid=$1", uuid)
+            result = await conn.execute(
+                "DELETE FROM managed_use_cases WHERE uuid = $1 AND project_id = $2", uuid, owner
+            )
     if result == "DELETE 0":
         raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
-    log.info("Use case %s deleted by %s", uuid, user)
-    return {"ok": True, "uuid": uuid}
+    log.info("Use case %s deleted by %s (impact: %s)", uuid, user, impact)
+    await audit.record(
+        pool, action="use_case.delete", actor=user, actor_source="session",
+        object_type="use_case", object_id=uuid, project_id=owner,
+        summary=f"deleted use case {uuid}",
+        detail={"impact": impact, "note": "right-to-erase; join rows removed, historical analyses retained"})
+    return {"ok": True, "uuid": uuid, "impact": impact}
 
 
 _PASSING_VERDICTS = ("supported", "partially_supported")
@@ -6191,18 +6246,36 @@ async def update_set(set_id: str, payload: SetIn, request: Request):
     return {"ok": True, "id": set_id}
 
 
+@app.get("/api/sets/{set_id}/delete-impact")
+async def set_delete_impact_preview(set_id: str, request: Request):
+    """Preview the propagation of deleting this scoping set (powers the delete-confirm warning)."""
+    set_id = _real_set_id(set_id)
+    async with pool.acquire() as conn:
+        await _gate_resource(conn, request, "use_case_sets", "id", set_id,
+                             rbac.P_PROJECT_USECASES, f"set {set_id} not found")
+        return {"set_id": set_id, "impact": await _set_delete_impact(conn, set_id)}
+
+
 @app.delete("/api/sets/{set_id}")
 async def delete_set(set_id: str, request: Request):
     set_id = set_id if _is_all_set(set_id) else _real_set_id(set_id)
-    user = get_user(request)  # noqa: F841 — auth check
+    user = get_user(request)
     _reject_all_set_edit(set_id)
     async with pool.acquire() as conn:
         owner = await _gate_resource(conn, request, "use_case_sets", "id", set_id,
                                      rbac.P_PROJECT_USECASES, f"set {set_id} not found")
+        impact = await _set_delete_impact(conn, set_id)
         result = await conn.execute("DELETE FROM use_case_sets WHERE id=$1 AND project_id=$2", set_id, owner)
     if result == "DELETE 0":
         raise HTTPException(404, f"set {set_id} not found")
-    return {"ok": True, "id": set_id}
+    log.info("Set %s deleted by %s (impact: %s)", set_id, user, impact)
+    await audit.record(
+        pool, action="use_case_set.delete", actor=user, actor_source="session",
+        object_type="use_case_set", object_id=str(set_id), project_id=owner,
+        summary=f"deleted scoping set {set_id}",
+        detail={"impact": impact, "note": "members detached (UCs kept); past runs keep recorded set "
+                "name, live link cleared (set_id→NULL)"})
+    return {"ok": True, "id": set_id, "impact": impact}
 
 
 @app.put("/api/sets/{set_id}/default")
@@ -9437,6 +9510,12 @@ async def _maybe_score_experiment(conn, exp: dict) -> dict:
 
 def _exp_out(r) -> dict:
     d = dict(r)
+    # Prefer the set's CURRENT name (resolved via the eval_set_id join in the query) over the stored
+    # eval_set_name snapshot, so a set rename reflects in experiment listings too. Snapshot remains the
+    # fallback for a deleted/synthetic set (no joinable row).
+    if d.get("eval_set_live_name"):
+        d["eval_set_name"] = d["eval_set_live_name"]
+    d.pop("eval_set_live_name", None)
     for k in ("created_at", "updated_at"):
         if d.get(k):
             d[k] = d[k].isoformat()
@@ -9576,7 +9655,8 @@ async def create_experiment(payload: ExperimentIn, request: Request):
 async def list_experiments(limit: int = Query(50, ge=1, le=200)):
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT * FROM experiments ORDER BY created_at DESC LIMIT $1", limit)
+            "SELECT *, (SELECT name FROM use_case_sets WHERE id = experiments.eval_set_id) "
+            "AS eval_set_live_name FROM experiments ORDER BY created_at DESC LIMIT $1", limit)
         # Opportunistically finalize any that have completed.
         out = []
         for r in rows:
@@ -9629,7 +9709,9 @@ async def static_compare(payload: StaticCompareIn, request: Request):
 @app.get("/api/experiments/{exp_id}")
 async def get_experiment(exp_id: int):
     async with pool.acquire() as conn:
-        r = await conn.fetchrow("SELECT * FROM experiments WHERE id=$1", exp_id)
+        r = await conn.fetchrow(
+            "SELECT *, (SELECT name FROM use_case_sets WHERE id = experiments.eval_set_id) "
+            "AS eval_set_live_name FROM experiments WHERE id=$1", exp_id)
         if not r:
             raise HTTPException(404, "experiment not found")
         exp = await _maybe_score_experiment(conn, dict(r))
