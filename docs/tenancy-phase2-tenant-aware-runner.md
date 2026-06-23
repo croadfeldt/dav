@@ -125,11 +125,13 @@ async with pool.acquire() as conn:
     await db_bootstrap.bootstrap(conn, control_seeds=_control_seeds, client_seeds=_client_seeds)
 ```
 
-**Check before boot-test:** confirm `_seed_corpus` / `_seed_managed_repos` / `_backfill_uc_projections`
-operate on the **passed `conn`** (not a freshly-acquired pool connection — which would reset search_path
-to `DAV_RUNTIME_SEARCH_PATH` and seed `tenant_flightpath` regardless of the loop's tenant). If any
-acquires its own connection, pass the target schema or set its search_path explicitly. This is the one
-spot the podman dry-run couldn't exercise (it has no FastAPI app), so it needs your boot-log check.
+**Seed-routing validated (2026-06-23):** `_seed_corpus`, `_seed_managed_repos`, and
+`_backfill_uc_projections` all operate on the **passed `conn`** (zero own-connection-acquires — checked
+in main.py), so routing them through `client_seeds(conn, schema)` with the per-tenant search_path set is
+safe; they seed the correct tenant schema. The remaining unknowns are minor and surface in boot logs:
+`_migrate_code_repo_configs` is routed to control (it targets `code_repo_configs`) — if it also touches a
+client table, that shows as a no-op/skip in the per-tenant pass; harmless + idempotent. Still worth a
+boot-log watch (same discipline as migrations 021–026), but there is no connection-scoping landmine.
 
 ## Other changes still needed (not done tonight)
 1. **Per-request search_path routing** (the runbook's "tenant #2" work): today a single global role/env
