@@ -1,0 +1,66 @@
+# Daily logical backup of the DAV Postgres DB (all schemas: public + every tenant_*).
+# pg_dump -Fc via the same postgres-16 image (version-matched), to a CephFS RWX PVC,
+# 14-day retention. The DB had NO backup before this (no RBD snapshot, no dump cron) —
+# a schema-per-tenant DB with no backup is the real risk surfaced 2026-06-23.
+# TODO: fold into ansible/roles/dav (co-locate with the cert-renewal CronJob).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dav-db-backups
+  namespace: dav
+  labels: { app: dav-review, component: db-backup }
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: ocs-external-storagecluster-cephfs
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dav-db-backup
+  namespace: dav
+  labels: { app: dav-review, component: db-backup }
+spec:
+  schedule: "0 6 * * *"          # 06:00 UTC daily
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        metadata:
+          labels: { app: dav-review, component: db-backup }
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: pgdump
+              image: quay.io/sclorg/postgresql-16-c9s:latest
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+                  ts=$(date +%Y%m%d-%H%M%S)
+                  out="/backup/dav_review-${ts}.dump"
+                  echo "[$(date -u)] pg_dump -> ${out}"
+                  pg_dump -Fc --no-owner --no-privileges "$DATABASE_URL" -f "${out}"
+                  ls -la "${out}"
+                  echo "retention: pruning dumps older than 14 days"
+                  find /backup -name 'dav_review-*.dump' -mtime +14 -print -delete
+                  echo "[$(date -u)] backup complete"
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: dav-review-db-creds
+                      key: dsn
+              volumeMounts:
+                - name: backups
+                  mountPath: /backup
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: dav-db-backups
