@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Static migration-wiring guard — part of the CI/CD validate gate.
+"""Static schema-bootstrap guard — part of the CI/CD validate gate.
 
-Migrations run in `lifespan` on every boot with no per-migration isolation (a broken or
-unwired migration is an outage-class mistake). This checks, WITHOUT a database, that:
+Tenancy Phase 2 replaced the flat per-boot migration list (MIGRATE_002..026 + schema.sql, all
+run under search_path=public) with a tenant-aware bootstrap (app/db_bootstrap.py) driven by two
+GENERATED base schemas. The old "every migrate_0NN.sql is declared + executed in lifespan" rule no
+longer holds (the migrations are folded into the base snapshots). This guard checks, WITHOUT a
+database, that the NEW model is wired:
 
-  1. every app/migrate_0NN_*.sql file has a `MIGRATE_0NN_PATH = ...` declaration in main.py,
-  2. every declared MIGRATE_0NN_PATH is actually executed in `lifespan`,
-  3. the migration numbers are contiguous (no gap that means a skipped/renamed file),
-  4. each migration file's BEGIN/COMMIT are balanced (a forgotten COMMIT leaves a txn open).
+  1. both base schema files exist and are non-empty (app/schema_control.sql, app/schema_client.sql),
+  2. db_bootstrap is imported and bootstrap() is called in lifespan,
+  3. the boot no longer runs the legacy flat MIGRATE_0NN list (that path shadows tenant tables),
+  4. any legacy migrate_0NN_*.sql kept for provenance is BEGIN/COMMIT-balanced.
 
 Exit non-zero on any violation. Mirrors check_routes.py's role in the gate.
 """
@@ -15,7 +18,8 @@ import re
 import sys
 from pathlib import Path
 
-APP = Path(__file__).parent / "app"
+HERE = Path(__file__).parent
+APP = HERE / "app"
 MAIN = APP / "main.py"
 
 
@@ -23,56 +27,39 @@ def main() -> int:
     main_src = MAIN.read_text()
     errors: list[str] = []
 
-    files = sorted(APP.glob("migrate_*.sql"))
-    file_nums = {}
-    for f in files:
-        m = re.match(r"migrate_(\d+)_", f.name)
-        if not m:
-            errors.append(f"{f.name}: does not match migrate_<NNN>_*.sql")
-            continue
-        file_nums[int(m.group(1))] = f.name
+    # 1: base schema files present + non-empty
+    for base in ("schema_control.sql", "schema_client.sql"):
+        p = APP / base
+        if not p.exists():
+            errors.append(f"base schema {base} missing (generate via scripts/gen_base_schema.sh)")
+        elif p.stat().st_size == 0:
+            errors.append(f"base schema {base} is empty")
 
-    declared = {int(n): name for n, name in
-                re.findall(r"MIGRATE_(\d+)_PATH\s*=.*?\"(migrate_\d+_[^\"]+\.sql)\"", main_src)}
-    executed = {int(n) for n in re.findall(r"await conn\.execute\(MIGRATE_(\d+)_PATH\.read_text\(\)\)", main_src)}
+    # 2: bootstrap wired into the app
+    if "import db_bootstrap" not in main_src:
+        errors.append("main.py does not import db_bootstrap")
+    if not re.search(r"db_bootstrap\.bootstrap\(", main_src):
+        errors.append("db_bootstrap.bootstrap() is not called in main.py (lifespan)")
 
-    # 1 + 2: file <-> declaration <-> execution
-    for num, name in file_nums.items():
-        if num not in declared:
-            errors.append(f"{name}: file exists but no MIGRATE_{num:03d}_PATH declaration in main.py")
-        elif declared[num] != name:
-            errors.append(f"MIGRATE_{num:03d}_PATH points at {declared[num]!r}, file is {name!r}")
-        if num not in executed:
-            errors.append(f"{name}: declared but never executed in lifespan()")
-    for num in declared:
-        if num not in file_nums:
-            errors.append(f"MIGRATE_{num:03d}_PATH declared but migrate_{num:03d}_*.sql file missing")
-    for num in executed:
-        if num not in declared:
-            errors.append(f"MIGRATE_{num:03d}_PATH executed in lifespan but never declared")
+    # 3: the legacy flat-migration boot path must be gone (it shadows tenant tables on reboot)
+    if re.search(r"await conn\.execute\(MIGRATE_\d+_PATH\.read_text\(\)\)", main_src):
+        errors.append("legacy MIGRATE_0NN execution still present in lifespan — remove it "
+                      "(folded into the generated base schemas; running it shadows tenant tables)")
 
-    # 3: contiguous numbering (migrations start at 002)
-    nums = sorted(file_nums)
-    if nums:
-        expected = list(range(nums[0], nums[-1] + 1))
-        missing = sorted(set(expected) - set(nums))
-        if missing:
-            errors.append(f"non-contiguous migrations — missing: {missing}")
-
-    # 4: BEGIN/COMMIT balance per file
-    for num, name in file_nums.items():
-        sql = (APP / name).read_text()
+    # 4: BEGIN/COMMIT balance on any legacy migration files kept for provenance
+    for f in sorted(APP.glob("migrate_*.sql")):
+        sql = f.read_text()
         begins = len(re.findall(r"(?im)^\s*BEGIN\s*;", sql))
         commits = len(re.findall(r"(?im)^\s*COMMIT\s*;", sql))
         if begins != commits:
-            errors.append(f"{name}: BEGIN/COMMIT unbalanced ({begins} BEGIN, {commits} COMMIT)")
+            errors.append(f"{f.name}: BEGIN/COMMIT unbalanced ({begins} BEGIN, {commits} COMMIT)")
 
     if errors:
-        print("MIGRATION-WIRING CHECK: FAIL")
+        print("SCHEMA-BOOTSTRAP CHECK: FAIL")
         for e in errors:
             print(f"  - {e}")
         return 1
-    print(f"MIGRATION-WIRING CHECK: OK ({len(file_nums)} migrations, contiguous, wired, balanced)")
+    print("SCHEMA-BOOTSTRAP CHECK: OK (base schemas present, bootstrap wired, legacy path removed)")
     return 0
 
 
