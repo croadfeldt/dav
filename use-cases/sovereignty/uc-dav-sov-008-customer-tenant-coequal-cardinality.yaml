@@ -1,0 +1,54 @@
+uuid: uc-dav-sov-008
+handle: dav-self/sovereignty/customer-tenant-coequal-cardinality
+scenario:
+  description: Customer and tenant are co-equal entities joined by an M:N relationship. A customer may
+    be associated with multiple tenants that remain isolated from each other (e.g. a multinational client
+    engaged under several per-jurisdiction sovereign tenants); a tenant may hold multiple customers that
+    are NOT isolated from each other within it (customer is a demand/attribution dimension, not a nested
+    isolation boundary), and any of those customers may also be associated with other tenants. DAV (self-applied)
+    must represent both cardinalities without (a) linking two tenants merely because they share a customer,
+    or (b) treating a within-tenant customer as an isolation sub-boundary.
+  actor:
+    persona: platform-engineer
+    profile: sovereign
+  intent: Represent the co-equal M:N customer↔tenant model without leaking isolation across tenants or
+    inventing isolation within a tenant
+  success_criteria:
+  - A customer associated with two tenants does not make those tenants mutually visible or linked
+  - Multiple customers within one tenant share that tenant's data plane (no intra-tenant customer silo)
+  - The same customer identity anchor is referenceable from each associated tenant by stable ID
+  - Removing a customer's association with one tenant leaves its associations with other tenants intact
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: cross_dependency_payload
+    policy_complexity: single_gatekeeper
+    provider_landscape: single_eligible
+    governance_context: sovereignty_enforced
+    failure_mode: happy_path
+  profile: sovereign
+  expected_domain_interactions:
+  - domain: data
+    interaction: customer anchor referenced by stable ID from each associated tenant; per-tenant relationship
+      edges are independent records
+  - domain: policy
+    interaction: tenant-boundary policy prevents cross-tenant linkage via a shared customer
+  - domain: audit
+    interaction: each customer↔tenant association recorded within its own tenant
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: null
+  prompt_version: sov-research-2.0
+  timestamp: '2026-06-23T00:00:00.000000+00:00'
+tags:
+- sovereignty
+- tenancy
+- customer-coequal
+- m-to-n
+- isolation
+- dav-self-gating
+version: 1.0.0
+metadata:
+  author: dav-research
+  origin: deep-research/customer-tenant-coequal-2026-06-23
+  self_gating: DAV self-applies this model to its own changes (#184)

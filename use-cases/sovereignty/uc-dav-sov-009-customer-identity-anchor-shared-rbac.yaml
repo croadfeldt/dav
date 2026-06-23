@@ -1,0 +1,59 @@
+uuid: uc-dav-sov-009
+handle: dav-self/sovereignty/customer-identity-anchor-shared-rbac
+scenario:
+  description: The only shared (control-plane) part of a customer is a bare identity anchor — a stable
+    global ID plus minimal, non-relationship-revealing attributes, with no tenant-mapping. Global RBAC
+    binds to this anchor's stable ID, while customer-scoped access grants — which bind a customer to a
+    tenant's project and therefore reveal a customer↔tenant relationship — live tenant-side with the edge.
+    DAV (self-applied) must not let the shared anchor accumulate relationship- or data-bearing fields,
+    and must keep customer-scoped grants in the tenant. This is the deliberate, bounded exception to "no
+    cross-tenant shared object" (uc-sov-003) — a bare identity anchor is a control-plane identity (like
+    users/roles), not a tenant data object.
+  actor:
+    persona: data-steward
+    profile: sovereign
+  intent: Share only a bare customer identity anchor (for RBAC + roster), keeping every relationship-
+    or data-bearing attribute tenant-owned
+  success_criteria:
+  - RBAC references the customer by the shared anchor's stable ID only
+  - Customer-scoped grants that imply a customer↔tenant relationship are stored within the tenant, not
+    the control plane
+  - The shared anchor never stores tenant-mapping or relationship-revealing metadata (rejected at admission)
+  - Where fact-of-relationship is legally protected, the anchor may be omitted/opaque and the customer
+    exists purely in-tenant
+  dimensions:
+    lifecycle_phase: modification
+    resource_complexity: cross_dependency_payload
+    policy_complexity: single_gatekeeper
+    provider_landscape: single_eligible
+    governance_context: sovereignty_enforced
+    failure_mode: policy_violation
+  profile: sovereign
+  expected_domain_interactions:
+  - domain: data
+    interaction: customer anchor kept minimal in the control plane; customer-scoped grants persisted within
+      the tenant
+  - domain: policy
+    interaction: gatekeeper rejects relationship-revealing fields on the shared anchor and shared-plane
+      customer grants
+  - domain: audit
+    interaction: customer-scoped grant creation recorded in-tenant
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: null
+  prompt_version: sov-research-2.0
+  timestamp: '2026-06-23T00:00:00.000000+00:00'
+tags:
+- sovereignty
+- tenancy
+- rbac
+- identity-anchor
+- control-plane
+- no-relationship-metadata
+- dav-self-gating
+version: 1.0.0
+metadata:
+  author: dav-research
+  origin: deep-research/customer-tenant-coequal-2026-06-23
+  self_gating: DAV self-applies this model to its own changes (#184)
