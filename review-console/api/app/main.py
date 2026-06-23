@@ -5053,6 +5053,7 @@ def _derive_uc_handle(parsed: dict) -> str:
 async def list_use_cases(
     request: Request,
     source: Optional[str] = Query(None, description="'managed', 'corpus', or None for both"),
+    applied: Optional[int] = Query(None, description="corpus scoping (#199): 1/None = corpus UCs applied to the active project; 0 = corpus UCs available to apply (not yet applied)"),
     sort: Optional[str] = Query(None, description="'priority' to order by roadmap weight; default is most-recently-updated"),
     priority: Optional[str] = Query(None, description="filter to a single priority label (critical/high/medium/low)"),
     customer_id: Optional[str] = Query(None, description="matrix #130: filter to managed UCs this customer has requested (corpus UCs carry no demand, so omitted when set)"),
@@ -5131,18 +5132,27 @@ async def list_use_cases(
 
     if source in (None, "corpus") and cust_filter is None:
         # Corpus UC files — already seeded into the files table; filter to .yaml files
-        # that look like UCs (have a uuid field when parsed as YAML).
+        # that look like UCs (have a uuid field when parsed as YAML). Corpus UCs are tenant
+        # assets that show in a project only when APPLIED to it (#199): with applied=1/None they
+        # are scoped to use_case_projects for the active project; applied=0 lists the ones NOT yet
+        # applied ("available to apply").
         async with pool.acquire() as conn:
+            _pid = await _active_project_id(request, conn)
+            _applied_uuids = set(r["uc_uuid"] for r in await conn.fetch(
+                "SELECT uc_uuid FROM use_case_projects WHERE project_id=$1", _pid)) if _pid else set()
             rows = await conn.fetch(
                 "SELECT path, content, size_bytes, folder FROM files "
                 "WHERE path LIKE '%.yaml' OR path LIKE '%.yml' ORDER BY path"
             )
+        want_applied = (applied != 0)   # default (None/1) = applied to this project; 0 = available
         for r in rows:
             try:
                 data = _yaml.safe_load(r["content"])
                 if not isinstance(data, dict) or "uuid" not in data:
                     continue
                 uc_uuid = data.get("uuid")
+                if (uc_uuid in _applied_uuids) != want_applied:
+                    continue   # filter to applied / available for the active project
                 c_priority, c_priority_score = _derive_uc_priority(data)
                 if prio_filter and c_priority != prio_filter:
                     continue
@@ -5373,7 +5383,51 @@ async def create_use_case(payload: ManagedUCIn, request: Request):
             """,
             uc_uuid, title, payload.yaml_content, user, tags, priority, priority_score, readiness, pid,
         )
+        # Apply the new UC to its project — the M:N membership (#199; project_id retained too).
+        if pid is not None:
+            await conn.execute(
+                "INSERT INTO use_case_projects(uc_uuid, project_id, applied_by) VALUES($1,$2,$3) "
+                "ON CONFLICT DO NOTHING", uc_uuid, pid, user)
     return {"ok": True, "uuid": uc_uuid, "title": title, "priority": priority, "readiness_score": readiness}
+
+
+class UCApplyIn(BaseModel):
+    uc_uuids: list[str]
+    project_id: Optional[int] = None
+
+
+@app.post("/api/use-case-projects")
+async def apply_use_cases(payload: UCApplyIn, request: Request):
+    """Apply tenant use cases (managed or corpus) to a project — the UC↔project M:N (#199).
+    The UC is a tenant asset; applying associates it with a project within the tenant."""
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        pid = payload.project_id or await _active_project_id(request, conn)
+        if pid is None:
+            raise HTTPException(400, "no active project")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)
+        n = 0
+        for u in payload.uc_uuids:
+            if isinstance(u, str) and u.strip():
+                await conn.execute(
+                    "INSERT INTO use_case_projects(uc_uuid, project_id, applied_by) VALUES($1,$2,$3) "
+                    "ON CONFLICT DO NOTHING", u.strip(), pid, user)
+                n += 1
+    return {"ok": True, "applied": n, "project_id": pid}
+
+
+@app.post("/api/use-case-projects/remove")
+async def unapply_use_cases(payload: UCApplyIn, request: Request):
+    """Remove tenant use cases from a project (un-apply the M:N). The UC itself is untouched."""
+    async with pool.acquire() as conn:
+        pid = payload.project_id or await _active_project_id(request, conn)
+        if pid is None:
+            raise HTTPException(400, "no active project")
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, pid)
+        uuids = [u.strip() for u in payload.uc_uuids if isinstance(u, str) and u.strip()]
+        await conn.execute(
+            "DELETE FROM use_case_projects WHERE project_id=$1 AND uc_uuid = ANY($2)", pid, uuids)
+    return {"ok": True, "project_id": pid, "removed": len(uuids)}
 
 
 @app.put("/api/use-cases/{uuid}")
@@ -6597,6 +6651,10 @@ async def import_use_cases(request: Request, file: UploadFile = File(...)):
                                VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10)""",
                             uc_uuid, title, content, target_state, user, tags, priority, priority_score, readiness, pid,
                         )
+                        if pid is not None:   # apply to its project — M:N membership (#199)
+                            await conn.execute(
+                                "INSERT INTO use_case_projects(uc_uuid, project_id, applied_by) VALUES($1,$2,$3) "
+                                "ON CONFLICT DO NOTHING", uc_uuid, pid, user)
                         await conn.execute(
                             "INSERT INTO lifecycle_events(uc_uuid, from_state, to_state, actor, notes) "
                             "VALUES ($1, NULL, $2, $3, 'imported')",
@@ -7424,6 +7482,8 @@ async def project_freshness(request: Request):
         # available" so the masthead reads evaluated-vs-everything-defined (managed + corpus). #178.
         corpus_rows = await conn.fetch(
             "SELECT content FROM files WHERE path LIKE '%.yaml' OR path LIKE '%.yml'")
+        applied_corpus = set(r["uc_uuid"] for r in await conn.fetch(
+            "SELECT uc_uuid FROM use_case_projects WHERE project_id=$1", pid)) if pid else set()
     managed_n = len(rows)
     ingested = failed = stale = stale_edited = stale_drifted = 0
     last_eval = oldest_stale_eval = None
@@ -7445,24 +7505,28 @@ async def project_freshness(request: Request):
             if drifted: stale_drifted += 1
             if oldest_stale_eval is None or eval_at < oldest_stale_eval:
                 oldest_stale_eval = eval_at
-    # Corpus-only UCs = source files whose uuid isn't an ingested managed UC. These are
-    # "defined but not ingested", so they count toward total-available but not toward the
-    # analyzable/evaluatable set (uncovered, below, stays managed-scoped for the ingest button).
+    # Corpus UCs are tenant assets shown in a project only when APPLIED (#199). Corpus applied to
+    # this project counts toward the total; corpus not applied is surfaced separately as "available".
     managed_uuids = {r["uuid"] for r in rows}
-    corpus_only = set()
+    corpus_applied = corpus_available = 0
     for cr in corpus_rows:
         try:
             d = _yaml.safe_load(cr["content"])
         except Exception:
             continue
-        if isinstance(d, dict) and d.get("uuid") and d["uuid"] not in managed_uuids:
-            corpus_only.add(d["uuid"])
-    corpus_n = len(corpus_only)
-    total_available = managed_n + corpus_n      # everything defined, regardless of ingest status
+        u = d.get("uuid") if isinstance(d, dict) else None
+        if not u or u in managed_uuids:
+            continue
+        if u in applied_corpus:
+            corpus_applied += 1
+        else:
+            corpus_available += 1
+    total_available = managed_n + corpus_applied   # everything applied to this project
     return {
-        "total": total_available,               # masthead denominator: managed + corpus (all defined)
-        "managed": managed_n,                    # analyzable UCs ingested into the DB
-        "corpus": corpus_n,                      # source UCs defined but not yet ingested as managed
+        "total": total_available,               # masthead denominator: managed + applied corpus
+        "managed": managed_n,                    # analyzable UCs ingested into the DB (this project)
+        "corpus": corpus_applied,                # corpus UCs applied to this project
+        "corpus_available": corpus_available,    # tenant corpus UCs not yet applied here (#199)
         "deprecated": int(deprecated or 0),     # excluded from the analyzable corpus (reconciles with the UC view)
         "ingested": ingested,                    # evaluated managed UCs (have a current, non-failed analysis)
         "failed": failed,
