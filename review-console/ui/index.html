@@ -11767,11 +11767,10 @@ async function loadFreshness() {
     pop.innerHTML =
       `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:5px;">Analysis freshness</div>`
       + row('Use cases (this project)', total)
-      // Breakdown: managed (ingested into the DB) + corpus APPLIED to this project (#199). Corpus
-      // UCs are tenant assets that count here only once applied; unapplied ones show as "available".
+      // Breakdown: managed (ingested into the DB) + corpus from the project's corpus repos (#199).
+      // Both count toward the total — the pill is the complete story (drift in either re-runs).
       + row('<span style="color:var(--text-faint);">├ Managed (ingested)</span>', `<span style="color:var(--text-faint);">${managed}</span>`)
-      + (corpus ? row('<span style="color:var(--text-faint);">├ Corpus (applied)</span>', `<span style="color:var(--text-faint);">${corpus}</span>`) : '')
-      + ((f.corpus_available || 0) ? row('<span style="color:var(--text-faint);">Available to apply</span>', `<span style="color:var(--text-faint);">${f.corpus_available} corpus UC${f.corpus_available===1?'':'s'}</span>`) : '')
+      + (corpus ? row('<span style="color:var(--text-faint);">├ Corpus (from repos)</span>', `<span style="color:var(--text-faint);">${corpus}</span>`) : '')
       + (f.deprecated ? row('<span style="color:var(--text-faint);">Deprecated (excluded)</span>', `<span style="color:var(--text-faint);">${f.deprecated}</span>`) : '')
       + row('Evaluated', `${ingested} / ${managed}${f.uncovered ? ` <span style="color:var(--text-faint);">(${f.uncovered} unevaluated)</span>` : ''}`)
       + (f.failed ? row('Failed', `<span style="color:var(--red);">${f.failed}</span>`) : '')

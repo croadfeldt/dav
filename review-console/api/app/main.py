@@ -5138,21 +5138,24 @@ async def list_use_cases(
         # applied ("available to apply").
         async with pool.acquire() as conn:
             _pid = await _active_project_id(request, conn)
-            _applied_uuids = set(r["uc_uuid"] for r in await conn.fetch(
-                "SELECT uc_uuid FROM use_case_projects WHERE project_id=$1", _pid)) if _pid else set()
+            _corpus_ns = set(r["namespace"] for r in await conn.fetch(
+                "SELECT namespace FROM managed_repos WHERE project_id=$1 AND 'corpus'=ANY(roles)", _pid)) if _pid else set()
             rows = await conn.fetch(
                 "SELECT path, content, size_bytes, folder FROM files "
                 "WHERE path LIKE '%.yaml' OR path LIKE '%.yml' ORDER BY path"
             )
-        want_applied = (applied != 0)   # default (None/1) = applied to this project; 0 = available
         for r in rows:
             try:
+                # A project's corpus = UC files from its corpus-role repos (managed_repos roles @>
+                # {corpus}), matched by the file's namespace (folder prefix). So corpus shows only in
+                # projects whose repo list includes that corpus repo — not in every project. #199.
+                ns = (r["folder"] or "").split("/", 1)[0]
+                if ns not in _corpus_ns:
+                    continue
                 data = _yaml.safe_load(r["content"])
                 if not isinstance(data, dict) or "uuid" not in data:
                     continue
                 uc_uuid = data.get("uuid")
-                if (uc_uuid in _applied_uuids) != want_applied:
-                    continue   # filter to applied / available for the active project
                 c_priority, c_priority_score = _derive_uc_priority(data)
                 if prio_filter and c_priority != prio_filter:
                     continue
@@ -5351,6 +5354,20 @@ async def create_use_case(payload: ManagedUCIn, request: Request):
             if _m else f"uuid: {uc_uuid}\n" + payload.yaml_content
         )
         data["uuid"] = uc_uuid
+
+    # Handle is REQUIRED by the engine but is mechanically derivable (namespace/profile/slug).
+    # Extraction/assist drafts sometimes omit it; derive + stamp it (like /repair) so a missing
+    # handle is auto-fixed, not a hard save failure. Semantic fields (enums/intent/criteria) stay
+    # strict below — the prompt owns those, this only backfills the computable identity field (#199).
+    hnd = data.get("handle")
+    if not isinstance(hnd, str) or not hnd.strip():
+        hnd = _derive_uc_handle(data)
+        data["handle"] = hnd
+        _mh = re.search(r"(?m)^[ \t]*handle:[ \t]*.*$", payload.yaml_content)
+        payload.yaml_content = (
+            payload.yaml_content[:_mh.start()] + f"handle: {hnd}" + payload.yaml_content[_mh.end():]
+            if _mh else f"handle: {hnd}\n" + payload.yaml_content
+        )
 
     # Pre-flight engine validation — catch bad enum values / missing uc-
     # prefix / etc. now instead of at run time. Returns 400 with a list.
@@ -7478,12 +7495,12 @@ async def project_freshness(request: Request):
         # so the masthead's `total` reconciles with the Use Cases view (which lists all).
         deprecated = await conn.fetchval(
             "SELECT count(*) FROM managed_use_cases WHERE project_id=$1 AND lifecycle_state='deprecated'", pid)
-        # Corpus UCs (source files not yet ingested as managed) — counted toward "total
-        # available" so the masthead reads evaluated-vs-everything-defined (managed + corpus). #178.
+        # Corpus UCs from the project's corpus-role repos (managed_repos roles @> {corpus}), matched
+        # by namespace — included in the total so the pill is the complete story (drift re-runs). #199.
         corpus_rows = await conn.fetch(
-            "SELECT content FROM files WHERE path LIKE '%.yaml' OR path LIKE '%.yml'")
-        applied_corpus = set(r["uc_uuid"] for r in await conn.fetch(
-            "SELECT uc_uuid FROM use_case_projects WHERE project_id=$1", pid)) if pid else set()
+            "SELECT content, folder FROM files WHERE path LIKE '%.yaml' OR path LIKE '%.yml'")
+        corpus_ns = set(r["namespace"] for r in await conn.fetch(
+            "SELECT namespace FROM managed_repos WHERE project_id=$1 AND 'corpus'=ANY(roles)", pid)) if pid else set()
     managed_n = len(rows)
     ingested = failed = stale = stale_edited = stale_drifted = 0
     last_eval = oldest_stale_eval = None
@@ -7505,28 +7522,27 @@ async def project_freshness(request: Request):
             if drifted: stale_drifted += 1
             if oldest_stale_eval is None or eval_at < oldest_stale_eval:
                 oldest_stale_eval = eval_at
-    # Corpus UCs are tenant assets shown in a project only when APPLIED (#199). Corpus applied to
-    # this project counts toward the total; corpus not applied is surfaced separately as "available".
+    # Corpus UCs from the project's corpus repos count toward the total — the pill is the complete
+    # story (drift in these should re-run). Scoped by namespace so corpus shows only in projects whose
+    # repo list includes that corpus repo (not every project). #199.
     managed_uuids = {r["uuid"] for r in rows}
-    corpus_applied = corpus_available = 0
+    corpus_n = 0
     for cr in corpus_rows:
+        ns = (cr["folder"] or "").split("/", 1)[0]
+        if ns not in corpus_ns:
+            continue
         try:
             d = _yaml.safe_load(cr["content"])
         except Exception:
             continue
         u = d.get("uuid") if isinstance(d, dict) else None
-        if not u or u in managed_uuids:
-            continue
-        if u in applied_corpus:
-            corpus_applied += 1
-        else:
-            corpus_available += 1
-    total_available = managed_n + corpus_applied   # everything applied to this project
+        if u and u not in managed_uuids:
+            corpus_n += 1
+    total_available = managed_n + corpus_n          # managed + the project's corpus (complete story)
     return {
-        "total": total_available,               # masthead denominator: managed + applied corpus
+        "total": total_available,               # masthead denominator: managed + project corpus
         "managed": managed_n,                    # analyzable UCs ingested into the DB (this project)
-        "corpus": corpus_applied,                # corpus UCs applied to this project
-        "corpus_available": corpus_available,    # tenant corpus UCs not yet applied here (#199)
+        "corpus": corpus_n,                      # corpus UCs from the project's corpus repos
         "deprecated": int(deprecated or 0),     # excluded from the analyzable corpus (reconciles with the UC view)
         "ingested": ingested,                    # evaluated managed UCs (have a current, non-failed analysis)
         "failed": failed,
