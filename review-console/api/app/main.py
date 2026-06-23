@@ -3551,7 +3551,8 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
         async with pool.acquire() as conn:
             mc_row = await conn.fetchrow(
                 "SELECT id, capabilities FROM model_configs "
-                "WHERE model_id=$1 AND enabled AND project_id=$2 ORDER BY id LIMIT 1",
+                "WHERE model_id=$1 AND enabled AND (project_id=$2 OR project_id IS NULL) "
+                "ORDER BY (project_id IS NULL), id LIMIT 1",  # scope-aware (#107 2b): project caps preferred, platform fallback
                 params["inference_model"], _trigpid,
             )
             if mc_row:
@@ -5329,8 +5330,17 @@ async def create_use_case(payload: ManagedUCIn, request: Request):
         raise HTTPException(400, str(e))
 
     uc_uuid = data.get("uuid")
-    if not uc_uuid or not isinstance(uc_uuid, str):
-        raise HTTPException(400, "UC YAML must have a non-empty 'uuid' field")
+    if not uc_uuid or not isinstance(uc_uuid, str) or not uc_uuid.strip():
+        # No uuid in the draft (assist/extraction no longer emit one — the server owns UC identity).
+        # Assign a real uc-<uuid4> and stamp it into the stored YAML so the row + content agree (#199).
+        import uuid as _uuidm
+        uc_uuid = f"uc-{_uuidm.uuid4()}"
+        _m = re.search(r"(?m)^[ \t]*uuid:[ \t]*.*$", payload.yaml_content)
+        payload.yaml_content = (
+            payload.yaml_content[:_m.start()] + f"uuid: {uc_uuid}" + payload.yaml_content[_m.end():]
+            if _m else f"uuid: {uc_uuid}\n" + payload.yaml_content
+        )
+        data["uuid"] = uc_uuid
 
     # Pre-flight engine validation — catch bad enum values / missing uc-
     # prefix / etc. now instead of at run time. Returns 400 with a list.

@@ -11,9 +11,23 @@ from __future__ import annotations
 
 import logging
 import os
+import re as _re
+import uuid as _uuid
 from typing import Any, Optional
 
 import httpx
+
+
+def _stamp_server_uuid(yaml_content: str) -> str:
+    """Force a server-generated `uuid: uc-<uuid4>` onto an extracted UC draft, overriding any
+    model-emitted id. LLMs produce templated, collision-prone placeholders (uc-0000...-1111...),
+    so the server owns UC identity. Replaces an existing `uuid:` line (preserving formatting) or
+    inserts one. Idempotent in effect — every call assigns a fresh, real UUID."""
+    new_line = f"uuid: uc-{_uuid.uuid4()}"
+    m = _re.search(r"(?m)^[ \t]*uuid:[ \t]*.*$", yaml_content)
+    if m:
+        return yaml_content[:m.start()] + new_line + yaml_content[m.end():]
+    return new_line + "\n" + yaml_content
 
 log = logging.getLogger("dav-review-api.uc_assist")
 
@@ -35,8 +49,7 @@ Required structure:
 
   title: <short human-readable name>   # 1-120 chars, shown in lists/headers
                                        # e.g. "VM provisioning — happy path"
-  uuid: uc-<unique-id>                 # MUST start with literal prefix `uc-`
-                                       # e.g. uc-d3b1f2a8-...
+  # NOTE: do NOT emit a `uuid` — the server assigns a real uc-<uuid> on save.
   handle: <prefix>/<category>/<descriptor>   # e.g. test/standard/vm-provision-happy
   scenario:
     description: <one-line summary>          # non-empty
@@ -81,7 +94,6 @@ Required structure:
   metadata: {}
 
 Validation rules the engine enforces (your YAML must satisfy these):
-- `uuid` must start with `uc-`
 - `generated_by.mode` must be one of: regression, pr-targeted, authoring
 - `generated_by.source` must be one of: corpus, llm-unguided, llm-guided, human-authored
 - Every `dimensions.*` value MUST be picked from the lists above exactly.
@@ -287,7 +299,6 @@ Rules:
 - If the text contains nothing UC-shaped, emit zero UCs and a single line:
   ----NO-UCS---- followed by a one-line explanation.
 - Cap output at 12 UCs even if you see more — surface the most distinct ones.
-- Each UC gets a fresh `uuid: uc-<random>` — invent UUIDs, don't reuse any.
 - `generated_by.source` MUST be `llm-guided` for every extracted UC.
 - `generated_by.mode` SHOULD be `authoring` (these are drafts for review).
 - Set `lifecycle_state` is the console's concern, not yours — don't emit it.
@@ -329,7 +340,13 @@ async def extract_bulk(
         log.exception("UC bulk extract API call failed")
         return {"error": str(e)}
 
-    return _parse_bulk_response(raw)
+    result = _parse_bulk_response(raw)
+    # The server owns UC identity — stamp a real uc-<uuid4> on every draft, ignoring any
+    # model-emitted uuid (LLMs emit templated, colliding placeholders). See #199/#182.
+    for item in result.get("items", []):
+        if item.get("yaml_content"):
+            item["yaml_content"] = _stamp_server_uuid(item["yaml_content"])
+    return result
 
 
 async def _call_anthropic_with_system(user_message: str, system: str, timeout: float, cfg: dict) -> str:
