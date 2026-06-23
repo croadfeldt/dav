@@ -3297,7 +3297,13 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
                 rows = await conn.fetch(
                     "SELECT run_name, name, description, category, tags, "
                     "gpu_energy_joules, total_gen_tokens, total_prompt_tokens, "
-                    "set_id, set_name, selection_mode, "
+                    # Resolve the set's CURRENT name by joining use_case_sets on set_id — so a set
+                    # rename reflects everywhere. The stored set_name is a provenance fallback only
+                    # (covers a deleted set [FK is ON DELETE SET NULL] + the synthetic "All Use Cases"
+                    # / custom-selection pseudo-sets that have no use_case_sets row).
+                    "set_id, set_name, "
+                    "(SELECT name FROM use_case_sets WHERE id = run_sessions.set_id) AS set_live_name, "
+                    "selection_mode, "
                     "uc_total, uc_succeeded, uc_failed, archived, project_id, "
                     "corpus_repo_branch, spec_repo_branch, corpus_repo_sha, spec_repo_sha "
                     "FROM run_sessions WHERE run_name = ANY($1::text[])",
@@ -3326,7 +3332,8 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
             r["total_gen_tokens"]  = s.get("total_gen_tokens")
             r["total_prompt_tokens"] = s.get("total_prompt_tokens")
             r["set_id"]        = s.get("set_id")
-            r["set_name"]      = s.get("set_name") or None
+            # live name (join on set_id) wins; stored snapshot is the fallback (deleted/synthetic set).
+            r["set_name"]      = s.get("set_live_name") or s.get("set_name") or None
             r["selection_mode"] = s.get("selection_mode") or None
             # run_sessions' uc_* columns are unpopulated today (the finalizer
             # defers them); the ingested analysis row is the authoritative
@@ -4359,10 +4366,14 @@ async def get_result(run_id: str):
             async with pool.acquire() as conn:
                 meta = await conn.fetchrow(
                     """SELECT ar.run_name,
-                              rs.set_id, rs.set_name, rs.selection_mode,
+                              rs.set_id,
+                              -- current set name via the set_id join; stored snapshot is fallback only
+                              COALESCE(ucs.name, rs.set_name) AS set_name,
+                              rs.selection_mode,
                               rs.name AS session_name
                        FROM analysis_runs ar
-                       LEFT JOIN run_sessions rs ON rs.run_name = ar.run_name
+                       LEFT JOIN run_sessions rs  ON rs.run_name = ar.run_name
+                       LEFT JOIN use_case_sets ucs ON ucs.id = rs.set_id
                        WHERE ar.run_id = $1""",
                     run_id,
                 )
