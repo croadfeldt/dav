@@ -7410,7 +7410,11 @@ async def project_freshness(request: Request):
         # so the masthead's `total` reconciles with the Use Cases view (which lists all).
         deprecated = await conn.fetchval(
             "SELECT count(*) FROM managed_use_cases WHERE project_id=$1 AND lifecycle_state='deprecated'", pid)
-    total = len(rows)
+        # Corpus UCs (source files not yet ingested as managed) — counted toward "total
+        # available" so the masthead reads evaluated-vs-everything-defined (managed + corpus). #178.
+        corpus_rows = await conn.fetch(
+            "SELECT content FROM files WHERE path LIKE '%.yaml' OR path LIKE '%.yml'")
+    managed_n = len(rows)
     ingested = failed = stale = stale_edited = stale_drifted = 0
     last_eval = oldest_stale_eval = None
     for r in rows:
@@ -7431,12 +7435,28 @@ async def project_freshness(request: Request):
             if drifted: stale_drifted += 1
             if oldest_stale_eval is None or eval_at < oldest_stale_eval:
                 oldest_stale_eval = eval_at
+    # Corpus-only UCs = source files whose uuid isn't an ingested managed UC. These are
+    # "defined but not ingested", so they count toward total-available but not toward the
+    # analyzable/evaluatable set (uncovered, below, stays managed-scoped for the ingest button).
+    managed_uuids = {r["uuid"] for r in rows}
+    corpus_only = set()
+    for cr in corpus_rows:
+        try:
+            d = _yaml.safe_load(cr["content"])
+        except Exception:
+            continue
+        if isinstance(d, dict) and d.get("uuid") and d["uuid"] not in managed_uuids:
+            corpus_only.add(d["uuid"])
+    corpus_n = len(corpus_only)
+    total_available = managed_n + corpus_n      # everything defined, regardless of ingest status
     return {
-        "total": total,
+        "total": total_available,               # masthead denominator: managed + corpus (all defined)
+        "managed": managed_n,                    # analyzable UCs ingested into the DB
+        "corpus": corpus_n,                      # source UCs defined but not yet ingested as managed
         "deprecated": int(deprecated or 0),     # excluded from the analyzable corpus (reconciles with the UC view)
-        "ingested": ingested,
+        "ingested": ingested,                    # evaluated managed UCs (have a current, non-failed analysis)
         "failed": failed,
-        "uncovered": max(0, total - ingested),
+        "uncovered": max(0, managed_n - ingested),  # managed UCs not yet evaluated (the ingest-button target)
         "stale": stale,
         "stale_edited": stale_edited,           # #114: UC content changed
         "stale_drifted": stale_drifted,         # #114: code (repo HEAD) moved since eval

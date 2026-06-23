@@ -11749,10 +11749,13 @@ async function loadFreshness() {
   try { f = await api('/api/freshness'); }
   catch { sumEl.textContent = '—'; if (dot) dot.style.background = 'var(--text-faint)'; return; }
   const total = f.total || 0, ingested = f.ingested || 0, stale = f.stale || 0;
+  const managed = (f.managed != null ? f.managed : total), corpus = f.corpus || 0;
+  // Pill = evaluated / total-available (managed + corpus, regardless of ingest status).
   sumEl.textContent = total ? `${ingested}/${total}${stale ? ` · ${stale} stale` : ''}` : 'no UCs';
   if (dot) {
-    // green = fully covered + fresh; amber = stale or uncovered; faint = nothing evaluated.
-    const attn = !!(ingested && (stale || ingested < total));   // needs attention
+    // green = managed UCs all evaluated + fresh; amber = managed stale/uncovered; faint = nothing
+    // evaluated. Corpus (defined-but-not-ingested) isn't evaluatable, so it doesn't force amber.
+    const attn = !!(ingested && (stale || ingested < managed));   // needs attention
     let c = 'var(--text-faint)';
     if (ingested) c = attn ? 'var(--amber, #d79a2b)' : 'var(--ok, var(--green))';
     dot.style.background = c;
@@ -11763,11 +11766,13 @@ async function loadFreshness() {
     const row = (l, v) => `<div style="display:flex;justify-content:space-between;gap:16px;padding:2px 0;"><span style="color:var(--text-dim);">${l}</span><span>${v}</span></div>`;
     pop.innerHTML =
       `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:5px;">Analysis freshness</div>`
-      + row(f.deprecated ? 'Use cases (active)' : 'Use cases', total)
-      // Deprecated UCs are excluded from analysis; show them so this total reconciles with
-      // the Use Cases view (active + deprecated = the list count).
+      + row('Total available', total)
+      // Breakdown of the total: managed (ingested into the DB) + corpus (source files not
+      // yet ingested). Only managed UCs are evaluatable; corpus is "defined but not ingested".
+      + row('<span style="color:var(--text-faint);">├ Managed (ingested)</span>', `<span style="color:var(--text-faint);">${managed}</span>`)
+      + (corpus ? row('<span style="color:var(--text-faint);">├ Corpus (not ingested)</span>', `<span style="color:var(--text-faint);">${corpus}</span>`) : '')
       + (f.deprecated ? row('<span style="color:var(--text-faint);">Deprecated (excluded)</span>', `<span style="color:var(--text-faint);">${f.deprecated}</span>`) : '')
-      + row('Evaluated', `${ingested}${f.uncovered ? ` <span style="color:var(--text-faint);">(${f.uncovered} uncovered)</span>` : ''}`)
+      + row('Evaluated', `${ingested} / ${managed}${f.uncovered ? ` <span style="color:var(--text-faint);">(${f.uncovered} unevaluated)</span>` : ''}`)
       + (f.failed ? row('Failed', `<span style="color:var(--red);">${f.failed}</span>`) : '')
       + row('Stale', `${stale}${stale ? ` <span style="color:var(--text-faint);">(${f.stale_edited || 0} edited · ${f.stale_drifted || 0} code-drifted)</span>` : ''}`)
       + row('Last evaluation', f.last_eval ? _ago(f.last_eval) : '—')
