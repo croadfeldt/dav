@@ -3829,6 +3829,64 @@ async def runs_stats():
     }
 
 
+def _correlate_inflight_progress(name: str, started_iso: Optional[str],
+                                 tolerance_seconds: int = 600) -> Optional[dict]:
+    """Correlate a PipelineRun to its DISTINCT in-flight workspace run-dir among concurrent runs.
+
+    The engine generates its own workspace run_id and does NOT record the PipelineRun name, so the
+    only link is start time. The old single-nearest match (`find_progress_near`) collided when runs
+    overlapped — two PipelineRuns both resolved to the newest dir, so the live drawer showed the
+    same UC stats for both. Here we collect every active (non-terminal) run and every in-flight
+    workspace dir, then greedily pair the globally-closest (run, dir) within tolerance and CLAIM
+    both, so each active run maps to a UNIQUE dir. Returns the progress dict for `name`, or None if
+    no dir is within tolerance (e.g. its workspace dir hasn't been created yet).
+
+    SYNC (calls the blocking k8s lister) — `to_thread` it from async call sites.
+
+    TODO (deterministic fix): have the engine stamp the PipelineRun name into run-progress.yaml
+    (thread `$(context.pipelineRun.name)` through the Tekton run-corpus task) and match on it.
+    """
+    from datetime import datetime
+    def _p(s):
+        try:
+            return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        except Exception:
+            return None
+    dirs = _results.list_inflight_progress()
+    if not dirs:
+        return None
+    try:
+        active = validations.list_recent(50)
+    except Exception:
+        active = []
+    runs = [(r.get("name"), _p(r.get("started_at") or r.get("created_at")))
+            for r in active if r.get("phase") not in TERMINAL_PHASES]
+    runs = [(n, t) for (n, t) in runs if n and t is not None]
+    if started_iso and not any(n == name for (n, _t) in runs):
+        t = _p(started_iso)
+        if t is not None:
+            runs.append((name, t))
+    dts = [(d, _p(d.get("started_at"))) for d in dirs]
+    dts = [(d, t) for (d, t) in dts if t is not None]
+    pairs = []
+    for (rn, rt) in runs:
+        for (d, dt) in dts:
+            diff = abs((rt - dt).total_seconds())
+            if diff <= tolerance_seconds:
+                pairs.append((diff, rn, d["_run_dir"], d))
+    pairs.sort(key=lambda x: x[0])
+    claimed_runs: set = set()
+    claimed_dirs: set = set()
+    assign: dict = {}
+    for diff, rn, rd, d in pairs:
+        if rn in claimed_runs or rd in claimed_dirs:
+            continue
+        claimed_runs.add(rn)
+        claimed_dirs.add(rd)
+        assign[rn] = d
+    return assign.get(name)
+
+
 @app.get("/api/runs/{name}/turns")
 async def get_run_turns(
     name: str,
@@ -3858,7 +3916,11 @@ async def get_run_turns(
     started = detail.get("started_at") or detail.get("created_at")
     if not started or not _results.is_available():
         return {"files": [], "records": []}
-    progress = _results.find_progress_near(started, tolerance_seconds=600)
+    # Unique correlation across concurrent runs; fall back to single-nearest for terminal/historical
+    # runs (whose in-flight progress file is gone).
+    progress = await asyncio.to_thread(_correlate_inflight_progress, name, started)
+    if not progress:
+        progress = _results.find_progress_near(started, tolerance_seconds=600)
     if not progress:
         return {"files": [], "records": [], "note": "no workspace run dir matches the PipelineRun start time"}
     run_id = progress.get("_run_dir")
@@ -4116,7 +4178,9 @@ async def get_run_detail(name: str):
         started = detail.get("started_at") or detail.get("created_at")
         if started and _results.is_available():
             try:
-                progress = _results.find_progress_near(started)
+                # Unique per-run correlation — never share a workspace dir between two concurrent
+                # runs (which made the live drawer show the same UC stats for both).
+                progress = await asyncio.to_thread(_correlate_inflight_progress, name, started)
                 if progress:
                     detail["progress"] = progress
             except Exception as e:
@@ -8923,7 +8987,9 @@ def _resolve_run_id(id_or_name: str) -> Optional[str]:
         detail = validations.get_run_detail(id_or_name)  # sync helper (_resolve_run_id)
         started = detail.get("started_at") or detail.get("created_at")
         if started:
-            prog = _results.find_progress_near(started, tolerance_seconds=600)
+            # Unique correlation across concurrent runs (fall back to single-nearest if none).
+            prog = _correlate_inflight_progress(id_or_name, started) \
+                or _results.find_progress_near(started, tolerance_seconds=600)
             if prog:
                 return prog.get("_run_dir")
     except Exception:

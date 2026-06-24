@@ -147,6 +147,35 @@ def find_progress_near(started_at_iso: str, tolerance_seconds: int = 120) -> Opt
     return None
 
 
+def list_inflight_progress(max_scan: int = 60) -> list[dict]:
+    """All in-flight ``run-progress.yaml`` files (one per active workspace run-dir), each parsed
+    and tagged with ``_run_dir``. The engine doesn't record the PipelineRun name, so concurrent
+    runs are correlated to distinct dirs by start time — this returns every candidate so the
+    caller can assign them uniquely (``find_progress_near`` returns only the single nearest, which
+    collides when two runs overlap). Bounded to the newest ``max_scan`` dirs; only non-terminal
+    (``running``) progress is returned."""
+    root = _results_root()
+    out: list[dict] = []
+    if not root.exists():
+        return out
+    scanned = 0
+    for run_dir in sorted(root.iterdir(), key=lambda p: p.name, reverse=True):
+        if not run_dir.is_dir():
+            continue
+        scanned += 1
+        if scanned > max_scan:
+            break
+        prog_path = run_dir / "run-progress.yaml"
+        if not prog_path.exists():
+            continue
+        p = _safe_load(prog_path)
+        if not p or p.get("phase") not in (None, "running"):
+            continue
+        p["_run_dir"] = run_dir.name
+        out.append(p)
+    return out
+
+
 def list_turns_files(run_id: str) -> list[str]:
     """List the turns/*.jsonl files in a run directory. Each corresponds to
     one (UC, sample) — filename pattern: <uc_uuid>.seed-<N>.jsonl."""
