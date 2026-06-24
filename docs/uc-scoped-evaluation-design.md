@@ -267,6 +267,21 @@ renders a failure card (reason + phase + re-ingest); the **ingestion drawer** UC
 badge with the reason on hover, and `/api/results/{run_id}` appends dropped (`not_emitted`) UCs so the
 drawer shows them too.
 
+## Open question (TBD, 2026-06-24) — ingestion stats across tenancy (#200)
+The masthead Ingestion pill aggregates **project-scoped** `allRuns`, so it shows only the active
+project's running ingestions — correct for sovereignty (a user in project A must not see project B's
+run names / sets / customers), but it means concurrent runs in other projects are invisible here. Real
+operational need: total cluster ingestion load (concurrent runs share the GPUs). **Proposed split (not
+yet built):** (1) keep the per-project masthead pill with content; (2) add a platform-admin-gated
+"cluster activity" view that aggregates ALL active ingestions cluster-wide but shows only **operational**
+fields (count, GPU/energy, UC progress numbers) with tenant **content redacted** (no set/project/customer
+names) unless the viewer has cross-project rights. Principle: the *fact + resource cost* of a run is
+operator telemetry; the *content* is tenant-scoped. The masthead is the user's project context, so it's
+the wrong place for cross-tenant aggregation. Decision pending. (Note: concurrent runs DO correlate to
+distinct workspace dirs now — the live-drawer stats mixup was a separate timestamp-correlation bug, fixed
+via `_correlate_inflight_progress`; engine doesn't stamp the PipelineRun name, deterministic fix is a TODO.)
+
 ## Related
 `ux-paradigm-design.md` (personas/lenses this serves) · `review-console-design.md` (§Navigation, the
-run/results architecture) · `uc-driven-roadmaps-design.md` · #112 (masthead) · #43 (UC↔project matrix).
+run/results architecture) · `uc-driven-roadmaps-design.md` · #112 (masthead) · #43 (UC↔project matrix)
+· #200 (ingestion-stats-across-tenancy TBD).
