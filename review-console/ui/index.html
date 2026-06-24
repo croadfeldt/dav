@@ -9329,10 +9329,11 @@ async function cloneUC(uuid) {
 async function deleteUC(uuid, btn) {
   if (!btn) return;
   _armDeleteBtn(btn, async () => {
-    if (!(await _confirmDeleteImpact('uc', uuid, uuid))) return;
+    const choice = await _confirmDeleteImpact('uc', uuid, uuid);
+    if (!choice) return;
     try {
-      await api(`/api/use-cases/${encodeURIComponent(uuid)}`, {method:'DELETE'});
-      toast(`Deleted ${uuid}`); activeUCId = null;
+      await api(`/api/use-cases/${encodeURIComponent(uuid)}?purge_analyses=${choice.purge ? 'true' : 'false'}`, {method:'DELETE'});
+      toast(`Deleted ${uuid}${choice.purge ? ' + analyses purged' : ''}`); activeUCId = null;
       document.getElementById('ucDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">Deleted.</div></div>';
       loadUCs();
     } catch (e) { toast('Delete failed: ' + e.message, true); }
@@ -12210,7 +12211,8 @@ function _armDeleteBtn(btn, action) {
 
 // Delete-propagation warning: fetch the server's impact preview and show what a delete cascades to,
 // so deletion (allowed for sovereignty/right-to-erase) is informed. The server also audits it.
-// Returns true if the user confirms. Falls back to a plain confirm if the preview can't be fetched.
+// Returns null if cancelled, else {purge:bool} (purge = also erase a UC's historical analyses).
+// Falls back to a plain confirm if the preview can't be fetched.
 async function _confirmDeleteImpact(kind, id, label) {
   let impact;
   try {
@@ -12219,7 +12221,7 @@ async function _confirmDeleteImpact(kind, id, label) {
       : `/api/sets/${id}/delete-impact`;
     impact = (await api(path)).impact;
   } catch (_) {
-    return confirm(`Delete ${label}? This cannot be undone (and is audited).`);
+    return confirm(`Delete ${label}? This cannot be undone (and is audited).`) ? { purge: false } : null;
   }
   const lines = [];
   if (kind === 'uc') {
@@ -12230,16 +12232,26 @@ async function _confirmDeleteImpact(kind, id, label) {
     lines.push(`  • ${r.customer_requests || 0} customer-demand record(s)`);
     lines.push(`  • ${r.lifecycle_events || 0} lifecycle event(s)`);
     if (k.past_analyses)
-      lines.push(`\n${k.past_analyses} past analysis result(s) reference this UC — RETAINED as historical record (not deleted).`);
-  } else {
-    const r = impact.removed || {}, d = impact.detached || {};
-    lines.push(`Deleting scoping set "${label}":`);
-    lines.push(`  • removes ${r.memberships || 0} membership(s) — the use cases themselves are kept`);
-    if (d.past_runs)
-      lines.push(`  • detaches ${d.past_runs} past run(s) — they keep the recorded set name, but the live link is cleared`);
+      lines.push(`\n${k.past_analyses} past analysis result(s) reference this UC.`);
+    lines.push(`\nThis action is audited. Continue?`);
+    if (!confirm(lines.join('\n'))) return null;
+    // Sovereignty erasure choice — only when there are analyses to purge.
+    let purge = false;
+    if (k.past_analyses) {
+      purge = confirm(
+        `This use case has ${k.past_analyses} historical analysis result(s).\n\n` +
+        `OK  = ALSO permanently erase them (full sovereignty erasure — audited).\n` +
+        `Cancel = keep them as a historical record (the UC is still deleted).`);
+    }
+    return { purge };
   }
+  const r = impact.removed || {}, d = impact.detached || {};
+  lines.push(`Deleting scoping set "${label}":`);
+  lines.push(`  • removes ${r.memberships || 0} membership(s) — the use cases themselves are kept`);
+  if (d.past_runs)
+    lines.push(`  • detaches ${d.past_runs} past run(s) — they keep the recorded set name, but the live link is cleared`);
   lines.push(`\nThis action is audited. Continue?`);
-  return confirm(lines.join('\n'));
+  return confirm(lines.join('\n')) ? { purge: false } : null;
 }
 
 async function loadReviewModels() {

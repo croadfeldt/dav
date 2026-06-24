@@ -5672,11 +5672,16 @@ async def use_case_delete_impact(uuid: str, request: Request):
 
 
 @app.delete("/api/use-cases/{uuid}")
-async def delete_use_case(uuid: str, request: Request):
+async def delete_use_case(
+    uuid: str,
+    request: Request,
+    purge_analyses: bool = Query(False, description="sovereignty erasure: also permanently delete this UC's historical analysis results (uc_analyses + cascaded capabilities/gaps/deps + analysis_output_cache). Default keeps them as a historical record."),
+):
     """Delete a managed use case. Right-to-erase (sovereignty/security) is honoured — the delete is
     allowed — but the propagation is computed, audited for visibility, and the dangling join rows
     (set memberships + project references, which have NO FK to managed_use_cases) are removed
-    explicitly so nothing orphans. Historical analyses are retained (provenance) and surfaced."""
+    explicitly so nothing orphans. Historical analyses are retained by default (provenance) and
+    surfaced; pass purge_analyses=true for full sovereignty erasure (also delete them, audited)."""
     user = get_user(request)
     async with pool.acquire() as conn:
         owner = await conn.fetchval("SELECT project_id FROM managed_use_cases WHERE uuid=$1", uuid)
@@ -5684,22 +5689,35 @@ async def delete_use_case(uuid: str, request: Request):
             raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
         await _require_priv_conn(conn, request, rbac.P_PROJECT_USECASES, owner)
         impact = await _uc_delete_impact(conn, uuid)
+        purged = 0
         async with conn.transaction():
             # No FK to managed_use_cases (corpus UCs share these tables) — clean explicitly.
             await conn.execute("DELETE FROM use_case_set_members WHERE uc_uuid=$1", uuid)
             await conn.execute("DELETE FROM use_case_projects   WHERE uc_uuid=$1", uuid)
+            if purge_analyses:
+                # Sovereignty erasure: drop the analysis results too. Deleting uc_analyses rows
+                # cascades to uc_capabilities / uc_gaps / uc_capability_deps (FK analysis_id ON DELETE
+                # CASCADE); analysis_output_cache is keyed by uc_uuid with no FK, so clear it directly.
+                r = await conn.execute("DELETE FROM uc_analyses WHERE uc_uuid=$1", uuid)
+                purged = int(r.split()[-1]) if r.startswith("DELETE") else 0
+                await conn.execute("DELETE FROM analysis_output_cache WHERE uc_uuid=$1", uuid)
             result = await conn.execute(
                 "DELETE FROM managed_use_cases WHERE uuid = $1 AND project_id = $2", uuid, owner
             )
     if result == "DELETE 0":
         raise HTTPException(404, f"use case {uuid!r} not found in managed DB")
-    log.info("Use case %s deleted by %s (impact: %s)", uuid, user, impact)
+    log.info("Use case %s deleted by %s (impact: %s, purge_analyses=%s, purged=%s)",
+             uuid, user, impact, purge_analyses, purged)
     await audit.record(
         pool, action="use_case.delete", actor=user, actor_source="session",
         object_type="use_case", object_id=uuid, project_id=owner,
-        summary=f"deleted use case {uuid}",
-        detail={"impact": impact, "note": "right-to-erase; join rows removed, historical analyses retained"})
-    return {"ok": True, "uuid": uuid, "impact": impact}
+        summary=f"deleted use case {uuid}" + (f" + purged {purged} analyses" if purge_analyses else ""),
+        detail={"impact": impact, "purge_analyses": purge_analyses, "analyses_purged": purged,
+                "note": ("right-to-erase; join rows removed; "
+                         + ("historical analyses PURGED (sovereignty erasure)" if purge_analyses
+                            else "historical analyses retained"))})
+    return {"ok": True, "uuid": uuid, "impact": impact,
+            "purged_analyses": purged if purge_analyses else None}
 
 
 _PASSING_VERDICTS = ("supported", "partially_supported")
