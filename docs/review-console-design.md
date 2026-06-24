@@ -400,6 +400,25 @@ Must conform to `specs/07-analysis-output-schema.md`. Key fields consumed by the
 Written by `run_corpus.py` on completion. Fields consumed by the UI:
 - `mode`, `started_at`, `finished_at`, `total_ucs`, `successful`, `failed`, `total_samples`
 
+### Run ↔ workspace correlation (concurrency + project attribution)
+
+The engine generates its **own** workspace `run_id` (timestamp-prefixed) and does **not** record the
+Tekton PipelineRun name, so there is no direct link between a PipelineRun (`run_sessions.run_name`) and
+its workspace dir. The shared workspace PVC is cluster-wide. Two consumers must bridge that gap:
+- **Live drawer** — maps the PipelineRun to its in-flight `run-progress.yaml` for live UC stats.
+- **Ingestion** — maps the workspace run to a `run_sessions` row to inherit `project_id` + `run_name`
+  onto `analysis_runs`. **This decides which PROJECT owns the results — sovereignty-critical.**
+
+Correlating by start time alone is unreliable (variable pod-init delay made two concurrent runs cross —
+a 6-UC run showed a 15-UC run's stats; at ingestion, results could land under the wrong project). The
+correlation therefore matches primarily on the run's **scope size**: each run's expected UC count
+(`len(trigger_payload.uc_uuids)` or its set's member count) must equal the workspace `total_ucs` —
+deterministic whenever concurrent runs differ in size. Start-time proximity is only a tiebreak/fallback,
+and each workspace dir is claimed once (`_correlate_inflight_progress`). **Open (#201):** two concurrent
+runs of the *same* scope size still fall back to timestamp; the durable fix is for the engine to stamp
+the PipelineRun name into `run-summary.yaml`/`run-progress.yaml` (`$(context.pipelineRun.name)` via the
+Tekton run-corpus task) so both consumers match deterministically.
+
 ### Turns files (`/workspace/results/{run_id}/turns/{uc_uuid}.seed-{N}.jsonl`)
 
 **Required for the Prompts & Responses panel in the run drawer.**

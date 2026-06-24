@@ -137,6 +137,17 @@ and auditable:
 
 See `uc-tenant-scoping-project-application.md` §Deletion and review-console-design.md (Use Cases tab).
 
+## Follow-on (2026-06-24): cross-project result attribution (concurrent ingestions)
+
+Ingested results are attributed to a **project** (`analysis_runs.project_id`) by correlating the shared
+cluster-wide workspace run back to a `run_sessions` row. That correlation was **timestamp-nearest**, so
+two concurrent runs in different projects could persist results under the **wrong project** — a
+sovereignty/data-integrity defect, not just a display glitch. Now correlated by the run's **scope size**
+(expected UC count vs workspace `total_ucs`), deterministic when concurrent runs differ in size;
+timestamp is only a fallback. Two concurrent **same-size** runs remain timestamp-correlated until the
+deterministic engine-stamp fix (#201). Forward-only; a one-time audit/repair of historically
+mis-attributed runs is optional. See review-console-design.md §Run ↔ workspace correlation.
+
 ## Recommended / deferred (with rationale)
 
 - **H7 — dav-docs-mcp unauthenticated exposure.** Remediation is the planned
