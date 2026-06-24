@@ -148,6 +148,21 @@ timestamp is only a fallback. Two concurrent **same-size** runs remain timestamp
 deterministic engine-stamp fix (#201). Forward-only; a one-time audit/repair of historically
 mis-attributed runs is optional. See review-console-design.md §Run ↔ workspace correlation.
 
+## Follow-on (2026-06-24): cross-project analysis-read IDOR closed (roadmaps leak)
+
+The Roadmaps domain showed another project's data — the **cross-project run IDOR** noted as a P1 tenancy
+item. Multiple analysis-read endpoints were not project-scoped:
+- `/api/analysis/runs` and `/api/analysis/gaps` were **global and unauthenticated** → now project-scoped
+  (active project's runs; orphans under the default project; single-user sees all) + `P_PROJECT_READ`.
+- Every **run_id-addressed read** now enforces the run belongs to the active project via a shared
+  `_require_run_in_project()` guard: capability-density, foundational-capabilities, uc-capability-map,
+  `/api/analysis/output` (cached arch-review/enhancement), `/api/results/{run_id}`, `…/uc/{uc}`.
+  Workspace-backed reads allow not-yet-ingested (live) runs since they have no DB project link yet.
+Verified: a DCM run fetched via the DAV project now returns **404** (was 200) for cached output +
+results; DAV sees only its own runs/gaps. **Residual:** the UC-scoped *latest-analysis-per-uc* lookups
+(roadmap/cap-map scope mode) still pull latest across projects for a UC referenced into multiple projects
+— tracked for the same project-run scoping. See review-console-design.md §Run ↔ workspace correlation.
+
 ## Recommended / deferred (with rationale)
 
 - **H7 — dav-docs-mcp unauthenticated exposure.** Remediation is the planned
