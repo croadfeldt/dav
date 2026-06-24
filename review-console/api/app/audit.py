@@ -92,11 +92,24 @@ async def query(conn, *, actor: Optional[str] = None, action: Optional[str] = No
     if before_id:
         add("id < ${}", before_id)
 
-    sql = ("SELECT id, ts, actor, actor_source, action, method, path, project_id, "
-           "outcome, status_code, ip, summary FROM audit_log")
+    sql = ("SELECT id, ts, actor, actor_source, action, method, path, "
+           "object_type, object_id, project_id, "
+           "outcome, status_code, ip, summary, detail FROM audit_log")
     if where:
         sql += " WHERE " + " AND ".join(where)
     args.append(min(int(limit or 200), 1000))
     sql += f" ORDER BY id DESC LIMIT ${len(args)}"
     rows = await conn.fetch(sql, *args)
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        # detail is JSONB — asyncpg returns it as a str; parse so the object detail
+        # (e.g. a delete's propagation impact) is visible in the Audit view (#103).
+        raw = d.get("detail")
+        if isinstance(raw, str):
+            try:
+                d["detail"] = json.loads(raw) if raw else None
+            except Exception:
+                pass
+        out.append(d)
+    return out

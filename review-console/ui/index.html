@@ -13543,15 +13543,21 @@ async function loadAudit() {
   if (!ev.length) { box.innerHTML = '<div class="empty">No audit events match.</div>'; return; }
   const th = (t) => `<th style="padding:5px 8px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg-panel);text-align:left;font-weight:600;">${t}</th>`;
   let h = '<table style="width:100%;border-collapse:collapse;font-size:11px;"><thead><tr>'
-    + th('When') + th('Actor') + th('Action') + th('Outcome') + th('Path') + th('IP') + '</tr></thead><tbody>';
+    + th('When') + th('Actor') + th('Action') + th('Object') + th('Outcome') + th('Path') + th('Detail') + th('IP') + '</tr></thead><tbody>';
   for (const e of ev) {
     const when = e.ts ? new Date(e.ts).toLocaleString() : '';
+    // Object (what was acted on) + structured detail (e.g. a delete's propagation impact) — #103.
+    const obj = e.object_type ? esc(e.object_type) + (e.object_id ? ' ' + esc(String(e.object_id)) : '') : '';
+    const detailFull = (e.detail && typeof e.detail === 'object') ? JSON.stringify(e.detail, null, 2) : '';
+    const detailShort = (e.detail && typeof e.detail === 'object') ? JSON.stringify(e.detail) : '';
     h += '<tr style="border-bottom:1px solid var(--border);">'
       + `<td style="padding:4px 8px;white-space:nowrap;color:var(--text-dim);" title="${esc(e.ts || '')}">${esc(when)}</td>`
       + `<td style="padding:4px 8px;white-space:nowrap;font-family:var(--mono,monospace);">${esc(e.actor || '—')}${e.actor_source ? ` <span style="color:var(--text-faint);">(${esc(e.actor_source)})</span>` : ''}</td>`
       + `<td style="padding:4px 8px;white-space:nowrap;">${esc(e.action || '')}</td>`
+      + `<td style="padding:4px 8px;white-space:nowrap;font-family:var(--mono,monospace);color:var(--text-dim);">${obj}</td>`
       + `<td style="padding:4px 8px;color:${_auOutcomeColor(e.outcome)};">${esc(e.outcome || '')}${e.status_code ? ` <span style="color:var(--text-faint);">${e.status_code}</span>` : ''}</td>`
       + `<td style="padding:4px 8px;font-family:var(--mono,monospace);color:var(--text-dim);">${esc(e.path || e.summary || '')}</td>`
+      + `<td style="padding:4px 8px;font-family:var(--mono,monospace);color:var(--text-faint);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:${detailShort ? 'help' : 'default'};" title="${esc(detailFull)}">${esc(detailShort)}</td>`
       + `<td style="padding:4px 8px;white-space:nowrap;color:var(--text-faint);">${esc(e.ip || '')}</td></tr>`;
   }
   h += '</tbody></table>';
