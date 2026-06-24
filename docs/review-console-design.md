@@ -242,6 +242,34 @@ times). The paradigm:
   cell enforcement); embeddings similarity → compatibility score → New-Ingestion warn-and-confirm
   disposition. See `customer-demand-dedup-design.md`.
 
+**UC tenant-scoping, apply, identity, deletion (SHIPPED 2026-06-23/24 — see
+`uc-tenant-scoping-project-application.md`):**
+- **Pill = complete story.** The masthead analysis/freshness pill shows the project's TOTAL UCs available
+  to ingest (managed + corpus), regardless of ingest status. **Corpus is sourced from the project's
+  corpus-role repos** (`managed_repos WHERE 'corpus'=ANY(roles)`, matched by `files.folder` namespace) and
+  counted in the total (deduped against managed UUIDs). `/api/use-cases` + `/api/freshness`; popover reads
+  *Managed (ingested)* / *Corpus (from repos)*.
+- **Apply button (#43).** Managed UCs are tenant assets referenced into projects via M:N
+  `use_case_projects`; "in this project" = home `project_id` OR referenced. The Use Cases toolbar's
+  *project scope* selector toggles **in this project** vs **available to apply** (`?source=managed&applied=0`
+  = managed UCs homed in other projects of the same tenant). Pool rows show **+ Apply**, referenced rows
+  **↪ ref** + **Remove** (`POST /api/use-case-projects[/remove]`, `P_PROJECT_USECASES`). Corpus is excluded
+  (repo-driven). Fork (copy into a project as a new UC) is pending.
+- **Server owns UC identity.** UUID assigned on save (`uc-<uuid4>`); a missing `handle` is auto-derived
+  (`namespace/profile/slug`) before validation so extraction drafts don't hard-fail. Migration `t002`
+  refreshed earlier fabricated uuid-shaped ids.
+- **Reference-by-ID invariant.** A scoping set's name is resolved by joining `use_case_sets` on
+  `set_id` at every display site (runs list, analysis summary, rerun-config, experiments), so a rename
+  propagates; the stored `set_name`/`eval_set_name` snapshot is a provenance fallback only (deleted set →
+  FK `ON DELETE SET NULL`; synthetic/custom selections have no row). CREATE captures the snapshot
+  deliberately (immutable record of what was evaluated).
+- **Deletion = right-to-erase + propagation warning + audit.** `GET …/delete-impact` previews what a
+  delete touches; the UI warns before the destructive click. A managed-UC delete only FK-cascades
+  `lifecycle_events` + `uc_customer_requests` — `use_case_set_members` + `use_case_projects` have no FK
+  (corpus UCs share them) so the delete removes them explicitly. Historical `uc_analyses` are retained by
+  default and surfaced; `?purge_analyses=true` erases them too (sovereignty erasure). Both deletes write
+  `audit_log` (`use_case.delete` / `use_case_set.delete`) with the impact + purge detail.
+
 ---
 
 ### Config tab

@@ -98,11 +98,28 @@ and the server enforces it regardless.)
 4. Tag UCs into **Scoping Sets** (select rows → **★ Add to Set**, or the per-UC set membership).
 5. **Customer demand:** the 👥 badge shows distinct customers who requested a UC (importance = *distinct
    customers*, which resists poisoning by repeated identical requests). Hover for the customer names.
+6. **Identity is server-owned:** you don't enter a UUID — DAV assigns one on save, and fills in a missing
+   `handle` (derived from the title) so a draft that omits it still saves. The dimension values and
+   scenario fields must be valid; an invalid UC is rejected with the reasons (fix and re-save, or use
+   **⚕ Repair** for mechanical fixes).
+7. **Use a UC in more than one project (same tenant):** a managed UC is a tenant asset that can be
+   *referenced* into other projects. In the Use Cases toolbar set **project scope → available to apply**
+   to see UCs homed in your tenant's other projects, then **+ Apply** to reference one into the current
+   project (referenced rows show **↪ ref**; **Remove** un-references — the UC itself is untouched). Corpus
+   UCs aren't applied this way — they come from the project's corpus repos automatically.
+8. **Deleting a UC or set** shows a **propagation warning** first (what it touches — memberships, project
+   references, customer demand, past analyses) and is **audited**. Past analysis results are kept as a
+   historical record by default; for a full sovereignty erasure, confirm the second prompt to also erase
+   them. Deleting a **set** keeps the use cases — it only removes the grouping (past runs keep the set
+   name they recorded).
 
 ### 4.2 Pick your scope
 Use the masthead **Scope** to select a Scoping Set (or All use cases). Everything downstream — Results,
 roadmaps, Cap Map — evaluates that scope, reading the **latest analysis per UC** (so a set's results may
-span multiple runs).
+span multiple runs). The masthead **pill tells the complete story** for the project: total use cases
+available to ingest = **managed** UCs + **corpus** UCs (pulled from the project's corpus repos), whatever
+their current ingest status. The popover breaks it down; fine-grained control lives here in Use Cases /
+Scoping Sets, not the pill.
 
 ### 4.3 Run an ingestion (evaluate)
 1. **Ingestion → Runs → + New Ingestion** (or the freshness chip's "ingest stale").

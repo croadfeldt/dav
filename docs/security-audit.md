@@ -118,6 +118,25 @@ mechanism over a shared static secret:
 
 See review-console-design.md §Service-to-service auth (engine → API).
 
+## Follow-on (2026-06-24): right-to-erase — audited, propagation-warned deletion
+
+Sovereignty/security requires the ability to **delete data**, but silent deletion is itself a risk
+(orphaned references, no record of what was removed). Use-case and scoping-set deletes are now informed
+and auditable:
+
+- **Audit.** Every UC/set delete writes `audit_log` (`use_case.delete` / `use_case_set.delete`) with the
+  actor, project, full propagation impact, and — for UCs — whether historical analyses were purged.
+- **Propagation preview.** `GET /api/use-cases/{uuid}/delete-impact` + `GET /api/sets/{id}/delete-impact`
+  power a UI warning before the destructive click. Found-and-fixed: `use_case_set_members` and
+  `use_case_projects` have **no FK** to `managed_use_cases` (corpus UCs share those tables), so a UC delete
+  used to leave dangling rows — the delete now removes them explicitly in the transaction.
+- **Sovereignty erasure (opt-in).** Historical `uc_analyses` are retained by default (provenance) and
+  surfaced; `DELETE /api/use-cases/{uuid}?purge_analyses=true` also erases them (cascades to
+  capabilities/gaps/deps + clears `analysis_output_cache`), recorded in the audit entry. The UI asks a
+  second confirm when analyses exist.
+
+See `uc-tenant-scoping-project-application.md` §Deletion and review-console-design.md (Use Cases tab).
+
 ## Recommended / deferred (with rationale)
 
 - **H7 — dav-docs-mcp unauthenticated exposure.** Remediation is the planned
