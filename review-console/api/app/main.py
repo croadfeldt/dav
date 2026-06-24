@@ -4448,13 +4448,15 @@ async def results_uc_latest(request: Request, set_id: str = None, uc_uuids: str 
 
 
 @app.get("/api/results/{run_id}")
-async def get_result(run_id: str):
+async def get_result(run_id: str, request: Request):
     """Return the run-summary.yaml content for a specific run, enriched with
     per-UC verdicts from the analysis files AND per-UC lineage/state from
     the DB (R2: lifecycle_state_at_run, source_kind, session-level set
     context)."""
     if not _results.is_available():
         raise HTTPException(503, "workspace PVC not mounted")
+    async with pool.acquire() as _c:   # sovereignty: an ingested run must belong to the active project
+        await _require_run_in_project(_c, request, run_id, allow_uningested=True)
     summary = _results.get_run_summary_enriched(run_id)
     if summary is None:
         raise HTTPException(404, f"run {run_id!r} not found")
@@ -4509,10 +4511,12 @@ async def get_result(run_id: str):
 
 
 @app.get("/api/results/{run_id}/uc/{uc_uuid:path}")
-async def get_result_uc(run_id: str, uc_uuid: str):
+async def get_result_uc(run_id: str, uc_uuid: str, request: Request):
     """Return the analysis output for a specific UC within a run."""
     if not _results.is_available():
         raise HTTPException(503, "workspace PVC not mounted")
+    async with pool.acquire() as _c:   # sovereignty guard (#cross-project IDOR)
+        await _require_run_in_project(_c, request, run_id, allow_uningested=True)
     analysis = _results.get_analysis(run_id, uc_uuid)
     if analysis is None:
         raise HTTPException(404, f"analysis for {uc_uuid!r} not found in run {run_id!r}")
@@ -7878,6 +7882,32 @@ async def _set_latest_analyses(conn, project_id, set_id) -> list[dict]:
     return out
 
 
+async def _require_run_in_project(conn, request, run_id: str, *, allow_uningested: bool = False):
+    """Sovereignty guard for run_id-addressed analysis reads: the run must belong to the ACTIVE
+    project, else it's a cross-project leak (one project's results showing in another). Orphan runs
+    (project_id NULL) are visible only under the default project (mirrors list_runs). 404s otherwise.
+    Returns the active project_id. In single-user mode (pid None) everything is visible.
+
+    `allow_uningested=True` (workspace-backed reads): a run not yet in analysis_runs has no DB
+    project link — allow it (it's a live/fresh run; the project-scoped runs list is what surfaces it)."""
+    pid = await _active_project_id(request, conn)
+    await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+    row = await conn.fetchrow("SELECT project_id FROM analysis_runs WHERE run_id=$1 LIMIT 1", run_id)
+    if row is None:
+        if allow_uningested:
+            return pid
+        raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
+    if pid is None:
+        return pid
+    owner = row["project_id"]
+    if owner is None:
+        owner = await _default_project_id(conn)
+    if owner != pid:
+        # Don't confirm the run exists elsewhere — 404 as if not in this project.
+        raise HTTPException(404, f"run {run_id!r} not found in this project")
+    return pid
+
+
 @app.get("/api/analysis/capability-density")
 async def capability_density(
     request: Request,
@@ -7891,8 +7921,7 @@ async def capability_density(
     """
     async with pool.acquire() as conn:
         if run_id:
-            if not await conn.fetchval("SELECT 1 FROM analysis_runs WHERE run_id=$1", run_id):
-                raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
+            await _require_run_in_project(conn, request, run_id)
             set_uuids: Optional[set] = None
             _sid = int(set_id) if (set_id is not None and str(set_id).isdigit()) else None
             if _sid is not None:
@@ -7979,8 +8008,7 @@ async def foundational_capabilities(
     """
     async with pool.acquire() as conn:
         if run_id:
-            if not await conn.fetchval("SELECT 1 FROM analysis_runs WHERE run_id=$1", run_id):
-                raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
+            await _require_run_in_project(conn, request, run_id)
             set_uuids: Optional[set] = None
             _sid = int(set_id) if (set_id is not None and str(set_id).isdigit()) else None
             if _sid is not None:
@@ -8046,8 +8074,7 @@ async def uc_capability_map(
     from collections import Counter, defaultdict
     async with pool.acquire() as conn:
         if run_id:
-            if not await conn.fetchval("SELECT 1 FROM analysis_runs WHERE run_id=$1", run_id):
-                raise HTTPException(404, f"run {run_id!r} not ingested; ingest it first")
+            await _require_run_in_project(conn, request, run_id)
             set_uuids: Optional[list] = None
             _sid = int(set_id) if (set_id is not None and str(set_id).isdigit()) else None
             if _sid is not None:
@@ -9940,9 +9967,13 @@ async def revert_experiment(exp_id: int, request: Request):
 
 
 @app.get("/api/analysis/runs")
-async def list_ingested_runs(limit: int = Query(50, ge=1, le=500)):
-    """List all runs that have been ingested into Postgres, newest first."""
+async def list_ingested_runs(request: Request, limit: int = Query(50, ge=1, le=500)):
+    """List runs ingested into Postgres for the ACTIVE project, newest first. Project-scoped +
+    auth-guarded so one project's runs never appear in another (was global + unauthenticated)."""
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        default_pid = await _default_project_id(conn)
         rows = await conn.fetch(
             """SELECT ar.run_id, ar.mode, ar.started_at, ar.finished_at,
                       ar.total_ucs, ar.successful, ar.failed, ar.total_samples,
@@ -9950,8 +9981,10 @@ async def list_ingested_runs(limit: int = Query(50, ge=1, le=500)):
                       rs.name AS session_name
                FROM analysis_runs ar
                LEFT JOIN run_sessions rs ON rs.run_name = ar.run_name
+               WHERE $2::bigint IS NULL OR ar.project_id = $2
+                     OR (ar.project_id IS NULL AND $2 = $3)
                ORDER BY ar.started_at DESC NULLS LAST LIMIT $1""",
-            limit,
+            limit, pid, default_pid,
         )
     return {
         "runs": [
@@ -10691,12 +10724,14 @@ async def list_repo_roles():
 
 @app.get("/api/analysis/gaps")
 async def query_gaps(
+    request: Request,
     uc_uuid: Optional[str] = Query(None, description="filter by UC uuid"),
     gap_id: Optional[str] = Query(None, description="filter by gap ID"),
     run_id: Optional[str] = Query(None, description="filter by run ID"),
     limit: int = Query(200, ge=1, le=2000),
 ):
-    """Query ingested gaps across runs. Useful for cross-run gap trend analysis."""
+    """Query ingested gaps for the ACTIVE project (cross-run trend analysis). Project-scoped +
+    auth-guarded so gaps from another project's runs never leak in (was global + unauthenticated)."""
     clauses = []
     args: list = []
 
@@ -10704,14 +10739,22 @@ async def query_gaps(
         args.append(val)
         clauses.append(clause.replace("?", f"${len(args)}"))
 
-    if uc_uuid:
-        _add("g.uc_uuid = ?", uc_uuid)
-    if gap_id:
-        _add("g.gap_id = ?", gap_id)
-    if run_id:
-        _add("g.run_id = ?", run_id)
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        default_pid = await _default_project_id(conn)
+        # Sovereignty: limit to the active project's runs (orphans under default; single-user sees all).
+        args.append(pid); _pid_i = len(args)
+        args.append(default_pid); _def_i = len(args)
+        clauses.append(f"(${_pid_i}::bigint IS NULL OR ar.project_id = ${_pid_i} "
+                       f"OR (ar.project_id IS NULL AND ${_pid_i} = ${_def_i}))")
+        if uc_uuid:
+            _add("g.uc_uuid = ?", uc_uuid)
+        if gap_id:
+            _add("g.gap_id = ?", gap_id)
+        if run_id:
+            _add("g.run_id = ?", run_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = await conn.fetch(
             f"""SELECT g.id, g.run_id, g.uc_uuid, g.gap_id, g.title,
                        g.description, g.severity, g.ingested_at,
@@ -12012,6 +12055,7 @@ async def _store_output_cache(run_id: str, kind: str, scope: str,
 
 @app.get("/api/analysis/output")
 async def get_cached_output(
+    request: Request,
     run_id: str = Query(..., min_length=1),
     kind: str = Query(..., pattern="^(review|enhancement)$"),
     scope: str = Query("run", pattern="^(run|uc|set)$"),
@@ -12024,6 +12068,9 @@ async def get_cached_output(
     if pool is None:
         raise HTTPException(503, "pool not initialized")
     async with pool.acquire() as conn:
+        # Sovereignty: cached review/enhancement output is post-ingestion, so the run is in
+        # analysis_runs — enforce it belongs to the active project (was a cross-project IDOR).
+        await _require_run_in_project(conn, request, run_id)
         row = await conn.fetchrow(
             """SELECT content, model_label, source_ingested_at, created_at, created_by
                FROM analysis_output_cache
