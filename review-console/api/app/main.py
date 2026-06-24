@@ -3829,22 +3829,21 @@ async def runs_stats():
     }
 
 
-def _correlate_inflight_progress(name: str, started_iso: Optional[str],
-                                 tolerance_seconds: int = 600) -> Optional[dict]:
+async def _correlate_inflight_progress(name: str, started_iso: Optional[str], conn,
+                                       tolerance_seconds: int = 900) -> Optional[dict]:
     """Correlate a PipelineRun to its DISTINCT in-flight workspace run-dir among concurrent runs.
 
-    The engine generates its own workspace run_id and does NOT record the PipelineRun name, so the
-    only link is start time. The old single-nearest match (`find_progress_near`) collided when runs
-    overlapped — two PipelineRuns both resolved to the newest dir, so the live drawer showed the
-    same UC stats for both. Here we collect every active (non-terminal) run and every in-flight
-    workspace dir, then greedily pair the globally-closest (run, dir) within tolerance and CLAIM
-    both, so each active run maps to a UNIQUE dir. Returns the progress dict for `name`, or None if
-    no dir is within tolerance (e.g. its workspace dir hasn't been created yet).
+    The engine generates its own workspace run_id and does NOT record the PipelineRun name, so there
+    is no direct link. Correlating by start time alone is unreliable (variable pod-init delay made
+    two concurrent runs cross — a 6-UC run showed a 15-UC run's stats and vice-versa). So we correlate
+    primarily by the run's KNOWN SCOPE SIZE: each run's trigger payload fixes how many UCs it
+    evaluates (len(uc_uuids) or its set's member count), which must equal the workspace dir's
+    `total_ucs`. That's deterministic whenever concurrent runs have different scope sizes. Start-time
+    proximity is only a tiebreak (same-size runs) + the fallback for runs with no recorded scope.
+    Each dir is claimed once, so two runs never share a dir.
 
-    SYNC (calls the blocking k8s lister) — `to_thread` it from async call sites.
-
-    TODO (deterministic fix): have the engine stamp the PipelineRun name into run-progress.yaml
-    (thread `$(context.pipelineRun.name)` through the Tekton run-corpus task) and match on it.
+    TODO (fully deterministic, incl. same-size runs): stamp `$(context.pipelineRun.name)` into
+    run-progress.yaml via the Tekton run-corpus task and match on it.
     """
     from datetime import datetime
     def _p(s):
@@ -3856,35 +3855,67 @@ def _correlate_inflight_progress(name: str, started_iso: Optional[str],
     if not dirs:
         return None
     try:
-        active = validations.list_recent(50)
+        active = await asyncio.to_thread(validations.list_recent, 50)
     except Exception:
         active = []
-    runs = [(r.get("name"), _p(r.get("started_at") or r.get("created_at")))
-            for r in active if r.get("phase") not in TERMINAL_PHASES]
-    runs = [(n, t) for (n, t) in runs if n and t is not None]
-    if started_iso and not any(n == name for (n, _t) in runs):
-        t = _p(started_iso)
-        if t is not None:
-            runs.append((name, t))
-    dts = [(d, _p(d.get("started_at"))) for d in dirs]
-    dts = [(d, t) for (d, t) in dts if t is not None]
+    runs: list[tuple] = [(r.get("name"), _p(r.get("started_at") or r.get("created_at")))
+                         for r in active if r.get("phase") not in TERMINAL_PHASES and r.get("name")]
+    if not any(n == name for (n, _t) in runs):
+        runs.append((name, _p(started_iso)))
+    # Expected UC count per run (the deterministic key) from its trigger payload / set.
+    exp: dict = {}
+    try:
+        rows = await conn.fetch(
+            "SELECT run_name, trigger_payload, set_id FROM run_sessions WHERE run_name = ANY($1::text[])",
+            [n for (n, _t) in runs])
+        for r in rows:
+            cfg = _parse_jsonb(r["trigger_payload"]) or {}
+            ucu = cfg.get("uc_uuids") or cfg.get("managed_uc_uuids")
+            cnt = len(ucu) if isinstance(ucu, list) and ucu else None
+            if cnt is None and r["set_id"]:
+                cnt = await conn.fetchval(
+                    "SELECT count(*) FROM use_case_set_members WHERE set_id=$1", r["set_id"])
+            exp[r["run_name"]] = cnt
+    except Exception as e:
+        log.info("scope-size lookup failed during correlation: %s", e)
+
+    dlist = [(d["_run_dir"], _p(d.get("started_at")), d.get("total_ucs"), d) for d in dirs]
+    assigned: dict = {}
+    claimed: set = set()
+
+    # Pass 1 — exact scope-size match (deterministic when concurrent runs differ in size).
+    for rn, rt in runs:
+        ec = exp.get(rn)
+        if ec is None:
+            continue
+        cands = [(drid, dt, dd) for (drid, dt, dtot, dd) in dlist
+                 if drid not in claimed and dtot == ec]
+        if not cands:
+            continue
+        if rt is not None:
+            cands.sort(key=lambda c: abs((c[1] - rt).total_seconds()) if c[1] else 9e18)
+        drid, _dt, dd = cands[0]
+        assigned[rn] = dd
+        claimed.add(drid)
+
+    # Pass 2 — remaining runs by closest start time within tolerance (unique).
     pairs = []
-    for (rn, rt) in runs:
-        for (d, dt) in dts:
+    for rn, rt in runs:
+        if rn in assigned or rt is None:
+            continue
+        for (drid, dt, dtot, dd) in dlist:
+            if drid in claimed or dt is None:
+                continue
             diff = abs((rt - dt).total_seconds())
             if diff <= tolerance_seconds:
-                pairs.append((diff, rn, d["_run_dir"], d))
+                pairs.append((diff, rn, drid, dd))
     pairs.sort(key=lambda x: x[0])
-    claimed_runs: set = set()
-    claimed_dirs: set = set()
-    assign: dict = {}
-    for diff, rn, rd, d in pairs:
-        if rn in claimed_runs or rd in claimed_dirs:
+    for diff, rn, drid, dd in pairs:
+        if rn in assigned or drid in claimed:
             continue
-        claimed_runs.add(rn)
-        claimed_dirs.add(rd)
-        assign[rn] = d
-    return assign.get(name)
+        assigned[rn] = dd
+        claimed.add(drid)
+    return assigned.get(name)
 
 
 @app.get("/api/runs/{name}/turns")
@@ -3918,7 +3949,8 @@ async def get_run_turns(
         return {"files": [], "records": []}
     # Unique correlation across concurrent runs; fall back to single-nearest for terminal/historical
     # runs (whose in-flight progress file is gone).
-    progress = await asyncio.to_thread(_correlate_inflight_progress, name, started)
+    async with pool.acquire() as _c:
+        progress = await _correlate_inflight_progress(name, started, _c)
     if not progress:
         progress = _results.find_progress_near(started, tolerance_seconds=600)
     if not progress:
@@ -4180,7 +4212,8 @@ async def get_run_detail(name: str):
             try:
                 # Unique per-run correlation — never share a workspace dir between two concurrent
                 # runs (which made the live drawer show the same UC stats for both).
-                progress = await asyncio.to_thread(_correlate_inflight_progress, name, started)
+                async with pool.acquire() as _c:
+                    progress = await _correlate_inflight_progress(name, started, _c)
                 if progress:
                     detail["progress"] = progress
             except Exception as e:
@@ -7327,16 +7360,37 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
         # per-UC lifecycle_state_at_run column.
         run_session = None
         run_started_ts = _parse_ts(summary.get("started_at"))
+        _ws_total = summary.get("total_ucs")
         if run_started_ts:
-            run_session = await conn.fetchrow(
-                """SELECT run_name, uc_state_snapshot, set_name, selection_mode, project_id
+            # SOVEREIGNTY-CRITICAL: this picks which run_session (and therefore which PROJECT) owns
+            # the ingested results. Nearest-by-time alone misattributes concurrent runs in different
+            # projects (a 6-UC DAV run vs a 15-UC DCM run started minutes apart). So prefer the
+            # session whose SCOPE SIZE (len(uc_uuids) or its set's member count) matches the workspace
+            # run's total_ucs — deterministic when concurrent runs differ in size — and fall back to
+            # nearest-by-time only if no size match. (Fully deterministic fix: stamp the PipelineRun
+            # name into run-summary.yaml from the engine and match on it.)
+            cands = await conn.fetch(
+                """SELECT run_name, uc_state_snapshot, set_name, selection_mode, project_id,
+                          trigger_payload, set_id
                    FROM run_sessions
                    WHERE started_at BETWEEN $1::timestamptz - interval '15 minutes'
                                         AND $1::timestamptz + interval '15 minutes'
-                   ORDER BY ABS(EXTRACT(EPOCH FROM (started_at - $1::timestamptz))) ASC
-                   LIMIT 1""",
+                   ORDER BY ABS(EXTRACT(EPOCH FROM (started_at - $1::timestamptz))) ASC""",
                 run_started_ts,
             )
+            if _ws_total is not None:
+                for c in cands:
+                    cfg = _parse_jsonb(c["trigger_payload"]) or {}
+                    ucu = cfg.get("uc_uuids") or cfg.get("managed_uc_uuids")
+                    cnt = len(ucu) if isinstance(ucu, list) and ucu else None
+                    if cnt is None and c["set_id"]:
+                        cnt = await conn.fetchval(
+                            "SELECT count(*) FROM use_case_set_members WHERE set_id=$1", c["set_id"])
+                    if cnt == _ws_total:
+                        run_session = c
+                        break
+            if run_session is None and cands:
+                run_session = cands[0]   # fall back to nearest-by-time
         run_name_for_analysis = run_session["run_name"] if run_session else None
         uc_state_snapshot = {}
         if run_session and run_session["uc_state_snapshot"]:
@@ -8987,9 +9041,10 @@ def _resolve_run_id(id_or_name: str) -> Optional[str]:
         detail = validations.get_run_detail(id_or_name)  # sync helper (_resolve_run_id)
         started = detail.get("started_at") or detail.get("created_at")
         if started:
-            # Unique correlation across concurrent runs (fall back to single-nearest if none).
-            prog = _correlate_inflight_progress(id_or_name, started) \
-                or _results.find_progress_near(started, tolerance_seconds=600)
+            # Sync path (no DB conn here) — single-nearest; the count-aware unique correlation runs
+            # on the live async endpoints (get_run_detail / turns). _resolve_run_id is mostly used
+            # for already-ingested runs, which resolve via get_run_summary above.
+            prog = _results.find_progress_near(started, tolerance_seconds=600)
             if prog:
                 return prog.get("_run_dir")
     except Exception:
