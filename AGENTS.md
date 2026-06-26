@@ -23,10 +23,12 @@ DAV at their spec + corpus repos. **Apache-2.0.**
 - **Python ≥ 3.11** (`engine/pyproject.toml`). The package is `dav` (src layout under `engine/`).
 - **Install (editable) before running `python -m dav.…`:** `cd engine && pip install -e .`
   (deps in `engine/requirements.txt`).
-- **Tests:** `cd engine && pip install pytest && python -m pytest` — suites live in
-  `engine/src/dav/tests/` (test_consumer_profile, test_ensemble, test_explore, test_grounding_nudge,
-  test_run_corpus, test_schema_v1, test_stage2_orchestration, test_version). pytest is **not** in
-  `requirements.txt`, so install it explicitly.
+- **Tests:** standalone unittest-style, **no pytest dependency** — each suite has an `if __name__ ==
+  "__main__"` block and runs via `python -m dav.tests.<name>` (from `engine/src/`, or after the editable
+  install). The 8 suites live in `engine/src/dav/tests/` (test_consumer_profile, test_ensemble,
+  test_explore, test_grounding_nudge, test_run_corpus, test_schema_v1, test_stage2_orchestration,
+  test_version). To run all at once you may use pytest (`pip install pytest && python -m pytest`) — it
+  discovers them — but pytest is **not** required and is not in `requirements.txt`.
 - **No linter / formatter / type-checker is configured** (no ruff/mypy/black/flake8/tox). Don't invent
   one — match surrounding style.
 
@@ -206,6 +208,7 @@ self-explanatory.
   linking an ADR/design doc; include **tests** for new behavior; update `specs/`/ADRs when contracts or
   architecture change. **Spec changes are consumer-breaking by default** → companion ADR + migration
   note. ADRs go in `adr/` (next number, one decision each).
-- **Further reading:** `DAV-AI-PROMPT.md` (design rationale / rebuild guide), `specs/` (the contracts),
-  `adr/` (locked decisions), `docs/agent-integration.md` (how external agents authenticate to a running
-  DAV via PAT).
+- **Further reading:** `DAV-AI-PROMPT.md` (engine-framework design rationale / rebuild guide),
+  `review-console/AGENTS.md` (the operator web app — stack, auth/RBAC, tenancy, data model), `specs/`
+  (the contracts), `adr/` (locked decisions), `docs/agent-integration.md` (how external agents
+  authenticate to a running DAV via PAT).

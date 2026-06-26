@@ -4,6 +4,15 @@ Audience: an LLM (or developer) tasked with confidently modifying or rebuilding 
 
 This is a design narrative, not a reference. The reference is in `specs/`. This document tells you which decisions were deliberate (don't undo them without good reason), which are incidental (free to change), and which compromises were made when (so you know what to revisit).
 
+> **Scope.** This document is about the **engine framework** — the stage-2 analyzer, schema, consumer
+> profiles, the corpus runner, and the Ansible/Tekton deployment. The operator-facing **review console**
+> (the web app: projects, customers, RBAC, assessments, maturity wall, roadmaps, recording pipeline,
+> multi-tenant substrate) is a much larger surface with its own architecture; see
+> `review-console/AGENTS.md` (canonical) and `review-console/README.md`. Where this doc still says
+> "single-tenant" (§9, §12), that reflects the **engine/Ansible deployment**; the console has since grown
+> a multi-tenant substrate, and reconciling single-vs-multi-tenant across the two layers is an open
+> architecture decision, not a settled one.
+
 ---
 
 ## 1. What DAV is and isn't
@@ -337,7 +346,7 @@ The Ansible variable namespace prefixes everything with `dav_` (operator-control
 
 `specs/` — versioned, authoritative specifications. The numbered ones (`05-use-case-schema.md`, `07-analysis-output-schema.md`) are the source of truth for shapes; the dataclasses in code must match them.
 
-`adr/` — architecture decision records. Currently two: ADR-001 (consumer-agnostic framework) and ADR-002 (DAV-as-DCM-capability future direction). Add new ADRs when locking new architectural decisions; don't edit existing ones (they're historical).
+`adr/` — architecture decision records (`README.md` index + 001–008): ADR-001 (consumer-agnostic framework), ADR-002 (DAV-as-DCM-capability future direction), then 003 multi-repo-registry/MCP-source-of-truth, 004 per-repo-credentials, 005 shared-credentials-abstraction, 006 consolidate-code-repos, 007 per-role-paths/corpus-parity, 008 bulk-UC-from-text/UC-editor-wizard. Add new ADRs when locking new architectural decisions; don't edit existing ones (they're historical).
 
 `docs/` — design docs, system spec, project context. Living documents, freer to update. `PROJECT_CONTEXT.md` is the project-level onboarding; `DAV-System-Design-Spec.md` is the deep architecture.
 
@@ -345,12 +354,13 @@ The Ansible variable namespace prefixes everything with `dav_` (operator-control
 
 ## 8. Testing philosophy
 
-166 tests across 7 suites. The suites cover:
+~200 tests across 8 suites. The suites cover:
 
 - `test_schema_v1` — UseCase/Analysis schema invariants, validation, round-trip
 - `test_consumer_profile` — profile loading (file/MCP/fallback), validation against profiles
 - `test_ensemble` — verification merger logic (vote, ties, confidence cap, sample_annotations)
 - `test_explore` — variance report builder
+- `test_grounding_nudge` — agent grounding/anti-fabrication behavior
 - `test_stage2_orchestration` — single-UC CLI orchestration (mocked inference + MCP)
 - `test_version` — engine_version_string, graceful degradation
 - `test_run_corpus` — corpus runner (gathering, run-id derivation, failure isolation)
