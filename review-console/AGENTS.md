@@ -77,4 +77,4 @@ Confirmed absent in code (don't assume these exist): a **webhook subsystem** (ou
 delivery/HMAC), **`/api/v1` versioning** + a published OpenAPI contract (all routes are unversioned
 `/api/...`), **`Idempotency-Key`** handling on mutating POSTs, and **time-series** GPU/inference graphs
 (metrics are point-in-time). The old doc listed several of these as "locked decisions" that never
-shipped — treat them as open design questions, not commitments.
+shipped — treat them as open design questions, not commitments. **Tracked in [#4](https://github.com/croadfeldt/dav/issues/4)** (locked-decision reconciliation); the single-vs-multi-tenant boundary is **[#5](https://github.com/croadfeldt/dav/issues/5)**.

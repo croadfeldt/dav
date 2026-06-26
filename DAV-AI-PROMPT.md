@@ -11,7 +11,8 @@ This is a design narrative, not a reference. The reference is in `specs/`. This 
 > `review-console/AGENTS.md` (canonical) and `review-console/README.md`. Where this doc still says
 > "single-tenant" (§9, §12), that reflects the **engine/Ansible deployment**; the console has since grown
 > a multi-tenant substrate, and reconciling single-vs-multi-tenant across the two layers is an open
-> architecture decision, not a settled one.
+> architecture decision, not a settled one — tracked in
+> [#5](https://github.com/croadfeldt/dav/issues/5).
 
 ---
 
