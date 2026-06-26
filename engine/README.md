@@ -60,7 +60,7 @@ python -m dav.stages.run_corpus \
     --mcp-url http://mcp.host:8080
 ```
 
-See `../AI-ONBOARDING.md` for full operational guidance.
+See `../AGENTS.md` for full operational guidance.
 
 ## Tests
 
@@ -80,7 +80,7 @@ All tests should report `OK: <N> tests passed`.
 
 ## References
 
-- `../AI-ONBOARDING.md` — operational onboarding
+- `../AGENTS.md` — operational onboarding
 - `../DAV-AI-PROMPT.md` — design narrative and reconstruction recipe
 - `../specs/05-use-case-schema.md` — Use Case input contract
 - `../specs/07-analysis-output-schema.md` — Analysis output contract
