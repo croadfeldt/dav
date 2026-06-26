@@ -1,6 +1,6 @@
 # Rebuilding DAV
 
-Audience: an LLM (or developer) tasked with confidently modifying or rebuilding the DAV framework. Where `AI-ONBOARDING.md` covers daily operations, this document covers **why DAV is shaped the way it is**. If you're going to touch the codebase non-trivially — add a runtime mode, change the schema, build a new consumer, port the framework to a different inference backend — read this first.
+Audience: an LLM (or developer) tasked with confidently modifying or rebuilding the DAV framework. Where `AGENTS.md` covers daily operations, this document covers **why DAV is shaped the way it is**. If you're going to touch the codebase non-trivially — add a runtime mode, change the schema, build a new consumer, port the framework to a different inference backend — read this first.
 
 This is a design narrative, not a reference. The reference is in `specs/`. This document tells you which decisions were deliberate (don't undo them without good reason), which are incidental (free to change), and which compromises were made when (so you know what to revisit).
 
@@ -414,7 +414,7 @@ The order of difficulty (and decreasing change-radius):
 
 - Port to a different inference backend — the OpenAI-compatible `/v1/chat/completions` API is the contract. Different backends with the same API (vLLM, llama.cpp server, hosted services) work with no code changes. A genuinely different backend (Anthropic API, Bedrock, etc.) would require an `InferenceClient` rewrite plus prompt validation against the new model's quirks.
 - Build a new consumer — author a profile YAML, build a corpus of v1.0 UCs, set up a spec repo and corpus repo, point Ansible variables at them, run the playbook. The framework doesn't care about your domain.
-- Rebuild DAV from scratch — read this document, then `AI-ONBOARDING.md`, then the specs, then `ai/prompts.py`, in that order. This document encodes the architectural rationale; the code gives you the shape.
+- Rebuild DAV from scratch — read this document, then `AGENTS.md`, then the specs, then `ai/prompts.py`, in that order. This document encodes the architectural rationale; the code gives you the shape.
 
 ---
 

@@ -19,7 +19,7 @@ See [`specs/04-three-modes.md`](specs/04-three-modes.md) for the full mode contr
 ```
 dav/
 ├── README.md
-├── AI-ONBOARDING.md       Operational onboarding (how to use DAV)
+├── AGENTS.md       Operational onboarding (how to use DAV)
 ├── DAV-AI-PROMPT.md       Architectural rationale (why DAV is shaped the way it is)
 ├── CONTRIBUTING.md
 ├── LICENSE
@@ -35,7 +35,7 @@ dav/
 
 ## Getting started
 
-If you're an LLM picking up the project: read [`AI-ONBOARDING.md`](AI-ONBOARDING.md) for operational guidance, then [`DAV-AI-PROMPT.md`](DAV-AI-PROMPT.md) for design context.
+If you're an LLM picking up the project: read [`AGENTS.md`](AGENTS.md) for operational guidance, then [`DAV-AI-PROMPT.md`](DAV-AI-PROMPT.md) for design context.
 
 If you're a developer integrating DAV into your own project as a consumer: read [`specs/08-consumer-integration.md`](specs/08-consumer-integration.md). You'll need a consumer profile YAML (see [`examples/dcm-reference-profile.yaml`](examples/dcm-reference-profile.yaml) for shape), a spec repo (your architecture docs), and a corpus repo (your use cases plus a `dav-version.yaml` manifest).
 
@@ -55,7 +55,7 @@ python -m dav.stages.stage2_analyze \
     --no-enable-thinking
 ```
 
-For a full-corpus run, use `python -m dav.stages.run_corpus`. See [`AI-ONBOARDING.md`](AI-ONBOARDING.md) for full CLI reference.
+For a full-corpus run, use `python -m dav.stages.run_corpus`. See [`AGENTS.md`](AGENTS.md) for full CLI reference.
 
 ## Specifications
 
