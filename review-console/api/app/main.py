@@ -4419,6 +4419,7 @@ async def results_uc_latest(request: Request, set_id: str = None, uc_uuids: str 
             ORDER BY COALESCE(NULLIF(u.title,''), u.uuid)
             """, uuids)
         current = await _current_project_repo_shas_cached(conn, pid)   # #114
+        dep = await _dep_drift_map(conn, [r["analysis_id"] for r in rows])  # #128 dependency-aware
         ucs, evaluated, failed = [], 0, 0
         for r in rows:
             has = r["analysis_id"] is not None
@@ -4430,15 +4431,20 @@ async def results_uc_latest(request: Request, set_id: str = None, uc_uuids: str 
                 evaluated += 1
             if is_failed:
                 failed += 1
-            # #114: two staleness axes — UC edited OR the code it was evaluated against drifted.
+            # Two staleness axes — UC edited OR a spec file it DEPENDED ON drifted (#128 dependency-aware,
+            # targeted). _repo_drifted (whole-repo HEAD moved) is kept only as the informational
+            # `stale_repo_moved` flag — it deliberately does NOT drive `stale` (it over-flags every UC).
+            _dd = dep.get(r["analysis_id"], {})
             edited  = bool(ok and r["analyzed_at"] and r["updated_at"] and r["updated_at"] > r["analyzed_at"])
-            drifted = bool(ok and _repo_drifted(r["source_repo_shas"], current))
+            drifted = bool(ok and _dd.get("drifted"))
+            repo_moved = bool(ok and _repo_drifted(r["source_repo_shas"], current))
             ucs.append({
                 "uc_uuid": r["uc_uuid"], "title": r["title"], "uc_handle": r["uc_handle"],
                 "verdict": r["verdict"], "overall_assessment": r["overall_assessment"],
                 "run_id": r["run_id"], "model": r["model"], "eval_fingerprint": r["eval_fingerprint"],
                 "evaluated": ok, "failed": is_failed,
                 "stale": (edited or drifted), "stale_edited": edited, "stale_drifted": drifted,
+                "drifted_files": _dd.get("files", []), "stale_repo_moved": repo_moved,
                 "status": r["status"], "error_reason": r["error_reason"], "error_phase": r["error_phase"],
                 "analyzed_at": r["analyzed_at"].isoformat() if r["analyzed_at"] else None,
                 "ingested_at": r["ingested_at"].isoformat() if r["ingested_at"] else None,
@@ -7233,6 +7239,60 @@ def _derive_gap_namespace(gap: dict) -> Optional[str]:
     return None
 
 
+# ── Dependency-aware staleness (migrate_t003): collect the spec refs an analysis
+# actually leaned on, resolve them to corpus file paths, so we can flag a UC stale
+# only when a file it DEPENDS ON changed (not when any repo moves). #128 ──────
+_SPEC_EXTS = (".md", ".json", ".yaml", ".yml")
+
+
+def _collect_emitted_spec_refs(analysis: dict) -> set:
+    """Walk an analysis dict and collect every `spec_refs` / `spec_ref` value
+    (the docs the model cited). Recursive + defensive — the schema nests refs on
+    components, data entities, capabilities_invoked, policies, and gaps."""
+    out: set = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k in ("spec_refs", "spec_ref") and v:
+                    for r in ([v] if isinstance(v, str) else v):
+                        if isinstance(r, str) and r.strip():
+                            out.add(r.strip())
+                else:
+                    walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(analysis or {})
+    return out
+
+
+def _resolve_spec_ref_to_path(ref: str, known_paths: set, basename_index: dict) -> Optional[str]:
+    """Resolve a doc-handle spec_ref (e.g. 'udlm/contracts/policy-contract' or
+    '.../policy-contract/some-section') to a corpus file path. Strategy: try the
+    ref (and progressively shorter prefixes, dropping trailing /section segments)
+    as a path with each known extension; fall back to a unique basename match.
+    Returns None if unresolvable (callers must treat None as 'never drifts')."""
+    if not ref:
+        return None
+    cand = ref.strip().lstrip("/")
+    parts = cand.split("/")
+    for stop in range(len(parts), 0, -1):
+        base = "/".join(parts[:stop])
+        for ext in _SPEC_EXTS:
+            p = base + ext
+            if p in known_paths:
+                return p
+        if base in known_paths:
+            return base
+    leaf = parts[-1]
+    hits = basename_index.get(leaf)
+    if hits and len(hits) == 1:
+        return next(iter(hits))
+    return None
+
+
 def _eval_fingerprint(content_sha, model, engine_version, engine_commit, repo_shas) -> str:
     """Per-UC evaluation fingerprint (uc-scoped-evaluation-design.md): the inputs an evaluation
     depended on. Staleness = stored fingerprint != recomputed-from-current. Stable field order;
@@ -7322,6 +7382,33 @@ def _repo_drifted(captured, current):
         if was and now and was != now:
             return True
     return False
+
+
+async def _dep_drift_map(conn, analysis_ids) -> dict:
+    """Dependency-aware drift per analysis (migrate_t003) — the TARGETED staleness signal (#128).
+    Returns {analysis_id: {"drifted": bool, "files": [paths]}} from uc_spec_drift: a UC is drift-stale
+    iff a spec FILE its eval depended on changed content since (not when any repo merely moved, the
+    coarse _repo_drifted check). Degrades to {} (→ nothing drifts) if the view/deps aren't present yet
+    — e.g. before the first re-ingest captures dependencies."""
+    aids = [a for a in (analysis_ids or []) if a is not None]
+    if not aids:
+        return {}
+    try:
+        rows = await conn.fetch(
+            """SELECT analysis_id,
+                      bool_or(is_drifted) AS drifted,
+                      array_agg(DISTINCT file_path) FILTER (WHERE is_drifted) AS files
+               FROM uc_spec_drift WHERE analysis_id = ANY($1::bigint[])
+               GROUP BY analysis_id""",
+            aids,
+        )
+    except Exception as e:  # noqa: BLE001 — view may not exist pre-migration; never break freshness
+        log.warning("dep-drift lookup failed: %s", e)
+        return {}
+    return {
+        r["analysis_id"]: {"drifted": bool(r["drifted"]), "files": list(r["files"] or [])}
+        for r in rows
+    }
 
 
 async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
@@ -7454,6 +7541,20 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
         ingested_gaps = 0
         ingested_caps = 0
         ingested_deps = 0
+        ingested_spec_deps = 0
+        # migrate_t003: snapshot current corpus file SHAs once so we can record, per UC, the content
+        # SHA of each depended-on spec file AT EVAL TIME (dependency-aware staleness, #128).
+        _files_rows = await conn.fetch("SELECT path, content_sha256 FROM files")
+        _file_sha = {r["path"]: r["content_sha256"] for r in _files_rows}
+        _known_paths = set(_file_sha.keys())
+        _basename_index: dict = {}
+        for _p in _known_paths:
+            _leaf = _p.rsplit("/", 1)[-1]
+            for _e in _SPEC_EXTS:
+                if _leaf.endswith(_e):
+                    _leaf = _leaf[: -len(_e)]
+                    break
+            _basename_index.setdefault(_leaf, set()).add(_p)
         emitted_uuids = set()   # #121: track which UCs the engine actually produced
         for uc in (summary.get("ucs") or []):
             uc_uuid = uc.get("uc_uuid")
@@ -7576,6 +7677,25 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             analysis_id = row["id"]
             ingested_ucs += 1
 
+            # migrate_t003: capture this analysis's spec-file dependencies + the file SHA at eval
+            # time, so /api/freshness can flag the UC stale only when a file it relied on changes
+            # (dependency-aware staleness, #128). Never break ingest on a capture error.
+            try:
+                for ref in _collect_emitted_spec_refs(analysis):
+                    fp = _resolve_spec_ref_to_path(ref, _known_paths, _basename_index)
+                    await conn.execute(
+                        """INSERT INTO uc_analysis_spec_deps
+                             (analysis_id, run_id, uc_uuid, spec_ref, file_path,
+                              file_sha256_at_eval, source)
+                           VALUES ($1,$2,$3,$4,$5,$6,'emitted')
+                           ON CONFLICT (analysis_id, spec_ref, source) DO NOTHING""",
+                        analysis_id, run_id, uc_uuid, ref, fp,
+                        (_file_sha.get(fp) if fp else None),
+                    )
+                    ingested_spec_deps += 1
+            except Exception as _e:  # noqa: BLE001 — dep capture must never break ingest
+                log.warning("spec-dep capture failed for %s: %s", uc_uuid, _e)
+
             for gap_idx, gap in enumerate(gaps, 1):
                 if not isinstance(gap, dict):
                     continue
@@ -7684,6 +7804,7 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
         "ingested_gaps": ingested_gaps,
         "ingested_capabilities": ingested_caps,
         "ingested_capability_deps": ingested_deps,
+        "ingested_spec_deps": ingested_spec_deps,
     }
 
 
@@ -7722,15 +7843,16 @@ async def project_freshness(request: Request):
               WHERE project_id = $1 AND lifecycle_state <> 'deprecated'
             ),
             latest AS (
-              SELECT DISTINCT ON (a.uc_uuid) a.uc_uuid, a.status, a.source_repo_shas,
+              SELECT DISTINCT ON (a.uc_uuid) a.uc_uuid, a.id AS analysis_id, a.status, a.source_repo_shas,
                      COALESCE(a.analyzed_at, a.ingested_at) AS eval_at
               FROM uc_analyses a JOIN ucs u ON u.uuid = a.uc_uuid
               ORDER BY a.uc_uuid, a.ingested_at DESC
             )
-            SELECT u.uuid, u.updated_at, l.status, l.eval_at, l.source_repo_shas
+            SELECT u.uuid, u.updated_at, l.analysis_id, l.status, l.eval_at, l.source_repo_shas
             FROM ucs u LEFT JOIN latest l ON l.uc_uuid = u.uuid
             """, pid)
         current = await _current_project_repo_shas_cached(conn, pid)
+        dep = await _dep_drift_map(conn, [r["analysis_id"] for r in rows])   # #128 dependency-aware
         # Deprecated UCs are excluded from the analyzable corpus above; surface the count
         # so the masthead's `total` reconciles with the Use Cases view (which lists all).
         deprecated = await conn.fetchval(
@@ -7742,8 +7864,9 @@ async def project_freshness(request: Request):
         corpus_ns = set(r["namespace"] for r in await conn.fetch(
             "SELECT namespace FROM managed_repos WHERE project_id=$1 AND 'corpus'=ANY(roles)", pid)) if pid else set()
     managed_n = len(rows)
-    ingested = failed = stale = stale_edited = stale_drifted = 0
+    ingested = failed = stale = stale_edited = stale_drifted = stale_repo_moved = 0
     last_eval = oldest_stale_eval = None
+    affected_files: set = set()
     for r in rows:
         eval_at = r["eval_at"]
         if eval_at is None:
@@ -7755,7 +7878,15 @@ async def project_freshness(request: Request):
         if last_eval is None or eval_at > last_eval:
             last_eval = eval_at
         edited  = bool(r["updated_at"] and r["updated_at"] > eval_at)
-        drifted = _repo_drifted(r["source_repo_shas"], current)
+        # #128: drift is dependency-aware (a spec file this UC DEPENDED ON changed) — targeted, not
+        # the coarse whole-repo-HEAD check. _repo_drifted is kept only as informational stale_repo_moved.
+        _dd = dep.get(r["analysis_id"], {})
+        drifted = bool(_dd.get("drifted"))
+        repo_moved = _repo_drifted(r["source_repo_shas"], current)
+        if repo_moved:
+            stale_repo_moved += 1
+        if drifted:
+            affected_files.update(_dd.get("files", []))
         if edited or drifted:
             stale += 1
             if edited:  stale_edited += 1
@@ -7789,7 +7920,9 @@ async def project_freshness(request: Request):
         "uncovered": max(0, managed_n - ingested),  # managed UCs not yet evaluated (the ingest-button target)
         "stale": stale,
         "stale_edited": stale_edited,           # #114: UC content changed
-        "stale_drifted": stale_drifted,         # #114: code (repo HEAD) moved since eval
+        "stale_drifted": stale_drifted,         # #128: a spec file the UC DEPENDED ON changed (targeted)
+        "stale_repo_moved": stale_repo_moved,   # informational: whole-repo HEAD moved (NOT folded into stale)
+        "affected_files": sorted(affected_files),  # #128: which spec files drove the drift ("affected by")
         "last_eval": last_eval.isoformat() if last_eval else None,
         "oldest_stale_eval": oldest_stale_eval.isoformat() if oldest_stale_eval else None,
         "drift": stale_drifted or None,         # commits-since (ahead_by) = #114 Pass B

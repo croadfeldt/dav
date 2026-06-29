@@ -62,6 +62,7 @@ CONTROL_MIGRATIONS: list[tuple[str, Path]] = []
 CLIENT_MIGRATIONS: list[tuple[str, Path]] = [
     ("t001-use-case-projects", _APP / "migrate_t001_use_case_projects.sql"),
     ("t002-refresh-fabricated-uuids", _APP / "migrate_t002_refresh_fabricated_uuids.sql"),
+    ("t003-uc-spec-deps", _APP / "migrate_t003_uc_spec_deps.sql"),
 ]
 
 _SLUG_BAD = re.compile(r"[^a-z0-9_]+")
