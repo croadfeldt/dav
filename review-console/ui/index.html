@@ -1365,6 +1365,9 @@
           <option value="managed">managed</option>
           <option value="corpus">corpus</option>
         </select>
+        <select id="ucRepoFilter" onchange="loadUCs()" title="Corpus repo / branch (#243): show only the UCs from one corpus repo+branch. Picking a repo shows that repo/branch's UCs distinctly (same-uuid versions are not collapsed against main/managed)." style="flex:1;">
+          <option value="">all repos</option>
+        </select>
         <select id="ucScopeFilter" onchange="loadUCs()" title="Project scope (#43): UCs in this project (home or referenced) vs the pool of managed UCs from other projects in this tenant, available to reference in" style="flex:1;">
           <option value="">in this project</option>
           <option value="pool">available to apply</option>
@@ -8374,9 +8377,31 @@ function renderExploreAnalysis(data, ucUuid) {
 
 // ══════════════════════════ USE CASES ══════════════════════════
 
+// #243 — populate the corpus repo/branch filter from the namespaces present in the loaded UCs.
+// Merge-in (never drop) so options persist once a single-repo filter is applied; preserve selection.
+function _populateRepoFilter(ucs) {
+  const sel = document.getElementById('ucRepoFilter');
+  if (!sel) return;
+  const seen = new Map();   // namespace -> branch (for the label)
+  for (const u of (ucs || [])) {
+    if (u && u.namespace) seen.set(u.namespace, u.branch || '');
+  }
+  if (!seen.size) return;
+  const cur = sel.value;
+  const have = new Set(Array.from(sel.options).map(o => o.value));
+  for (const [ns, br] of Array.from(seen.entries()).sort()) {
+    if (have.has(ns)) continue;
+    const o = document.createElement('option');
+    o.value = ns;
+    o.textContent = br ? `${ns} (${br})` : ns;
+    sel.appendChild(o);
+  }
+  if (cur && Array.from(sel.options).some(o => o.value === cur)) sel.value = cur;
+}
 async function loadUCs() {
   document.getElementById('ucList').innerHTML = '<div class="empty">loading…</div>';
   const src = document.getElementById('ucSourceFilter').value;
+  const repoNs = (document.getElementById('ucRepoFilter') || {}).value || '';  // #243 repo/branch
   const scope = (document.getElementById('ucScopeFilter') || {}).value || '';
   _ucPoolMode = (scope === 'pool');
   // Lazy-fetch corpus-push status once per tab session so the Push button
@@ -8385,6 +8410,7 @@ async function loadUCs() {
   try {
     const qp = [];
     if (src) qp.push('source=' + src);
+    if (repoNs) qp.push('namespace=' + encodeURIComponent(repoNs));   // #243 corpus repo/branch filter
     // #43 "available to apply" pool = managed UCs from other projects in this tenant, not referenced
     // here. Force source=managed (corpus is repo-driven, not appliable) and request applied=0.
     if (_ucPoolMode) { qp.length = 0; qp.push('source=managed', 'applied=0'); }
@@ -8392,6 +8418,7 @@ async function loadUCs() {
     const q = qp.length ? '?' + qp.join('&') : '';
     const resp = await api('/api/use-cases' + q);
     allUCs = resp.use_cases || [];
+    _populateRepoFilter(allUCs);   // #243: refresh repo/branch options from the loaded corpus UCs
     // Badge = active UCs (deprecated are hidden by default), so it reconciles with the list + masthead.
     document.getElementById('badgeUC').textContent = allUCs.filter(u => u.lifecycle_state !== 'deprecated').length;
     renderUCList();

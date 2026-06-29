@@ -5176,6 +5176,7 @@ async def list_use_cases(
     sort: Optional[str] = Query(None, description="'priority' to order by roadmap weight; default is most-recently-updated"),
     priority: Optional[str] = Query(None, description="filter to a single priority label (critical/high/medium/low)"),
     customer_id: Optional[str] = Query(None, description="matrix #130: filter to managed UCs this customer has requested (corpus UCs carry no demand, so omitted when set)"),
+    namespace: Optional[str] = Query(None, description="filter corpus UCs to a single repo namespace (#243); when set, corpus UCs from that repo are NOT collapsed against same-uuid UCs elsewhere, so a branch's distinct versions are visible"),
 ):
     """List use cases — from the managed DB, the corpus files, or both.
 
@@ -5194,6 +5195,7 @@ async def list_use_cases(
     by_priority = (sort == "priority")
     by_demand = (sort == "demand")   # order by customer request count (highest first)
     cust_filter = int(customer_id) if (customer_id and str(customer_id).isdigit()) else None
+    ns_filter = namespace.strip() if isinstance(namespace, str) and namespace.strip() else None  # #243
 
     # Pre-build uuid → [set_ids] map once for all UCs (managed + corpus).
     async with pool.acquire() as conn:
@@ -5273,12 +5275,19 @@ async def list_use_cases(
         # applied ("available to apply").
         async with pool.acquire() as conn:
             _pid = await _active_project_id(request, conn)
-            _corpus_ns = set(r["namespace"] for r in await conn.fetch(
-                "SELECT namespace FROM managed_repos WHERE project_id=$1 AND 'corpus'=ANY(roles)", _pid)) if _pid else set()
+            # namespace -> {branch, repo_url, display_name} for the project's corpus repos (#243),
+            # so each corpus UC can carry its source repo/branch and be filtered by it.
+            _corpus_repos = await conn.fetch(
+                "SELECT namespace, repo_branch, repo_url, display_name FROM managed_repos "
+                "WHERE project_id=$1 AND 'corpus'=ANY(roles)", _pid) if _pid else []
+            _corpus_ns = {r["namespace"] for r in _corpus_repos}
+            _ns_meta = {r["namespace"]: {"branch": r["repo_branch"], "repo_url": r["repo_url"],
+                                         "display_name": r["display_name"]} for r in _corpus_repos}
             rows = await conn.fetch(
                 "SELECT path, content, size_bytes, folder FROM files "
                 "WHERE path LIKE '%.yaml' OR path LIKE '%.yml' ORDER BY path"
             )
+        ns_filter = namespace.strip() if isinstance(namespace, str) and namespace.strip() else None
         for r in rows:
             try:
                 # A project's corpus = UC files from its corpus-role repos (managed_repos roles @>
@@ -5286,6 +5295,8 @@ async def list_use_cases(
                 # projects whose repo list includes that corpus repo — not in every project. #199.
                 ns = (r["folder"] or "").split("/", 1)[0]
                 if ns not in _corpus_ns:
+                    continue
+                if ns_filter and ns != ns_filter:
                     continue
                 data = _yaml.safe_load(r["content"])
                 if not isinstance(data, dict) or "uuid" not in data:
@@ -5307,6 +5318,9 @@ async def list_use_cases(
                     "distinct_customers": 0,
                     "path":    r["path"],
                     "source":  "corpus",
+                    "namespace": ns,                                  # #243 source repo namespace
+                    "branch":  (_ns_meta.get(ns) or {}).get("branch"),  # #243 source repo branch
+                    "repo_url": (_ns_meta.get(ns) or {}).get("repo_url"),
                     "set_ids": set_ids_by_uuid.get(uc_uuid, []),
                 })
             except Exception:
@@ -5314,7 +5328,13 @@ async def list_use_cases(
 
     # Collapse the same uuid appearing across multiple corpus paths and/or as a
     # managed row into one entry (managed preferred), surfacing corpus path_count.
-    use_cases = _collapse_uc_duplicates(managed, corpus_ucs)
+    # When filtering to a single repo namespace (#243), DON'T collapse — the caller
+    # wants exactly that repo/branch's UCs (e.g. a branch's edited same-uuid versions),
+    # not a merged view that hides them behind main/managed.
+    if ns_filter:
+        use_cases = managed + corpus_ucs
+    else:
+        use_cases = _collapse_uc_duplicates(managed, corpus_ucs)
     if by_priority:
         # Stable global ordering across both sources: weight desc, unranked last.
         # (None != 0 — a valid low-band score of 0 still outranks unranked.)
@@ -10265,6 +10285,14 @@ async def create_repo_api(payload: RepoCreateIn, request: Request):
                 projections["corpus"] = await _projector.project_corpus_sources(
                     conn, applied_by=reviewer,
                 )
+                # Auto-resync the corpus-files cache so a freshly-added corpus repo's UCs appear
+                # immediately (otherwise they only show after the hourly loop / webhook / manual
+                # resync). The new repo's files are pulled and upserted on the spot.
+                try:
+                    created["_corpus_sync"] = await sync_corpus_files(conn, reason="repo-added")
+                except Exception as e:  # noqa: BLE001 — never fail repo creation on a sync hiccup
+                    log.warning("auto corpus sync after repo add failed: %s", e)
+                    created["_corpus_sync"] = {"error": str(e)}
             if projections:
                 created["_projection"] = projections
             warn = await _check_repo_ref(payload.repo_url, payload.repo_branch, payload.github_pat)
@@ -10379,6 +10407,11 @@ async def update_repo_api(uuid_or_namespace: str, payload: RepoUpdateIn, request
                 projections["corpus"] = await _projector.project_corpus_sources(
                     conn, applied_by=reviewer,
                 )
+                try:
+                    updated["_corpus_sync"] = await sync_corpus_files(conn, reason="repo-updated")
+                except Exception as e:  # noqa: BLE001
+                    log.warning("auto corpus sync after repo update failed: %s", e)
+                    updated["_corpus_sync"] = {"error": str(e)}
             if projections:
                 updated["_projection"] = projections
             warn = await _check_repo_ref(updated.get("repo_url"), updated.get("repo_branch"), payload.github_pat)
@@ -10449,6 +10482,11 @@ async def project_repos_api(
             results["corpus"] = await _projector.project_corpus_sources(
                 conn, applied_by=reviewer,
             )
+            try:
+                results["corpus_sync"] = await sync_corpus_files(conn, reason="repo-projected")
+            except Exception as e:  # noqa: BLE001
+                log.warning("auto corpus sync after project failed: %s", e)
+                results["corpus_sync"] = {"error": str(e)}
         return results
 
 
