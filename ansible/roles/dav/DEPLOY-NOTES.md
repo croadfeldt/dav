@@ -42,7 +42,15 @@ _2026-06-29. How DAV is deployed + the gotchas that bite. Keep current._
 ## Recovering a stuck CephFS mount (Init:0/1, FailedMount)
 Symptom: new `dav-review-api` pod stuck `Init:0/1`; events show
 `MountVolume.MountDevice failed ... DeadlineExceeded` then `... already exists`.
-Order of remedies (least → most invasive):
+
+**FIRST, check the Ceph backend — `DeadlineExceeded` is usually the cluster, not the node.**
+If CephFS mounts hang *cluster-wide*, the external Ceph likely has **no active mgr** (CSI
+operations stall without it). `status.ceph.health` can still read stale `HEALTH_OK`. Verify on
+the external Ceph (active mgr present?) before touching anything in-cluster. With mgr restored,
+the stuck pod mounts on its own (Recreate = one pod retrying) — no node action needed.
+(2026-06-29 incident: the hang was a downed Ceph mgr, not a node op-lock.)
+
+If it's genuinely node-local (one node only, backend healthy), order of remedies (least → most invasive):
 1. **Wait** ~5–15 min — the hung kernel mount op times out and the pod's own retry
    succeeds (Recreate means only one pod is trying).
 2. If it won't clear, **restart the CephFS CSI nodeplugin on the affected node** to
