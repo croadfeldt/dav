@@ -23,21 +23,23 @@ _2026-06-29. How DAV is deployed + the gotchas that bite. Keep current._
 - Deployments: `dav-review-api`, `dav-review-ui`, `dav-review-db`, `dav-docs-mcp`,
   `dav-recording-worker`. BuildConfigs are binary.
 
-## Storage gotcha — RWX CephFS + rollout strategy (the big one)
+## Storage — RWX CephFS (external ODF)
 - `dav-review-api` mounts **RWX CephFS** PVCs: **`dav-workspace`**, **`dav-uc-repos`**.
-- Storage is **`ocs-external-storagecluster` (external ODF)** — Ceph/MDS/mons live
-  OUTSIDE this OCP cluster. So **no MDS/mon pods in `openshift-storage` is NORMAL**;
+  RWX = ReadWriteMany → **multiple pods mounting simultaneously is supported by design**,
+  so **RollingUpdate is correct** (two pods briefly during a roll is fine). Strategy is
+  RollingUpdate (maxSurge 1 / maxUnavailable 0). UI also RollingUpdate (configMaps only).
+- Storage is **`ocs-external-storagecluster` (external ODF)** — Ceph/MDS/mons/**mgr** live
+  OUTSIDE this OCP cluster. So **no MDS/mon/mgr/tools pods in `openshift-storage` is NORMAL**;
   check health via `oc -n openshift-storage get cephcluster -o jsonpath='{.items[0].status.ceph.health}'`
-  (HEALTH_OK = backend fine). There is no `rook-ceph-tools` deploy.
-- **Deployment strategy MUST be `Recreate` for the API** (set in the j2 template,
-  2026-06-29). RollingUpdate briefly runs two API pods mounting the same CephFS
-  volumes → CSI `MountVolume.MountDevice` intermittently hangs
-  (`DeadlineExceeded`), then the retry collides with the still-running op
-  (`rpc error: code = Aborted ... operation with the given Volume ID ... already
-  exists`) → the rollout **deadlocks** and the new pod sits in `Init:0/1`.
-  UI stays RollingUpdate (configMaps only, no PVC).
-- **Do NOT churn API pods** (repeated `oc delete pod`) when a rollout is stuck — it
-  spawns more stuck CSI mount ops and makes it worse.
+  (but note it can read a **stale HEALTH_OK** — verify the external Ceph directly when in doubt).
+- **Do NOT churn API pods** (repeated `oc delete pod`) when a rollout is stuck on a mount —
+  pod-churn spawns more stuck CSI mount ops and makes it worse. Fix the backend first (below).
+
+> **2026-06-29 misdiagnosis, corrected:** a stuck rollout was first blamed on RollingUpdate
+> "multi-attach contention" and the strategy was switched to Recreate. That was WRONG — RWX
+> supports multi-attach. The real cause was a **downed external Ceph mgr** stalling all CSI
+> mounts. Once an active mgr was restored, the pod mounted and RollingUpdate worked. Strategy
+> reverted to RollingUpdate (Recreate also caused needless deploy-time downtime).
 
 ## Recovering a stuck CephFS mount (Init:0/1, FailedMount)
 Symptom: new `dav-review-api` pod stuck `Init:0/1`; events show

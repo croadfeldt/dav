@@ -20,14 +20,16 @@ metadata:
     dav.dev/last-applied-at: "{{ ansible_date_time.iso8601 }}"
 spec:
   replicas: 1
-  # Recreate (not RollingUpdate): the API mounts RWX CephFS volumes (dav-workspace,
-  # dav-uc-repos). A rolling update briefly runs two pods that both mount the same
-  # CephFS volumes, which on this external-ODF cluster intermittently hangs the
-  # CSI MountDevice (DeadlineExceeded → stuck "operation already exists" op-lock),
-  # deadlocking the rollout. Recreate tears down the old pod before starting the
-  # new one, so only one pod ever mounts. (2026-06-29)
+  # RollingUpdate is fine here: the volumes (dav-workspace, dav-uc-repos) are RWX
+  # CephFS, which supports simultaneous multi-pod mount by design — two pods during
+  # a roll is expected and OK. (The 2026-06-29 rollout deadlock was caused by a
+  # downed Ceph mgr stalling CSI mounts, NOT by the rollout strategy; once the mgr
+  # was restored, RollingUpdate worked. See DEPLOY-NOTES.md.)
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app: dav-review

@@ -5328,11 +5328,12 @@ async def list_use_cases(
 
     # Collapse the same uuid appearing across multiple corpus paths and/or as a
     # managed row into one entry (managed preferred), surfacing corpus path_count.
-    # When filtering to a single repo namespace (#243), DON'T collapse — the caller
-    # wants exactly that repo/branch's UCs (e.g. a branch's edited same-uuid versions),
-    # not a merged view that hides them behind main/managed.
+    # When filtering to a single repo namespace (#243), return ONLY that repo/branch's
+    # corpus UCs — managed UCs are DB-owned (no corpus repo namespace) so they don't
+    # belong to a repo/branch view — and DON'T collapse, so a branch's edited
+    # same-uuid versions are visible rather than hidden behind main/managed.
     if ns_filter:
-        use_cases = managed + corpus_ucs
+        use_cases = corpus_ucs
     else:
         use_cases = _collapse_uc_duplicates(managed, corpus_ucs)
     if by_priority:
