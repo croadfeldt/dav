@@ -1101,6 +1101,7 @@
               <div class="rd-header-actions">
                 <button class="btn ghost btn-sm" id="rdDiagnoseBtn" style="display:none;font-size:10px;" title="Diagnose this analysis's failures and propose fixes (Improve tab)">🩺 Diagnose</button>
                 <button class="btn ghost btn-sm" id="rdViewResultsBtn" style="display:none;font-size:10px;">View Results →</button>
+                <button class="btn ghost btn-sm" id="rdReviewBtn" style="display:none;font-size:10px;" title="Generate the architecture review, enhancement plan and PRs in Roadmaps, scoped to this analysis's Scoping Set">Review this analysis →</button>
               </div>
             </div>
             <div class="rd-panel-sub" id="rdSub"></div>
@@ -6167,7 +6168,13 @@ function selectRun(name) {
   renderRunsList(); // re-render to show active state
   // Show detail panel header + tabs
   document.getElementById('rdPanelHeader').style.display = '';
-  document.getElementById('rdTabStrip').style.display = '';
+  // IA slice 3: the run-detail "Review & Plan" tab is retired — review/enhancement/PR
+  // generation has ONE home (Roadmaps), reached via the "Review this analysis →" header
+  // launcher (scopes Roadmaps to this analysis's Scoping Set). Keep the strip hidden; the
+  // embedded generator body (#rdReviewBody) stays in markup but unreachable, pending a
+  // dead-code removal pass.
+  document.getElementById('rdTabStrip').style.display = 'none';
+  try { rdSwitchTab('run'); } catch (_) {}   // force the Analysis body visible (the Review tab is retired)
   document.getElementById('rdTitle').textContent = name;
   document.getElementById('rdSub').textContent = 'loading…';
   // Reset run body
@@ -6255,6 +6262,12 @@ function selectRun(name) {
   // name to its workspace results dir; a clean run simply yields 0 proposals).
   const diagBtn = document.getElementById('rdDiagnoseBtn');
   if (diagBtn) diagBtn.style.display = '';
+
+  // Show "Review this analysis →" once results exist (review/enhancement/PRs need an
+  // analyzed corpus). The single generation home is Roadmaps; this just opens it scoped
+  // to the analysis (IA slice 3).
+  const reviewBtn = document.getElementById('rdReviewBtn');
+  if (reviewBtn) reviewBtn.style.display = hasResult ? '' : 'none';
 
   // Start polling
   stopRunPolling();
@@ -12019,6 +12032,15 @@ document.getElementById('rdViewResultsBtn')?.addEventListener('click', () => {
   } else {
     switchView('results');
   }
+});
+
+// "Review this analysis →" — IA slice 3: review/enhancement/PR generation has ONE home
+// (Roadmaps). This scopes Roadmaps to the analysis's originating Scoping Set (runs record
+// set_id) and opens Arch Review. No set_id (corpus/ad-hoc run) → scope to all use cases.
+document.getElementById('rdReviewBtn')?.addEventListener('click', () => {
+  const setId = activeRunSummary?.set_id;
+  try { setScope(setId != null ? String(setId) : ''); } catch (_) {}
+  switchView('review');
 });
 
 // Diagnose button in run detail header — jump to the Improve tab, preselect
