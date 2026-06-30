@@ -12045,8 +12045,11 @@ async function loadFreshness() {
   const dot = document.getElementById('freshDot');
   if (!sumEl) return;
   let f;
-  try { f = await api('/api/freshness'); }
+  // #239 / TODO3: Coverage follows the masthead Scope (Scoping Set). scopeQuery() → ?set_id=…
+  const _scopeQ = (typeof scopeQuery === 'function') ? scopeQuery() : '';
+  try { f = await api('/api/freshness' + _scopeQ); }
   catch { sumEl.textContent = '—'; if (dot) dot.style.background = 'var(--text-faint)'; return; }
+  const _scoped = !!_scopeQ;   // coverage is scoped to a Scoping Set (not the whole project)
   const total = f.total || 0, ingested = f.ingested || 0, stale = f.stale || 0;
   const managed = (f.managed != null ? f.managed : total), corpus = f.corpus || 0;
   // Pill = evaluated / total-available (managed + corpus, regardless of ingest status).
@@ -12064,8 +12067,8 @@ async function loadFreshness() {
   if (pop) {
     const row = (l, v) => `<div style="display:flex;justify-content:space-between;gap:16px;padding:2px 0;"><span style="color:var(--text-dim);">${l}</span><span>${v}</span></div>`;
     pop.innerHTML =
-      `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:5px;">Analysis freshness</div>`
-      + row('Use cases (this project)', total)
+      `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:5px;">Analysis freshness${_scoped ? ' · <span style="color:var(--accent);">scoped</span>' : ''}</div>`
+      + row(_scoped ? 'Use cases (in scope)' : 'Use cases (this project)', total)
       // Breakdown: managed (ingested into the DB) + corpus from the project's corpus repos (#199).
       // Both count toward the total — the pill is the complete story (drift in either re-runs).
       + row('<span style="color:var(--text-faint);">├ Managed (ingested)</span>', `<span style="color:var(--text-faint);">${managed}</span>`)
