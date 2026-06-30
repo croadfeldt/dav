@@ -433,6 +433,7 @@ def write_run_summary(
     runner_started_at: str,
     runner_total_seconds: float,
     effective_sampling: Optional[dict] = None,
+    quarantined: Optional[list[dict]] = None,
 ) -> Path:
     """Write the unified run-summary.yaml at the top of run_dir."""
     successful = [r for r in results if r.success]
@@ -453,6 +454,10 @@ def write_run_summary(
         "failed": len(failed),
         "total_samples": total_samples,
         "mean_uc_wall_time_seconds": round(mean_wall, 2),
+        # Ingest validation gate (DR §6): UCs excluded before the analyze pass
+        # because they could not load or failed profile validation.
+        "quarantined": len(quarantined or []),
+        **({"quarantined_ucs": quarantined} if quarantined else {}),
         # Per-(model, use) capabilities + profile system (DAV migration 014).
         # `effective_sampling.sent` is what actually went out on every
         # request body for this run; `effective_sampling.dropped` is what
@@ -499,6 +504,58 @@ def write_failure_report(run_dir: Path, result: CorpusUcResult) -> None:
         f"\n"
         f"Error:\n{result.error}\n"
     )
+
+
+# ── Ingest validation gate (operating-model DR §6) ───────────────────────────
+# Validate the corpus with the REAL engine loader BEFORE the analyze pass, and
+# partition into valid vs quarantined. The DR's ingest→analyze split made
+# concrete: invalid UCs are excluded from the (expensive) LLM analyze pass and
+# recorded with a precise reason + phase, instead of surfacing mid-run as a
+# cryptic per-UC load failure. The loader (UseCase.from_dict — tolerant of
+# unknown metadata keys) + UseCase.validate(profile) are the single source of
+# validity; this gate adds no second schema.
+def validate_corpus_files(
+    corpus_files: list[Path], consumer_profile,
+) -> tuple[list[Path], list[dict]]:
+    """Partition corpus UC files into (valid_paths, quarantined). Each quarantine
+    entry is {path, uuid, handle, phase: 'load'|'validate', reason}. Pure and
+    read-only: no LLM, no GPU, no network."""
+    valid: list[Path] = []
+    quarantined: list[dict] = []
+    for path in corpus_files:
+        try:
+            with path.open("r") as f:
+                uc_data = yaml.safe_load(f)
+            use_case = UseCase.from_dict(uc_data)
+        except Exception as e:
+            quarantined.append({
+                "path": str(path), "uuid": None, "handle": None,
+                "phase": "load", "reason": f"{type(e).__name__}: {e}",
+            })
+            continue
+        errors = use_case.validate(consumer_profile)
+        if errors:
+            quarantined.append({
+                "path": str(path), "uuid": use_case.uuid, "handle": use_case.handle,
+                "phase": "validate", "reason": "; ".join(errors),
+            })
+            continue
+        valid.append(path)
+    return valid, quarantined
+
+
+def write_quarantine_report(run_dir: Path, quarantined: list[dict]) -> Path:
+    """Write quarantine.yaml listing every UC excluded from analyze + why.
+    Always written (even when empty) so consumers can distinguish 'gate ran,
+    nothing quarantined' from 'gate never ran'."""
+    out = run_dir / "quarantine.yaml"
+    with out.open("w") as f:
+        yaml.safe_dump(
+            {"count": len(quarantined), "quarantined": quarantined},
+            f, sort_keys=False, default_flow_style=False,
+        )
+    return out
+
 
 def _cli():
     parser = argparse.ArgumentParser(
@@ -814,6 +871,26 @@ def _cli():
     run_dir.mkdir(parents=True, exist_ok=True)
     log.info("run id: %s (output: %s)", run_id, run_dir)
 
+    # Ingest validation gate (operating-model DR §6): validate every UC with the
+    # real engine loader+profile BEFORE the analyze pass. Invalid UCs are
+    # quarantined (excluded, with reason) so we never spend an LLM call on a UC
+    # that cannot load/validate, and the failure is legible up front.
+    corpus_files, _quarantined = validate_corpus_files(corpus_files, consumer_profile)
+    write_quarantine_report(run_dir, _quarantined)
+    if _quarantined:
+        log.warning(
+            "ingest-gate: quarantined %d UC(s) (see %s); analyzing %d valid UC(s)",
+            len(_quarantined), run_dir / "quarantine.yaml", len(corpus_files),
+        )
+        for q in _quarantined:
+            log.warning("ingest-gate: quarantine [%s] %s — %s",
+                        q["phase"], q.get("handle") or q["path"], q["reason"])
+    if not corpus_files:
+        print("ERROR: all UCs quarantined by the ingest validation gate; "
+              f"nothing to analyze (see {run_dir / 'quarantine.yaml'})",
+              file=sys.stderr)
+        return 2
+
     # Resolution order for every tunable: explicit CLI flag > use_profile
     # from DAV > mode default in code. Capabilities filter drops disallowed
     # params at body-build time in client._build_body.
@@ -1029,6 +1106,7 @@ def _cli():
         results=results, runner_started_at=runner_started_at,
         runner_total_seconds=runner_total,
         effective_sampling=effective_block,
+        quarantined=_quarantined,
     )
     log.info("run summary written: %s", summary_path)
 
