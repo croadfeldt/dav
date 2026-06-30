@@ -5354,18 +5354,17 @@ const DOMAINS = [
   { key:'catalog', label:'Catalog',    icon:'📒', focus:'both', subviews:[
       { view:'catalog', label:'Catalog' },
   ]},
-  { key:'improve', label:'Prompts & Improvement', icon:'📝', focus:'both', subviews:[
-      { view:'improve', label:'Prompts & Improvement', badge:'badgeImprove' },
-  ]},
-  { key:'audit',   label:'Audit',      icon:'📜', focus:'both', navId:'navAudit', subviews:[
-      { view:'audit', label:'Audit', priv:'__platAdmin' },
-  ]},
-  { key:'org',     label:'Customers & Projects', icon:'🏢', focus:'both', subviews:[
+  // UI lean slice 3: setup/admin surfaces folded into one Settings group (9 → 6 top-level
+  // domains; Miller's 7±2). Config, Prompts & Improvement, Customers & Projects, and Audit
+  // are not daily-driver views — they live behind one gear, surfaced as its sub-tabs.
+  // Each sub-view keeps its existing privilege, so access is unchanged (the domain shows iff
+  // at least one sub-tab is permitted; the strip renders only permitted tabs).
+  { key:'settings', label:'Settings', icon:'⚙', focus:'both', subviews:[
+      { view:'config',    label:'Config' },
+      { view:'improve',   label:'Prompts & Improvement', badge:'badgeImprove' },
       { view:'customers', label:'Customers' },
       { view:'projects',  label:'Projects' },
-  ]},
-  { key:'config',  label:'Config',     icon:'⚙', focus:'both', subviews:[
-      { view:'config', label:'Config' },
+      { view:'audit',     label:'Audit', priv:'__platAdmin' },
   ]},
 ];
 const _viewToDomain = {};

@@ -133,6 +133,16 @@ async function runRole(role) {
   ck('stable rail: Authoring domain shown', shown(domDisp('author')), 'display=' + domDisp('author'));
   ck('stable rail: Catalog domain shown', shown(domDisp('catalog')), 'display=' + domDisp('catalog'));
   ck('stable rail: Assessments domain shown', shown(domDisp('assess')), 'display=' + domDisp('assess'));
+  // UI lean slice 3: setup/admin domains folded into one Settings group (9 → 6 top-level).
+  // Settings is a rail domain; Config / Prompts & Improvement / Customers & Projects / Audit
+  // are no longer top-level domains — they are Settings sub-tabs.
+  ck('consolidated: Settings domain shown', shown(domDisp('settings')), 'display=' + domDisp('settings'));
+  ck('consolidated: Config not a top-level domain', domDisp('config') === '(missing)', 'display=' + domDisp('config'));
+  ck('consolidated: Prompts/Improve not a top-level domain', domDisp('improve') === '(missing)', 'display=' + domDisp('improve'));
+  ck('consolidated: Customers&Projects (org) not a top-level domain', domDisp('org') === '(missing)', 'display=' + domDisp('org'));
+  ck('consolidated: Audit not a top-level domain', domDisp('audit') === '(missing)', 'display=' + domDisp('audit'));
+  ck('consolidated: rail is ≤6 domains', document.querySelectorAll('.pf-nav-item[data-domain]').length <= 6,
+     'count=' + document.querySelectorAll('.pf-nav-item[data-domain]').length);
   if (role === 'platform-admin') {
     // Authoring is multi-sub-view → the top strip renders ≥2 tabs (Use Cases · Scoping Sets · Discussion).
     ck('Authoring strip has ≥2 sub-tabs', document.querySelectorAll('#domainTabs .tab').length >= 2,
