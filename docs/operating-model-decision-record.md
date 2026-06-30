@@ -3,7 +3,9 @@
 **Status:** ACCEPTED — Chris ratified the **Purpose / North Star (§0: A-now/B-later)** and all four
 decisions 2026-06-30, with one refinement to #4 (architectures own a curated *approved* validation
 corpus; UC **purpose** becomes first-class — §6a). Secondary mission added: **assessments** ride the
-same shape (§2.2).
+same shape (§2.2). Later additions (ratified): roadmap is a projection incl. **UC-enablement** as the
+engineering bridge (§6b). Proposed, pending ratification: **labels+selectors** scope model (§6c) and
+**one capability spine** (§6d).
 **Date:** 2026-06-30
 **Scope of this DR:** the *core mission only* — analyzing use cases for **gap analysis** and
 **roadmapping**. Peripheral capabilities (assessments/maturity wall, recording pipeline, enhancement
@@ -65,10 +67,14 @@ subject evaluated against a reference model. Two subjects are in scope:
 > For an **engagement/organization**, determine where it stands against a **maturity framework**
 > (**gap analysis** = findings vs target), render the present state (**current status** = the
 > **Maturity Wall**), and turn the gaps into a prioritized **improvement roadmap**.
-- Reference model: a **maturity framework** (FlightPath, configurable). Inputs: **assessment material**
-  (notes / PDF / image / structured info-dump).
+- Reference model: a **maturity framework** = a **base dataset of capabilities + a maturity rubric**
+  (FlightPath, configurable). This is assessments' one *additional* dataset vs the primary mission — and
+  per §6d it is **the same capability catalog** the architecture mission uses, with a maturity-level
+  overlay (not a separate capability store). Inputs: **assessment material** (notes / PDF / image /
+  structured info-dump).
 - Same engine shape: *inputs × reference model → gaps → status + roadmap*. The "current status" surface
-  is the existing **Maturity Wall** (heat-mapped current state); the roadmap is current → target.
+  is the existing **Maturity Wall** (heat-mapped current state); the roadmap is current → target — and
+  can be projected as **capability** *or* **UC-enablement** (§6b), same as the primary mission.
 
 **Why this is one system, not two:** both missions are `inputs × reference-model → (gaps, status,
 roadmap)`. They **share** the ingest/validation gate, the project scope seam, the roadmap projection,
@@ -95,8 +101,9 @@ the same rails and must not fork them.
 - **ANALYZE** — run the gap analysis: for each UC, retrieve the relevant DCM/UDLM **architecture**
   (spec) and assess whether it's supported → emit **gaps** + capability mappings. (This is today's
   "run" / `dav-stage2` pipeline.)
-- **ROADMAP** — project the confirmed gaps into a tiered, themed capability roadmap (today's
-  `GET /api/analysis/roadmap`), the consumable output.
+- **ROADMAP** — project the confirmed gaps into a prioritized, consumable plan. **The analysis is the
+  single source; the roadmap is a projection — and there is more than one** (see §6b): a
+  **capability** roadmap *and* a **UC-enablement** roadmap (UC = the bridge to engineering).
 
 ### DECISION 3a — fix the vocabulary (the "ingest" overload)
 "Ingest" currently means **three** different things; this is the single biggest source of confusion.
@@ -227,6 +234,86 @@ required, enumerated `purpose`.
 
 ---
 
+## 6b. DECISION — roadmap is a *projection*; UC-enablement is the engineering bridge
+*(Chris, 2026-06-30)*
+
+The analysis is the **single source**; the **roadmap is a projection of it, and there is more than
+one**. From the same gap↔capability↔UC graph, DAV projects (along with, or in place of, each other):
+
+- **Capability roadmap** — grouped by **capability**: "build/raise capability C → enables UCs X, Y, Z."
+  The architecture-program view.
+- **UC-enablement roadmap** — grouped by **use case**: "to enable **UC X**, close gaps {a,b} → do work
+  {build cap C, …}." **The UC is the bridge to engineering** — a concrete, shippable unit an engineer
+  or stakeholder acts on, far more actionable than an abstract capability list. This is the form that
+  feeds a **SOW** and **Jira/engineering hand-off**.
+
+They are two **groupings of one graph**, pivoted via the **UC↔capability map**; both must stay
+consistent with the same underlying gaps. The projection is **configurable** (capability, UC-enablement,
+or both).
+
+**Applies to both missions.** The assessment improvement roadmap can likewise be projected as
+capability/maturity improvement **or** as UC-enablement ("raising maturity on these capabilities enables
+these scenarios"). Generalizes the projection builder (#177); subsumes #255 (UC-centric eng roadmaps).
+
+---
+
+## 6c. DECISION (PROPOSED) — scope & selection: labels + selectors (the matrix)
+*(Chris proposed tagging 2026-06-30; mechanics below for ratification)*
+
+**Requirement:** compose a working scope across a **matrix** of {use cases, sets, customers, projects,
+capabilities} where relationships are **M:N and bidirectional** (projects-within-customers *and*
+customers-within-projects). Hardcoding each relationship doesn't scale.
+
+**Decision:** every entity carries **labels (annotations)**, and scope is composed by **selectors with
+positive *and* negative matching** — adopt **Kubernetes label-selector semantics** (`matchLabels` +
+`matchExpressions`: `In / NotIn / Exists / DoesNotExist`); do not invent a grammar.
+
+- **Entities stay first-class; membership is expressed as labels** (`customer/acme`, `project/rehydration`,
+  `set/piotr-feedback`, `arch/dcm`). The matrix mapping (customer→UCs/projects and the reverse) becomes
+  one query over the label graph — collapsing the bespoke customer×project / customer×user matrices into
+  one mechanism.
+- **A scoping set becomes a saved selector** (static member list = the pinned/degenerate case). Dynamic
+  sets re-evaluate as labels change.
+- **System-derived vs human labels** are distinguishable: derived labels (source repo/branch, `purpose`,
+  `lifecycle`) are applied at **ingest** and may refresh on re-ingest; human labels (customer/project
+  membership, ad-hoc) are sticky and never clobbered.
+- **Lifecycle:** labels are attached/derived through ingest → edit → promotion; **selectors are evaluated
+  at analyze time** to materialize the working set.
+- **Separation of concerns:** **labels *select*; project + RBAC *authorize*.** A selector composes only
+  within what the caller may access — it can never cross the §5 project scope seam.
+
+Open: label key namespace/reserved prefixes; whether capabilities use the same selector surface (lean
+yes); UI for building/saving selectors.
+
+---
+
+## 6d. DECISION (PROPOSED) — capability: the one shared spine (simplify)
+*(Chris: "simplify the use and architecture of the capability" 2026-06-30)*
+
+**Problem:** capability is modeled several overlapping ways — `capability_catalog`,
+`capability_taxonomy_terms`, UDLM `capability_inventory`, and assessment `framework_capabilities` — that
+have needed repeated reconciliation (#89/#90/#104). That duplication *is* the complexity.
+
+**Decision (proposed):** **one capability catalog** is the shared spine for **both** missions, because
+capability is the common currency: architecture gaps → capabilities to build (capability roadmap), and
+assessments score **the same capabilities** against a maturity rubric.
+
+- **Capabilities** = one entity (id, name, description, category). One catalog.
+- A **maturity framework** is **not its own capability store** — it is a **selected capability set + a
+  maturity rubric (levels/states)** layered on the catalog. FlightPath = curated capability set + rubric.
+  (This is assessments' "additional base dataset", §2.2 — an *overlay*, not a parallel model.)
+- The capability **method** (#132 Core/Supporting/Generic) and **map** (#88, UC↔capability) become
+  attributes/views on the one catalog, not separate machinery.
+- **Catalog scope:** one shared catalog, **labeled by architecture** (`capability tagged arch/dcm`) per
+  §6c — the simpler default than per-architecture stores.
+
+**Open (needs explicit go — touches the built Maturity Wall #147/#148):**
+1. Collapse `capability_catalog` / `capability_inventory` / `framework_capabilities` into one entity?
+2. Framework = capability-set + rubric overlay (not a separate capability store)?
+3. Shared catalog labeled by architecture vs per-architecture catalog?
+
+---
+
 ## 7. Explicitly deferred (not part of either mission)
 
 To keep the missions working well, these are **not** part of this model and will be re-justified against
@@ -284,3 +371,10 @@ re-pointing existing docs/runbooks. All one-time.
    over the unified pipeline: reference model = maturity framework (FlightPath), inputs = assessment
    material, current status = the existing Maturity Wall, output = improvement roadmap. Reuse
    ingest/validation/roadmap; **do not fork** the pipeline. (Builds on the existing Maturity Wall work.)
+10. **Roadmap projections** (§6b) — add the **UC-enablement** projection alongside the capability
+    roadmap, pivoting via the UC↔capability map; make the projection selectable; wire UC-enablement to
+    SOW (#142) + Jira hand-off (#175).
+11. **Scope: labels + selectors** (§6c, *after* ratification) — label model on all entities; K8s-style
+    positive/negative selectors; scoping set → saved selector; selectors authz-bounded by project/RBAC.
+12. **Capability: one shared spine** (§6d, *after* ratification) — collapse the parallel capability
+    stores into one catalog; framework = capability-set + rubric overlay; method/map become views.
