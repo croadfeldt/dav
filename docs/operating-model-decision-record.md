@@ -363,8 +363,13 @@ re-pointing existing docs/runbooks. All one-time.
 5. **Rename run→analyze** — *API alias DONE* (`/api/analyses…` additively aliases every `/api/runs…`
    route; old paths unchanged, no flag day). **Follow-ups:** UI relabel to "Analyses" (cosmetic; do
    with eyes on it — disruptive to a live session), then eventual deprecation of the `/api/runs` paths.
-6. **Tenancy collapse** — migrate `tenant_flightpath` → `public`, strip `search_path` plumbing, drop
-   test tenants.
+6. **Tenancy collapse** — *STAGED, supervised* (`review-console/deploy/tenancy-collapse.sql` +
+   `docs/tenancy-collapse-runbook.md`). Verified live: clean disjoint sets, 0 collisions, metadata-only
+   `SET SCHEMA` move of 35 tables/17 seqs/1 view from `tenant_flightpath`→`public`. **LANDMINE:** the
+   *deployed* API image is from the never-merged tenant-aware Phase-2 branch (pins
+   `search_path=tenant_flightpath,public` per conn); `main` uses a plain `public` pool — so **deploying
+   the API from `main` IS the cutover** and must not happen until the data is moved. Execution is
+   backup-first + quiet-window + supervised (NOT autonomous). Couples PRs #9/#10's deferred deploy.
 7. **Corpus/spec hygiene** — set curated subpaths on every corpus repo (dcm/udlm = their approved
    `use-cases` trees; dcm-piotr = `dav/use-cases`); confirm spec roles unchanged.
 8. **Continuous validation / gating** — schedule the approved corpus to analyze on cadence + on
