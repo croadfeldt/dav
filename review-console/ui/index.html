@@ -903,11 +903,11 @@
   </div>
   <!-- Active run: read-only STATUS (the run is working context, not global chrome —
        see ux-paradigm-design.md). Selection happens in Execution → Runs. -->
-  <div class="run-context-chip" id="runContextChip" title="Ingestions — live progress when active; click for in-flight items" style="cursor:pointer;position:relative;">
+  <div class="run-context-chip" id="runContextChip" title="Analyses — live progress when active; click for in-flight items" style="cursor:pointer;position:relative;">
     <span class="rcc-dot" id="rccDot"></span>
-    <span id="rccLabel" style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Ingestion</span>
-    <span id="rccName" style="font-size:11px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit;">— no ingestion —</span>
-    <span class="llm-spinner" id="runLoadSpinner" style="display:none;margin:0 0 0 6px;" title="Loading ingestion data…"></span>
+    <span id="rccLabel" style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Analysis</span>
+    <span id="rccName" style="font-size:11px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit;">— no analysis —</span>
+    <span class="llm-spinner" id="runLoadSpinner" style="display:none;margin:0 0 0 6px;" title="Loading analysis data…"></span>
     <div id="runChipPopover" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:70;min-width:280px;max-height:340px;overflow-y:auto;background:var(--bg-panel);border:1px solid var(--border);border-radius:4px;box-shadow:0 6px 20px rgba(0,0,0,0.35);padding:8px 10px;cursor:default;font-size:11px;"></div>
   </div>
   <!-- Analysis freshness (#112 / uc-scoped-evaluation-design.md): coverage + staleness for the
@@ -1050,7 +1050,7 @@
           </div>
           <div style="font-size:11px;color:var(--text-dim);padding:6px 2px;">
             Drag a use case from the left onto a Scoping Set to <strong>add</strong> it (a UC can be in several sets).
-            Expand a set (▶) to see / remove members. Mark one <strong>default</strong> to pre-fill New Ingestion.
+            Expand a set (▶) to see / remove members. Mark one <strong>default</strong> to pre-fill New Analysis.
           </div>
           <div id="scopingSetsList" style="font-size:12px;flex:1;min-height:0;overflow-y:auto;border:1px solid var(--border);border-radius:3px;"></div>
         </div>
@@ -1063,15 +1063,15 @@
         <!-- Left: run list -->
         <div class="runs-list-panel" id="runsListPanel">
           <div class="panel-header" style="flex-shrink:0;">
-            <div class="panel-title">Ingestions</div>
+            <div class="panel-title">Analyses</div>
             <div class="toolbar-actions">
-              <button class="btn ghost btn-icon" id="toggleArchivedRuns" title="Show archived ingestions">⊟</button>
+              <button class="btn ghost btn-icon" id="toggleArchivedRuns" title="Show archived analyses">⊟</button>
               <button class="btn ghost btn-icon" id="refreshRunsBtn" title="Refresh">↻</button>
-              <button class="btn primary btn-sm" id="newRunBtn" data-edit-gate="project.runs.execute">+ New Ingestion</button>
+              <button class="btn primary btn-sm" id="newRunBtn" data-edit-gate="project.runs.execute">+ New Analysis</button>
             </div>
           </div>
           <div class="panel-toolbar" style="gap:6px;flex-shrink:0;">
-            <input id="runFilter" placeholder="filter ingestions…" style="flex:1;" />
+            <input id="runFilter" placeholder="filter analyses…" style="flex:1;" />
             <select id="runPhaseFilter" style="flex:none;width:96px;font-size:10px;padding:3px 5px;">
               <option value="">all</option>
               <option value="Running">running</option>
@@ -1080,12 +1080,12 @@
               <option value="Cancelled">cancelled</option>
               <option value="TimedOut">timed out</option>
             </select>
-            <button class="btn ghost btn-sm" id="runSelectAllBtn" title="Select / deselect all visible ingestions">☑ All</button>
+            <button class="btn ghost btn-sm" id="runSelectAllBtn" title="Select / deselect all visible analyses">☑ All</button>
           </div>
           <div id="runSelectionToolbar" style="display:none;padding:6px 10px;background:var(--accent-bg);border-bottom:1px solid var(--accent-soft);align-items:center;gap:6px;font-size:11px;flex-shrink:0;">
             <span id="runSelectionCount" style="flex:1;color:var(--accent);font-weight:500;"></span>
-            <button class="btn ghost btn-sm" id="runSelArchiveBtn" title="Archive the selected ingestions (hide)">Archive</button>
-            <button class="btn danger btn-sm" id="runSelDeleteBtn" title="Delete the selected ingestions completely (irreversible)">Delete</button>
+            <button class="btn ghost btn-sm" id="runSelArchiveBtn" title="Archive the selected analyses (hide)">Archive</button>
+            <button class="btn danger btn-sm" id="runSelDeleteBtn" title="Delete the selected analyses completely (irreversible)">Delete</button>
             <button class="btn ghost btn-sm" id="runSelClearBtn" title="Clear selection">×</button>
           </div>
           <div style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:10px;color:var(--text-faint);flex-shrink:0;" id="runsNote"></div>
@@ -1098,7 +1098,7 @@
             <div class="rd-header-top">
               <div class="rd-panel-title" id="rdTitle">—</div>
               <div class="rd-header-actions">
-                <button class="btn ghost btn-sm" id="rdDiagnoseBtn" style="display:none;font-size:10px;" title="Diagnose this ingestion's failures and propose fixes (Improve tab)">🩺 Diagnose</button>
+                <button class="btn ghost btn-sm" id="rdDiagnoseBtn" style="display:none;font-size:10px;" title="Diagnose this analysis's failures and propose fixes (Improve tab)">🩺 Diagnose</button>
                 <button class="btn ghost btn-sm" id="rdViewResultsBtn" style="display:none;font-size:10px;">View Results →</button>
               </div>
             </div>
@@ -1107,12 +1107,12 @@
           </div>
           <!-- Tab strip inside run detail -->
           <div id="rdTabStrip" class="rd-tab-strip" style="display:none;">
-            <button class="rd-tab active" id="rdTabRun">Ingest</button>
+            <button class="rd-tab active" id="rdTabRun">Analysis</button>
             <button class="rd-tab" id="rdTabReview">Review &amp; Plan</button>
           </div>
           <!-- Run body -->
           <div class="runs-detail-body" id="rdRunBody">
-            <div class="rd-empty">Select an ingestion from the list</div>
+            <div class="rd-empty">Select an analysis from the list</div>
           </div>
           <!-- Review body (hidden until tab clicked) -->
           <div class="runs-detail-body" id="rdReviewBody" style="display:none;">
@@ -1124,7 +1124,7 @@
                 <select id="rdRevModelSel" style="flex:1;min-width:160px;font-size:11px;"></select>
                 <select id="rdRevScopeSel" style="width:140px;">
                   <option value="uc">This use case</option>
-                  <option value="run">Whole ingestion</option>
+                  <option value="run">Whole analysis</option>
                 </select>
                 <button class="btn primary btn-sm" id="rdRevRunBtn">Generate</button>
                 <button class="btn ghost btn-sm" id="rdRevCopyBtn" style="display:none;">⧉ Copy review</button>
@@ -1157,7 +1157,7 @@
                 <select id="rdEnhModelSel" style="flex:1;min-width:160px;font-size:11px;"></select>
                 <select id="rdEnhScopeSel" style="width:140px;">
                   <option value="uc">This use case</option>
-                  <option value="run">Whole ingestion</option>
+                  <option value="run">Whole analysis</option>
                 </select>
                 <button class="btn primary btn-sm" id="rdEnhRunBtn">Generate</button>
                 <button class="btn ghost btn-sm" id="rdEnhCopyBtn" style="display:none;">⧉ Copy spec</button>
@@ -2649,7 +2649,7 @@
 <div class="modal-overlay" id="newRunModal">
   <div class="modal">
     <div class="modal-header">
-      <div class="modal-title" id="newRunTitle">New ingestion</div>
+      <div class="modal-title" id="newRunTitle">New analysis</div>
       <button class="btn ghost btn-icon" id="closeNewRun">✕</button>
     </div>
     <div class="modal-body">
@@ -2746,7 +2746,7 @@
     <div class="modal-footer">
       <span id="nrStatus" style="flex:1; font-size:11px; color:var(--text-faint);"></span>
       <button class="btn ghost" id="cancelNewRun">Cancel</button>
-      <button class="btn primary" id="submitNewRun">Trigger ingestion</button>
+      <button class="btn primary" id="submitNewRun">Run analysis</button>
     </div>
   </div>
 </div>
@@ -3069,7 +3069,7 @@
       </div>
     </div>
     <div class="modal-footer">
-      <span style="flex:1;font-size:11px;color:var(--text-faint);">Scoping Sets group UCs. Mark one as default to pre-fill New Ingestion.</span>
+      <span style="flex:1;font-size:11px;color:var(--text-faint);">Scoping Sets group UCs. Mark one as default to pre-fill New Analysis.</span>
       <button class="btn ghost" id="manageSetsDoneBtn">Done</button>
     </div>
   </div>
@@ -5337,8 +5337,8 @@ const DOMAINS = [
       { view:'scopingsets', label:'Scoping Sets' },
       { view:'inbox',       label:'Discussion',    badge:'badgeInbox' },
   ]},
-  { key:'execute', label:'Ingestion',  icon:'▶', focus:'architecture', subviews:[
-      { view:'runs',    label:'Ingestions', badge:'badgeRuns' },
+  { key:'execute', label:'Analyze',    icon:'▶', focus:'architecture', subviews:[
+      { view:'runs',    label:'Analyses', badge:'badgeRuns' },
       { view:'results', label:'Results',    badge:'badgeResults' },
   ]},
   { key:'roadmap', label:'Roadmaps',   icon:'✦', focus:'architecture', subviews:[
@@ -5596,7 +5596,7 @@ function _renderRunItemHtml(r) {
       ${phaseHtml(r.phase)}<br>
       <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
       <div class="rli-actions">
-        ${!['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase) ? `<button class="btn ghost btn-sm" title="Stop this ingestion (cancel the pipeline)" onclick="event.stopPropagation();stopRunConfirm('${r.name}')">⏹ Stop</button>` : ''}
+        ${!['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase) ? `<button class="btn ghost btn-sm" title="Stop this analysis (cancel the pipeline)" onclick="event.stopPropagation();stopRunConfirm('${r.name}')">⏹ Stop</button>` : ''}
         <button class="btn ghost btn-sm" title="Re-ingest with the same Scoping Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
         <button class="btn ghost btn-sm" title="${r.archived ? 'Unarchive' : 'Archive (hide from list)'}" onclick="event.stopPropagation();archiveRun('${r.name}',${r.archived ? 'false' : 'true'})">${r.archived ? 'Unarchive' : 'Archive'}</button>
         <button class="btn danger btn-sm" title="Delete completely — irreversible" onclick="event.stopPropagation();deleteRunConfirm('${r.name}')">Delete</button>
@@ -5611,12 +5611,12 @@ function _renderRunItemHtml(r) {
 function renderRunsList() {
   const el = document.getElementById('runsList');
   if (!allRuns.length) {
-    el.innerHTML = '<div class="empty">No ingestions found. Use + New Ingestion to trigger one.</div>';
+    el.innerHTML = '<div class="empty">No analyses found. Use + New Analysis to trigger one.</div>';
     return;
   }
   const visible = allRuns.filter(_matchRunFilter);
   if (!visible.length) {
-    el.innerHTML = '<div class="empty">No ingestions match the filter.</div>';
+    el.innerHTML = '<div class="empty">No analyses match the filter.</div>';
     return;
   }
   // Recover from a previous empty/loading/error placeholder cleanly
@@ -5690,7 +5690,7 @@ async function stopRunConfirm(name){
 async function deleteRunConfirm(name){
   const r = allRuns.find(x => x.name === name);
   const label = (r && r.session_name) || name;
-  if (!confirm(`Delete ingestion "${label}" COMPLETELY?\n\nThis removes its analysis, workspace result files, and the Tekton PipelineRun. It cannot be undone.\n\nUse Archive instead to just hide it.`)) return;
+  if (!confirm(`Delete analysis "${label}" COMPLETELY?\n\nThis removes its analysis output, workspace result files, and the Tekton PipelineRun. It cannot be undone.\n\nUse Archive instead to just hide it.`)) return;
   try {
     const resp = await api(`/api/runs/${encodeURIComponent(name)}`, {method:'DELETE'});
     const rm = resp.removed || {};
@@ -5728,7 +5728,7 @@ async function archiveSelectedRuns(){
 async function deleteSelectedRuns(){
   const names = [..._selectedRuns];
   if (!names.length) return;
-  if (!confirm(`Delete ${names.length} ingestion${names.length===1?'':'s'} COMPLETELY?\n\nRemoves each ingestion's analysis, workspace result files, and Tekton PipelineRun. This cannot be undone.\n\nUse Archive to just hide them.`)) return;
+  if (!confirm(`Delete ${names.length} analysis${names.length===1?'':'es'} COMPLETELY?\n\nRemoves each analysis's output, workspace result files, and Tekton PipelineRun. This cannot be undone.\n\nUse Archive to just hide them.`)) return;
   let ok=0, fail=0;
   for (const nm of names){ try { await api(`/api/runs/${encodeURIComponent(nm)}`, {method:'DELETE'}); ok++; } catch(e){ fail++; } }
   _selectedRuns.clear();
@@ -11896,8 +11896,8 @@ function _fmtEta(ms) {
   if (m < 90) return `${m}m`;
   const h = Math.floor(m / 60); return `${h}h${m % 60}m`;
 }
-// The masthead Ingestion pill is ALWAYS the aggregate stats — never the name of a run in
-// progress (no flipping). Format: <#runs> · <#ingested>/<#UCs across all active runs> · ✓<succ> ✗<fail>.
+// The masthead Analysis pill is ALWAYS the aggregate stats — never the name of a run in
+// progress (no flipping). Format: <#runs> · <#done>/<#UCs across all active runs> · ✓<succ> ✗<fail>.
 function _renderRunChipLive() {
   const active = (allRuns || []).filter(_runIsActive);
   const dot = document.getElementById('rccDot');
@@ -11905,27 +11905,27 @@ function _renderRunChipLive() {
   const lbl = document.getElementById('rccLabel');
   if (!nm) return;
   if (!active.length) {
-    if (lbl) lbl.textContent = 'Ingestion';
+    if (lbl) lbl.textContent = 'Analysis';
     nm.textContent = '— none —';              // idle: neutral, NOT a run name
     if (dot) dot.classList.remove('pulse');
     return;
   }
-  if (lbl) lbl.textContent = 'Ingestion';     // label stays "Ingestion"; the dot pulses + stats lead with "# active"
+  if (lbl) lbl.textContent = 'Analysis';      // label stays "Analysis"; the dot pulses + stats lead with "# active"
   let ucs = 0, succ = 0, fail = 0;
   active.forEach(r => { ucs += (r.uc_total || 0); succ += (r.uc_succeeded || 0); fail += (r.uc_failed || 0); });
   const done = succ + fail;
   // "<N> active · <done>/<total> UC · ✓ ok ✗ failed".
   nm.textContent = `${active.length} active · ${done}/${ucs} UC · ✓${succ} ✗${fail}`;
   const chip = document.getElementById('runContextChip');
-  if (chip) chip.title = `${active.length} ingestion${active.length > 1 ? 's' : ''} active · ` +
-    `${done} of ${ucs} use cases processed (✓${succ} succeeded, ✗${fail} failed) · click for per-ingestion progress`;
+  if (chip) chip.title = `${active.length} analysis run${active.length > 1 ? 's' : ''} active · ` +
+    `${done} of ${ucs} use cases processed (✓${succ} succeeded, ✗${fail} failed) · click for per-run progress`;
   if (dot) dot.classList.add('pulse');
 }
 function _renderRunChipPopover() {
   const pop = document.getElementById('runChipPopover');
   if (!pop) return;
   const active = (allRuns || []).filter(_runIsActive);
-  if (!active.length) { pop.innerHTML = '<div style="color:var(--text-faint);">No ingestions in progress.</div>'; return; }
+  if (!active.length) { pop.innerHTML = '<div style="color:var(--text-faint);">No analyses in progress.</div>'; return; }
   pop.innerHTML =
     `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:5px;">Running (${active.length}) — click to open</div>`
     + active.map(r => {
