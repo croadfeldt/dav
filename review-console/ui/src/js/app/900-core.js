@@ -989,35 +989,4 @@ function setupConfigNav() {
 
 // ── Arch review font bar ──────────────────────────────────────────────────────
 
-(function() {
-  const MIN = 11, MAX = 22;
-  const LS_SIZE = 'archFontSize', LS_FAM = 'archFontFamily';
-  const famMap = { serif: 'var(--serif)', sans: 'var(--sans)', mono: 'var(--mono)' };
-  let curSize = Math.max(MIN, Math.min(MAX, parseInt(localStorage.getItem(LS_SIZE) || '15', 10)));
-  let curFam  = localStorage.getItem(LS_FAM) || 'serif';
-
-  function applySize(px) {
-    curSize = Math.max(MIN, Math.min(MAX, px));
-    document.documentElement.style.setProperty('--arch-font-size', curSize + 'px');
-    document.querySelectorAll('.font-size-lbl').forEach(el => { el.textContent = curSize + 'px'; });
-    localStorage.setItem(LS_SIZE, String(curSize));
-  }
-
-  function applyFamily(fam) {
-    curFam = fam;
-    document.documentElement.style.setProperty('--arch-font-family', famMap[fam] || famMap.serif);
-    document.querySelectorAll('#rdRevFontFam,#rdEnhFontFam').forEach(sel => { sel.value = fam; });
-    localStorage.setItem(LS_FAM, fam);
-  }
-
-  applySize(curSize);
-  applyFamily(curFam);
-
-  ['Rev', 'Enh'].forEach(w => {
-    document.getElementById('rd' + w + 'FontDown').addEventListener('click', () => applySize(curSize - 1));
-    document.getElementById('rd' + w + 'FontUp').addEventListener('click',   () => applySize(curSize + 1));
-    document.getElementById('rd' + w + 'FontFam').addEventListener('change', function() { applyFamily(this.value); });
-  });
-})();
-
 init();

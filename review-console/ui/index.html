@@ -1110,102 +1110,11 @@
           <!-- Tab strip inside run detail -->
           <div id="rdTabStrip" class="rd-tab-strip" style="display:none;">
             <button class="rd-tab active" id="rdTabRun">Analysis</button>
-            <button class="rd-tab" id="rdTabReview">Review &amp; Plan</button>
           </div>
           <!-- Run body -->
           <div class="runs-detail-body" id="rdRunBody">
             <div class="rd-empty">Select an analysis from the list</div>
           </div>
-          <!-- Review body (hidden until tab clicked) -->
-          <div class="runs-detail-body" id="rdReviewBody" style="display:none;">
-            <!-- ── Architectural Review ── -->
-            <div class="rd-review-section">
-              <div class="rd-review-section-title">Architectural Review</div>
-              <div class="rd-review-section-sub" id="rdRevSubtitle">—</div>
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                <select id="rdRevModelSel" style="flex:1;min-width:160px;font-size:11px;"></select>
-                <select id="rdRevScopeSel" style="width:140px;">
-                  <option value="uc">This use case</option>
-                  <option value="run">Whole analysis</option>
-                </select>
-                <button class="btn primary btn-sm" id="rdRevRunBtn">Generate</button>
-                <button class="btn ghost btn-sm" id="rdRevCopyBtn" style="display:none;">⧉ Copy review</button>
-                <button class="btn ghost btn-sm" id="rdRevUseClaudeBtn">⧉ Use in Claude</button>
-                <button class="btn ghost btn-sm" id="rdRevReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
-              </div>
-              <div id="rdRevHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
-              <div id="rdRevStatus" style="font-size:11px;color:var(--text-faint);margin-top:4px;display:none;"></div>
-              <div class="arch-font-bar" id="rdRevFontBar" style="display:none;">
-                <button id="rdRevFontDown">A−</button>
-                <span class="font-size-lbl" id="rdRevFontLbl">15px</span>
-                <button id="rdRevFontUp">A+</button>
-                <select id="rdRevFontFam">
-                  <option value="serif">Serif</option>
-                  <option value="sans">Sans</option>
-                  <option value="mono">Mono</option>
-                </select>
-              </div>
-              <div id="rdRevStream" class="arch-review-stream" style="display:none;margin-top:6px;"></div>
-              <div id="rdRevNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
-                <span style="font-size:11px;color:var(--text-faint);">Review complete —</span>
-                <button class="btn ghost btn-sm" id="rdRevToEnhBtn">Plan enhancements →</button>
-              </div>
-            </div>
-            <!-- ── Enhancement Plan ── -->
-            <div class="rd-review-section" id="rdEnhSection" style="display:none;">
-              <div class="rd-review-section-title">Enhancement Plan</div>
-              <div class="rd-review-section-sub" id="rdEnhSubtitle">—</div>
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                <select id="rdEnhModelSel" style="flex:1;min-width:160px;font-size:11px;"></select>
-                <select id="rdEnhScopeSel" style="width:140px;">
-                  <option value="uc">This use case</option>
-                  <option value="run">Whole analysis</option>
-                </select>
-                <button class="btn primary btn-sm" id="rdEnhRunBtn">Generate</button>
-                <button class="btn ghost btn-sm" id="rdEnhCopyBtn" style="display:none;">⧉ Copy spec</button>
-                <button class="btn ghost btn-sm" id="rdEnhUseClaudeBtn">⧉ Use in Claude</button>
-                <button class="btn ghost btn-sm" id="rdEnhReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
-              </div>
-              <div id="rdEnhHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
-              <div id="rdEnhStatus" style="font-size:11px;color:var(--text-faint);margin-top:4px;display:none;"></div>
-              <div class="arch-font-bar" id="rdEnhFontBar" style="display:none;">
-                <button id="rdEnhFontDown">A−</button>
-                <span class="font-size-lbl" id="rdEnhFontLbl">15px</span>
-                <button id="rdEnhFontUp">A+</button>
-                <select id="rdEnhFontFam">
-                  <option value="serif">Serif</option>
-                  <option value="sans">Sans</option>
-                  <option value="mono">Mono</option>
-                </select>
-              </div>
-              <div id="rdEnhStream" class="arch-review-stream" style="display:none;margin-top:8px;"></div>
-              <div id="rdEnhNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
-                <span style="font-size:11px;color:var(--text-faint);">Spec complete —</span>
-                <button class="btn ghost btn-sm" id="rdEnhToPrBtn">Create PR →</button>
-              </div>
-            </div>
-            <!-- ── Create PR / MR ── -->
-            <div class="rd-review-section" id="rdPrSection" style="display:none;">
-              <div class="rd-review-section-title">Create pull request / merge request</div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-top:10px;">
-                <div class="form-field"><label style="font-size:10px;">Repository</label>
-                  <select id="rdPrRepoSel"></select></div>
-                <div class="form-field"><label style="font-size:10px;">Base branch</label>
-                  <input id="rdPrBaseBranch" placeholder="main" /></div>
-                <div class="form-field"><label style="font-size:10px;">New branch</label>
-                  <input id="rdPrBranch" /></div>
-                <div class="form-field"><label style="font-size:10px;">File path</label>
-                  <input id="rdPrFilePath" /></div>
-                <div class="form-field" style="grid-column:1/-1;"><label style="font-size:10px;">PR title</label>
-                  <input id="rdPrTitle" /></div>
-              </div>
-              <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
-                <button class="btn ghost btn-sm" id="rdPrCopyBtn">⧉ Copy PR description</button>
-                <button class="btn primary btn-sm" id="rdPrCreateBtn">Push branch + open PR</button>
-                <span id="rdPrMsg" style="font-size:11px;color:var(--text-faint);"></span>
-              </div>
-            </div>
-          </div><!-- /rdReviewBody -->
         </div><!-- /runs-detail-panel -->
       </div><!-- /runs-split -->
     </section>
@@ -6169,13 +6078,12 @@ function selectRun(name) {
   renderRunsList(); // re-render to show active state
   // Show detail panel header + tabs
   document.getElementById('rdPanelHeader').style.display = '';
-  // IA slice 3: the run-detail "Review & Plan" tab is retired — review/enhancement/PR
-  // generation has ONE home (Roadmaps), reached via the "Review this analysis →" header
-  // launcher (scopes Roadmaps to this analysis's Scoping Set). Keep the strip hidden; the
-  // embedded generator body (#rdReviewBody) stays in markup but unreachable, pending a
-  // dead-code removal pass.
+  // The run-detail "Review & Plan" tab is retired — review/enhancement/PR generation has
+  // ONE home (Roadmaps), reached via the "Review this analysis →" header launcher. The
+  // embedded generator body + its listeners + openRunDetailReview were removed in the
+  // dead-code purge; rdSwitchTab now just keeps the Analysis body shown.
   document.getElementById('rdTabStrip').style.display = 'none';
-  try { rdSwitchTab('run'); } catch (_) {}   // force the Analysis body visible (the Review tab is retired)
+  try { rdSwitchTab('run'); } catch (_) {}   // keep the Analysis body visible
   document.getElementById('rdTitle').textContent = name;
   document.getElementById('rdSub').textContent = 'loading…';
   // Reset run body
@@ -13030,50 +12938,6 @@ function openReviewPane(scope, ucUuid, startAt = 'review') {
     _updateArchModelInfo();
   }, 50);
 }
-
-// Keep rdRevSubtitle etc. for the inline run-detail review panel
-function openRunDetailReview(scope, ucUuid, startAt = 'review') {
-  const runId = activeRunResultId;
-  if (!runId) { toast('Select an analysis ingestion in the Results tab first'); return; }
-  _reviewCtx = { runId, ucUuid: ucUuid || null };
-
-  const ucEntry = ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid) : null;
-  const ucHandle = ucEntry?.uc_handle || ucUuid || '—';
-  const label = scope === 'uc' ? `Use case: ${ucHandle}` : `Run: ${runId||'—'}`;
-  const revSub = document.getElementById('rdRevSubtitle');
-  const enhSub = document.getElementById('rdEnhSubtitle');
-  if (revSub) revSub.textContent = label;
-  if (enhSub) enhSub.textContent = label;
-
-  const revSel = document.getElementById('rdRevScopeSel');
-  if (revSel) { revSel.value = scope; revSel.querySelector('option[value="uc"]').disabled = !ucUuid; }
-  const enhSel = document.getElementById('rdEnhScopeSel');
-  if (enhSel) { enhSel.value = scope; enhSel.querySelector('option[value="uc"]').disabled = !ucUuid; }
-
-  _updateArchModelInfo();
-
-  ['rdRevStream','rdEnhStream'].forEach(id => {
-    const el = document.getElementById(id); if (!el) return;
-    el.textContent = ''; el.style.display = 'none'; el.classList.remove('streaming');
-  });
-  ['rdRevStatus','rdEnhStatus','rdRevCopyBtn','rdEnhCopyBtn','rdRevReasoningBtn','rdEnhReasoningBtn','rdRevNextRow','rdEnhNextRow','rdRevHint','rdEnhHint'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.style.display = 'none';
-  });
-  _rdRevRaw.text = ''; _rdEnhRaw.text = '';
-
-  const enhSec = document.getElementById('rdEnhSection');
-  if (enhSec) enhSec.style.display = startAt === 'enhance' ? '' : 'none';
-  const prSec = document.getElementById('rdPrSection');
-  if (prSec) prSec.style.display = 'none';
-
-  if (_rdName) switchView('runs');
-  rdSwitchTab('review');
-
-  if (startAt === 'enhance') {
-    setTimeout(() => { const el = document.getElementById('rdEnhSection'); if (el) el.scrollIntoView({ behavior:'smooth', block:'start' }); }, 50);
-  }
-}
-
 // ══════════════ REVIEW & PLAN TAB ════════════════════════════
 
 const _rpRevRaw = { text: '' };
@@ -15079,29 +14943,6 @@ document.getElementById('rpEnhToPrBtn')?.addEventListener('click', () => {
   document.getElementById('ewRouteBtn')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   _ewRoute();
 });
-
-// ── Run detail tab buttons ────────────────────────────────────
-document.getElementById('rdTabRun')?.addEventListener('click', () => rdSwitchTab('run'));
-document.getElementById('rdTabReview')?.addEventListener('click', () => {
-  if (!_reviewCtx.runId && !activeRunResultId) { toast('Select an analysis ingestion in the Results tab first'); return; }
-  if (!_reviewCtx.runId) openRunDetailReview('run', null);
-  else rdSwitchTab('review');
-});
-
-document.getElementById('rdRevScopeSel').addEventListener('change', function() {
-  const ucEntry = _reviewCtx.ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===_reviewCtx.ucUuid) : null;
-  document.getElementById('rdRevSubtitle').textContent = this.value === 'run'
-    ? `Run: ${_reviewCtx.runId||'—'}`
-    : `Use case: ${ucEntry?.uc_handle||_reviewCtx.ucUuid||'—'}`;
-});
-
-document.getElementById('rdEnhScopeSel').addEventListener('change', function() {
-  const ucEntry = _reviewCtx.ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===_reviewCtx.ucUuid) : null;
-  document.getElementById('rdEnhSubtitle').textContent = this.value === 'run'
-    ? `Run: ${_reviewCtx.runId||'—'}`
-    : `Use case: ${ucEntry?.uc_handle||_reviewCtx.ucUuid||'—'}`;
-});
-
 // ── Shared think-block rendering ─────────────────────────────────────────────
 function _stripThink(raw) {
   let s = raw.replace(/<think>[\s\S]*?<\/think>\n?/g, '');
@@ -15274,46 +15115,6 @@ async function _runStream({ endpoint, body, streamEl, statusEl, copyBtn, runBtn,
   }
 }
 
-// ── Arch Review stream ────────────────────────────────────────────────────────
-
-document.getElementById('rdRevReasoningBtn').addEventListener('click', function() {
-  const on = localStorage.getItem('rdRevShowReasoning') === '1';
-  localStorage.setItem('rdRevShowReasoning', on ? '0' : '1');
-  this.textContent = on ? '○ Reasoning' : '● Reasoning';
-  const el = document.getElementById('rdRevStream');
-  _applyStreamRender(el, (!on) ? _rdRevRaw.text : _stripThink(_rdRevRaw.text), el.dataset.renderMode);
-  el.scrollTop = el.scrollHeight;
-});
-
-document.getElementById('rdRevRunBtn').addEventListener('click', async () => {
-  // Model defaults to the Config Arch Review default; the override picker sends
-  // an explicit model only when the operator changes it.
-  const scope  = document.getElementById('rdRevScopeSel').value;
-  const { runId, ucUuid } = _reviewCtx;
-  if (!runId) { toast('No ingestion selected'); return; }
-  if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
-  const body = { scope, run_id: runId, ..._overrideModelBody('rdRevModelSel') };
-  if (scope === 'uc') body.uc_uuid = ucUuid;
-  await _runStream({
-    endpoint: '/api/arch-review', body,
-    streamEl:     document.getElementById('rdRevStream'),
-    statusEl:     document.getElementById('rdRevStatus'),
-    copyBtn:      document.getElementById('rdRevCopyBtn'),
-    runBtn:       document.getElementById('rdRevRunBtn'),
-    reasoningBtn: document.getElementById('rdRevReasoningBtn'),
-    nextRow:      document.getElementById('rdRevNextRow'),
-    rawHolder:    _rdRevRaw,
-    showReasoningKey: 'rdRevShowReasoning',
-    renderMode: 'markdown',
-    fontBar:      document.getElementById('rdRevFontBar'),
-  });
-});
-
-document.getElementById('rdRevCopyBtn').addEventListener('click', () => {
-  const text = localStorage.getItem('rdRevShowReasoning') === '1' ? _rdRevRaw.text : _stripThink(_rdRevRaw.text);
-  navigator.clipboard.writeText(text).then(() => toast('Review copied'));
-});
-
 async function _useInClaude(promptEndpoint, scope, runId, ucUuid, hintEl, btn) {
   if (!runId) { toast('No ingestion selected'); return; }
   const prev = btn.textContent;
@@ -15329,161 +15130,6 @@ async function _useInClaude(promptEndpoint, scope, runId, ucUuid, hintEl, btn) {
   } catch(e) { toast('Copy failed: ' + e.message, true); }
   finally { btn.disabled = false; btn.textContent = prev; }
 }
-
-document.getElementById('rdRevUseClaudeBtn').addEventListener('click', () =>
-  _useInClaude('/api/arch-review/prompt',
-    document.getElementById('rdRevScopeSel').value,
-    _reviewCtx.runId, _reviewCtx.ucUuid,
-    document.getElementById('rdRevHint'),
-    document.getElementById('rdRevUseClaudeBtn')));
-
-document.getElementById('rdRevToEnhBtn').addEventListener('click', () => {
-  const enhSec = document.getElementById('rdEnhSection');
-  enhSec.style.display = '';
-  // Sync scope from arch review (model is the shared Config arch-review default).
-  document.getElementById('rdEnhScopeSel').value = document.getElementById('rdRevScopeSel').value;
-  setTimeout(() => enhSec.scrollIntoView({ behavior:'smooth', block:'start' }), 30);
-});
-
-// ── Enhancement stream ────────────────────────────────────────────────────────
-
-document.getElementById('rdEnhReasoningBtn').addEventListener('click', function() {
-  const on = localStorage.getItem('rdEnhShowReasoning') === '1';
-  localStorage.setItem('rdEnhShowReasoning', on ? '0' : '1');
-  this.textContent = on ? '○ Reasoning' : '● Reasoning';
-  const el = document.getElementById('rdEnhStream');
-  _applyStreamRender(el, (!on) ? _rdEnhRaw.text : _stripThink(_rdEnhRaw.text), el.dataset.renderMode);
-  el.scrollTop = el.scrollHeight;
-});
-
-document.getElementById('rdEnhRunBtn').addEventListener('click', async () => {
-  // Model defaults to the Config Enhancement default (→ Arch Review when unset);
-  // the override picker sends an explicit model only when changed.
-  const scope  = document.getElementById('rdEnhScopeSel').value;
-  const { runId, ucUuid } = _reviewCtx;
-  if (!runId) { toast('No ingestion selected'); return; }
-  if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
-  const body = { scope, run_id: runId, ..._overrideModelBody('rdEnhModelSel') };
-  if (scope === 'uc') body.uc_uuid = ucUuid;
-  await _runStream({
-    endpoint: '/api/enhancements', body,
-    streamEl:     document.getElementById('rdEnhStream'),
-    statusEl:     document.getElementById('rdEnhStatus'),
-    copyBtn:      document.getElementById('rdEnhCopyBtn'),
-    runBtn:       document.getElementById('rdEnhRunBtn'),
-    reasoningBtn: document.getElementById('rdEnhReasoningBtn'),
-    nextRow:      document.getElementById('rdEnhNextRow'),
-    rawHolder:    _rdEnhRaw,
-    showReasoningKey: 'rdEnhShowReasoning',
-    renderMode: 'enhancement',
-    fontBar:      document.getElementById('rdEnhFontBar'),
-  });
-});
-
-document.getElementById('rdEnhCopyBtn').addEventListener('click', () => {
-  const text = localStorage.getItem('rdEnhShowReasoning') === '1' ? _rdEnhRaw.text : _stripThink(_rdEnhRaw.text);
-  navigator.clipboard.writeText(text).then(() => toast('Enhancement spec copied'));
-});
-
-document.getElementById('rdEnhUseClaudeBtn').addEventListener('click', () =>
-  _useInClaude('/api/enhancements/prompt',
-    document.getElementById('rdEnhScopeSel').value,
-    _reviewCtx.runId, _reviewCtx.ucUuid,
-    document.getElementById('rdEnhHint'),
-    document.getElementById('rdEnhUseClaudeBtn')));
-
-// ── PR creation ────────────────────────────────────────────────────────────────
-
-function _rdPrRepoChanged() {
-  const opt = document.getElementById('rdPrRepoSel').selectedOptions[0];
-  if (opt && opt.dataset.branch) document.getElementById('rdPrBaseBranch').value = opt.dataset.branch;
-}
-
-document.getElementById('rdEnhToPrBtn').addEventListener('click', async () => {
-  const panel  = document.getElementById('rdPrSection');
-  const msgEl  = document.getElementById('rdPrMsg');
-  msgEl.textContent = '';
-
-  // ADR-006: enhancement targets are managed_repos rows with role=enhancement-target
-  if (!_codeRepos.length) {
-    try {
-      const r = await api('/api/repos?role=enhancement-target');
-      _codeRepos = r.repos || [];
-    } catch {}
-  }
-  const sel = document.getElementById('rdPrRepoSel');
-  sel.innerHTML = _codeRepos.length
-    ? _codeRepos.map(r => {
-        const provider = (r.metadata && r.metadata.provider) || (r.repo_url && r.repo_url.toLowerCase().includes('gitlab') ? 'gitlab' : 'github');
-        return `<option value="${esc(r.uuid)}" data-branch="${esc(r.repo_branch)}">${esc(r.display_name || r.namespace)} (${esc(provider)})</option>`;
-      }).join('')
-    : '<option value="">No enhancement-target repos — add the role in Config → Managed repos</option>';
-  if (_codeRepos.length) _rdPrRepoChanged();
-
-  const scope  = document.getElementById('rdEnhScopeSel').value;
-  const { runId, ucUuid } = _reviewCtx;
-  try {
-    let url = `/api/pr/preview?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
-    if (scope === 'uc' && ucUuid) url += `&uc_uuid=${encodeURIComponent(ucUuid)}`;
-    const preview = await api(url);
-    document.getElementById('rdPrBranch').value   = preview.branch;
-    document.getElementById('rdPrTitle').value    = preview.title;
-    document.getElementById('rdPrFilePath').value = preview.file_path;
-    panel._gapContext = preview.gap_context;
-  } catch(e) {
-    msgEl.textContent = 'Preview load failed: ' + e.message;
-    msgEl.style.color = 'var(--error)';
-    panel._gapContext = '';
-  }
-
-  panel.style.display = '';
-  setTimeout(() => panel.scrollIntoView({ behavior:'smooth', block:'start' }), 30);
-});
-
-document.getElementById('rdPrRepoSel').addEventListener('change', _rdPrRepoChanged);
-
-document.getElementById('rdPrCopyBtn').addEventListener('click', () => {
-  const panel   = document.getElementById('rdPrSection');
-  const gapCtx  = panel._gapContext || '';
-  const enhText = _stripThink(_rdEnhRaw.text);
-  const branch  = document.getElementById('rdPrBranch').value;
-  const file    = document.getElementById('rdPrFilePath').value;
-  let body = `**Branch:** \`${branch}\`  \n**File:** \`${file}\`\n\n---\n\n` + gapCtx;
-  if (enhText) body += '\n\n## Enhancement specification\n\n' + enhText;
-  body += '\n\n---\n*Generated by DAV Console*';
-  navigator.clipboard.writeText(body)
-    .then(() => toast('PR description copied'))
-    .catch(() => toast('Copy failed', true));
-});
-
-document.getElementById('rdPrCreateBtn').addEventListener('click', async () => {
-  const repoUuid = document.getElementById('rdPrRepoSel').value;
-  if (!repoUuid) { toast('Select a repository first'); return; }
-  const msgEl = document.getElementById('rdPrMsg');
-  const btn   = document.getElementById('rdPrCreateBtn');
-  const payload = {
-    repo_uuid: repoUuid,
-    run_id:  _reviewCtx.runId,
-    uc_uuid: _reviewCtx.ucUuid || null,
-    scope:       document.getElementById('rdEnhScopeSel').value,
-    branch:      document.getElementById('rdPrBranch').value.trim(),
-    title:       document.getElementById('rdPrTitle').value.trim(),
-    base_branch: document.getElementById('rdPrBaseBranch').value.trim() || null,
-    file_path:   document.getElementById('rdPrFilePath').value.trim(),
-    enhancement_text: _stripThink(_rdEnhRaw.text),
-  };
-  if (!payload.branch || !payload.title) { toast('Branch and title required'); return; }
-  btn.disabled = true;
-  msgEl.textContent = 'Creating…'; msgEl.style.color = 'var(--text-faint)';
-  try {
-    const result = await createPrWithApprovalGate(payload);
-    if (!result) { msgEl.textContent = 'Cancelled.'; msgEl.style.color = 'var(--text-faint)'; }
-    else { msgEl.textContent = '✓ PR created'; msgEl.style.color = 'var(--ok)';
-           if (result.pr_url) window.open(result.pr_url, '_blank'); }
-  } catch(e) {
-    msgEl.textContent = 'Failed: ' + e.message; msgEl.style.color = 'var(--error)';
-  } finally { btn.disabled = false; }
-});
 
 // ── MCP Servers ──────────────────────────────────────────────────────────────
 
@@ -17212,37 +16858,6 @@ function setupConfigNav() {
 // Config tab data is loaded via loadConfig() called from switchView('config').
 
 // ── Arch review font bar ──────────────────────────────────────────────────────
-
-(function() {
-  const MIN = 11, MAX = 22;
-  const LS_SIZE = 'archFontSize', LS_FAM = 'archFontFamily';
-  const famMap = { serif: 'var(--serif)', sans: 'var(--sans)', mono: 'var(--mono)' };
-  let curSize = Math.max(MIN, Math.min(MAX, parseInt(localStorage.getItem(LS_SIZE) || '15', 10)));
-  let curFam  = localStorage.getItem(LS_FAM) || 'serif';
-
-  function applySize(px) {
-    curSize = Math.max(MIN, Math.min(MAX, px));
-    document.documentElement.style.setProperty('--arch-font-size', curSize + 'px');
-    document.querySelectorAll('.font-size-lbl').forEach(el => { el.textContent = curSize + 'px'; });
-    localStorage.setItem(LS_SIZE, String(curSize));
-  }
-
-  function applyFamily(fam) {
-    curFam = fam;
-    document.documentElement.style.setProperty('--arch-font-family', famMap[fam] || famMap.serif);
-    document.querySelectorAll('#rdRevFontFam,#rdEnhFontFam').forEach(sel => { sel.value = fam; });
-    localStorage.setItem(LS_FAM, fam);
-  }
-
-  applySize(curSize);
-  applyFamily(curFam);
-
-  ['Rev', 'Enh'].forEach(w => {
-    document.getElementById('rd' + w + 'FontDown').addEventListener('click', () => applySize(curSize - 1));
-    document.getElementById('rd' + w + 'FontUp').addEventListener('click',   () => applySize(curSize + 1));
-    document.getElementById('rd' + w + 'FontFam').addEventListener('change', function() { applyFamily(this.value); });
-  });
-})();
 
 init();
 </script>
