@@ -910,11 +910,12 @@
     <span class="llm-spinner" id="runLoadSpinner" style="display:none;margin:0 0 0 6px;" title="Loading analysis data…"></span>
     <div id="runChipPopover" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:70;min-width:280px;max-height:340px;overflow-y:auto;background:var(--bg-panel);border:1px solid var(--border);border-radius:4px;box-shadow:0 6px 20px rgba(0,0,0,0.35);padding:8px 10px;cursor:default;font-size:11px;"></div>
   </div>
-  <!-- Analysis freshness (#112 / uc-scoped-evaluation-design.md): coverage + staleness for the
-       active project. Status, not selection. Click → breakdown popover. -->
-  <div class="run-context-chip" id="freshnessChip" title="Analysis freshness — UC coverage + staleness (click for detail)" style="cursor:pointer;position:relative;">
+  <!-- Coverage (#112 / uc-scoped-evaluation-design.md): UC analysis coverage + staleness for the
+       active project. Status, not selection. Click → breakdown popover. Distinct from the run-status
+       "Analysis" chip above (active runs) — this is how much of the corpus has fresh analysis. -->
+  <div class="run-context-chip" id="freshnessChip" title="Coverage — UC analysis coverage + staleness (click for detail)" style="cursor:pointer;position:relative;">
     <span class="rcc-dot" id="freshDot"></span>
-    <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Analysis</span>
+    <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Coverage</span>
     <span id="freshSummary" style="font-size:11px;color:inherit;">—</span>
     <div id="freshnessPopover" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:70;min-width:240px;background:var(--bg-panel);border:1px solid var(--border);border-radius:4px;box-shadow:0 6px 20px rgba(0,0,0,0.35);padding:8px 10px;cursor:default;font-size:11px;"></div>
   </div>
@@ -1149,9 +1150,9 @@
                 <button class="btn ghost btn-sm" id="rdRevToEnhBtn">Plan enhancements →</button>
               </div>
             </div>
-            <!-- ── Enhancement Spec ── -->
+            <!-- ── Enhancement Plan ── -->
             <div class="rd-review-section" id="rdEnhSection" style="display:none;">
-              <div class="rd-review-section-title">Enhancement Spec</div>
+              <div class="rd-review-section-title">Enhancement Plan</div>
               <div class="rd-review-section-sub" id="rdEnhSubtitle">—</div>
               <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                 <select id="rdEnhModelSel" style="flex:1;min-width:160px;font-size:11px;"></select>
@@ -1215,12 +1216,12 @@
       <div class="panel-header">
         <div class="panel-title">Results</div>
         <div style="display:flex;gap:4px;flex-shrink:0;">
-          <button class="btn ghost btn-icon" id="ingestResultBtn" title="Re-ingest analysis results into Postgres (done automatically on ingestion selection)" style="font-size:10px;padding:3px 8px;display:none;">↓ Re-ingest</button>
+          <button class="btn ghost btn-icon" id="ingestResultBtn" title="Re-load analysis results into Postgres (done automatically on analysis selection)" style="font-size:10px;padding:3px 8px;display:none;">↓ Reload</button>
           <button class="btn ghost btn-icon" id="refreshResultsBtn" title="Refresh">↻</button>
         </div>
       </div>
       <div class="panel-toolbar">
-        <input id="resultFilter" placeholder="filter ingestions…" />
+        <input id="resultFilter" placeholder="filter analyses…" />
       </div>
       <div class="scrollable" id="resultList"><div class="empty">loading…</div></div>
     </div>
@@ -1231,7 +1232,7 @@
           <div class="panel-header">
             <span class="panel-title" id="ucPanelTitle">Use Cases</span>
             <div class="toolbar-actions">
-              <button class="btn ghost btn-sm" id="cmpToggleBtn" title="Compare with another ingestion">⇄ Compare</button>
+              <button class="btn ghost btn-sm" id="cmpToggleBtn" title="Compare with another analysis">⇄ Compare</button>
             </div>
           </div>
           <!-- Compare run picker (hidden until compare mode active) -->
@@ -1239,7 +1240,7 @@
             <div style="font-size:10px; color:var(--text-dim);">Compare <em style="color:var(--accent);" id="cmpRunALabel">…</em> vs:</div>
             <div style="display:flex; gap:6px; align-items:center;">
               <select id="cmpRunBSelect" style="flex:1; font-size:10px; padding:3px 5px;">
-                <option value="">— pick an ingestion —</option>
+                <option value="">— pick an analysis —</option>
               </select>
               <button class="btn ghost btn-icon" id="cmpRunBtn" style="font-size:10px;">Go</button>
               <button class="btn ghost btn-icon" id="cmpCancelBtn" style="font-size:10px; color:var(--text-faint);">✕</button>
@@ -1273,7 +1274,7 @@
             <button class="cmp-filter-btn" data-cf="only_a">only A</button>
             <button class="cmp-filter-btn" data-cf="only_b">only B</button>
           </div>
-          <div class="scrollable" id="ucResultList"><div class="empty">select an ingestion</div></div>
+          <div class="scrollable" id="ucResultList"><div class="empty">select an analysis</div></div>
         </div>
         <div class="split-resizer" data-rs-left="ucListPanel" data-rs-storage="rsUcsW"></div>
         <div class="split-right" id="analysisPanel" style="display:flex;flex-direction:column;min-height:0;">
@@ -1282,7 +1283,7 @@
           <div id="runResultsHeader" style="display:none;flex-shrink:0;border-bottom:1px solid var(--border);background:var(--bg-panel);padding:10px 16px;"></div>
           <div id="analysisActionBar" style="display:none;flex-shrink:0;border-bottom:1px solid var(--border);background:var(--bg-panel)"></div>
           <div id="analysisDetail" style="flex:1;overflow-y:auto;min-height:0;">
-            <div class="detail-pane"><div class="detail-empty">Select an ingestion, then a use case to view its analysis.</div></div>
+            <div class="detail-pane"><div class="detail-empty">Select an analysis, then a use case to view its results.</div></div>
           </div>
         </div>
       </div>
@@ -1694,7 +1695,7 @@
       <div style="display:flex;flex-direction:column;height:calc(100vh - 60px);padding:14px;gap:10px;">
         <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;padding:12px 14px;">
           <div class="panel-title">Capability Map</div>
-          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 8px;">Bidirectional UC ↔ capability matrix for an ingestion. Rows = use cases, columns = capabilities. Click a UC to highlight its capabilities; click a capability header to highlight the UCs that demand it. Column ★ = foundational (other capabilities depend on it); the count is demand (how many UCs).</div>
+          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 8px;">Bidirectional UC ↔ capability matrix for an analysis. Rows = use cases, columns = capabilities. Click a UC to highlight its capabilities; click a capability header to highlight the UCs that demand it. Column ★ = foundational (other capabilities depend on it); the count is demand (how many UCs).</div>
           <div style="font-size:10px;color:var(--text-faint);margin:-4px 0 8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;" title="Column underline = R4 disposition from the catalog (≈ Gartner TIME). Set it in the Catalog → Board.">
             <span>Disposition underline:</span>
             <span><span style="display:inline-block;width:10px;border-bottom:2px solid var(--green);"></span> Reuse·Tolerate</span>
@@ -1715,7 +1716,7 @@
           </div>
         </div>
         <div class="scrollable" id="cmMatrix" style="flex:1;overflow:auto;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;padding:10px;">
-          <div class="empty">Pick an ingestion and click “Load map”.</div>
+          <div class="empty">Pick an analysis and click “Load map”.</div>
         </div>
       </div>
     </section>
@@ -5345,7 +5346,7 @@ const DOMAINS = [
       { view:'review',      label:'Arch Review' },
       { view:'enhancement', label:'Enhancement / PR' },
       { view:'capmap',      label:'Cap Map' },
-      { view:'engineering', label:'Roadmap' },
+      { view:'engineering', label:'Engineering Roadmap' },
   ]},
   { key:'assess',  label:'Assessments', icon:'📊', focus:'assessment', navId:'navAssess', subviews:[
       { view:'assess',   label:'Assessments', priv:'assessment.view' },
