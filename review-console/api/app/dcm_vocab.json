@@ -1,0 +1,71 @@
+{
+  "_consumer_id": "generic",
+  "_generated_by": "dav.scripts.export_dcm_vocab",
+  "_source": "engine consumer_profile.get_generic_reference_profile()",
+  "failure_modes": [
+    "happy_path",
+    "provider_failure",
+    "policy_violation",
+    "peer_dcm_disconnect",
+    "data_inconsistency",
+    "rollback_required",
+    "partial_fulfillment",
+    "timeout",
+    "resource_exhaustion"
+  ],
+  "governance_contexts": [
+    "no_governance",
+    "standard_governance",
+    "audit_heavy",
+    "compliance_gated",
+    "sovereignty_enforced"
+  ],
+  "lifecycle_phases": [
+    "new_request",
+    "modification",
+    "decommission",
+    "drift_detection",
+    "brownfield_ingestion",
+    "rehydration_faithful",
+    "rehydration_provider_portable",
+    "rehydration_historical_exact",
+    "rehydration_historical_portable",
+    "expiry_enforcement"
+  ],
+  "policy_complexities": [
+    "system_defaults_only",
+    "single_gating",
+    "multi_policy_chain",
+    "conflicting_policies",
+    "orchestration_flow_static",
+    "dynamic_conditional_flow",
+    "cross_domain_constraint",
+    "human_escalation_required",
+    "governance_matrix_enforcement",
+    "recovery_policy"
+  ],
+  "profiles": [
+    "minimal",
+    "dev",
+    "standard",
+    "prod",
+    "fsi",
+    "sovereign"
+  ],
+  "provider_landscapes": [
+    "single_eligible",
+    "multiple_eligible",
+    "none_eligible",
+    "peer_dcm_required",
+    "process_provider",
+    "mixed"
+  ],
+  "resource_complexities": [
+    "single_no_deps",
+    "hard_dependencies",
+    "composite_service",
+    "conditional_soft_deps",
+    "process_resource",
+    "cross_dependency_payload"
+  ]
+}
