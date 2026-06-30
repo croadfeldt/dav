@@ -886,7 +886,7 @@
   </div>
   <!-- Active CUSTOMER (customer-demand-dedup-design.md #130): peer to Project — filters
        customer-attributed surfaces (UC demand, etc.) to this customer. Default = all. -->
-  <div class="run-context-chip" id="customerChip" title="Customer — filters customer-attributed surfaces (demand) to this customer; the other axis of the (customer × project) matrix">
+  <div class="run-context-chip" id="customerChip" title="Customer — filters customer-attributed surfaces (demand) to this customer; the other axis of the (customer × project) matrix" style="display:none;">
     <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Customer</span>
     <select id="globalCustomerSel" title="Active customer" style="font-size:11px;max-width:180px;background:transparent;border:none;color:inherit;cursor:pointer;font-family:inherit;">
       <option value="">All customers</option>
@@ -895,7 +895,7 @@
   <!-- Active SCOPE (uc-scoped-evaluation-design.md: "Scope = a Scoping Set"). App-wide
        chrome like Project — one selection drives Results, Cap Map, and Engineering, and
        the Analysis freshness chip reflects it. Per-view pickers are retired. -->
-  <div class="run-context-chip" id="scopeChip" title="Scoping Set — the current scope for Results, Cap Map and Engineering (latest evaluation per use case)">
+  <div class="run-context-chip" id="scopeChip" title="Scoping Set — filters Results, Cap Map and Roadmap to this set (latest evaluation per use case)" style="display:none;">
     <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Scope</span>
     <select id="globalScopeSel" title="Active Scoping Set" style="font-size:11px;max-width:220px;background:transparent;border:none;color:inherit;cursor:pointer;font-family:inherit;">
       <option value="">All use cases</option>
@@ -5421,6 +5421,7 @@ function switchDomain(key) {
 
 function switchView(name) {
   _curView = name;
+  _updateContextChrome(name);
   document.querySelectorAll('.pf-nav-item').forEach(b =>
     b.classList.toggle('active', b.dataset.view === name));
   document.querySelectorAll('.pf-view').forEach(v =>
@@ -7519,6 +7520,23 @@ function setCustomer(v) {
   try { _persistUserSettings(); } catch (_) {}   // #129/sync: working context follows the user
 }
 document.getElementById('globalCustomerSel')?.addEventListener('change', function () { setCustomer(this.value); });
+
+// UI lean slice 2: contextual masthead chrome. Scope (Scoping Set) and Customer
+// are FILTERS, not global context — they only do something on the views that
+// consume them. Show each chip only where it applies (standard adaptive-toolbar
+// pattern); hide it everywhere else so the masthead is Project + status + account
+// on the ~13 views that ignore them. This is contextual (filters for the current
+// surface), NOT nav reshuffling — the rail is unchanged.
+//   Scope  → set_id= on Results / Cap Map / Roadmap surfaces (scopeQuery()).
+//   Customer → customer_id= on the Use Cases list only (customerQuery(), 1 consumer).
+const _SCOPE_VIEWS    = new Set(['results', 'capmap', 'review', 'enhancement', 'engineering']);
+const _CUSTOMER_VIEWS = new Set(['usecases']);
+function _updateContextChrome(name) {
+  const sc = document.getElementById('scopeChip');
+  const cu = document.getElementById('customerChip');
+  if (sc) sc.style.display = _SCOPE_VIEWS.has(name) ? '' : 'none';
+  if (cu) cu.style.display = _CUSTOMER_VIEWS.has(name) ? '' : 'none';
+}
 
 // ── UC/Set-scoped results (uc-scoped-evaluation-design.md 3b) ──────────────────
 let _scopedUCs = [];
