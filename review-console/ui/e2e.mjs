@@ -130,7 +130,7 @@ async function runRole(role) {
   // Stable rail (no personas): Authoring + Catalog have no privilege gate, so they show for
   // every role. Assessments shows where assessment.view is held (all three fixtures have it /
   // are admin). The rail is identical in shape per RBAC — it does not reshuffle by role.
-  ck('stable rail: Authoring domain shown', shown(domDisp('author')), 'display=' + domDisp('author'));
+  ck('stable rail: Use Cases domain shown', shown(domDisp('author')), 'display=' + domDisp('author'));
   ck('stable rail: Catalog domain shown', shown(domDisp('catalog')), 'display=' + domDisp('catalog'));
   ck('stable rail: Assessments domain shown', shown(domDisp('assess')), 'display=' + domDisp('assess'));
   // UI lean slice 3: setup/admin domains folded into one Settings group (9 → 6 top-level).

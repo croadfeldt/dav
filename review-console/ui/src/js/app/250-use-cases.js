@@ -107,6 +107,8 @@ async function _repairAllUCs() {
 
 function renderUCList() {
   const el = document.getElementById('ucList');
+  _ucRenderChips();   // #244: keep the filter chips in sync with the backing controls
+
   // Set-membership filter from the left rail (skipped in the #43 "available to apply" pool —
   // pool UCs belong to other projects, so set-rail filtering would spuriously empty it).
   let setFiltered = allUCs;
@@ -137,6 +139,8 @@ function renderUCList() {
   // Health filter (#122): invalid = managed UC failing engine validation (from _ucHealth).
   if (ucHealthFilter === 'invalid') filtered = filtered.filter(u => _ucHealth[u.uuid] && !_ucHealth[u.uuid].valid);
   else if (ucHealthFilter === 'valid') filtered = filtered.filter(u => !_ucHealth[u.uuid] || _ucHealth[u.uuid].valid);
+  // #244 tag facet: EXACT tag match (the free-text search above already does substring tag match).
+  if (ucTagFilter) { const _tf = ucTagFilter.toLowerCase(); filtered = filtered.filter(u => (u.tags||[]).some(t => t.toLowerCase() === _tf)); }
   _lastVisibleUUIDs = filtered.map(u => u.uuid);   // for Select-all (operates on the visible/filtered set)
 
   // Roadmap-weight ordering (DCM feature #1): highest priority.score first,

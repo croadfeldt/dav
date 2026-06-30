@@ -413,6 +413,7 @@ let ucAssignFilter = '';        // '' | 'unassigned' | 'assigned' (unified with 
 let ucHealthFilter = '';        // '' | 'invalid' | 'valid' (#122 — flags UCs failing engine validation)
 let ucSortByPriority = false;   // DCM feature #1: toggle roadmap-weight ordering
 let ucPriorityFilter = '';      // '' = all; else critical/high/medium/low
+let ucTagFilter = '';           // #244 tag facet: '' = any; else EXACT tag match
 let _ucPoolMode = false;        // #43: list is showing the "available to apply" pool (managed UCs from other projects)
 
 // ── Init ─────────────────────────────────────────────────────
@@ -2092,7 +2093,7 @@ function _stopRunsListPoll() {
 // Sub-tabs are dual-classed `.tab.pf-nav-item[data-view]` (+ legacy ids) so the e2e
 // selectors and the active-toggle in switchView keep resolving them.
 const DOMAINS = [
-  { key:'author',  label:'Authoring',  icon:'✎', focus:'architecture', subviews:[
+  { key:'author',  label:'Use Cases',  icon:'✎', focus:'architecture', subviews:[
       { view:'usecases',    label:'Use Cases',     badge:'badgeUC' },
       { view:'scopingsets', label:'Scoping Sets' },
       { view:'inbox',       label:'Discussion',    badge:'badgeInbox' },
