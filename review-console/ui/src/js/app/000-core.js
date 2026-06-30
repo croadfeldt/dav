@@ -1,0 +1,14005 @@
+'use strict';
+
+const API = '';
+
+// ── API helpers ──────────────────────────────────────────────
+let _activeProject = (() => { try { return localStorage.getItem('davActiveProject') || ''; } catch { return ''; } })();
+// View-mode backstop (#136): in read-only View mode, refuse mutating requests client-side, so
+// even an un-gated control can't change anything. GET/HEAD always pass; a few utility writes are
+// exempt (auth, the settings toggle itself, a model connection-probe, presence heartbeat).
+const _VIEWMODE_SAFE = ['/api/auth/', '/api/me/settings', '/api/models/probe', '/api/presence'];
+async function api(path, opts = {}) {
+  const method = (opts.method || 'GET').toUpperCase();
+  if (typeof _viewMode !== 'undefined' && _viewMode && method !== 'GET' && method !== 'HEAD'
+      && !_VIEWMODE_SAFE.some(p => path.startsWith(p))) {
+    try { toast('View mode is read-only — switch to Editing to make changes', true); } catch {}
+    const err = new Error('View mode is read-only'); err.viewModeBlocked = true; err.status = 0;
+    throw err;
+  }
+  const res = await fetch(API + path, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(_activeProject ? { 'X-DAV-Project': _activeProject } : {}),
+      ...(opts.headers || {}),
+    },
+    ...opts,
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    const err = new Error(`${res.status}: ${txt}`);
+    err.status = res.status;
+    // Try to parse JSON body so callers can branch on structured detail
+    // (FastAPI HTTPException with a dict detail surfaces as {detail: {...}}).
+    try { err.body = JSON.parse(txt); } catch { err.body = null; }
+    // 401 on a non-auth call means the session is no longer valid (account
+    // deleted/disabled, or never authenticated) — show the login screen so
+    // access is visibly cut off immediately.
+    if (res.status === 401 && !path.startsWith('/api/auth/')) {
+      const ov = document.getElementById('loginOverlay'); if (ov) ov.style.display = 'flex';
+    }
+    throw err;
+  }
+  // 204 No Content (e.g. DELETE endpoints) and any empty body have no JSON to
+  // parse — res.json() would throw on them, surfacing a spurious "failed" toast
+  // even though the call succeeded. Treat no-body as a successful null result.
+  if (res.status === 204) return null;
+  const txt = await res.text();
+  if (!txt) return null;
+  try { return JSON.parse(txt); } catch { return txt; }
+}
+
+// ── Auto-follow helper ──────────────────────────────────────────────────────
+// Standard "follow new content as it streams" behavior shared by every tail
+// pane in the UI (prompts/responses today; future streams should reuse this).
+// Contract:
+//   - scrolling up disables auto-follow (state := false, button reflects)
+//   - clicking the button re-enables auto-follow AND jumps to the bottom
+//   - button is "filled" (dark accent background) when active, "outline" (grey)
+//     when inactive — consistent visual language across all auto-follow tails
+//   - the caller is responsible for actually scrolling to the bottom when new
+//     content arrives, gated on get() returning true. This helper only owns
+//     state + button + scroll-away detection.
+const _AUTO_FOLLOW_BOTTOM_SLACK = 24;   // px from bottom that still counts as "at bottom"
+function _renderAutoFollowBtn(btn, on) {
+  btn.classList.toggle('auto-follow-active', on);
+  // Inline styles (the codebase doesn't use a stylesheet entry for this btn).
+  btn.style.background = on ? 'var(--accent)'      : 'transparent';
+  btn.style.color      = on ? 'var(--bg-panel)'    : 'var(--text-faint)';
+  btn.style.borderColor = on ? 'var(--accent)'     : 'var(--border)';
+  btn.title = on ? 'Auto-follow ON — click to pause (or just scroll up)'
+                 : 'Auto-follow OFF — click to resume and jump to bottom';
+}
+function _setupAutoFollow(scrollEl, btn, get, set) {
+  if (!scrollEl || !btn) return;
+  _renderAutoFollowBtn(btn, get());
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const newState = !get();
+    set(newState);
+    _renderAutoFollowBtn(btn, newState);
+    if (newState) {
+      // Resuming → snap to bottom
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+    }
+  });
+  scrollEl.addEventListener('scroll', () => {
+    const dist = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight;
+    const atBottom = dist <= _AUTO_FOLLOW_BOTTOM_SLACK;
+    if (get() && !atBottom) {
+      // User scrolled away from the bottom → pause
+      set(false);
+      _renderAutoFollowBtn(btn, false);
+    } else if (!get() && atBottom) {
+      // User scrolled BACK to the bottom → re-engage
+      set(true);
+      _renderAutoFollowBtn(btn, true);
+    }
+  });
+}
+
+// ── R3: PR-create wrapper that handles the approval gate ────────────────────
+// Centralized so both PR-create button paths (rpPrCreateBtn / rdRevPrCreateBtn)
+// share the same gate UX. POSTs the payload; on 409 with detail==approval_gate,
+// opens the override modal and re-submits with override+reason on confirm.
+async function createPrWithApprovalGate(payload) {
+  try {
+    return await api('/api/pr/create', { method: 'POST', body: JSON.stringify(payload) });
+  } catch (e) {
+    const gate = e.status === 409 && e.body
+      && (e.body.detail?.detail === 'approval_gate' ? e.body.detail
+          : (e.body.detail === 'approval_gate' ? e.body : null));
+    if (!gate) throw e;
+    // Show override modal; wait for user decision
+    const reason = await _showApprovalGateModal(gate.non_approved || []);
+    if (!reason) return null;   // user cancelled
+    return await api('/api/pr/create', {
+      method: 'POST',
+      body: JSON.stringify({ ...payload, override: true, override_reason: reason }),
+    });
+  }
+}
+function _showApprovalGateModal(nonApproved) {
+  return new Promise(resolve => {
+    const modal = document.getElementById('approvalGateModal');
+    const list = document.getElementById('approvalGateList');
+    const reasonEl = document.getElementById('approvalGateReason');
+    const status = document.getElementById('approvalGateStatus');
+    reasonEl.value = ''; status.textContent = '';
+    const stateColors = { draft:'var(--text-faint)', ready:'var(--blue)', in_review:'var(--accent)', approved:'var(--green)', deprecated:'var(--red)' };
+    list.innerHTML = nonApproved.length
+      ? nonApproved.map(n => {
+          const c = stateColors[n.state || 'draft'] || 'var(--text-faint)';
+          return `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;">
+            <span style="font-size:9px;text-transform:uppercase;color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;">${esc(n.state || 'draft')}</span>
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(n.uc_handle || n.uc_uuid)}</span>
+          </div>`;
+        }).join('')
+      : '<em>(no UCs returned — server logic edge case)</em>';
+    modal.classList.add('open');
+    const cleanup = () => {
+      modal.classList.remove('open');
+      document.getElementById('approvalGateConfirm').onclick = null;
+      document.getElementById('approvalGateCancel').onclick = null;
+      document.getElementById('closeApprovalGateModal').onclick = null;
+    };
+    document.getElementById('approvalGateConfirm').onclick = () => {
+      const r = (reasonEl.value || '').trim();
+      if (!r) { status.textContent = 'Reason is required to override the gate.'; status.style.color = 'var(--red)'; return; }
+      cleanup(); resolve(r);
+    };
+    document.getElementById('approvalGateCancel').onclick = () => { cleanup(); resolve(null); };
+    document.getElementById('closeApprovalGateModal').onclick = () => { cleanup(); resolve(null); };
+    setTimeout(() => reasonEl.focus(), 50);
+  });
+}
+
+// ── Toast ────────────────────────────────────────────────────
+function toast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.toggle('error', !!isError); t.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+// ── Utilities ────────────────────────────────────────────────
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+// Canonical tab wiring (docs/ui-style-guide.md). Within `container`, clicking a
+// .tab[data-tab=X] activates it + the .tabpanel[data-tabpanel=X] sibling, hiding the
+// rest. Idempotent; call after rendering the tab strip. `onChange(key)` is optional.
+function wireTabs(tabsEl, opts) {
+  opts = opts || {};
+  if (!tabsEl) return;
+  // Panels may be siblings of the tab strip (e.g. Config), so search the enclosing view.
+  const root = opts.panelsRoot || tabsEl.closest('.pf-view') || tabsEl.parentElement || document;
+  const tabs = Array.from(tabsEl.querySelectorAll('.tab'));
+  const panels = Array.from(root.querySelectorAll('.tabpanel'));
+  const show = (key) => {
+    tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === key));
+    panels.forEach(p => p.classList.toggle('active', p.dataset.tabpanel === key));
+    if (typeof opts.onChange === 'function') { try { opts.onChange(key); } catch (e) { console.warn('tab onChange', e); } }
+  };
+  tabs.forEach(t => { if (!t._tabWired) { t._tabWired = true; t.addEventListener('click', () => show(t.dataset.tab)); } });
+  // Keep a VISIBLE tab active (re-pick if role-gating just hid the active one).
+  const visible = tabs.filter(t => t.style.display !== 'none');
+  const cur = visible.find(t => t.classList.contains('active')) || visible[0] || tabs[0];
+  if (cur) show(cur.dataset.tab);
+}
+// Show a Config section-tab only if it has ≥1 visible panel-card (respects the
+// per-panel privilege gating set in _applyAccessVisibility), then (re)wire the strip.
+function _syncConfigTabs() {
+  const view = document.getElementById('view-config');
+  const tabsEl = document.getElementById('configTabs');
+  if (!view || !tabsEl) return;
+  view.querySelectorAll('.tabpanel[data-tabpanel]').forEach(tp => {
+    const tab = tabsEl.querySelector(`.tab[data-tab="${tp.dataset.tabpanel}"]`);
+    if (!tab) return;
+    const anyVisible = Array.from(tp.querySelectorAll('.panel-card')).some(p => p.style.display !== 'none');
+    tab.style.display = anyVisible ? '' : 'none';
+  });
+  wireTabs(tabsEl);
+}
+// Embed JSON.stringify output safely inside a double-quoted HTML attribute
+// (e.g. onclick="..."). Without &quot;-escaping, an inner `"` would terminate
+// the attribute and silently kill the handler — this was a real bug (v0.9.31).
+function attrJson(v) { return JSON.stringify(v).replace(/"/g, '&quot;'); }
+
+function fmtTs(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts), now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  return d.toLocaleDateString([],{month:'short',day:'numeric'}) + ' ' +
+         d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+}
+
+function fmtDuration(startTs, endTs) {
+  if (!startTs) return '—';
+  const s = (endTs ? new Date(endTs) : new Date()) - new Date(startTs);
+  const sec = Math.floor(s / 1000);
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60), r = sec % 60;
+  return r ? `${m}m ${r}s` : `${m}m`;
+}
+
+// Compact duration from seconds: "45s" / "12m" / "5.3h". For estimates + timeout.
+function _fmtDurShort(sec) {
+  if (sec == null || !isFinite(sec)) return '—';
+  if (sec < 90) return `${Math.round(sec)}s`;
+  if (sec < 5400) return `${Math.round(sec/60)}m`;
+  return `${(sec/3600).toFixed(1)}h`;
+}
+// Clock time from an epoch-ms (e.g. ETA): "8:35p".
+function _fmtClock(ms) {
+  if (!ms || !isFinite(ms)) return '—';
+  const d = new Date(ms);
+  let h = d.getHours(); const m = d.getMinutes();
+  const ap = h >= 12 ? 'p' : 'a'; h = h % 12 || 12;
+  return `${h}:${String(m).padStart(2,'0')}${ap}`;
+}
+// Edit a running run's "time allowed" (failsafe timeout) — extend or shorten it.
+async function editRunTimeout(name, curSec) {
+  const curH = curSec ? (curSec/3600).toFixed(1) : '';
+  const inp = prompt(`Time allowed (hours) — the failsafe that stops this run if it runs away. Extend or shorten it; it won't cut short a run that finishes first.\n\nCurrent: ${curH}h`, curH);
+  if (inp === null) return;
+  const h = parseFloat(inp);
+  if (!(h > 0)) { toast('Enter a positive number of hours', true); return; }
+  try {
+    await api(`/api/runs/${encodeURIComponent(name)}/timeout`, {method:'POST', body: JSON.stringify({seconds: Math.round(h*3600)})});
+    toast(`Time allowed set to ${h}h`);
+    refreshRunDrawer();
+  } catch(e){ toast(e.message, true); }
+}
+
+function phaseHtml(phase) {
+  const cls = 'phase-' + (phase || 'unknown').toLowerCase().replace(/\s+/g,'-');
+  return `<span class="phase ${cls}"><span class="dot"></span>${esc(phase||'unknown')}</span>`;
+}
+
+function verdictClass(v) {
+  if (!v) return 'verdict-error';
+  if (v === 'supported') return 'verdict-supported';
+  if (v.includes('partial')) return 'verdict-partial';
+  if (v.includes('not_supported') || v === 'not_supported') return 'verdict-unsupported';
+  return 'verdict-error';
+}
+function sevClass(label) { return 'sev-' + (label||'minor').toLowerCase(); }
+
+function lcHtml(state) {
+  if (!state) return '';
+  const label = state.replace(/_/g,' ');
+  return `<span class="lc lc-${state}">${esc(label)}</span>`;
+}
+// Inline lifecycle transition menu from the UC list (so changing status — incl. Reactivate
+// a deprecated UC — doesn't require opening the detail pane). Reuses openLCModal + the same
+// LC_TRANSITIONS map and server guard (project.usecases); blocked in View mode by api().
+function _lcMenu(event, uuid, state) {
+  document.querySelectorAll('.lc-menu-pop').forEach(p => p.remove());
+  const trans = LC_TRANSITIONS[state] || [];
+  if (!trans.length) { try { toast('No status changes available from ' + state.replace(/_/g,' ')); } catch {} return; }
+  const pop = document.createElement('div');
+  pop.className = 'lc-menu-pop';
+  pop.style.cssText = 'position:fixed;z-index:9999;background:var(--bg-panel);border:1px solid var(--border);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.35);padding:4px;min-width:160px;';
+  pop.innerHTML = trans.map(t =>
+    `<button class="dropdown-item" data-to="${esc(t.to)}" data-label="${esc(t.label)}" style="display:block;width:100%;text-align:left;font-size:12px;">${esc(t.label)} <span style="opacity:.5;font-size:10px;">→ ${esc(t.to.replace(/_/g,' '))}</span></button>`).join('');
+  document.body.appendChild(pop);
+  const r = (event.target.closest('span') || event.target).getBoundingClientRect();
+  pop.style.left = Math.max(6, Math.min(r.left, window.innerWidth - 174)) + 'px';
+  pop.style.top = (r.bottom + 4) + 'px';
+  pop.querySelectorAll('button').forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation(); pop.remove(); openLCModal(uuid, b.dataset.to, b.dataset.label);
+  }));
+  setTimeout(() => {
+    const close = e => { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('click', close); } };
+    document.addEventListener('click', close);
+  }, 0);
+}
+
+// UC priority badge (roadmap weighting, spec 05 §6.8 / DCM feature #1).
+// Color tracks urgency; the score is the roadmap weight (higher = build first).
+const PRIORITY_COLORS = {
+  critical: 'var(--red)', high: 'var(--accent)',
+  medium:   'var(--blue)', low: 'var(--text-faint)',
+};
+function prioHtml(label, score) {
+  if (!label) return '';
+  const c = PRIORITY_COLORS[label] || 'var(--text-faint)';
+  const title = `roadmap priority: ${label}` + (score != null ? ` (weight ${score})` : '');
+  return `<span title="${esc(title)}" style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;`
+       + `color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;">${esc(label)}</span>`;
+}
+
+// Surfaces UC-list de-duplication: the same uuid can live in several corpus
+// paths and/or also be managed. The list shows one row per uuid; this badge
+// makes the collapsed copies visible. path_count = corpus paths for this uuid.
+function dupHtml(u) {
+  const n = u.path_count || 0;
+  const ns = (u.namespaces || []).join(', ');
+  if (u.source === 'managed') {
+    if (n < 1) return '';
+    const t = `Also present in ${n} corpus path${n===1?'':'s'}${ns ? ': ' + ns : ''}`;
+    return `<span title="${esc(t)}" style="font-size:8px;color:var(--text-faint);border:1px solid var(--border);padding:0 4px;border-radius:2px;flex-shrink:0;">+${n} corpus</span>`;
+  }
+  if (n > 1) {
+    const t = `Same UC in ${n} corpus paths${ns ? ': ' + ns : ''}`;
+    return `<span title="${esc(t)}" style="font-size:8px;color:var(--text-faint);border:1px solid var(--border);padding:0 4px;border-radius:2px;flex-shrink:0;">×${n} paths</span>`;
+  }
+  return '';
+}
+
+// Customer-demand badge. Importance is measured by DISTINCT customers (multi-tenant
+// signal), not raw requests — so one customer asking 10× doesn't inflate it. Shows the
+// distinct-customer count; total requests in the tooltip; highlighted when multi-tenant.
+function demandHtml(u) {
+  const dc = u.distinct_customers || 0;
+  const total = u.customer_requests || 0;
+  if (!total && !dc) return '';
+  const mt = dc > 1;
+  const c = mt ? 'var(--blue)' : 'var(--text-faint)';
+  const names = (u.customers || []).filter(Boolean);
+  const t = `${total} request${total === 1 ? '' : 's'} from ${dc} distinct customer${dc === 1 ? '' : 's'}`
+          + (mt ? ' — multi-tenant (higher importance)' : '')
+          + (names.length ? `\n${names.join(', ')}` : '');
+  const badge = `<span title="${esc(t)}" style="font-size:8px;color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;">`
+       + `👥 ${dc}${total > dc ? `·${total}` : ''}</span>`;
+  // #130 2b-iii: customer attribution — show WHO (up to 2 name chips + overflow), not just how many.
+  let chips = '';
+  if (names.length) {
+    chips = names.slice(0, 2).map(n =>
+      `<span class="cust-chip" title="requested by ${esc(n)}" style="font-size:8px;color:var(--text-dim);background:var(--bg-raised);border:1px solid var(--border);padding:0 4px;border-radius:2px;flex-shrink:0;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(n)}</span>`).join('');
+    if (names.length > 2) chips += `<span style="font-size:8px;color:var(--text-faint);flex-shrink:0;" title="${esc(names.join(', '))}">+${names.length - 2}</span>`;
+  }
+  return badge + chips;
+}
+
+// UC definition readiness badge (DCM feature #4). Band thresholds mirror the
+// backend's band_for(): strong>=85, good>=70, fair>=50, else needs_work.
+const READINESS_COLORS = {
+  strong: 'var(--green)', good: 'var(--blue)', fair: 'var(--accent)', needs_work: 'var(--red)',
+};
+function readinessBand(score) {
+  if (score == null) return null;
+  if (score >= 85) return 'strong';
+  if (score >= 70) return 'good';
+  if (score >= 50) return 'fair';
+  return 'needs_work';
+}
+function readinessHtml(score) {
+  const b = readinessBand(score);
+  if (!b) return '';
+  const c = READINESS_COLORS[b];
+  return `<span title="definition readiness: ${score}/100 (${esc(b.replace('_',' '))})" style="font-size:8px;`
+       + `color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;">rdy ${score}</span>`;
+}
+
+const LC_TRANSITIONS = {
+  draft:      [{to:'ready',      label:'Submit for review', cls:'btn ghost'}],
+  ready:      [{to:'in_review',  label:'Start review',      cls:'btn primary'},
+               {to:'draft',      label:'Back to draft',     cls:'btn ghost'}],
+  in_review:  [{to:'approved',   label:'Approve',           cls:'btn success'},
+               {to:'ready',      label:'Send back',         cls:'btn ghost'}],
+  approved:   [{to:'in_review',  label:'Return to review',  cls:'btn ghost'},
+               {to:'deprecated', label:'Deprecate',         cls:'btn danger'}],
+  deprecated: [{to:'draft',      label:'Reactivate',        cls:'btn ghost'}],
+};
+
+// ── State ────────────────────────────────────────────────────
+let me = { reviewer: null, authenticated: false };
+let allRuns = [];
+const _selectedRuns = new Set(); // run names checked for batch archive/delete
+let allResults = [];
+let allUCs = [];
+let allSets = [];
+const ALL_SET_ID = '__all__';  // synthetic "All Use Cases" set — string sentinel, never 0 (falsy-0 kept causing silent breakage)
+
+let activeRunResultId = null;
+let activeRunSummary  = null;
+let _rdShallowByUuid  = {};     // uc_uuid -> shallowness row (advisory grounding signal, #45a)
+let _rdShallowSummary = null;   // run-level shallowness rollup
+let activeUCResult    = null;
+let _lastAnalysisData = null;
+let activeUCId        = null;
+let editingUCId       = null;
+
+let activeSetId       = null;
+let editingSetId      = null;
+
+let lcPendingUCId   = null;
+let lcPendingTo     = null;
+let addMemberSetId  = null;
+let selectedMember  = null;
+let promoteSetId    = null;
+
+let ucStateFilter = '';
+let ucAssignFilter = '';        // '' | 'unassigned' | 'assigned' (unified with Scoping Sets palette)
+let ucHealthFilter = '';        // '' | 'invalid' | 'valid' (#122 — flags UCs failing engine validation)
+let ucSortByPriority = false;   // DCM feature #1: toggle roadmap-weight ordering
+let ucPriorityFilter = '';      // '' = all; else critical/high/medium/low
+let _ucPoolMode = false;        // #43: list is showing the "available to apply" pool (managed UCs from other projects)
+
+// ── Init ─────────────────────────────────────────────────────
+// If the URL carries ?invite=<token>, show the accept overlay and short-circuit
+// the normal app boot (the invitee isn't logged in yet).
+async function _maybeHandleInvite() {
+  const token = new URLSearchParams(location.search).get('invite');
+  if (!token) return false;
+  const ov = document.getElementById('inviteAcceptOverlay');
+  if (ov) ov.style.display = 'flex';
+  const info = document.getElementById('inviteAcceptInfo');
+  try {
+    const inv = await api(`/api/invites/${encodeURIComponent(token)}`);
+    info.innerHTML = `You've been invited${inv.project_name ? ` to <strong>${esc(inv.project_name)}</strong>` : ''} as <code>${esc(inv.email)}</code>.`;
+    if (!inv.sessions_enabled) {
+      info.innerHTML += '<br><span style="color:var(--red)">App sessions aren\'t configured yet — contact your admin.</span>';
+      return true;
+    }
+    document.getElementById('inviteAcceptForm').style.display = '';
+    document.getElementById('inviteName').value = inv.display_name || '';
+    document.getElementById('inviteAcceptBtn').addEventListener('click', async () => {
+      const pw = document.getElementById('invitePw').value;
+      const name = document.getElementById('inviteName').value;
+      const msg = document.getElementById('inviteAcceptMsg');
+      if ((pw || '').length < 8) { msg.textContent = 'Password must be at least 8 characters'; msg.style.color = 'var(--red)'; return; }
+      msg.textContent = 'Joining…'; msg.style.color = 'var(--text-faint)';
+      try {
+        await api(`/api/invites/${encodeURIComponent(token)}/accept`, { method:'POST', body: JSON.stringify({ password: pw, display_name: name }) });
+        location.href = location.pathname;   // reload into the logged-in app
+      } catch(e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+    });
+  } catch(e) {
+    info.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+  }
+  return true;
+}
+
+async function _submitLogin() {
+  const email = document.getElementById('loginEmail').value;
+  const pw = document.getElementById('loginPw').value;
+  const msg = document.getElementById('loginMsg');
+  msg.textContent = 'signing in…'; msg.style.color = 'var(--text-faint)';
+  try { await api('/api/auth/login', { method:'POST', body: JSON.stringify({ email, password: pw }) }); location.reload(); }
+  catch(e){ msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+}
+document.getElementById('loginBtn')?.addEventListener('click', _submitLogin);
+['loginEmail','loginPw'].forEach(id => document.getElementById(id)?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); _submitLogin(); }
+}));
+
+async function init() {
+  if (await _maybeHandleInvite()) return;
+  initTheme();
+  initNavCollapse();
+  renderDomainRail();   // build the domain rail from DOMAINS before focus/RBAC/switchView run
+  try { me = await api('/api/me'); } catch { me = { authenticated:false }; }
+  // Not signed in (relaxed-proxy mode) → show the sign-in screen and stop.
+  if (me && me.authenticated === false) {
+    document.getElementById('loginOverlay').style.display = 'flex';
+    return;
+  }
+  // Signed in but not yet approved (e.g. an OCP user an admin hasn't enabled).
+  if (me && me.authenticated && me.approved === false) {
+    const ov = document.getElementById('loginOverlay');
+    document.getElementById('loginTitle').textContent = 'Account pending approval';
+    document.getElementById('loginBody').innerHTML =
+      `<div style="font-size:12px;color:var(--text-dim);">Signed in as <code>${esc(me.reviewer||'')}</code>, but your account isn't enabled yet. Ask a platform admin to approve you.</div>
+       <button class="btn ghost" style="width:100%;margin-top:14px;" onclick="api('/api/auth/logout',{method:'POST'}).then(()=>location.reload())">Sign out</button>`;
+    ov.style.display = 'flex';
+    return;
+  }
+  try { await Promise.all([loadMe(), loadRunStatus()]); setApiStatus(true); }
+  catch (e) { console.error(e); setApiStatus(false, e.message); }
+  _loadUserSettings();   // #129: pull server-side prefs (theme/persona/view-mode/nav) + re-apply
+  // Pre-load models + project model defaults so every default-aware override
+  // selector ("Use default — <name>") is ready on any tab.
+  loadReviewModels().then(async () => {
+    await loadArchDefault();      // _modelDefaults + Config default selectors + _refreshAllOverrides
+    _populateUCAssistModelSel();  // UC-authoring status chip + eval default
+  }).catch(() => {});
+  loadProjectSwitcher();   // masthead active-project selector
+  try { populateCustomerSel(); } catch (_) {}   // matrix #130: masthead customer axis
+  _setupRbacViews();       // relocate Users/Projects panels into their own views
+  // Land on the active persona's first domain. _persona is resolved by now (loadMe →
+  // _applyPersona already homed the rail); re-assert it here to be safe.
+  { const _h = _personaDomains()[0]; if (_h) switchDomain(_h.key); }
+  // Load the run list on boot so the masthead run selector is ready on every tab
+  // (same archived-aware source as the Runs tab).
+  loadRuns();
+  loadFreshness();   // masthead analysis-freshness chip (#112)
+}
+
+let _defaultProject = '';
+async function loadProjectSwitcher() {
+  const sel = document.getElementById('globalProjectSel');
+  if (!sel) return;
+  try {
+    const r = await api('/api/projects/mine');
+    const projects = r.projects || [];
+    _defaultProject = r.default_project_id ? String(r.default_project_id) : '';
+    // On login (no client-side selection), land on the user's default project.
+    if (!_activeProject && _defaultProject && projects.some(p => String(p.id) === _defaultProject)) {
+      _activeProject = _defaultProject;
+      try { localStorage.setItem('davActiveProject', _activeProject); } catch {}
+    }
+    if (_activeProject && !projects.some(p => String(p.id) === String(_activeProject))) {
+      _activeProject = ''; try { localStorage.removeItem('davActiveProject'); } catch {}
+    }
+    sel.innerHTML = projects.length
+      ? projects.map(p => `<option value="${p.id}"${String(p.id)===String(_activeProject)?' selected':''}>${esc(p.name)}${String(p.id)===_defaultProject?' ★':''}</option>`).join('')
+      : '<option value="">No projects — ask an admin to add you</option>';
+    if (_activeProject) sel.value = _activeProject;
+    const chip = document.getElementById('projectChip');
+    if (chip) chip.style.display = '';
+    const star = document.getElementById('projSetDefaultBtn');
+    if (star) {
+      star.style.display = projects.length ? '' : 'none';
+      star.textContent = (_activeProject && _activeProject === _defaultProject) ? '★' : '☆';
+      star.title = (_activeProject && _activeProject === _defaultProject) ? 'This is your default project' : 'Make this my default project';
+    }
+  } catch(e) {}
+}
+document.getElementById('globalProjectSel')?.addEventListener('change', function() {
+  _activeProject = this.value || '';
+  try { _activeProject ? localStorage.setItem('davActiveProject', _activeProject) : localStorage.removeItem('davActiveProject'); } catch {}
+  location.reload();   // re-fetch everything scoped to the newly selected project
+});
+document.getElementById('projSetDefaultBtn')?.addEventListener('click', async () => {
+  if (!_activeProject) return;
+  try { await api('/api/me/default-project', { method:'PUT', body: JSON.stringify({ project_id: parseInt(_activeProject,10) }) });
+    _defaultProject = _activeProject; const s = document.getElementById('projSetDefaultBtn');
+    if (s) { s.textContent = '★'; s.title = 'This is your default project'; } toast('Default project set'); }
+  catch(e){ toast(e.message, true); }
+});
+
+// Re-fetch identity + re-apply access visibility when the tab regains focus, throttled.
+// Self-heals the case where a transient /api/me during a deploy rollover briefly reported
+// is_platform_admin=false and the admin UI (presence chip, Users/Audit nav, etc.) vanished
+// until a manual refresh.
+let _lastMeRefresh = 0;
+window.addEventListener('focus', () => {
+  if (Date.now() - _lastMeRefresh > 30000) { _lastMeRefresh = Date.now(); loadMe(); }
+});
+
+async function loadMe() {
+  _lastMeRefresh = Date.now();
+  try { me = await api('/api/me'); } catch { me = {reviewer:null,authenticated:false}; }
+  const chip = document.getElementById('acctChipLabel');
+  const who = document.getElementById('acctMenuWho');
+  if (me.authenticated && me.reviewer) {
+    chip.textContent = me.reviewer;
+    if (who) who.textContent = me.role ? `${me.reviewer} · ${me.role}` : me.reviewer;
+  } else {
+    chip.textContent = 'unauthenticated';
+    if (who) who.textContent = 'Not signed in';
+  }
+  _applyAccessVisibility();
+  if (me && me.must_change_password) {
+    // Forced first-login change — no cancel; messaging reflects that.
+    const sub = document.getElementById('pwChangeSub'); if (sub) sub.textContent = "You're using a default password — set your own to continue.";
+    const c = document.getElementById('pwChangeCancel'); if (c) c.style.display = 'none';
+    const ov = document.getElementById('pwChangeOverlay'); if (ov) ov.style.display = 'flex';
+  }
+}
+document.getElementById('pwChangeBtn')?.addEventListener('click', async () => {
+  const cur = document.getElementById('pwChangeCur').value;
+  const nw = document.getElementById('pwChangeNew').value;
+  const msg = document.getElementById('pwChangeMsg');
+  if ((nw||'').length < 8) { msg.textContent = 'New password must be at least 8 characters'; msg.style.color='var(--red)'; return; }
+  try {
+    await api('/api/auth/change-password', { method:'POST', body: JSON.stringify({ current_password: cur, new_password: nw }) });
+    document.getElementById('pwChangeOverlay').style.display = 'none';
+    toast('Password updated');
+  } catch(e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+});
+
+// Show the admin-only Users & Access UI when the caller is an admin.
+// Does the caller hold a project-scoped privilege in the active project?
+// platform.admin is a superuser. me.privileges is resolved for the active project
+// by /api/me, so this re-evaluates correctly after a project switch.
+function can(priv) {
+  return !!(me && (me.is_platform_admin || (me.privileges || []).includes(priv)));
+}
+
+// ── Workspace focus (Architecture ⇄ Assessment) + read-only View mode ──────────
+// Focus filters the left nav to an intent's views (+ 'both' shared ones); View mode
+// hides edit affordances even for users who can edit. Both persist per-user.
+let _persona = (() => { try { return localStorage.getItem('davPersona') || ''; } catch { return ''; } })();
+let _viewMode = (() => { try { return localStorage.getItem('davViewMode') === '1'; } catch { return false; } })();
+let _navRbac = {};  // {navId: allowed} — RBAC baseline computed by _applyAccessVisibility
+
+// ── Persona (the UX paradigm, docs/ux-paradigm-design.md) ───────────────────
+// Objectives are constant; the PERSONA is the lens. Each persona foregrounds an
+// ordered subset of domains (+ later, the projections it reads). Switchable, with the
+// default derived from the RBAC role; orthogonal to view-mode (persona = which
+// projection you consume; posture = edit/view).
+const PERSONAS = [
+  { key:'architect',   label:'Architect',   domains:['author','execute','roadmap','catalog','improve','org'] },
+  { key:'engineer',    label:'Engineer',    domains:['roadmap','execute','catalog'] },
+  { key:'customer',    label:'Customer',    domains:['roadmap','execute'] },         // + Outcomes when built
+  { key:'stakeholder', label:'Stakeholder', domains:['roadmap'] },                   // + Value/Outcomes when built
+  { key:'assessor',    label:'Assessor',    domains:['assess','catalog','roadmap','org'] },
+  { key:'operator',    label:'Operator',    domains:['org','config','catalog','improve','audit'] },
+];
+function _activePersona() { return PERSONAS.find(a => a.key === _persona) || PERSONAS[0]; }
+// Default persona from privileges: assessment-oriented users (assessment access but not
+// the UC/arch pipeline, not a platform admin) → Assessor; everyone else → Architect.
+function _defaultPersona() {
+  if (can('assessment.view') && !can('project.usecases') && !can('project.runs.execute')
+      && !(me && me.is_platform_admin)) return 'assessor';
+  return 'architect';
+}
+// UI lean slice 1: personas removed as a navigation mechanism. The nav is one
+// stable rail for everyone — every domain the user is PERMITTED to see (RBAC),
+// in canonical DOMAINS order. No per-role reshuffling (that breaks spatial
+// memory / recognition). Permission gates visibility, not persona.
+function _personaDomains() {
+  return DOMAINS.filter(d => _domainPermitted(d));
+}
+// canEdit = can(priv) AND not browsing in read-only View mode.
+function canEdit(priv) { return can(priv) && !_viewMode; }
+
+// Re-render the rail for the active persona (subset + order), reflect the switcher, and
+// land on the persona's first domain if the active one isn't in this persona.
+function _applyPersona() {
+  if (!_persona || !PERSONAS.some(a => a.key === _persona)) _persona = _defaultPersona();
+  renderDomainRail();
+  const sw = document.getElementById('personaSel');
+  if (sw) {
+    if (sw.options.length !== PERSONAS.length)
+      sw.innerHTML = PERSONAS.map(a => `<option value="${a.key}">${esc(a.label)}</option>`).join('');
+    sw.value = _persona;
+  }
+  const doms = _personaDomains();
+  // renderDomainRail() just cleared the rail's .active marker, so derive the current
+  // domain from the active VIEW (not the DOM) — otherwise a bare re-render (e.g. window
+  // refocus → loadMe → here) would always look "unset" and home us back to the default
+  // view (Authoring → Use Cases). Only auto-home when there's genuinely no current view.
+  const curDom = _curView ? _viewToDomain[_curView] : null;
+  if (curDom && doms.some(d => d.key === curDom.key)) {
+    document.querySelectorAll('.pf-nav-item[data-domain]').forEach(a =>
+      a.classList.toggle('active', a.dataset.domain === curDom.key));
+    try { renderDomainTabs(curDom, _curView); } catch (e) {}
+  } else if (doms.length) {
+    try { switchDomain(doms[0].key); } catch (e) { console.warn('persona home switch failed', e); }
+  }
+}
+// #129: per-user settings sync. The UI chrome prefs live in localStorage (fast, local) and
+// are mirrored to the DB so they follow the user across devices. localStorage is the cache;
+// the server is the source of truth, pulled once at boot and pushed (debounced) on change.
+// Chrome prefs (always lightweight). Session/working-context keys (where you left off) sync
+// only when "Continue session across devices" is on.
+const _USER_SETTING_KEYS = ['davTheme', 'davMode', 'davPersona', 'davViewMode', 'davNavCollapsed'];
+const _SESSION_KEYS = ['davActiveProject', 'davScope', 'davCustomer'];
+let _userSettingsLoaded = false;
+let _persistTimer = null;
+// Master switch (default ON). When OFF, nothing but the flag itself syncs — pure local/per-browser.
+function _syncEnabled() { try { return localStorage.getItem('davSyncSession') !== '0'; } catch { return true; } }
+function setSyncSession(on) {
+  try { localStorage.setItem('davSyncSession', on ? '1' : '0'); } catch {}
+  const cb = document.getElementById('syncSessionToggle'); if (cb) cb.checked = on;
+  _persistUserSettings();   // persists the flag (and, when on, your current settings + context)
+  try { toast(on ? 'Session sync on — you’ll continue where you left off on any device' : 'Session sync off — this browser only'); } catch {}
+}
+function _persistUserSettings() {
+  if (!_userSettingsLoaded) return;   // don't clobber the server with defaults before the pull lands
+  const on = _syncEnabled();
+  const settings = { davSyncSession: on ? '1' : '0' };   // the choice itself always persists
+  if (on) {
+    for (const k of [..._USER_SETTING_KEYS, ..._SESSION_KEYS]) {
+      try { const v = localStorage.getItem(k); if (v !== null && v !== '') settings[k] = v; } catch {}
+    }
+  }
+  clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(() => {
+    api('/api/me/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings }) }).catch(() => {});
+  }, 600);
+}
+async function _loadUserSettings() {
+  try {
+    const r = await api('/api/me/settings');
+    const s = (r && r.settings) || {};
+    if (s.davSyncSession !== undefined) { try { localStorage.setItem('davSyncSession', String(s.davSyncSession)); } catch {} }
+    const on = _syncEnabled();
+    const cb = document.getElementById('syncSessionToggle'); if (cb) cb.checked = on;
+    _userSettingsLoaded = true;
+    if (!on) return;   // local-only — don't restore
+    // Seed keys this browser is MISSING (a fresh device) from the server; an active device's
+    // local choices win (no surprise overrides). Chrome re-applies live; a restored working
+    // context (project/scope/customer) needs a single clean re-boot.
+    let chromeSeeded = false, sessionSeeded = false;
+    for (const k of [..._USER_SETTING_KEYS, ..._SESSION_KEYS]) {
+      let local = null; try { local = localStorage.getItem(k); } catch {}
+      if ((local === null || local === '') && s[k] !== undefined && s[k] !== null && String(s[k]) !== '') {
+        try { localStorage.setItem(k, String(s[k])); } catch {}
+        if (_SESSION_KEYS.includes(k)) sessionSeeded = true; else chromeSeeded = true;
+      }
+    }
+    if (sessionSeeded && !sessionStorage.getItem('davSessionRestored')) {
+      try { sessionStorage.setItem('davSessionRestored', '1'); } catch {}
+      location.reload();   // re-boot with the restored working context (existing init reads localStorage)
+      return;
+    }
+    if (chromeSeeded) {   // re-apply chrome from the seeded prefs (no reload needed)
+      try { currentTheme = localStorage.getItem('davTheme') || currentTheme; currentMode = localStorage.getItem('davMode') || currentMode; applyTheme(); } catch {}
+      try { _persona = localStorage.getItem('davPersona') || _persona; _applyPersona(); const ps = document.getElementById('personaSel'); if (ps) ps.value = _persona; } catch {}
+      try { _viewMode = localStorage.getItem('davViewMode') === '1'; _applyViewMode(); _applyAccessVisibility(); } catch {}
+      try { const nav = document.getElementById('pfNav'); if (nav) { _navCollapsed = localStorage.getItem('davNavCollapsed') === '1'; nav.classList.toggle('collapsed', _navCollapsed); } } catch {}
+    }
+    // Snapshot this (active) device's current context to the server so the latest project/
+    // scope/customer is available to the next fresh device (the project switch reloads, so
+    // its push lands here on the post-reload boot).
+    try { _persistUserSettings(); } catch {}
+  } catch { _userSettingsLoaded = true; }   // never block boot on a settings fetch
+}
+function setPersona(a) {
+  if (!PERSONAS.some(x => x.key === a) || a === _persona) return;
+  _persona = a;
+  try { localStorage.setItem('davPersona', a); } catch {}
+  _applyPersona();
+  _persistUserSettings();
+}
+function _applyViewMode() {
+  document.body.dataset.viewMode = _viewMode ? '1' : '';
+  const chip = document.getElementById('viewModeToggle');
+  const lbl = document.getElementById('viewModeLabel');
+  if (chip) chip.classList.toggle('on', _viewMode);
+  if (lbl) lbl.textContent = _viewMode ? 'View only' : 'Editing';
+}
+function toggleViewMode() {
+  _viewMode = !_viewMode;
+  try { localStorage.setItem('davViewMode', _viewMode ? '1' : '0'); } catch {}
+  _applyViewMode();
+  try { _applyAccessVisibility(); } catch (e) { console.warn('view-mode reapply failed', e); }
+  _persistUserSettings();
+}
+
+function _applyAccessVisibility() {
+  const projAdmin = !!(me && me.is_admin);            // project admin or above
+  const platAdmin = !!(me && me.is_platform_admin);   // platform admin only
+  // Projects management (now in view-projects): project admins.
+  const cp = document.getElementById('configProjectsPanel'); if (cp) cp.style.display = projAdmin ? '' : 'none';
+  // Accounts/roles + LDAP + SMTP + Agents (Config → Platform): platform admins only.
+  ['configUsersPanel','configLdapPanel','configSmtpPanel','configAgentsPanel','configTenantsPanel','configGroupsPanel'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.style.display = platAdmin ? '' : 'none';
+  });
+  // Bundles (#107) — manage shared/platform/use-category config: usecat.manage holders.
+  const bp = document.getElementById('configBundlesPanel'); if (bp) bp.style.display = can('usecat.manage') ? '' : 'none';
+  // The Config "Platform" section-tab shows iff one of its panels is visible (projAdmin
+  // → Projects; platAdmin → Email/LDAP/Users) — derived by _syncConfigTabs() below from
+  // the per-panel gating already applied above. No separate nav-link gating needed.
+  // Nav RBAC baseline (which items the user may see at all). The persona switcher then
+  // selects which domains foreground — see _applyPersona(). Projects/Users left-nav
+  // views are retired (consolidated into Config → Platform).
+  _navRbac = {
+    navAudit: platAdmin,
+    navAssess: can('assessment.view'),
+  };
+  try { _applyPersona(); } catch (e) { console.warn('persona apply failed', e); }
+  // Presence gauge — platform admins only. Run it HERE (early) and guarded, so a failure
+  // in any later block can never strip the admin status bar (it used to be the last line).
+  try { _startPresence(platAdmin); } catch (e) { console.warn('presence init failed', e); }
+  try { loadAssessmentSelector(); loadBlueprintSelector(); } catch (e) { console.warn('masthead selector init failed', e); }
+  // Config panels are project-scoped: gate each on its management privilege.
+  const cfgGate = [
+    ['configReposPanel',  'project.repos'],
+    ['configModelsPanel', 'project.models'],
+    ['configMCPPanel',    'project.integrations'],
+  ];
+  for (const [panelId, priv] of cfgGate) {
+    const panel = document.getElementById(panelId); if (panel) panel.style.display = can(priv) ? '' : 'none';
+  }
+  // Section-tabs follow the now-resolved per-panel visibility (hides empty sections).
+  try { _syncConfigTabs(); } catch (e) { console.warn('config tab sync failed', e); }
+  // Workflow action affordances (server enforces regardless; this is UX). Toggle
+  // body data-* flags that CSS can hang off, and hide tagged controls directly.
+  // canEdit() = the privilege AND not browsing in read-only View mode, so toggling
+  // View mode hides every edit/execute affordance hung off these data-can-* flags.
+  const flags = {
+    'data-can-usecases':    canEdit('project.usecases'),
+    'data-can-runs-exec':   canEdit('project.runs.execute'),
+    'data-can-runs-manage': canEdit('project.runs.manage'),
+    'data-can-archreview':  canEdit('project.archreview.execute'),
+    'data-can-archctx':     canEdit('project.archreview.context'),
+    'data-can-enh':         canEdit('project.enhancement.execute'),
+    'data-can-enh-pr':      canEdit('project.enhancement.pr'),
+    'data-can-catalog':     canEdit('project.catalog'),
+  };
+  for (const [attr, ok] of Object.entries(flags)) {
+    if (ok) document.body.setAttribute(attr, '1'); else document.body.removeAttribute(attr);
+  }
+  // Any element tagged data-needs-priv="<key>" is hidden unless the caller holds it.
+  document.querySelectorAll('[data-needs-priv]').forEach(el => {
+    el.style.display = can(el.getAttribute('data-needs-priv')) ? '' : 'none';
+  });
+  // Edit affordances tagged data-edit-gate="<priv>" hide unless the caller can EDIT — i.e. holds
+  // the privilege AND isn't in read-only View mode. One marker covers both #136 (view mode) and
+  // #137 (view-only role). The api() backstop blocks any leaked mutation regardless.
+  document.querySelectorAll('[data-edit-gate]').forEach(el => {
+    el.style.display = canEdit(el.getAttribute('data-edit-gate')) ? '' : 'none';
+  });
+  // A persistent, unmistakable read-only banner while in View mode.
+  document.body.dataset.viewMode = _viewMode ? '1' : '';
+  // Presence gauge — platform admins only.
+  _startPresence(platAdmin);
+}
+
+let _presenceTimer = null;
+async function loadPresence() {
+  const wrap = document.getElementById('presenceWrap');
+  if (!wrap || wrap.style.display === 'none') return;
+  try {
+    const p = await api('/api/presence');
+    const o = document.getElementById('presenceOnline'); if (o) o.textContent = p.online ?? '–';
+    const a = document.getElementById('presenceActive'); if (a) a.textContent = p.active ?? '–';
+  } catch(e) { /* keep last values on a transient failure */ }
+}
+function _startPresence(on) {
+  const wrap = document.getElementById('presenceWrap');
+  if (on) {
+    if (wrap) wrap.style.display = 'inline-block';
+    loadPresence();
+    if (!_presenceTimer) _presenceTimer = setInterval(loadPresence, 45000);
+  } else {
+    if (wrap) wrap.style.display = 'none';
+    _closePresencePopover();
+    if (_presenceTimer) { clearInterval(_presenceTimer); _presenceTimer = null; }
+  }
+}
+let _presencePopTimer = null;
+function _closePresencePopover() {
+  const pop = document.getElementById('presencePopover'); if (pop) pop.style.display = 'none';
+  if (_presencePopTimer) { clearInterval(_presencePopTimer); _presencePopTimer = null; }
+}
+async function _renderPresenceDetail(first) {
+  const pop = document.getElementById('presencePopover');
+  if (!pop || pop.style.display === 'none') return;
+  if (first) pop.innerHTML = '<div style="padding:8px 10px;color:var(--text-faint);font-size:11px;">loading…</div>';
+  try {
+    const p = await api('/api/presence?detail=1');
+    // Keep the chip headline counts in sync with the live detail.
+    const co = document.getElementById('presenceOnline'); if (co) co.textContent = p.online ?? '–';
+    const ca = document.getElementById('presenceActive'); if (ca) ca.textContent = p.active ?? '–';
+    const me_id = (me && me.reviewer) ? me.reviewer.toLowerCase() : '';
+    const head = `<div style="display:flex;align-items:center;gap:6px;padding:4px 8px 6px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-faint);border-bottom:1px solid var(--border);">
+        <span class="presence-live-dot" style="width:6px;height:6px;border-radius:50%;background:var(--green);"></span>
+        ${p.online||0} online · ${p.active||0} active</div>`;
+    const rows = (p.users && p.users.length) ? p.users.map(u => {
+      // online+active = working now; online+idle = polling but quiet; active+!online = acted
+      // recently but the tab stopped polling (e.g. closed/backgrounded — counts as active, not online).
+      const idleTxt = (u.idle_secs == null) ? '' : (u.idle_secs < 60 ? `${u.idle_secs}s idle` : `${Math.floor(u.idle_secs/60)}m idle`);
+      const idle = (u.online && u.active) ? 'active now'
+        : (u.online ? idleTxt
+        : (u.active ? 'active · not polling' : (idleTxt || 'offline')));
+      const dot = (u.online && u.active) ? 'var(--green)' : (u.active ? 'var(--amber,#d79a2b)' : 'var(--text-faint)');
+      const meTag = (u.id === me_id) ? ' <span style="color:var(--text-faint);">(you)</span>' : '';
+      return `<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;font-size:12px;">
+        <span style="color:${dot};font-size:9px;">●</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(u.id)}${meTag}</span>
+        <span style="color:var(--text-faint);font-size:10px;white-space:nowrap;">${idle}</span>
+      </div>`;
+    }).join('') : '<div style="padding:8px;color:var(--text-faint);font-size:11px;">No one online.</div>';
+    pop.innerHTML = head + rows;
+  } catch(e) {
+    if (first) pop.innerHTML = `<div style="padding:8px;color:var(--red);font-size:11px;">${esc(e.message||'failed')}</div>`;
+  }
+}
+function _togglePresencePopover() {
+  const pop = document.getElementById('presencePopover');
+  if (!pop) return;
+  if (pop.style.display !== 'none') { _closePresencePopover(); return; }
+  pop.style.display = 'block';
+  _renderPresenceDetail(true);
+  // Live refresh while open — fast cadence for a real-time feel; stops on close.
+  if (!_presencePopTimer) _presencePopTimer = setInterval(() => _renderPresenceDetail(false), 4000);
+}
+document.getElementById('presenceChip')?.addEventListener('click', (e) => { e.stopPropagation(); _togglePresencePopover(); });
+document.addEventListener('click', (e) => {
+  const wrap = document.getElementById('presenceWrap');
+  if (wrap && !wrap.contains(e.target)) _closePresencePopover();
+});
+// Build stamp — confirm which UI build this browser is actually running.
+(function(){
+  const b = document.querySelector('meta[name="dav-build"]')?.content || 'dev';
+  const el = document.getElementById('buildStamp'); if (el) el.textContent = b;
+  try { console.info('%cDAV UI build: ' + b, 'color:#c8964a'); } catch(_) {}
+})();
+
+function loadAccessPanels() {
+  // Projects admin moved to the Customers & Projects → Projects tab (loadProjectsTab).
+  if (me && me.is_platform_admin) { loadLdapStatus(); loadUsers(); loadLdapSettings(); loadSmtpSettings(); }
+}
+
+// ── Agents & access tokens (#168) — Config → Platform → Agents panel ─────────
+function _agentFmtDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso); if (isNaN(d.getTime())) return esc(String(iso));
+  return d.toLocaleDateString(undefined, { year:'numeric', month:'short', day:'numeric' });
+}
+
+async function loadAgentTokens() {
+  const box = document.getElementById('agentTokenList');
+  if (!box) return;
+  box.innerHTML = '<div class="empty" style="padding:14px;">Loading…</div>';
+  try {
+    const r = await api('/api/tokens');
+    const toks = (r && r.tokens) || [];
+    if (!toks.length) { box.innerHTML = '<div class="empty" style="padding:14px;">No tokens yet — generate one above.</div>'; return; }
+    const now = Date.now();
+    const rows = toks.map(t => {
+      const revoked = !!t.revoked_at;
+      const exp = t.expires_at ? new Date(t.expires_at).getTime() : 0;
+      const expired = exp && exp < now;
+      const status = revoked ? '<span style="color:var(--red);">revoked</span>'
+        : expired ? '<span style="color:var(--orange,#c8861a);">expired</span>'
+        : '<span style="color:var(--green);">active</span>';
+      const lastUsed = t.last_used_at ? _agentFmtDate(t.last_used_at) : '<span style="color:var(--text-faint);">never</span>';
+      const expTxt = t.expires_at ? _agentFmtDate(t.expires_at) : '<span style="color:var(--text-faint);">no expiry</span>';
+      return `<tr style="border-top:1px solid var(--border);">
+        <td style="padding:8px 10px;">${esc(t.label || '—')}</td>
+        <td style="padding:8px 10px;font-family:monospace;font-size:11px;">${esc(t.email)}</td>
+        <td style="padding:8px 10px;font-size:11px;">${status}</td>
+        <td style="padding:8px 10px;font-size:11px;">${_agentFmtDate(t.created_at)}<div style="color:var(--text-faint);">${esc(t.created_by || '')}</div></td>
+        <td style="padding:8px 10px;font-size:11px;">${lastUsed}</td>
+        <td style="padding:8px 10px;font-size:11px;">${expTxt}</td>
+        <td style="padding:8px 10px;text-align:right;">${revoked ? '' : `<button class="btn ghost btn-sm" type="button" onclick="_revokeAgentToken(${t.id}, this)">Revoke</button>`}</td>
+      </tr>`;
+    }).join('');
+    box.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="text-align:left;color:var(--text-dim);font-size:10px;text-transform:uppercase;letter-spacing:.04em;">
+        <th style="padding:6px 10px;">Label</th><th style="padding:6px 10px;">Acts as</th><th style="padding:6px 10px;">Status</th>
+        <th style="padding:6px 10px;">Created</th><th style="padding:6px 10px;">Last used</th><th style="padding:6px 10px;">Expires</th><th></th>
+      </tr></thead><tbody>${rows}</tbody></table>`;
+  } catch (e) {
+    box.innerHTML = `<div class="empty" style="padding:14px;color:var(--red);">${esc(e.message || 'failed to load tokens')}</div>`;
+  }
+}
+
+async function _revokeAgentToken(id, btn) {
+  if (!confirm('Revoke this token? Any agent using it loses access immediately.')) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'revoking…'; }
+  try { await api('/api/tokens/' + id, { method: 'DELETE' }); toast('Token revoked'); loadAgentTokens(); }
+  catch (e) { toast(e.message, true); if (btn) { btn.disabled = false; btn.textContent = 'Revoke'; } }
+}
+
+document.getElementById('agentMintBtn')?.addEventListener('click', async () => {
+  const email = (document.getElementById('agentEmail').value || '').trim().toLowerCase();
+  const label = (document.getElementById('agentLabel').value || '').trim();
+  const days = parseInt(document.getElementById('agentExpiry').value, 10);
+  const msg = document.getElementById('agentMintMsg');
+  if (email.length < 2) { msg.textContent = 'Enter the account email the token acts as.'; msg.style.color = 'var(--red)'; return; }
+  let expires_at = null;
+  if (days > 0) expires_at = new Date(Date.now() + days * 864e5).toISOString();
+  msg.textContent = 'generating…'; msg.style.color = 'var(--text-faint)';
+  try {
+    const r = await api('/api/tokens', { method: 'POST', body: JSON.stringify({ email, label, expires_at }) });
+    msg.textContent = '';
+    const card = document.getElementById('agentRevealCard');
+    document.getElementById('agentRevealToken').textContent = r.token;
+    document.getElementById('agentRevealUsage').innerHTML =
+      `Send it as a bearer header on every request:<br>` +
+      `<code>Authorization: Bearer ${esc(r.token)}</code><br>` +
+      `Example: <code>curl -s ${esc(location.origin)}/api/me -H "Authorization: Bearer $DAV_TOKEN"</code><br>` +
+      `Acts as <strong>${esc(r.email)}</strong> — grant it roles in Users &amp; roles if it has none.`;
+    card.style.display = '';
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    document.getElementById('agentLabel').value = '';
+    loadAgentTokens();
+  } catch (e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+});
+
+document.getElementById('agentCopyBtn')?.addEventListener('click', () => {
+  const t = document.getElementById('agentRevealToken').textContent || '';
+  if (navigator.clipboard) navigator.clipboard.writeText(t).then(() => toast('Copied')).catch(() => toast('Copy failed', true));
+  else toast('Copy not available', true);
+});
+document.getElementById('agentRevealDismiss')?.addEventListener('click', () => {
+  const c = document.getElementById('agentRevealCard'); if (c) c.style.display = 'none';
+});
+document.getElementById('agentRefreshBtn')?.addEventListener('click', loadAgentTokens);
+
+// ── Tenants + Groups management (tenancy Phase 1c) — platform-admin ───────────
+let _tenantsCache = [];
+async function loadTenants() {
+  const box = document.getElementById('tenantList');
+  if (!box) return;
+  try {
+    const r = await api('/api/tenants');
+    _tenantsCache = (r && r.tenants) || [];
+    if (!_tenantsCache.length) { box.innerHTML = '<div class="empty" style="padding:10px;">No tenants.</div>'; }
+    else box.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead><tr style="text-align:left;color:var(--text-dim);font-size:10px;text-transform:uppercase;letter-spacing:.04em;">
+        <th style="padding:6px 8px;">Slug</th><th style="padding:6px 8px;">Name</th><th style="padding:6px 8px;">Isolation</th>
+        <th style="padding:6px 8px;">Regime</th><th style="padding:6px 8px;">Projects</th></tr></thead><tbody>${
+      _tenantsCache.map(t => `<tr style="border-top:1px solid var(--border);">
+        <td style="padding:6px 8px;font-family:var(--mono,monospace);">${esc(t.slug)}</td>
+        <td style="padding:6px 8px;">${esc(t.name)}</td>
+        <td style="padding:6px 8px;">${esc(t.isolation_level)}</td>
+        <td style="padding:6px 8px;">${esc(t.declared_regime)}</td>
+        <td style="padding:6px 8px;">${t.project_count}</td></tr>`).join('')}</tbody></table>`;
+    _populateGroupTenantPicker();
+  } catch (e) { box.innerHTML = `<div class="empty" style="padding:10px;color:var(--red);">${esc(e.message)}</div>`; }
+}
+document.getElementById('tenantCreateBtn')?.addEventListener('click', async () => {
+  const slug = (document.getElementById('tenantNewSlug').value || '').trim().toLowerCase();
+  const name = (document.getElementById('tenantNewName').value || '').trim();
+  const regime = document.getElementById('tenantNewRegime').value;
+  const msg = document.getElementById('tenantCreateMsg');
+  if (slug.length < 2) { msg.textContent = 'slug required'; msg.style.color = 'var(--red)'; return; }
+  msg.textContent = 'creating…'; msg.style.color = 'var(--text-faint)';
+  try {
+    await api('/api/tenants', { method: 'POST', body: JSON.stringify({ slug, name, declared_regime: regime }) });
+    msg.textContent = ''; document.getElementById('tenantNewSlug').value = ''; document.getElementById('tenantNewName').value = '';
+    toast('Tenant created'); loadTenants();
+  } catch (e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+});
+
+function _onGroupScopeChange() {
+  const scope = document.getElementById('groupNewScope').value;
+  const tp = document.getElementById('groupNewTenant');
+  if (tp) tp.style.display = scope === 'tenant' ? '' : 'none';
+}
+function _populateGroupTenantPicker() {
+  const tp = document.getElementById('groupNewTenant');
+  if (tp) tp.innerHTML = _tenantsCache.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('');
+}
+async function loadGroups() {
+  const box = document.getElementById('groupList');
+  if (!box) return;
+  try {
+    const r = await api('/api/groups');
+    const groups = (r && r.groups) || [];
+    if (!groups.length) { box.innerHTML = '<div class="empty" style="padding:10px;">No groups.</div>'; return; }
+    box.innerHTML = groups.map(g => {
+      const scopeLabel = g.scope === 'tenant' ? `tenant:${(_tenantsCache.find(t => t.id === g.tenant_id) || {}).slug || g.tenant_id}` : g.scope;
+      return `<div class="cfg-card" style="margin:6px 0;padding:8px 10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+          <div><b>${esc(g.name)}</b> <span style="font-size:10px;color:var(--text-dim);border:1px solid var(--border);padding:0 4px;border-radius:3px;">${esc(scopeLabel)}</span>
+            <span style="font-size:11px;color:var(--text-faint);"> · ${g.member_count} member${g.member_count===1?'':'s'} · ${g.role_count} role${g.role_count===1?'':'s'}</span></div>
+          <div style="display:flex;gap:4px;">
+            <button class="btn ghost btn-sm" type="button" onclick="_toggleGroupDetail(${g.id})">Manage</button>
+            <button class="btn danger btn-sm" type="button" onclick="_deleteGroup(${g.id}, '${esc(g.name)}')">Delete</button></div>
+        </div>
+        <div id="groupDetail-${g.id}" style="display:none;margin-top:8px;border-top:1px solid var(--border);padding-top:8px;"></div>
+      </div>`;
+    }).join('');
+  } catch (e) { box.innerHTML = `<div class="empty" style="padding:10px;color:var(--red);">${esc(e.message)}</div>`; }
+}
+document.getElementById('groupCreateBtn')?.addEventListener('click', async () => {
+  const name = (document.getElementById('groupNewName').value || '').trim();
+  const scope = document.getElementById('groupNewScope').value;
+  const msg = document.getElementById('groupCreateMsg');
+  if (name.length < 1) { msg.textContent = 'name required'; msg.style.color = 'var(--red)'; return; }
+  const body = { name, scope };
+  if (scope === 'tenant') body.tenant_id = parseInt(document.getElementById('groupNewTenant').value, 10);
+  msg.textContent = 'creating…'; msg.style.color = 'var(--text-faint)';
+  try {
+    await api('/api/groups', { method: 'POST', body: JSON.stringify(body) });
+    msg.textContent = ''; document.getElementById('groupNewName').value = ''; toast('Group created'); loadGroups();
+  } catch (e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+});
+async function _deleteGroup(id, name) {
+  if (!confirm(`Delete group "${name}"? Members lose its roles.`)) return;
+  try { await api('/api/groups/' + id, { method: 'DELETE' }); toast('Group deleted'); loadGroups(); }
+  catch (e) { toast(e.message, true); }
+}
+async function _toggleGroupDetail(id) {
+  const d = document.getElementById('groupDetail-' + id);
+  if (!d) return;
+  if (d.style.display !== 'none') { d.style.display = 'none'; return; }
+  d.style.display = ''; d.innerHTML = 'Loading…';
+  try {
+    const [mres, rres, roles] = await Promise.all([
+      api('/api/groups/' + id + '/members'), api('/api/groups/' + id + '/roles'), api('/api/rbac/roles')]);
+    const members = (mres && mres.members) || [];
+    const bound = (rres && rres.roles) || [];
+    const allRoles = ((roles && roles.roles) || roles || []);
+    d.innerHTML = `
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+        <input id="gm-${id}" placeholder="user email" style="font-size:12px;width:180px;">
+        <button class="btn ghost btn-sm" type="button" onclick="_addGroupMember(${id})">+ Member</button></div>
+      <div style="font-size:11px;margin-bottom:8px;">${members.length ? members.map(m =>
+        `<span style="display:inline-flex;align-items:center;gap:3px;border:1px solid var(--border);border-radius:10px;padding:1px 7px;margin:2px;">${esc(m.reviewer)}<span style="cursor:pointer;color:var(--red);" onclick="_removeGroupMember(${id},'${esc(m.reviewer)}')">✕</span></span>`).join('') : '<span style="color:var(--text-faint);">no members</span>'}</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+        <select id="gr-${id}" style="font-size:12px;">${allRoles.map(r => `<option value="${r.id}">${esc(r.name)} (${esc(r.scope)})</option>`).join('')}</select>
+        <button class="btn ghost btn-sm" type="button" onclick="_bindGroupRole(${id})">+ Role</button></div>
+      <div style="font-size:11px;">${bound.length ? bound.map(r =>
+        `<span style="display:inline-flex;align-items:center;gap:3px;border:1px solid var(--border);border-radius:10px;padding:1px 7px;margin:2px;">${esc(r.name)}<span style="cursor:pointer;color:var(--red);" onclick="_unbindGroupRole(${id},${r.role_id})">✕</span></span>`).join('') : '<span style="color:var(--text-faint);">no roles bound</span>'}</div>`;
+  } catch (e) { d.innerHTML = `<span style="color:var(--red);">${esc(e.message)}</span>`; }
+}
+async function _addGroupMember(id) {
+  const v = (document.getElementById('gm-' + id).value || '').trim();
+  if (v.length < 2) return;
+  try { await api('/api/groups/' + id + '/members', { method: 'POST', body: JSON.stringify({ reviewer: v }) });
+    d_reload(id); } catch (e) { toast(e.message, true); }
+}
+async function _removeGroupMember(id, reviewer) {
+  try { await api('/api/groups/' + id + '/members/' + encodeURIComponent(reviewer), { method: 'DELETE' }); d_reload(id); }
+  catch (e) { toast(e.message, true); }
+}
+async function _bindGroupRole(id) {
+  const rid = parseInt(document.getElementById('gr-' + id).value, 10);
+  try { await api('/api/groups/' + id + '/roles', { method: 'POST', body: JSON.stringify({ role_id: rid }) }); d_reload(id); }
+  catch (e) { toast(e.message, true); }
+}
+async function _unbindGroupRole(id, roleId) {
+  try { await api('/api/groups/' + id + '/roles/' + roleId, { method: 'DELETE' }); d_reload(id); }
+  catch (e) { toast(e.message, true); }
+}
+// Re-open a group's detail (refresh counts + the expanded panel).
+async function d_reload(id) { await loadGroups(); await _toggleGroupDetail(id); }
+
+// Create a login-less AGENT identity (kind='agent') — a real account, separate from
+// people, that carries its own roles (granted in Users & roles) and authenticates only
+// via a PAT. After creation we pre-fill the mint form's "Acts as" with it.
+document.getElementById('agentCreateBtn')?.addEventListener('click', async () => {
+  const email = (document.getElementById('newAgentEmail').value || '').trim().toLowerCase();
+  const name  = (document.getElementById('newAgentName').value || '').trim();
+  const msg = document.getElementById('agentCreateMsg');
+  if (email.length < 2) { msg.textContent = 'Enter an identifier for the agent.'; msg.style.color = 'var(--red)'; return; }
+  msg.textContent = 'creating…'; msg.style.color = 'var(--text-faint)';
+  try {
+    await api('/api/accounts', { method: 'POST', body: JSON.stringify({ email, display_name: name, kind: 'agent' }) });
+    msg.textContent = ''; toast('Agent identity created — grant it roles in Users & roles, then mint a token');
+    document.getElementById('newAgentEmail').value = '';
+    document.getElementById('newAgentName').value = '';
+    const acts = document.getElementById('agentEmail'); if (acts) acts.value = email;   // prefill the mint form
+    try { loadAccounts(); loadRolesMatrix(); } catch {}   // refresh the people/roles panel so the agent shows
+  } catch (e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+});
+
+async function loadLdapSettings() {
+  try {
+    const s = await api('/api/settings/ldap');
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ''; };
+    set('ls-url', s.url); set('ls-bind_dn', s.bind_dn); set('ls-user_base', s.user_base);
+    set('ls-group_dn', s.group_dn); set('ls-user_attr', s.user_attr); set('ls-mail_attr', s.mail_attr);
+    set('ls-name_attr', s.name_attr); set('ls-member_attr', s.member_attr);
+    document.getElementById('ls-start_tls').checked = !!s.start_tls;
+    document.getElementById('ls-enforce').checked = !!s.enforce;
+    document.getElementById('ls-bind_password').placeholder = s.bind_password_set ? '•••• (set — leave blank to keep)' : '';
+  } catch(e) {}
+}
+document.getElementById('ls-save')?.addEventListener('click', async () => {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const body = { url:v('ls-url'), bind_dn:v('ls-bind_dn'), user_base:v('ls-user_base'), group_dn:v('ls-group_dn'),
+    user_attr:v('ls-user_attr'), mail_attr:v('ls-mail_attr'), name_attr:v('ls-name_attr'), member_attr:v('ls-member_attr'),
+    start_tls:document.getElementById('ls-start_tls').checked, enforce:document.getElementById('ls-enforce').checked };
+  const pw = v('ls-bind_password'); if (pw) body.bind_password = pw;
+  const msg = document.getElementById('ls-msg'); msg.textContent = 'saving…'; msg.style.color='var(--text-faint)';
+  try { const r = await api('/api/settings/ldap', { method:'PUT', body: JSON.stringify(body) });
+    msg.textContent = r.configured ? (r.synced_ok ? `saved — ${r.approved_identity_count} approved` : ('saved, sync failed: '+(r.last_error||''))) : 'saved (not configured)';
+    msg.style.color = r.synced_ok || !r.configured ? 'var(--green)' : 'var(--red)';
+    document.getElementById('ls-bind_password').value=''; loadLdapStatus();
+  } catch(e){ msg.textContent = e.message; msg.style.color='var(--red)'; }
+});
+function _ldapFormBody() {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const body = { url:v('ls-url'), bind_dn:v('ls-bind_dn'), user_base:v('ls-user_base'), group_dn:v('ls-group_dn'),
+    user_attr:v('ls-user_attr'), mail_attr:v('ls-mail_attr'), name_attr:v('ls-name_attr'), member_attr:v('ls-member_attr'),
+    start_tls:document.getElementById('ls-start_tls').checked, enforce:document.getElementById('ls-enforce').checked };
+  const pw = v('ls-bind_password'); if (pw) body.bind_password = pw;
+  return body;
+}
+document.getElementById('ls-test')?.addEventListener('click', async () => {
+  const msg = document.getElementById('ls-msg'); const btn = document.getElementById('ls-test');
+  btn.disabled = true; msg.textContent = 'testing…'; msg.style.color = 'var(--text-faint)';
+  try {
+    const r = await api('/api/settings/ldap/test', { method:'POST', body: JSON.stringify(_ldapFormBody()) });
+    if (r.ok) { msg.innerHTML = `✓ bound — ${r.count} group member${r.count===1?'':'s'}${r.sample&&r.sample.length?` (${r.sample.map(esc).join(', ')}${r.count>r.sample.length?'…':''})`:''}`; msg.style.color = 'var(--green)'; }
+    else { msg.textContent = '✕ ' + (r.error||'failed'); msg.style.color = 'var(--red)'; }
+  } catch(e){ msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+  btn.disabled = false;
+});
+async function loadSmtpSettings() {
+  try {
+    const s = await api('/api/settings/smtp');
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v ?? ''; };
+    set('sm-host', s.host); set('sm-port', s.port); set('sm-user', s.user); set('sm-from_addr', s.from_addr); set('sm-base_url', s.base_url);
+    document.getElementById('sm-tls').checked = s.tls !== false;
+    document.getElementById('sm-verify_cert').checked = s.verify_cert !== false;
+    document.getElementById('sm-password').placeholder = s.password_set ? '•••• (set — leave blank to keep)' : '(optional)';
+  } catch(e) {}
+}
+document.getElementById('sm-save')?.addEventListener('click', async () => {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const body = { host:v('sm-host'), port:parseInt(v('sm-port')||'587',10), user:v('sm-user'),
+    from_addr:v('sm-from_addr'), base_url:v('sm-base_url'), tls:document.getElementById('sm-tls').checked,
+    verify_cert:document.getElementById('sm-verify_cert').checked };
+  const pw = v('sm-password'); if (pw) body.password = pw;
+  const msg = document.getElementById('sm-msg'); msg.textContent='saving…'; msg.style.color='var(--text-faint)';
+  try { await api('/api/settings/smtp', { method:'PUT', body: JSON.stringify(body) }); msg.textContent='saved'; msg.style.color='var(--green)'; document.getElementById('sm-password').value=''; }
+  catch(e){ msg.textContent=e.message; msg.style.color='var(--red)'; }
+});
+document.getElementById('sm-test')?.addEventListener('click', async () => {
+  const v = id => (document.getElementById(id)?.value || '').trim();
+  const to = prompt('Send a test email to:', v('sm-from_addr') || (me && me.reviewer) || '');
+  if (to === null) return;
+  const msg = document.getElementById('sm-msg'); const btn = document.getElementById('sm-test');
+  btn.disabled = true; msg.textContent = 'sending…'; msg.style.color = 'var(--text-faint)';
+  const body = { host:v('sm-host'), port:parseInt(v('sm-port')||'587',10), user:v('sm-user'),
+    from_addr:v('sm-from_addr'), base_url:v('sm-base_url'), tls:document.getElementById('sm-tls').checked,
+    verify_cert:document.getElementById('sm-verify_cert').checked, test_to: to };
+  const pw = v('sm-password'); if (pw) body.password = pw;
+  try {
+    const r = await api('/api/settings/smtp/test', { method:'POST', body: JSON.stringify(body) });
+    if (r.ok) { msg.textContent = `✓ sent to ${r.sent_to}`; msg.style.color = 'var(--green)'; }
+    else { msg.textContent = '✕ ' + (r.error||'failed'); msg.style.color = 'var(--red)'; }
+  } catch(e){ msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+  btn.disabled = false;
+});
+
+// ── Projects admin (create / archive / membership) ───────────────────────────
+let _projApproved = null;   // cached approved-user list for member pickers
+async function _projApprovedUsers() {
+  if (_projApproved) return _projApproved;
+  try { _projApproved = (await api('/api/ldap/approved')).users || []; } catch { _projApproved = []; }
+  return _projApproved;
+}
+document.getElementById('newProjBtn')?.addEventListener('click', async () => {
+  const slug = document.getElementById('newProjSlug').value.trim();
+  const name = document.getElementById('newProjName').value.trim();
+  const msg = document.getElementById('newProjMsg');
+  if (!slug) { msg.textContent = 'slug required'; msg.style.color = 'var(--red)'; return; }
+  try {
+    await api('/api/projects', { method:'POST', body: JSON.stringify({ slug, name: name || slug }) });
+    document.getElementById('newProjSlug').value = ''; document.getElementById('newProjName').value = '';
+    msg.textContent = 'created'; msg.style.color = 'var(--green)';
+    loadProjectsAdmin(); loadProjectSwitcher();
+  } catch(e) { msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+});
+// Projects management — two-pane master/detail (#168 follow-up; mirrors the Customers tab).
+let _selectedProjId = null;
+let _projectsCache = [];
+document.getElementById('newProjToggle')?.addEventListener('click', () => {
+  const f = document.getElementById('newProjForm'); if (f) f.style.display = f.style.display === 'none' ? '' : 'none';
+});
+async function loadProjectsAdmin() {
+  const el = document.getElementById('projectsList');
+  if (!el) return;
+  // Project creation is gated on the project.create privilege (platform admins by default).
+  const canCreate = !!(me && (me.is_platform_admin || (me.privileges||[]).includes('project.create')));
+  const tgl = document.getElementById('newProjToggle'); if (tgl) tgl.style.display = canCreate ? '' : 'none';
+  try {
+    const r = await api('/api/projects?show_archived=true');
+    let projects = r.projects || [];
+    // Project admins see only the projects they administer.
+    if (me && !me.is_platform_admin && me.role !== 'admin') {
+      projects = projects.filter(p => p.my_role === 'admin');
+    }
+    _projectsCache = projects;
+    el.innerHTML = projects.map(p => `
+      <div class="proj-item" data-pid="${p.id}" style="padding:8px 10px;border-radius:6px;cursor:pointer;margin-bottom:2px;${p.archived?'opacity:.55;':''}${p.id===_selectedProjId?'background:var(--bg-raised);':''}">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <strong style="font-size:12px;flex:1;">${esc(p.name)}</strong>
+          ${p.is_exclusive?'<span title="exclusive — sealed">🔒</span>':''}
+          ${p.archived?'<span style="font-size:9px;color:var(--red);">archived</span>':''}
+        </div>
+        <div style="font-size:10px;color:var(--text-faint);"><code>${esc(p.slug)}</code> · ${p.member_count} member${p.member_count===1?'':'s'}</div>
+      </div>`).join('') || '<div class="empty" style="padding:14px;color:var(--text-faint);">No projects.</div>';
+    el.querySelectorAll('.proj-item').forEach(it => it.addEventListener('click', () => _selectProject(parseInt(it.dataset.pid, 10))));
+    if (_selectedProjId && projects.some(p => p.id === _selectedProjId)) _selectProject(_selectedProjId);
+    else if (!_selectedProjId && projects.length) _selectProject(projects[0].id);
+    else if (_selectedProjId && !projects.some(p => p.id === _selectedProjId)) {
+      _selectedProjId = null;
+      const det = document.getElementById('projDetail'); if (det) det.innerHTML = '<div class="empty" style="padding:20px;color:var(--text-faint);">Select a project…</div>';
+    }
+  } catch(e) { el.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+
+function _selectProject(pid) {
+  _selectedProjId = pid;
+  document.querySelectorAll('.proj-item').forEach(it => {
+    it.style.background = (parseInt(it.dataset.pid, 10) === pid) ? 'var(--bg-raised)' : '';
+  });
+  const p = _projectsCache.find(x => x.id === pid);
+  const det = document.getElementById('projDetail');
+  if (!p || !det) return;
+  const projects = _projectsCache;
+  const canAdmin = me && (me.is_platform_admin || p.my_role === 'admin');
+  const moveOpts = projects.filter(x => x.id !== p.id && !x.archived);
+  det.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:2px;flex-wrap:wrap;">
+      <div class="view-title" style="margin:0;">${esc(p.name)}</div>
+      <code style="font-size:12px;color:var(--text-faint);">${esc(p.slug)}</code>
+      ${p.archived?'<span style="font-size:10px;color:var(--red);border:1px solid var(--red);border-radius:10px;padding:0 8px;">archived</span>':''}
+    </div>
+    <div class="view-subtitle">${p.member_count} member${p.member_count===1?'':'s'} · the masthead switcher sets your active project; data is scoped to it.</div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:14px 0;padding:10px 12px;background:var(--bg-input,rgba(255,255,255,.03));border:1px solid var(--border);border-radius:8px;">
+      <label style="display:inline-flex;align-items:center;gap:5px;font-size:11px;cursor:pointer;" title="Sealed — explicit grant required for everyone, incl. platform-admin"><input type="checkbox" id="pd-excl" ${p.is_exclusive?'checked':''} style="width:auto;height:auto;" /> 🔒 Exclusive</label>
+      ${(me&&me.can_manage_uc_sources)?`<button class="btn ghost btn-sm" id="pd-ucstore" type="button">UC store</button>`:''}
+      ${p.slug!=='default'?`<button class="btn ghost btn-sm" id="pd-archive" type="button">${p.archived?'Unarchive':'Archive'}</button>`:''}
+      ${(me&&me.is_platform_admin&&moveOpts.length)?`<select id="pd-move" style="font-size:11px;"><option value="">move data →</option>${moveOpts.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join('')}</select>`:''}
+      <span style="flex:1;"></span>
+      ${(p.slug!=='default'&&canAdmin)?`<a href="javascript:void(0)" id="pd-del" style="color:var(--red);font-size:11px;">delete project</a>`:''}
+    </div>
+    <div id="pd-ucstore-box" style="display:none;margin-bottom:14px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;"></div>
+    <div class="cfg-card panel-card">
+      <div class="panel-card-header"><div><div class="pc-title">Members</div><div class="pc-sub">Who can access this project, and with what role.</div></div></div>
+      <div id="pd-members" style="padding:12px 14px;">Loading…</div>
+    </div>`;
+  det.querySelector('#pd-excl')?.addEventListener('change', async function() {
+    try { await api(`/api/projects/${pid}`, { method:'PATCH', body: JSON.stringify({ is_exclusive: this.checked }) }); p.is_exclusive = this.checked; }
+    catch(e){ toast(e.message, true); this.checked = !this.checked; }
+  });
+  det.querySelector('#pd-archive')?.addEventListener('click', async function() {
+    try { await api(`/api/projects/${pid}`, { method:'PATCH', body: JSON.stringify({ archived: !p.archived }) }); loadProjectsAdmin(); loadProjectSwitcher(); }
+    catch(e){ toast('Failed: ' + e.message, true); }
+  });
+  det.querySelector('#pd-move')?.addEventListener('change', async function() {
+    const tgt = this.value; if (!tgt) return;
+    const tgtName = this.options[this.selectedIndex].text;
+    if (!confirm(`Move ALL data from "${p.name}" into "${tgtName}"? This reassigns use cases, ingestions, sessions, Scoping Sets and cached outputs.`)) { this.value=''; return; }
+    try { const rr = await api(`/api/projects/${pid}/move-data`, { method:'POST', body: JSON.stringify({ target_project_id: parseInt(tgt,10) }) });
+      toast(`Moved ${rr.total} item(s): ${rr.source} → ${rr.target}`); loadProjectsAdmin(); loadProjectSwitcher(); }
+    catch(e){ toast(e.message, true); this.value=''; }
+  });
+  det.querySelector('#pd-del')?.addEventListener('click', async function() {
+    if (!confirm(`Delete project "${p.name}"? Its data must already be moved or removed.`)) return;
+    try { await api(`/api/projects/${pid}`, { method:'DELETE' }); toast('Project deleted'); _selectedProjId = null; loadProjectsAdmin(); loadProjectSwitcher(); }
+    catch(e){ toast(e.message, true); }
+  });
+  const ucBox = det.querySelector('#pd-ucstore-box');
+  det.querySelector('#pd-ucstore')?.addEventListener('click', () => {
+    if (ucBox.style.display === 'none') { ucBox.style.display = ''; _renderUcDestination(pid, ucBox); } else ucBox.style.display = 'none';
+  });
+  _renderProjectMembers(pid, det.querySelector('#pd-members'));
+}
+// UC git destination for a project (Phase 2 — where its use cases live).
+async function _renderUcDestination(pid, box) {
+  box.innerHTML = 'Loading…';
+  try {
+    const dest = await api(`/api/projects/${pid}/uc-destination`);
+    const repoResp = await api('/api/repos?role=uc-store');
+    const repos = repoResp.repos || [];
+    const opts = ['<option value="">— global default —</option>'].concat(repos.map(r => {
+      const pvc = (r.metadata && r.metadata.provider === 'pvc-local') || r.provider === 'pvc-local';
+      return `<option value="${esc(r.uuid)}"${dest.repo_uuid===r.uuid?' selected':''}>${esc(r.display_name||r.namespace)}${pvc?' (DAV-hosted)':''}</option>`;
+    })).join('');
+    box.innerHTML = `
+      <div style="font-size:11px;color:var(--text-faint);margin-bottom:4px;">Git home for this project's use cases (a uc-store repo). Per-UC overrides win.</div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <select id="ucd-repo-${pid}" style="font-size:11px;">${opts}</select>
+        <input id="ucd-path-${pid}" placeholder="path (optional)" value="${esc(dest.path||'')}" style="font-size:11px;width:120px;">
+        <input id="ucd-branch-${pid}" placeholder="branch" value="${esc(dest.branch||'')}" style="font-size:11px;width:90px;">
+        <button class="btn primary btn-sm ucd-save" data-pid="${pid}">Save</button>
+        <span id="ucd-msg-${pid}" style="font-size:11px;color:var(--text-faint);"></span>
+      </div>
+      <div style="margin-top:6px;font-size:11px;">
+        <a href="javascript:void(0)" class="ucd-new-toggle" data-pid="${pid}" style="color:var(--accent)">+ Let DAV host a new store</a>
+        <span id="ucd-new-form-${pid}" style="display:none;margin-left:6px;">
+          <input id="ucd-new-ns-${pid}" placeholder="namespace (a-z0-9-)" style="font-size:11px;width:150px;">
+          <button class="btn ghost btn-sm ucd-new-go" data-pid="${pid}">Create</button>
+        </span>
+      </div>`;
+    box.querySelector('.ucd-save').addEventListener('click', async function() {
+      const repo_uuid = document.getElementById(`ucd-repo-${pid}`).value || null;
+      const path = document.getElementById(`ucd-path-${pid}`).value;
+      const branch = document.getElementById(`ucd-branch-${pid}`).value;
+      const msg = document.getElementById(`ucd-msg-${pid}`);
+      try { await api(`/api/projects/${pid}/uc-destination`, { method:'PUT', body: JSON.stringify({ repo_uuid, path, branch }) }); msg.textContent = 'saved'; msg.style.color = 'var(--green)'; }
+      catch(e){ msg.textContent = e.message; msg.style.color = 'var(--red)'; }
+    });
+    box.querySelector('.ucd-new-toggle').addEventListener('click', function() {
+      const f = document.getElementById(`ucd-new-form-${pid}`); f.style.display = f.style.display === 'none' ? '' : 'none';
+    });
+    box.querySelector('.ucd-new-go').addEventListener('click', async function() {
+      const ns = (document.getElementById(`ucd-new-ns-${pid}`).value || '').trim();
+      if (!ns) return;
+      try { await api('/api/repos/pvc-local', { method:'POST', body: JSON.stringify({ namespace: ns }) }); toast('DAV-hosted store created'); _renderUcDestination(pid, box); }
+      catch(e){ toast(e.message, true); }
+    });
+  } catch(e) { box.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+// Project membership = per-project RBAC role assignments (same model as the
+// Accounts panel). A user may hold multiple project roles.
+const _LEGACY_PROJ_ROLE = { 'project-admin':'admin', 'project-edit':'editor', 'project-viewer':'viewer' };
+// Reusable type-ahead user picker (#133/#134) — unifies "add member" across project + customer
+// surfaces. `accounts` = [{reviewer,email,display_name}]; `excludeSet` = lowercased reviewers to omit
+// (current members, so you only pick NON-members). On pick, sets input.value (display) +
+// input.dataset.reviewer (the id) and calls onPick(reviewer). Typing clears the pick — you must select.
+function userPickerHtml(inputId, ddId, placeholder) {
+  return `<div style="position:relative;flex:1;min-width:140px;">
+    <input id="${inputId}" placeholder="${esc(placeholder || '+ add user…')}" autocomplete="off" style="font-size:11px;width:100%;" />
+    <div id="${ddId}" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:200;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:6px;min-width:340px;max-height:340px;overflow:auto;box-shadow:0 8px 24px rgba(0,0,0,0.45);margin-top:3px;"></div>
+  </div>`;
+}
+function wireUserPicker(inputId, ddId, accounts, excludeSet, onPick) {
+  const inp = document.getElementById(inputId), dd = document.getElementById(ddId);
+  if (!inp || !dd) return;
+  const pool = (accounts || []).filter(a => !excludeSet.has((a.reviewer || '').toLowerCase()));
+  const close = () => { dd.style.display = 'none'; };
+  const render = (q) => {
+    q = (q || '').toLowerCase().trim();
+    const matches = pool.filter(a =>
+      (a.reviewer || '').toLowerCase().includes(q) || (a.email || '').toLowerCase().includes(q) || (a.display_name || '').toLowerCase().includes(q)
+    ).slice(0, 20);
+    dd.innerHTML = matches.length
+      ? matches.map(a => `<div class="up-item" data-rev="${esc(a.reviewer)}" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border);line-height:1.35;" onmouseover="this.style.background='var(--bg-raised)'" onmouseout="this.style.background=''"><div style="font-size:13px;">${esc(a.display_name || a.reviewer)}</div><div style="color:var(--text-faint);font-size:11px;">${esc(a.email || a.reviewer)}</div></div>`).join('')
+      : `<div style="padding:8px 12px;font-size:12px;color:var(--text-faint);">${q ? 'no matching non-members' : (pool.length ? 'type to search…' : 'everyone is already a member')}</div>`;
+    dd.style.display = '';
+    dd.querySelectorAll('.up-item').forEach(it => it.addEventListener('mousedown', (e) => {
+      e.preventDefault();   // beat the input's blur so the pick registers
+      const a = pool.find(x => x.reviewer === it.dataset.rev);
+      inp.value = (a.display_name || a.reviewer); inp.dataset.reviewer = a.reviewer; close();
+      if (onPick) onPick(a.reviewer);
+    }));
+  };
+  inp.addEventListener('input', () => { inp.dataset.reviewer = ''; render(inp.value); });
+  inp.addEventListener('focus', () => render(inp.value));
+  inp.addEventListener('blur', () => setTimeout(close, 150));
+}
+
+async function _renderProjectMembers(pid, box) {
+  box.innerHTML = 'Loading…';
+  try {
+    const mResp = await api(`/api/projects/${pid}/members`);
+    const approved = await _projApprovedUsers();
+    const rolesResp = await api('/api/rbac/roles');
+    const projRoles = (rolesResp.roles||[]).filter(r => r.scope === 'project');
+    const roleOpts = projRoles.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+    const members = mResp.members || [];
+    box.innerHTML = members.map(m => `
+      <div style="display:flex;gap:8px;align-items:center;padding:3px 0;">
+        <span style="flex:1;">${esc(m.display_name||m.reviewer)} <span style="color:var(--text-faint);font-size:11px;">${esc(m.email||m.reviewer)}</span></span>
+        <span style="font-size:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:1px 8px;">${esc(m.role_name||m.role_key)}</span>
+        <button class="btn ghost btn-sm pm-remove" data-pid="${pid}" data-rev="${esc(m.reviewer)}" data-role="${m.role_id}" style="color:var(--red);" title="Revoke this role">✕</button>
+      </div>`).join('') +
+      `<div style="display:flex;gap:6px;align-items:center;margin-top:6px;">
+        ${userPickerHtml(`pm-add-${pid}`, `pm-add-dd-${pid}`, '+ add user…')}
+        <select id="pm-add-role-${pid}" style="font-size:11px;">${roleOpts}</select>
+        <button class="btn ghost btn-sm pm-add-btn" data-pid="${pid}">Add</button>
+      </div>` +
+      `<div style="margin-top:8px;border-top:1px dashed var(--border);padding-top:8px;">
+        <div style="font-size:10px;color:var(--text-faint);margin-bottom:4px;">Invite a new user by email (they set a password &amp; join with this role):</div>
+        <div style="display:flex;gap:6px;">
+          <input id="inv-email-${pid}" placeholder="name@org" style="font-size:11px;flex:1;" />
+          <select id="inv-role-${pid}" style="font-size:11px;">${roleOpts}</select>
+          <button class="btn ghost btn-sm inv-send-btn" data-pid="${pid}">Invite</button>
+        </div>
+        <div id="inv-result-${pid}" style="font-size:10px;margin-top:5px;word-break:break-all;"></div>
+      </div>`;
+    box.querySelectorAll('.pm-remove').forEach(b => b.addEventListener('click', async function() {
+      try { await api(`/api/projects/${this.dataset.pid}/members/${encodeURIComponent(this.dataset.rev)}?role_id=${this.dataset.role}`, { method:'DELETE' }); _renderProjectMembers(pid, box); loadProjectsAdmin(); loadProjectSwitcher(); } catch(e){ toast(e.message, true); }
+    }));
+    const _pmExclude = new Set(members.map(m => (m.reviewer || '').toLowerCase()));
+    wireUserPicker(`pm-add-${pid}`, `pm-add-dd-${pid}`, approved, _pmExclude, null);
+    box.querySelector('.pm-add-btn')?.addEventListener('click', async function() {
+      const rev = document.getElementById(`pm-add-${pid}`).dataset.reviewer || '';
+      const role_id = parseInt(document.getElementById(`pm-add-role-${pid}`).value, 10);
+      if (!rev) { toast('Pick a user from the list', true); return; }
+      try { await api(`/api/projects/${pid}/members`, { method:'POST', body: JSON.stringify({ reviewer:rev, role_id }) }); _renderProjectMembers(pid, box); loadProjectsAdmin(); loadProjectSwitcher(); } catch(e){ toast(e.message, true); }
+    });
+    box.querySelector('.inv-send-btn')?.addEventListener('click', async function() {
+      const email = (document.getElementById(`inv-email-${pid}`).value || '').trim();
+      const role_id = parseInt(document.getElementById(`inv-role-${pid}`).value, 10);
+      const out = document.getElementById(`inv-result-${pid}`);
+      if (!email) { out.textContent = 'email required'; out.style.color = 'var(--red)'; return; }
+      out.textContent = 'creating invite…'; out.style.color = 'var(--text-faint)';
+      try {
+        const rk = (projRoles.find(r=>r.id===role_id)||{}).key;
+        const legacy = _LEGACY_PROJ_ROLE[rk] || 'viewer';
+        const r = await api('/api/invites', { method:'POST', body: JSON.stringify({ email, project_id: parseInt(pid,10), project_role: legacy }) });
+        const link = (r.link && r.link.startsWith('http')) ? r.link : (location.origin + (r.link||''));
+        out.innerHTML = (r.emailed ? '✓ emailed · ' : ('⚠ not emailed' + (r.email_error ? ' (' + esc(r.email_error) + ')' : ' (no SMTP)') + ' · '))
+          + `<a href="javascript:void(0)" id="inv-copy-${pid}" style="color:var(--accent)">copy link</a>`;
+        out.style.color = 'var(--text-dim)';
+        document.getElementById(`inv-copy-${pid}`)?.addEventListener('click', () => { navigator.clipboard.writeText(link).then(()=>toast('Invite link copied')); });
+        document.getElementById(`inv-email-${pid}`).value = '';
+      } catch(e) { out.textContent = e.message; out.style.color = 'var(--red)'; }
+    });
+  } catch(e) { box.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+
+async function loadLdapStatus() {
+  const body = document.getElementById('ldapStatusBody');
+  const chip = document.getElementById('ldapStatusChip');
+  if (!body) return;
+  try {
+    const s = await api('/api/ldap/status');
+    if (chip) {
+      chip.textContent = s.configured ? (s.enforcing ? 'enforcing' : 'configured · not enforcing') : 'not configured';
+      chip.style.color = (s.configured && s.synced_ok) ? 'var(--ok)' : 'var(--text-faint)';
+    }
+    body.innerHTML = s.configured
+      ? `<div>Server: <code>${esc(s.url||'')}</code></div>
+         <div>Approval group: <code>${esc(s.group_dn||'')}</code></div>
+         <div>Last sync: ${s.synced_ok ? '<span style="color:var(--ok)">ok</span>' : '<span style="color:var(--red)">not yet</span>'} — ${s.group_member_count} group member(s), ${s.approved_identity_count} approved identit${s.approved_identity_count===1?'y':'ies'}</div>
+         ${s.last_error ? `<div style="color:var(--red)">Last error: ${esc(s.last_error)}</div>` : ''}
+         <div>Enforcement: <strong>${s.enforcing ? 'ON' : 'OFF'}</strong>${s.enforcing ? '' : ' — set <code>DAV_LDAP_ENFORCE=true</code> once the user list looks right'}</div>
+         <div>Bootstrap admins: ${(s.bootstrap_admins||[]).map(esc).join(', ') || '<span style="color:var(--text-faint)">none</span>'}</div>`
+      : `<div style="color:var(--text-faint)">LDAP is not configured. Set the <code>DAV_LDAP_*</code> env vars (from a Secret) on the API to enable approved-user access. The gate stays a no-op until configured <em>and</em> <code>DAV_LDAP_ENFORCE=true</code>.</div>`;
+  } catch(e) { body.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+
+document.getElementById('ldapSyncBtn')?.addEventListener('click', async () => {
+  const msg = document.getElementById('ldapSyncMsg'); const btn = document.getElementById('ldapSyncBtn');
+  btn.disabled = true; msg.textContent = 'syncing…'; msg.style.color = 'var(--text-faint)';
+  try {
+    const r = await api('/api/ldap/sync', { method:'POST', body:'{}' });
+    msg.textContent = r.synced_ok ? `synced — ${r.approved_identity_count} approved` : ('failed: ' + (r.last_error||''));
+    msg.style.color = r.synced_ok ? 'var(--green)' : 'var(--red)';
+    loadLdapStatus(); loadUsers();
+  } catch(e) { msg.textContent = 'error: ' + e.message; msg.style.color = 'var(--red)'; }
+  btn.disabled = false;
+});
+
+let _rbacRoles = [];
+let _rbacProjects = [];
+
+// Back-compat alias — callers refresh the whole Users & roles panel.
+async function loadUsers() { loadAccounts(); loadRolesMatrix(); }
+
+// ── Bundles (#107) — Config → Platform → Bundles ─────────────────────────────
+// Reusable, versioned packages of config/capability items. Assemble → publish
+// (snapshots non-secret defs) → attach to a project/use-category (scope-resolved).
+let _bundleOpenId = null;
+async function loadBundles() {
+  const el = document.getElementById('bundlesList');
+  if (!el) return;
+  try {
+    const bundles = await api('/api/bundles');
+    if (!bundles.length) {
+      el.innerHTML = '<div style="color:var(--text-faint);padding:8px 0;">No bundles yet. Create one, add items, publish a version, then attach it to a project or use-category.</div>';
+      const d = document.getElementById('bundleDetail'); if (d) d.style.display = 'none';
+      return;
+    }
+    el.innerHTML = bundles.map(b => `
+      <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border);">
+        <span style="flex:1;cursor:pointer;" onclick="openBundle(${b.id})"><strong>${esc(b.name)}</strong>
+          <span style="font-size:10px;background:var(--bg-raised);border:1px solid var(--border);padding:0 5px;border-radius:2px;">${esc(b.kind)}</span>
+          <span style="color:var(--text-faint);font-size:11px;"> · ${b.item_count} item${b.item_count===1?'':'s'} · ${b.versions} ver · ${b.attachments} attach${b.current_version_id?'':' · <span style="color:var(--accent);">unpublished</span>'}</span></span>
+        <button class="btn ghost btn-sm" onclick="openBundle(${b.id})">Open</button>
+        <a href="javascript:void(0)" onclick="_armDeleteBtn(this, () => deleteBundle(${b.id}))" style="color:var(--red);font-size:11px;">delete</a>
+      </div>`).join('');
+    if (_bundleOpenId && bundles.some(b => b.id === _bundleOpenId)) openBundle(_bundleOpenId);
+  } catch (e) { el.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+function _bundleNew() {
+  const f = document.getElementById('bundleNewForm');
+  if (f) f.style.display = f.style.display === 'none' ? 'flex' : 'none';
+}
+async function createBundle() {
+  const name = (document.getElementById('bundleNewName').value || '').trim();
+  if (!name) { toast('name required', true); return; }
+  const kind = document.getElementById('bundleNewKind').value;
+  const description = (document.getElementById('bundleNewDesc').value || '').trim();
+  try {
+    const b = await api('/api/bundles', { method: 'POST', body: JSON.stringify({ name, kind, description }) });
+    toast('✓ bundle created');
+    document.getElementById('bundleNewName').value = '';
+    document.getElementById('bundleNewDesc').value = '';
+    _bundleNew(); _bundleOpenId = b.id; await loadBundles();
+  } catch (e) { toast(e.message, true); }
+}
+async function deleteBundle(id) {
+  try {
+    await api(`/api/bundles/${id}`, { method: 'DELETE' });
+    toast('bundle deleted');
+    if (_bundleOpenId === id) { _bundleOpenId = null; const d = document.getElementById('bundleDetail'); if (d) d.style.display = 'none'; }
+    await loadBundles();
+  } catch (e) { toast(e.message, true); }
+}
+async function openBundle(id) {
+  _bundleOpenId = id;
+  const box = document.getElementById('bundleDetail');
+  if (!box) return;
+  box.style.display = '';
+  box.innerHTML = '<div style="color:var(--text-faint);">loading…</div>';
+  try {
+    const b = await api(`/api/bundles/${id}`);
+    const latest = (b.version_list || [])[0];
+    const isDraft = latest && latest.status === 'draft';
+    const items = (b.items || []).map(i => `
+      <div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:11px;">
+        <span style="background:var(--bg-raised);border:1px solid var(--border);padding:0 4px;border-radius:2px;font-size:9px;">${esc(i.item_type)}</span>
+        <span style="flex:1;">${esc((i.item_data && (i.item_data.name || i.item_data.model_id)) || (i.source_id ? ('#' + i.source_id) : '(item)'))}</span>
+        ${isDraft ? `<a href="javascript:void(0)" onclick="_delBundleItem(${i.id})" style="color:var(--red);font-size:10px;">remove</a>` : ''}
+      </div>`).join('') || '<div style="color:var(--text-faint);font-size:11px;">no items yet</div>';
+    const attachments = (b.attachment_list || []).map(a => `
+      <div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:11px;">
+        <span style="flex:1;">${a.project_id ? 'project ' + a.project_id : 'platform'}${a.use_category ? (' · ' + esc(a.use_category)) : ' · any use-category'}</span>
+        <a href="javascript:void(0)" onclick="_detachBundle(${a.id})" style="color:var(--red);font-size:10px;">detach</a>
+      </div>`).join('') || '<div style="color:var(--text-faint);font-size:11px;">not attached anywhere</div>';
+    box.innerHTML = `
+      <div style="display:flex;align-items:baseline;gap:10px;">
+        <div style="font-size:13px;font-weight:600;flex:1;">${esc(b.name)} <span style="font-size:10px;color:var(--text-faint);">${esc(b.slug)} · ${isDraft ? '<span style="color:var(--accent)">editing draft v' + (latest ? latest.version_no : '?') + '</span>' : 'published v' + (latest ? latest.version_no : '?')}</span></div>
+        ${isDraft ? `<button class="btn primary btn-sm" onclick="publishBundle(${id})">Publish version</button>` : ''}
+      </div>
+      <div style="margin-top:8px;"><div style="font-size:10px;text-transform:uppercase;color:var(--text-faint);letter-spacing:.05em;margin-bottom:3px;">Items</div>${items}</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;">
+        <select id="biType-${id}" style="font-size:11px;" onchange="_biLoadSources(${id})"><option value="mcp_server">MCP server</option><option value="model_config">Model</option></select>
+        <select id="biSource-${id}" style="font-size:11px;min-width:200px;"><option value="">— pick an item —</option></select>
+        <button class="btn ghost btn-sm" onclick="addBundleItem(${id})">Add to draft</button>
+      </div>
+      <div style="margin-top:10px;"><div style="font-size:10px;text-transform:uppercase;color:var(--text-faint);letter-spacing:.05em;margin-bottom:3px;">Attached</div>${attachments}</div>
+      ${b.current_version_id ? `<div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;">
+        <span style="font-size:11px;color:var(--text-dim);">Attach published version to:</span>
+        <button class="btn ghost btn-sm" onclick="attachBundle(${id}, 'project')">this project</button>
+        <select id="baCat-${id}" style="font-size:11px;"><option value="">— use-category —</option><option value="assessment">assessment</option><option value="arch-review">arch-review</option><option value="uc-gap-analysis">uc-gap-analysis</option><option value="enhancement">enhancement</option><option value="evaluation">evaluation</option></select>
+        <button class="btn ghost btn-sm" onclick="attachBundle(${id}, 'usecat')">use-category (platform-wide)</button>
+      </div>` : '<div style="font-size:10px;color:var(--text-faint);margin-top:6px;">Publish a version to enable attaching.</div>'}
+    `;
+    _biLoadSources(id);
+  } catch (e) { box.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+async function _biLoadSources(id) {
+  const type = document.getElementById(`biType-${id}`) ? document.getElementById(`biType-${id}`).value : 'mcp_server';
+  const sel = document.getElementById(`biSource-${id}`);
+  if (!sel) return;
+  try {
+    const data = await api(type === 'model_config' ? '/api/models' : '/api/mcp-servers');
+    // Exclude rows that are themselves materialized from a bundle (no re-bundling).
+    sel.innerHTML = '<option value="">— pick an item —</option>' + (data || []).filter(x => x.id && !x.from_bundle).map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('');
+  } catch (e) { /* leave the picker as-is on error */ }
+}
+async function addBundleItem(id) {
+  const item_type = document.getElementById(`biType-${id}`).value;
+  const source_id = parseInt(document.getElementById(`biSource-${id}`).value || '', 10);
+  if (!source_id) { toast('pick an item', true); return; }
+  try { await api(`/api/bundles/${id}/items`, { method: 'POST', body: JSON.stringify({ item_type, source_id }) }); toast('item added to draft'); await openBundle(id); loadBundles(); }
+  catch (e) { toast(e.message, true); }
+}
+async function _delBundleItem(iid) {
+  try { await api(`/api/bundle-items/${iid}`, { method: 'DELETE' }); if (_bundleOpenId) openBundle(_bundleOpenId); loadBundles(); }
+  catch (e) { toast(e.message, true); }
+}
+async function publishBundle(id) {
+  try { await api(`/api/bundles/${id}/publish`, { method: 'POST' }); toast('✓ version published'); await openBundle(id); loadBundles(); }
+  catch (e) { toast(e.message, true); }
+}
+async function attachBundle(id, scope) {
+  const body = {};
+  if (scope === 'project') {
+    body.project_id = parseInt(_activeProject || '0', 10) || null;
+    if (!body.project_id) { toast('no active project selected', true); return; }
+  } else if (scope === 'usecat') {
+    const c = document.getElementById(`baCat-${id}`) ? document.getElementById(`baCat-${id}`).value : '';
+    if (!c) { toast('pick a use-category', true); return; }
+    body.use_category = c;
+  }
+  try { await api(`/api/bundles/${id}/attach`, { method: 'POST', body: JSON.stringify(body) }); toast('✓ attached'); await openBundle(id); loadBundles(); }
+  catch (e) { toast(e.message, true); }
+}
+async function _detachBundle(aid) {
+  try { await api(`/api/bundle-attachments/${aid}`, { method: 'DELETE' }); toast('detached'); if (_bundleOpenId) openBundle(_bundleOpenId); loadBundles(); }
+  catch (e) { toast(e.message, true); }
+}
+
+// #39 identity unification: link an alias identity (uid / old key / 2nd email) into a canonical
+// account, optionally migrating its roles + settings and removing the duplicate account.
+async function _linkIdentity(reviewer, email) {
+  const alias = prompt(`Unify another identity into ${email}.\n\nEnter the OTHER identity (a uid, an old login, or a second email) that should resolve to this account:`);
+  if (!alias || !alias.trim()) return;
+  const migrate = confirm(`Migrate ${alias.trim()}'s existing roles + settings onto ${email}, and remove its duplicate account?\n\nOK = unify (recommended)   ·   Cancel = alias only (no migration)`);
+  try {
+    await api(`/api/accounts/${encodeURIComponent(reviewer)}/identities`, { method: 'POST', body: JSON.stringify({ alias: alias.trim(), migrate }) });
+    toast(`Linked ${alias.trim()} → ${email}${migrate ? ' (roles migrated)' : ''}`);
+    loadAccounts();
+  } catch (e) { toast(e.message, true); }
+}
+async function loadAccounts() {
+  const el = document.getElementById('accountsList');
+  const chip = document.getElementById('usersCountChip');
+  if (!el) return;
+  try {
+    const aResp = await api('/api/accounts');
+    const rResp = await api('/api/rbac/roles');
+    const pResp = await api('/api/projects');
+    const accounts = aResp.accounts || [];
+    _rbacRoles = rResp.roles || [];
+    _rbacProjects = (pResp.projects || []).filter(p => !p.archived);
+    if (chip) chip.textContent = `${accounts.length} account${accounts.length===1?'':'s'}`;
+    // Platform + Cross-project roles bind globally (no project); Project roles bind per-project.
+    const platRoles = _rbacRoles.filter(r => r.scope === 'platform' || r.scope === 'cross-project');
+    const projRoles = _rbacRoles.filter(r => r.scope === 'project');
+    el.innerHTML = accounts.map(a => {
+      const roleChips = (a.roles||[]).map(r => {
+        const lbl = r.scope==='project' ? `${esc(r.name)} · ${esc(r.project_name||('#'+r.project_id))}` : esc(r.name);
+        return `<span style="display:inline-flex;align-items:center;gap:4px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:1px 7px;font-size:10px;">${lbl}<a href="javascript:void(0)" class="role-rm" data-rev="${esc(a.reviewer)}" data-role="${r.role_id}" data-proj="${r.project_id==null?'':r.project_id}" style="color:var(--text-faint);">✕</a></span>`;
+      }).join(' ') || '<span style="color:var(--text-faint);font-size:10px;">no roles</span>';
+      const platOpts = platRoles.map(r => `<option value="p:${r.id}">+ ${esc(r.name)}</option>`).join('');
+      const projOpts = projRoles.map(r => _rbacProjects.map(p => `<option value="r:${r.id}:${p.id}">+ ${esc(r.name)} · ${esc(p.name)}</option>`).join('')).join('');
+      return `<div style="display:flex;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+        <span style="flex:1;min-width:140px;"><strong>${esc(a.display_name||a.reviewer)}</strong> <span style="color:var(--text-faint);font-size:11px;">${esc(a.email||a.reviewer)}</span>${a.is_default_admin?' <span style="font-size:9px;color:var(--accent);">default</span>':''}${(a.aliases||[]).map(al=>`<span title="alias identity → resolves to this account" style="display:inline-flex;align-items:center;gap:2px;font-size:9px;background:var(--bg-input);border:1px solid var(--border);border-radius:8px;padding:0 5px;margin-left:4px;">🔗 ${esc(al)} <a href="javascript:void(0)" class="acct-unalias" data-rev="${esc(a.reviewer)}" data-alias="${esc(al)}" style="color:var(--text-faint);">✕</a></span>`).join('')}</span>
+        <span style="display:flex;gap:4px;flex-wrap:wrap;flex:2;min-width:160px;">${roleChips}</span>
+        <select class="acct-assign" data-rev="${esc(a.reviewer)}" style="font-size:11px;max-width:170px;"><option value="">assign role…</option>${platOpts}${projOpts}</select>
+        <label style="font-size:10px;display:flex;align-items:center;gap:3px;"><input type="checkbox" class="acct-enabled" data-rev="${esc(a.reviewer)}" ${a.enabled?'checked':''}> enabled</label>
+        ${(!a.has_password && (a.email||'').indexOf('@')>=0)?`<a href="javascript:void(0)" class="acct-invite" data-rev="${esc(a.reviewer)}" style="color:var(--accent);font-size:11px;">send invite</a>`:''}
+        <a href="javascript:void(0)" class="acct-alias" data-rev="${esc(a.reviewer)}" data-email="${esc(a.email||a.reviewer)}" style="color:var(--accent);font-size:11px;" title="Unify another identity (a uid, an old login, or a 2nd email) into this account">🔗 link</a>
+        ${(me && a.reviewer===me.reviewer)?'<span style="font-size:10px;color:var(--text-faint);">(you)</span>':`<a href="javascript:void(0)" class="acct-del" data-rev="${esc(a.reviewer)}" data-default="${a.is_default_admin?1:0}" style="color:var(--red);font-size:11px;">${a.is_default_admin?'deactivate':'delete'}</a>`}
+      </div>`;
+    }).join('') || '<div style="color:var(--text-faint)">No accounts yet.</div>';
+    el.querySelectorAll('.acct-assign').forEach(s => s.addEventListener('change', async function() {
+      const v = this.value; if (!v) return; const rev = this.dataset.rev;
+      let body;
+      if (v.startsWith('p:')) body = { role_id: parseInt(v.slice(2),10) };
+      else { const parts = v.split(':'); body = { role_id: parseInt(parts[1],10), project_id: parseInt(parts[2],10) }; }
+      try { await api(`/api/accounts/${encodeURIComponent(rev)}/roles`, {method:'POST', body: JSON.stringify(body)}); toast('role assigned'); loadAccounts(); }
+      catch(e){ toast(e.message, true); this.value=''; }
+    }));
+    el.querySelectorAll('.role-rm').forEach(a => a.addEventListener('click', async function() {
+      const rev=this.dataset.rev, rid=this.dataset.role, proj=this.dataset.proj;
+      const q = proj!=='' ? `?role_id=${rid}&project_id=${proj}` : `?role_id=${rid}`;
+      try { await api(`/api/accounts/${encodeURIComponent(rev)}/roles${q}`, {method:'DELETE'}); loadAccounts(); }
+      catch(e){ toast(e.message, true); }
+    }));
+    el.querySelectorAll('.acct-enabled').forEach(c => c.addEventListener('change', async function() {
+      try { const r = await api(`/api/accounts/${encodeURIComponent(this.dataset.rev)}`, {method:'PATCH', body: JSON.stringify({enabled: this.checked})}); if (r && r.warning) toast(r.warning); else toast(this.checked?'enabled':'disabled'); loadAccounts(); }
+      catch(e){ toast(e.message, true); loadAccounts(); }
+    }));
+    el.querySelectorAll('.acct-del').forEach(a => a.addEventListener('click', async function() {
+      const isDefault = this.dataset.default==='1';
+      if (!confirm(`${isDefault?'Deactivate the break-glass default account':'Delete account'} ${this.dataset.rev}?`)) return;
+      try { const r = await api(`/api/accounts/${encodeURIComponent(this.dataset.rev)}`, {method:'DELETE'}); toast(r && r.warning ? r.warning : (r && r.deactivated ? 'Account deactivated' : 'Account deleted')); loadAccounts(); }
+      catch(e){ toast(e.message, true); }
+    }));
+    el.querySelectorAll('.acct-alias').forEach(a => a.addEventListener('click', function() { _linkIdentity(this.dataset.rev, this.dataset.email); }));
+    el.querySelectorAll('.acct-unalias').forEach(a => a.addEventListener('click', async function() {
+      if (!confirm(`Unlink alias ${this.dataset.alias}? (does not restore the old account or un-migrate roles)`)) return;
+      try { await api(`/api/accounts/${encodeURIComponent(this.dataset.rev)}/identities/${encodeURIComponent(this.dataset.alias)}`, { method: 'DELETE' }); toast('alias unlinked'); loadAccounts(); }
+      catch (e) { toast(e.message, true); }
+    }));
+    el.querySelectorAll('.acct-invite').forEach(a => a.addEventListener('click', async function() {
+      try {
+        const r = await api(`/api/accounts/${encodeURIComponent(this.dataset.rev)}/invite`, {method:'POST'});
+        if (r.emailed) toast('Invite emailed');
+        else {
+          const abs=(r.link&&r.link.startsWith('http'))?r.link:(location.origin+(r.link||''));
+          if (r.email_error) toast('⚠ not emailed: ' + r.email_error + ' — link copied (see Audit)', true);
+          navigator.clipboard.writeText(abs).then(()=>{ if(!r.email_error) toast('SMTP off — invite link copied'); });
+        }
+      } catch(e){ toast(e.message, true); }
+    }));
+  } catch(e) { el.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+
+document.getElementById('acctAddBtn')?.addEventListener('click', async () => {
+  const email = (document.getElementById('acctNewEmail').value||'').trim();
+  const display_name = (document.getElementById('acctNewName').value||'').trim();
+  const password = document.getElementById('acctNewPw').value;
+  const msg = document.getElementById('acctAddMsg');
+  if (!email) { msg.textContent='email required'; msg.style.color='var(--red)'; return; }
+  try {
+    const r = await api('/api/accounts', {method:'POST', body: JSON.stringify({email, display_name, password: password||null})});
+    document.getElementById('acctNewEmail').value=''; document.getElementById('acctNewName').value=''; document.getElementById('acctNewPw').value='';
+    if (r.invited && r.emailed) { msg.textContent='account added · invite emailed'; msg.style.color='var(--green)'; }
+    else if (r.invited) { _showInviteLink(msg, r.link); if (r.email_error) toast('⚠ invite not emailed: ' + r.email_error + ' (see Audit)', true); }
+    else { msg.textContent='account added (password set)'; msg.style.color='var(--green)'; }
+    loadAccounts();
+  } catch(e){ msg.textContent=e.message; msg.style.color='var(--red)'; }
+});
+// Render a "copy invite link" affordance (SMTP not configured / not emailed).
+function _showInviteLink(el, link) {
+  const abs = (link && link.startsWith('http')) ? link : (location.origin + (link||''));
+  el.innerHTML = 'account added · <a href="javascript:void(0)" class="inv-copy-link" style="color:var(--accent)">copy invite link</a>';
+  el.style.color = 'var(--text-dim)';
+  el.querySelector('.inv-copy-link').addEventListener('click', () => navigator.clipboard.writeText(abs).then(()=>toast('Invite link copied')));
+}
+
+async function loadRolesMatrix() {
+  const el = document.getElementById('rolesMatrix');
+  if (!el) return;
+  try {
+    const rResp = await api('/api/rbac/roles');
+    const pResp = await api('/api/rbac/privileges');
+    const roles = rResp.roles || [];
+    const privs = pResp.privileges || [];
+    const RANK = { 'platform':3, 'cross-project':2, 'project':1 };
+    const SCOPE_LABEL = { 'platform':'Platform', 'cross-project':'Cross-project', 'project':'Project' };
+    const SCOPE_DESC = {
+      'platform':'The platform itself — settings, accounts, roles, repos. Bound globally.',
+      'cross-project':'Project-related but not tied to one project (e.g. create projects). Bound globally.',
+      'project':'A single project — its data, settings, members, deletion. Bound per-project.' };
+    const roleCard = (r) => {
+      // A role may hold privileges of its own scope or narrower (Platform ⊇ Cross-project ⊇ Project).
+      const chips = privs.filter(p => (RANK[p.scope]||1) <= (RANK[r.scope]||1)).map(p => {
+        const on = (r.privileges||[]).includes(p.key);
+        return `<label title="${esc(p.key)} — ${esc(p.description)}" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;background:var(--bg-input);border:1px solid var(--border);border-radius:5px;padding:3px 9px;margin:3px;cursor:pointer;"><input type="checkbox" class="rp-cell" data-role="${r.id}" data-priv="${esc(p.key)}" ${on?'checked':''}> ${esc(p.name)} <span style="font-size:9px;color:var(--text-faint);">${esc(p.scope)}</span></label>`;
+      }).join('');
+      return `<div style="padding:9px 0;border-bottom:1px solid var(--border);">
+        <div style="margin-bottom:3px;"><strong style="font-size:13px;">${esc(r.name)}</strong>
+          <span style="font-size:11px;color:var(--text-faint);"> · ${r.is_system?'built-in':'custom'} · ${r.assignment_count||0} binding${(r.assignment_count||0)===1?'':'s'}</span>
+          ${r.is_system?'':`<a href="javascript:void(0)" class="role-del" data-role="${r.id}" style="color:var(--red);font-size:11px;margin-left:8px;">delete</a>`}</div>
+        <div style="display:flex;flex-wrap:wrap;">${chips || '<span style="font-size:11px;color:var(--text-faint);">no privileges</span>'}</div>
+      </div>`;
+    };
+    const groups = ['platform','cross-project','project'].map(sc => {
+      const rs = roles.filter(r => r.scope === sc);
+      if (!rs.length) return '';
+      return `<div style="margin-top:12px;"><div style="font-size:12px;font-weight:600;color:var(--accent);">${SCOPE_LABEL[sc]} roles</div>
+        <div style="font-size:10px;color:var(--text-faint);margin-bottom:2px;">${SCOPE_DESC[sc]}</div>
+        ${rs.map(roleCard).join('')}</div>`;
+    }).join('');
+    el.innerHTML = `${groups}
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:14px;border-top:1px dashed var(--border);padding-top:10px;">
+        <span style="font-size:11px;color:var(--text-faint);">New role:</span>
+        <input id="roleNewKey" placeholder="key (a-z-)" style="font-size:12px;width:120px;">
+        <input id="roleNewName" placeholder="name" style="font-size:12px;width:150px;">
+        <select id="roleNewScope" style="font-size:12px;"><option value="project">Project</option><option value="cross-project">Cross-project</option><option value="platform">Platform</option></select>
+        <button class="btn ghost btn-sm" id="roleAddBtn">Add role</button>
+        <span id="roleAddMsg" style="font-size:11px;color:var(--text-faint);"></span>
+      </div>`;
+    el.querySelectorAll('.rp-cell').forEach(c => c.addEventListener('change', async function() {
+      const roleId = this.dataset.role;
+      const checked = Array.from(el.querySelectorAll(`.rp-cell[data-role="${roleId}"]`)).filter(x=>x.checked).map(x=>x.dataset.priv);
+      try { await api(`/api/rbac/roles/${roleId}`, {method:'PUT', body: JSON.stringify({privileges: checked})}); toast('role updated'); }
+      catch(e){ toast(e.message, true); loadRolesMatrix(); }
+    }));
+    el.querySelector('#roleAddBtn')?.addEventListener('click', async () => {
+      const key=(document.getElementById('roleNewKey').value||'').trim();
+      const name=(document.getElementById('roleNewName').value||'').trim();
+      const scope=document.getElementById('roleNewScope').value;
+      const msg=document.getElementById('roleAddMsg');
+      if(!key||!name){ msg.textContent='key + name required'; msg.style.color='var(--red)'; return; }
+      try { await api('/api/rbac/roles', {method:'POST', body: JSON.stringify({key,name,scope,privileges:[]})}); loadRolesMatrix(); loadAccounts(); }
+      catch(e){ msg.textContent=e.message; msg.style.color='var(--red)'; }
+    });
+    el.querySelectorAll('.role-del').forEach(a => a.addEventListener('click', async function() {
+      if(!confirm('Delete this custom role?')) return;
+      try { await api(`/api/rbac/roles/${this.dataset.role}`, {method:'DELETE'}); loadRolesMatrix(); loadAccounts(); loadRoleBindings(); }
+      catch(e){ toast(e.message, true); }
+    }));
+  } catch(e) { el.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+
+// Role bindings: who is bound to what, where — account bindings + LDAP/OCP group→role mappings.
+// Human label for a binding's scope target — project, customer, a spanning grant, or platform.
+function _bindScopeLabel(b) {
+  if (b.spans_all) return `<span style="color:var(--accent);">${b.scope === 'customer' ? 'All customers' : (b.scope === 'project' ? 'All projects' : 'All')}</span>`;
+  if (b.customer_id) return '👥 ' + esc(b.customer_name || ('customer #' + b.customer_id));
+  if (b.project_id) return esc(b.project_name || ('project #' + b.project_id));
+  if (b.scope === 'platform' || b.scope === 'cross-project') return 'Platform';
+  return '<span style="color:var(--text-faint);">—</span>';
+}
+// Revoke a binding via the right axis endpoint (customer member vs account-role).
+async function _revokeBinding(reviewer, roleId, projId, custId) {
+  if (custId) {
+    return api(`/api/customers/${custId}/members/${encodeURIComponent(reviewer)}?role_id=${roleId}`, { method: 'DELETE' });
+  }
+  const q = (projId !== '' && projId != null) ? `?role_id=${roleId}&project_id=${projId}` : `?role_id=${roleId}`;
+  return api(`/api/accounts/${encodeURIComponent(reviewer)}/roles${q}`, { method: 'DELETE' });
+}
+
+// ── RBAC grant matrix (#130 2b-iv) — subject × scoped-resource → role, parameterized by scope type.
+let _bindView = 'list';
+let _bindMatrixScope = 'project';   // 'project' | 'customer'
+function _setBindView(mode) {
+  _bindView = mode;
+  document.getElementById('bindViewListBtn')?.classList.toggle('active', mode === 'list');
+  document.getElementById('bindViewMatrixBtn')?.classList.toggle('active', mode === 'matrix');
+  const lv = document.getElementById('roleBindings'), mv = document.getElementById('roleBindingsMatrix');
+  if (lv) lv.style.display = mode === 'list' ? '' : 'none';
+  if (mv) mv.style.display = mode === 'matrix' ? '' : 'none';
+  if (mode === 'matrix') _renderBindingsMatrix();
+}
+let _bindMatrixBox = 'roleBindingsMatrix';   // the container the grant matrix renders into (reused in Customers & Projects → Access)
+async function _renderBindingsMatrix(boxId = 'roleBindingsMatrix') {
+  _bindMatrixBox = boxId;
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  box.innerHTML = '<div class="empty">loading…</div>';
+  let accounts = [], roles = [], projects = [], customers = [], bindings = [];
+  try {
+    accounts = (await api('/api/accounts')).accounts || [];
+    roles = (await api('/api/rbac/roles')).roles || [];
+    projects = ((await api('/api/projects?show_archived=false')).projects || []).filter(p => !p.archived);
+    customers = (await api('/api/customers')).customers || [];
+    bindings = (await api('/api/rbac/bindings')).account_bindings || [];
+  } catch (e) { box.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`; return; }
+  const scope = _bindMatrixScope;
+  const resources = (scope === 'project' ? projects : customers).map(r => ({ id: r.id, name: r.name }));
+  const scopeRoles = roles.filter(r => r.scope === scope);
+  // Index bindings of this scope: subject -> (resourceId | 'all') -> [{role_name, role_id, ...}]
+  const idx = {};                        // `${subject}|${resId}` -> array of bindings
+  const platformSubjects = new Set();    // subjects holding a platform/cross-project role (span everything)
+  for (const b of bindings) {
+    if (b.scope === 'platform' || b.scope === 'cross-project') { platformSubjects.add(b.subject); continue; }
+    if (b.scope !== scope) continue;
+    const resId = scope === 'project' ? b.project_id : b.customer_id;
+    if (resId == null) continue;
+    (idx[`${b.subject}|${resId}`] ||= []).push(b);
+  }
+  // Subjects = all accounts (so you can grant to anyone), ordered: platform admins first.
+  const subjects = accounts.map(a => ({ id: (a.reviewer || '').toLowerCase(), name: a.display_name || a.reviewer }))
+    .sort((x, y) => (platformSubjects.has(y.id) - platformSubjects.has(x.id)) || x.name.localeCompare(y.name));
+  const seal = scope === 'customer' ? 'customer_exclusive' : 'project_exclusive';
+  const cell = (subj, resId) => {
+    const list = idx[`${subj.id}|${resId}`] || [];
+    if (list.length) {
+      return list.map(b => `<span class="bm-role" data-rev="${esc(b.subject)}" data-role="${b.role_id}" data-proj="${b.project_id == null ? '' : b.project_id}" data-cust="${b.customer_id == null ? '' : b.customer_id}" title="${esc(b.role_name)}${b.spans_all ? ' · spans all (cell-model, not yet enforced)' : ''} — click ✕ to revoke" style="display:inline-flex;align-items:center;gap:3px;font-size:9px;background:var(--accent-bg);border:1px solid var(--accent-soft);border-radius:8px;padding:0 5px;white-space:nowrap;">${esc(b.role_name)}${b.spans_all ? ' ⊞' : ''} <a href="javascript:void(0)" class="bm-revoke" style="color:var(--red);">✕</a></span>`).join(' ');
+    }
+    return `<a href="javascript:void(0)" class="bm-grant" data-rev="${esc(subj.id)}" data-res="${resId}" title="Grant a ${esc(scope)} role here" style="color:var(--text-faint);font-size:11px;">＋</a>`;
+  };
+  let h = `<div style="display:flex;gap:6px;align-items:center;margin:4px 0 8px;">
+      <span style="font-size:10px;color:var(--text-faint);">Axis</span>
+      <button class="tab${scope === 'project' ? ' active' : ''}" type="button" onclick="_bindMatrixScope='project';_renderBindingsMatrix(_bindMatrixBox)">Projects</button>
+      <button class="tab${scope === 'customer' ? ' active' : ''}" type="button" onclick="_bindMatrixScope='customer';_renderBindingsMatrix(_bindMatrixBox)">Customers</button>
+      <span style="font-size:10px;color:var(--text-faint);margin-left:8px;">rows = accounts · cols = ${scope}s · cell = role (click ＋ to grant, ✕ to revoke). A 🔒 sealed ${scope} requires an explicit grant for everyone — platform admins included.</span>
+    </div>`;
+  if (!resources.length) { box.innerHTML = h + `<div class="empty">No ${scope}s yet.</div>`; return; }
+  const sealedSet = new Set((scope === 'project' ? projects : customers).filter(r => r.is_exclusive).map(r => r.id));
+  h += `<div style="overflow:auto;max-height:60vh;"><table class="capmap" style="border-collapse:collapse;font-size:11px;">
+    <thead><tr><th class="cm-corner" style="position:sticky;left:0;top:0;z-index:4;background:var(--bg-panel);padding:3px 8px;text-align:left;">Account ＼ ${scope}</th>
+      ${resources.map(r => `<th class="cm-caphead" style="position:sticky;top:0;background:var(--bg-panel);padding:3px 6px;white-space:nowrap;" title="${sealedSet.has(r.id) ? 'sealed — explicit grants only' : ''}">${sealedSet.has(r.id) ? '🔒 ' : ''}${esc(r.name)}</th>`).join('')}
+    </tr></thead><tbody>`;
+  h += subjects.map(s => `<tr>
+      <td class="cm-uc" style="position:sticky;left:0;background:var(--bg-panel);padding:3px 8px;white-space:nowrap;">${esc(s.name)}${platformSubjects.has(s.id) ? ' <span title="platform admin — superuser, except on sealed scopes" style="font-size:8px;color:var(--accent);">★ platform</span>' : ''}</td>
+      ${resources.map(r => `<td style="border:1px solid var(--border);padding:3px 6px;text-align:center;">${cell(s, r.id)}</td>`).join('')}
+    </tr>`).join('');
+  h += '</tbody></table></div>';
+  box.innerHTML = h;
+  // Revoke from a cell badge.
+  box.querySelectorAll('.bm-revoke').forEach(a => a.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const sp = a.closest('.bm-role');
+    try { await _revokeBinding(sp.dataset.rev, sp.dataset.role, sp.dataset.proj, sp.dataset.cust); _renderBindingsMatrix(_bindMatrixBox); loadAccounts(); }
+    catch (err) { toast(err.message, true); }
+  }));
+  // Grant into an empty resource cell via a role picker popover.
+  box.querySelectorAll('.bm-grant').forEach(a => a.addEventListener('click', (e) => _bmGrantPopover(e, a.dataset.rev, a.dataset.res, scope, scopeRoles)));
+}
+function _bmGrantPopover(event, reviewer, resId, scope, scopeRoles) {
+  document.querySelectorAll('.bm-pop').forEach(p => p.remove());
+  if (!scopeRoles.length) { toast(`No ${scope} roles defined`); return; }
+  const pop = document.createElement('div');
+  pop.className = 'bm-pop';
+  pop.style.cssText = 'position:fixed;z-index:9999;background:var(--bg-panel);border:1px solid var(--border);border-radius:4px;box-shadow:0 4px 16px rgba(0,0,0,0.35);padding:4px;min-width:160px;';
+  pop.innerHTML = `<div style="font-size:9px;color:var(--text-faint);padding:2px 6px;">Grant role to ${esc(reviewer)}</div>` +
+    scopeRoles.map(r => `<button class="dropdown-item" data-role="${r.id}" style="display:block;width:100%;text-align:left;font-size:12px;">${esc(r.name)}</button>`).join('');
+  document.body.appendChild(pop);
+  const rb = event.target.getBoundingClientRect();
+  pop.style.left = Math.min(rb.left, window.innerWidth - 180) + 'px';
+  pop.style.top = (rb.bottom + 4) + 'px';
+  pop.querySelectorAll('button').forEach(b => b.addEventListener('click', async () => {
+    pop.remove();
+    try {
+      if (scope === 'customer') {
+        await api(`/api/customers/${resId}/members`, { method: 'POST', body: JSON.stringify({ reviewer, role_id: parseInt(b.dataset.role, 10) }) });
+      } else {
+        await api(`/api/accounts/${encodeURIComponent(reviewer)}/roles`, { method: 'POST', body: JSON.stringify({ role_id: parseInt(b.dataset.role, 10), project_id: parseInt(resId, 10) }) });
+      }
+      _renderBindingsMatrix(_bindMatrixBox); loadAccounts();
+    } catch (e) { toast(e.message, true); }
+  }));
+  setTimeout(() => { const close = ev => { if (!pop.contains(ev.target)) { pop.remove(); document.removeEventListener('click', close); } }; document.addEventListener('click', close); }, 0);
+}
+
+async function loadRoleBindings() {
+  const el = document.getElementById('roleBindings');
+  if (!el) return;
+  try {
+    const bResp = await api('/api/rbac/bindings');
+    const rResp = await api('/api/rbac/roles');
+    const pResp = await api('/api/projects?show_archived=false');
+    const roles = rResp.roles || [];
+    const projects = (pResp.projects || []).filter(p => !p.archived);
+    const accts = bResp.account_bindings || [];
+    const groups = bResp.group_mappings || [];
+    const SL = { 'platform':'Platform', 'cross-project':'Cross-project', 'project':'Project', 'customer':'Customer' };
+    const acctRows = accts.length ? accts.map(b => `
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:3px 8px;">${esc(b.display_name||b.subject)} <span style="color:var(--text-faint);font-size:10px;">${esc(b.subject)}</span></td>
+        <td style="padding:3px 8px;">${esc(b.role_name)} <span style="font-size:9px;color:var(--text-faint);">${esc(b.scope)}</span></td>
+        <td style="padding:3px 8px;">${_bindScopeLabel(b)}</td>
+        <td style="padding:3px 8px;"><a href="javascript:void(0)" class="rb-acct-rm" data-rev="${esc(b.subject)}" data-role="${b.role_id}" data-proj="${b.project_id==null?'':b.project_id}" data-cust="${b.customer_id==null?'':b.customer_id}" style="color:var(--red);">revoke</a></td>
+      </tr>`).join('') : `<tr><td colspan="4" style="padding:6px 8px;color:var(--text-faint);">No account bindings — assign roles from the account list above.</td></tr>`;
+    const groupRows = groups.length ? groups.map(g => `
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:3px 8px;"><span style="font-size:9px;color:var(--text-faint);">${esc(g.source)}</span> ${esc(g.subject)}</td>
+        <td style="padding:3px 8px;">${esc(g.role_name)} <span style="font-size:9px;color:var(--text-faint);">${esc(g.scope)}</span></td>
+        <td style="padding:3px 8px;">${_bindScopeLabel(g)}</td>
+        <td style="padding:3px 8px;"><a href="javascript:void(0)" class="rb-grp-rm" data-id="${g.mapping_id}" style="color:var(--red);">remove</a></td>
+      </tr>`).join('') : `<tr><td colspan="4" style="padding:6px 8px;color:var(--text-faint);">No group mappings yet.</td></tr>`;
+    const roleOpts = roles.map(r => `<option value="${r.id}" data-scope="${esc(r.scope)}">${esc(r.name)} (${SL[r.scope]||r.scope})</option>`).join('');
+    const projOpts = projects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
+    const th = '<tr style="text-align:left;color:var(--text-faint);font-size:10px;"><th style="padding:2px 8px;">Subject</th><th style="padding:2px 8px;">Role</th><th style="padding:2px 8px;">Scope</th><th></th></tr>';
+    el.innerHTML = `
+      <div style="font-size:11px;font-weight:600;margin:6px 0 2px;">Account bindings</div>
+      <table style="border-collapse:collapse;width:100%;font-size:12px;"><thead>${th}</thead><tbody>${acctRows}</tbody></table>
+      <div style="font-size:11px;font-weight:600;margin:14px 0 2px;">LDAP / OCP group → role mappings</div>
+      <table style="border-collapse:collapse;width:100%;font-size:12px;"><thead>${th}</thead><tbody>${groupRows}</tbody></table>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px;">
+        <select id="rbGrpSource" style="font-size:11px;"><option value="ldap">ldap</option><option value="ocp">ocp</option></select>
+        <input id="rbGrpKey" placeholder="group DN / name" style="font-size:11px;width:220px;">
+        <select id="rbGrpRole" style="font-size:11px;">${roleOpts}</select>
+        <select id="rbGrpProj" style="font-size:11px;display:none;"><option value="">— project —</option>${projOpts}</select>
+        <button class="btn ghost btn-sm" id="rbGrpAdd">Add mapping</button>
+        <span id="rbGrpMsg" style="font-size:11px;color:var(--text-faint);"></span>
+      </div>`;
+    const roleSel = document.getElementById('rbGrpRole');
+    const projSel = document.getElementById('rbGrpProj');
+    const syncProjVis = () => { const sc = roleSel.options[roleSel.selectedIndex]?.dataset.scope; projSel.style.display = sc==='project' ? '' : 'none'; };
+    roleSel.addEventListener('change', syncProjVis); syncProjVis();
+    document.getElementById('rbGrpAdd').addEventListener('click', async () => {
+      const source = document.getElementById('rbGrpSource').value;
+      const group_key = (document.getElementById('rbGrpKey').value||'').trim();
+      const role_id = parseInt(roleSel.value,10);
+      const sc = roleSel.options[roleSel.selectedIndex]?.dataset.scope;
+      const project_id = sc==='project' ? (parseInt(projSel.value,10)||null) : null;
+      const msg = document.getElementById('rbGrpMsg');
+      if (!group_key) { msg.textContent='group required'; msg.style.color='var(--red)'; return; }
+      if (sc==='project' && !project_id) { msg.textContent='pick a project'; msg.style.color='var(--red)'; return; }
+      try { await api('/api/rbac/group-mappings', {method:'POST', body: JSON.stringify({source, group_key, role_id, project_id})}); document.getElementById('rbGrpKey').value=''; loadRoleBindings(); }
+      catch(e){ msg.textContent=e.message; msg.style.color='var(--red)'; }
+    });
+    el.querySelectorAll('.rb-acct-rm').forEach(a => a.addEventListener('click', async function() {
+      try { await _revokeBinding(this.dataset.rev, this.dataset.role, this.dataset.proj, this.dataset.cust); loadRoleBindings(); loadAccounts(); }
+      catch(e){ toast(e.message, true); }
+    }));
+    el.querySelectorAll('.rb-grp-rm').forEach(a => a.addEventListener('click', async function() {
+      try { await api(`/api/rbac/group-mappings/${this.dataset.id}`, {method:'DELETE'}); loadRoleBindings(); }
+      catch(e){ toast(e.message, true); }
+    }));
+  } catch(e) { el.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; }
+}
+
+async function loadRunStatus() {
+  try {
+    const s = await api('/api/runs/status');
+    document.getElementById('triggerStatus').textContent =
+      s.enabled && s.available ? `pipeline: ${s.pipeline_name}`
+      : s.enabled ? 'pipeline: unavailable' : 'trigger disabled';
+  } catch { /* non-fatal */ }
+}
+
+function setApiStatus(ok, msg) {
+  const el = document.getElementById('apiStatusEl'), txt = document.getElementById('apiStatusText');
+  el.classList.toggle('api-ok', !!ok); el.classList.toggle('api-err', !ok);
+  txt.textContent = ok ? 'api ok' : ('error: ' + (msg || 'offline'));
+}
+
+// ── Sidebar nav state ────────────────────────────────────────
+let _navCollapsed = false;
+
+function initNavCollapse() {
+  try { _navCollapsed = localStorage.getItem('davNavCollapsed') === '1'; } catch(e) {}
+  const nav = document.getElementById('pfNav');
+  if (_navCollapsed) nav.classList.add('collapsed');
+}
+
+function toggleNav() {
+  _navCollapsed = !_navCollapsed;
+  document.getElementById('pfNav').classList.toggle('collapsed', _navCollapsed);
+  try { localStorage.setItem('davNavCollapsed', _navCollapsed ? '1' : '0'); } catch(e) {}
+  try { _persistUserSettings(); } catch {}
+}
+
+// ── Tab routing ──────────────────────────────────────────────
+// Background poll that keeps the runs list live while the user is on the
+// Runs tab. Triggers from elsewhere (API direct, CLI) show up within
+// _RUNS_LIST_POLL_MS; in-flight phase transitions repaint without refresh.
+let _runsListPollTimer = null;
+const _RUNS_LIST_POLL_MS = 5000;
+function _startRunsListPoll() {
+  _stopRunsListPoll();
+  _runsListPollTimer = setInterval(() => {
+    // Only poll while the Runs view is the active one — protects against
+    // background tabs / hidden pages spinning needless requests.
+    if (document.visibilityState === 'visible'
+        && document.getElementById('view-runs')?.classList.contains('active')) {
+      // silent: skip the "loading…" placeholder + don't blank the list
+      // on a transient API blip — diff-render handles the update in place.
+      loadRuns({silent: true}).catch(() => {});
+    }
+  }, _RUNS_LIST_POLL_MS);
+}
+function _stopRunsListPoll() {
+  if (_runsListPollTimer) { clearInterval(_runsListPollTimer); _runsListPollTimer = null; }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Logical-domain IA (app-wide). The left rail lists DOMAINS; the active domain's
+// sub-views render as the #domainTabs top strip; the selected sub-view's #view-X
+// section fills the bulk. switchView() stays the single funnel (its tail keeps the
+// rail + strip in sync) so every existing switchView('x') caller works unchanged.
+// Sub-tabs are dual-classed `.tab.pf-nav-item[data-view]` (+ legacy ids) so the e2e
+// selectors and the active-toggle in switchView keep resolving them.
+const DOMAINS = [
+  { key:'author',  label:'Authoring',  icon:'✎', focus:'architecture', subviews:[
+      { view:'usecases',    label:'Use Cases',     badge:'badgeUC' },
+      { view:'scopingsets', label:'Scoping Sets' },
+      { view:'inbox',       label:'Discussion',    badge:'badgeInbox' },
+  ]},
+  { key:'execute', label:'Analyze',    icon:'▶', focus:'architecture', subviews:[
+      { view:'runs',    label:'Analyses', badge:'badgeRuns' },
+      { view:'results', label:'Results',    badge:'badgeResults' },
+  ]},
+  { key:'roadmap', label:'Roadmaps',   icon:'✦', focus:'architecture', subviews:[
+      { view:'review',      label:'Arch Review' },
+      { view:'enhancement', label:'Enhancement / PR' },
+      { view:'engineering', label:'Engineering Roadmap' },
+  ]},
+  { key:'assess',  label:'Assessments', icon:'📊', focus:'assessment', navId:'navAssess', subviews:[
+      { view:'assess',   label:'Assessments', priv:'assessment.view' },
+      { view:'maturity', label:'Maturity Wall', priv:'assessment.view' },
+  ]},
+  // IA slice 2: capability spine = one domain. The Catalog (registry, List/Board) and the
+  // Cap Map (UC↔capability matrix) are both capability surfaces, so they live together under
+  // "Capabilities" rather than Cap Map sitting in Roadmaps. (The Engineering Roadmap view's own
+  // inline cap-map render is the remaining duplicate — removed in the generator-collapse slice.)
+  { key:'catalog', label:'Capabilities', icon:'📒', focus:'both', subviews:[
+      { view:'catalog', label:'Catalog' },
+      { view:'capmap',  label:'Cap Map' },
+  ]},
+  // UI lean slice 3: setup/admin surfaces folded into one Settings group (9 → 6 top-level
+  // domains; Miller's 7±2). Config, Prompts & Improvement, Customers & Projects, and Audit
+  // are not daily-driver views — they live behind one gear, surfaced as its sub-tabs.
+  // Each sub-view keeps its existing privilege, so access is unchanged (the domain shows iff
+  // at least one sub-tab is permitted; the strip renders only permitted tabs).
+  { key:'settings', label:'Settings', icon:'⚙', focus:'both', subviews:[
+      { view:'config',    label:'Config' },
+      { view:'improve',   label:'Prompts & Improvement', badge:'badgeImprove' },
+      { view:'customers', label:'Customers' },
+      { view:'projects',  label:'Projects' },
+      { view:'audit',     label:'Audit', priv:'__platAdmin' },
+  ]},
+];
+const _viewToDomain = {};
+DOMAINS.forEach(d => d.subviews.forEach(s => { _viewToDomain[s.view] = d; }));
+const _lastSubview = {};       // domainKey -> last view shown in it
+let _inSwitchView = false;     // re-entrancy guard (focus auto-home re-enters switchView)
+
+// A sub-view is permitted if it has no priv, or the caller holds it ('__platAdmin' = platform admin).
+function _subviewPermitted(sub) {
+  if (!sub.priv) return true;
+  if (sub.priv === '__platAdmin') return !!(me && me.is_platform_admin);
+  return can(sub.priv);
+}
+function _domainPermitted(d) { return d.subviews.some(_subviewPermitted); }
+
+// Render the left rail from DOMAINS (one anchor per domain). data-focus preserved so
+// _applyFocus()'s selector keeps filtering; navId carried for RBAC + e2e parity.
+function renderDomainRail() {
+  const host = document.querySelector('.pf-nav-items');
+  if (!host) return;
+  host.innerHTML = _personaDomains().map(d => `
+    <a class="pf-nav-item" data-domain="${d.key}" data-focus="${d.focus}"${d.navId ? ` id="${d.navId}"` : ''} href="javascript:void(0)">
+      <span class="nav-icon">${d.icon}</span><span class="nav-label">${esc(d.label)} <span class="badge dom-dot" id="domDot-${d.key}" style="font-size:9px;"></span></span>
+    </a>`).join('');
+  // Clicks are handled by event delegation on .pf-nav-items (bound once at boot).
+}
+
+// Populate #domainTabs with the active domain's permitted sub-views (the top strip).
+// Dual-classed `.tab.pf-nav-item` + data-view (+ legacy id) so e2e selectors + the
+// switchView active-toggle keep resolving them. Strip hidden when ≤1 permitted sub-view.
+function renderDomainTabs(domain, activeView) {
+  const strip = document.getElementById('domainTabs');
+  if (!strip) return;
+  const subs = domain.subviews.filter(_subviewPermitted);
+  if (subs.length <= 1) { strip.style.display = 'none'; strip.innerHTML = ''; return; }
+  strip.style.display = '';
+  strip.innerHTML = subs.map(s => `
+    <button class="tab pf-nav-item${s.view === activeView ? ' active' : ''}" data-tab="${s.view}" data-view="${s.view}"${s.navId ? ` id="${s.navId}"` : ''} onclick="switchView('${s.view}')">
+      ${esc(s.label)}${s.badge ? ` <span class="badge" id="${s.badge}" style="font-size:9px;"></span>` : ''}
+    </button>`).join('');
+}
+
+// Select a domain → show its remembered (or first permitted) sub-view via the funnel.
+function switchDomain(key) {
+  const d = DOMAINS.find(x => x.key === key);
+  if (!d) return;
+  const permitted = d.subviews.filter(_subviewPermitted);
+  if (!permitted.length) return;
+  const target = (_lastSubview[key] && permitted.some(s => s.view === _lastSubview[key]))
+    ? _lastSubview[key] : permitted[0].view;
+  switchView(target);
+}
+
+function switchView(name) {
+  _curView = name;
+  _updateContextChrome(name);
+  document.querySelectorAll('.pf-nav-item').forEach(b =>
+    b.classList.toggle('active', b.dataset.view === name));
+  document.querySelectorAll('.pf-view').forEach(v =>
+    v.classList.toggle('active', v.id === 'view-' + name));
+  // Start/stop the runs-list poll based on whether we're on that tab
+  if (name === 'runs') _startRunsListPoll();
+  else                 _stopRunsListPoll();
+  if (name === 'runs')     { loadRuns(); setTimeout(_renderIngestionAudit, 40); }
+  if (name === 'results')  { loadResults(); _showCurrentRunResults(); }
+  if (name === 'usecases') { loadUCs(); loadSets(); }
+  if (name === 'scopingsets') loadScopingSets();
+  if (name === 'review')   loadReviewTab();
+  if (name === 'enhancement') loadEnhancementWorkbench();
+  if (name === 'engineering') loadEngineeringTab();
+  if (name === 'catalog')  loadCatalogTab();
+  if (name === 'customers') loadCustomers();
+  if (name === 'projects')  loadProjectsTab();
+  if (name === 'capmap')   loadCapMap();
+  if (name === 'audit')    loadAudit();
+  if (name === 'assess')   loadAssessments();
+  if (name === 'maturity') loadMaturityWall();
+  if (name === 'improve')  { pmInit(); loadImproveQueue(); }
+  if (name === 'config') {
+    loadConfig();
+    // Platform settings (accounts/roles/bindings/LDAP/SMTP/agents/tenants/groups) live in
+    // Config → Platform. Project management is its own Settings → Projects view now, so the
+    // projects loaders are NOT fired here (IA slice 4: drop the redundant double-load — the
+    // 'projects' branch below is the single owner).
+    if (me && me.is_platform_admin) { loadAccounts(); loadRolesMatrix(); loadRoleBindings(); loadLdapStatus(); loadLdapSettings(); loadSmtpSettings(); loadAgentTokens(); loadTenants(); loadGroups(); }
+    if (can('usecat.manage')) loadBundles();
+  }
+  if (name === 'inbox')    loadInbox();
+  if (name === 'projects') { loadProjectsAdmin(); loadProjectSwitcher(); }
+  // Keep the domain rail + top sub-tab strip in sync with the active view (the IA
+  // funnel). Guarded against the _applyFocus() auto-home re-entry.
+  const _dom = _viewToDomain[name];
+  if (_dom && !_inSwitchView) {
+    _inSwitchView = true;
+    try {
+      _lastSubview[_dom.key] = name;
+      document.querySelectorAll('.pf-nav-item[data-domain]').forEach(a =>
+        a.classList.toggle('active', a.dataset.domain === _dom.key));
+      renderDomainTabs(_dom, name);
+    } finally { _inSwitchView = false; }
+  }
+}
+
+// Relocate the Users/Projects management panels out of Config into their own
+// full-page views (built once at boot). Far safer than duplicating the markup;
+// the panels keep their ids so all the existing loaders keep working.
+function _setupRbacViews() {
+  // Platform settings (Projects, Email/SMTP, LDAP, Users & roles) now live in the Config
+  // view's "Platform" section — no longer relocated into separate Users/Projects views
+  // (whose nav items are retired). Kept as a no-op stub so existing callers don't break.
+}
+
+// ── Active run chip (masthead) ───────────────────────────────
+function updateRunChip(name, phase) {
+  // The pill text is owned solely by _renderRunChipLive (aggregate stats, never a run name);
+  // this only manages the chip's active/done state + refreshes the stats.
+  const chip = document.getElementById('runContextChip');
+  const dot  = document.getElementById('rccDot');
+  if (!name) { if (chip) chip.classList.remove('active'); _renderRunChipLive(); return; }
+  const terminal = ['Succeeded','Failed','Cancelled','TimedOut'].includes(phase);
+  if (dot) dot.classList.toggle('done', terminal);
+  if (chip) chip.classList.add('active');
+  _renderRunChipLive();
+}
+
+function clearRunChip() {
+  document.getElementById('runContextChip').classList.remove('active');
+  _rdName = null;
+  stopRunPolling();
+}
+
+// ══════════════════════════ RUNS ══════════════════════════
+
+async function loadRunsStats() {
+  try {
+    const s = await api('/api/runs/stats');
+    const chip = document.getElementById('kwhChip');
+    if (!s || !s.total_runs) { chip.style.display = 'none'; return; }
+    chip.style.display = '';
+    const total = s.total_kwh || 0;
+    const fmt = v => v < 0.1 ? `${(v*1000).toFixed(0)} Wh` : `${v.toFixed(2)} kWh`;
+    document.getElementById('kwhValue').textContent = fmt(total) + ' total';
+    document.getElementById('kwhBreakdown').textContent =
+      `· last 24h ${fmt(s.last_24h_kwh||0)} · 7d ${fmt(s.last_7d_kwh||0)} · ${s.total_runs} runs`;
+  } catch {}
+}
+
+async function loadRuns(opts) {
+  const silent = !!(opts && opts.silent);
+  const listEl = document.getElementById('runsList');
+  // Show the "loading…" placeholder only on the initial (non-silent) load
+  // when nothing is currently rendered. Background polls keep the existing
+  // rows visible while the new data fetches — no wholesale-rebuild flash.
+  if (!silent && !listEl.querySelector('.run-list-item')) {
+    listEl.innerHTML = '<div class="empty">loading…</div>';
+  }
+  try {
+    const resp = await api('/api/runs?limit=100' + (_showArchivedRuns ? '&show_archived=true' : ''));
+    allRuns = resp.runs || [];
+    // badgeRuns lives on the Execution sub-tab → may be absent under another domain (guard).
+    const _bRuns = document.getElementById('badgeRuns'); if (_bRuns) _bRuns.textContent = allRuns.length;
+    _populateGlobalRunSel();   // keep the masthead run-status label in sync with the Runs list
+    renderRunsList();
+    const noteEl = document.getElementById('runsNote');
+    if (noteEl) {
+      noteEl.textContent = resp.enabled ? '' : 'Pipeline trigger not available.';
+      noteEl.style.display = noteEl.textContent ? '' : 'none';
+    }
+    loadRunsStats();
+    _renderRunChipLive();   // live masthead run-progress chip (#112)
+    _ensureRunChipPoll();
+  } catch (e) {
+    // On silent (poll-driven) failure, keep the current list visible and
+    // just log — a transient API blip shouldn't blank the user's view.
+    if (!silent) {
+      listEl.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+    } else {
+      console.warn('runs list poll failed:', e);
+    }
+  }
+}
+
+// Fingerprint of the salient display fields. If unchanged between renders,
+// the row's innerHTML doesn't need to be rebuilt at all.
+function _runItemFingerprint(r) {
+  return [
+    r.phase,
+    r.uc_total, r.uc_succeeded, r.uc_failed,
+    r.set_name, r.selection_mode,
+    r.session_name,
+    r.started_at, r.completed_at, r.created_at,
+    r.archived ? 'a' : '',
+    // #branch-targeting: re-render when the resolved ref/sha lands (sha fills in at ingest).
+    r.spec_repo_branch, r.corpus_repo_branch, r.spec_repo_sha, r.corpus_repo_sha,
+    _rdName === r.name ? '1' : '0',
+  ].join('|');
+}
+
+function _renderRunItemHtml(r) {
+  const modeLabels = {set:'Set', selection:'Selection', individual:'UC', corpus:'Full corpus'};
+  const friendly = r.session_name || r.name || '?';
+  const params = r.params || {};
+  const scopeBits = [];
+  if (r.set_name)        scopeBits.push(`⊞ ${esc(r.set_name)}`);
+  if (r.selection_mode)  scopeBits.push(esc(modeLabels[r.selection_mode] || r.selection_mode));
+  if (!scopeBits.length) scopeBits.push(esc(params.mode || 'verification'));
+  let countsHtml = '';
+  if (typeof r.uc_total === 'number') {
+    const okColor = (r.uc_failed || 0) > 0 ? 'var(--accent)' : 'var(--green)';
+    countsHtml = `<span style="font-size:10px;color:${okColor};">${r.uc_succeeded}/${r.uc_total} ok</span>` +
+      ((r.uc_failed || 0) > 0 ? ` <span style="font-size:10px;color:var(--red);">${r.uc_failed} fail</span>` : '');
+  }
+  // #branch-targeting: evaluated git ref provenance — "⎇ branch@sha7" (spec ref preferred,
+  // else corpus). The branch is known at trigger; the SHA fills in once repos are cloned at ingest.
+  const _evalBranch = r.spec_repo_branch || r.corpus_repo_branch;
+  const _evalSha    = r.spec_repo_sha || r.corpus_repo_sha;
+  let refHtml = '';
+  if (_evalBranch || _evalSha) {
+    const shaShort = _evalSha ? '@' + esc(String(_evalSha).slice(0, 7)) : '';
+    refHtml = `<span title="Evaluated git ref (branch@sha)" style="font-size:10px;color:var(--text-dim);">⎇ ${esc(_evalBranch || '?')}${shaShort}</span>`;
+  }
+  return `
+    <input type="checkbox" class="run-sel-cb" onclick="event.stopPropagation()" onchange="toggleRunSelect('${r.name}', this.checked)" ${_selectedRuns.has(r.name) ? 'checked' : ''} title="Select for batch archive/delete" style="margin:3px 6px 0 0;width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;align-self:flex-start;cursor:pointer;" />
+    <div class="rli-main" style="${r.archived ? 'opacity:0.55;' : ''}">
+      <div class="rli-name">${esc(friendly)}${r.archived ? ' <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-faint);border:1px solid var(--border);padding:0 3px;border-radius:2px;">archived</span>' : ''}</div>
+      <div class="rli-sub">${scopeBits.join(' · ')}${countsHtml ? ' · ' + countsHtml : ''}${refHtml ? ' · ' + refHtml : ''}</div>
+      <div class="rli-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.6;">${esc(r.name||'')}</div>
+    </div>
+    <div class="rli-right">
+      ${phaseHtml(r.phase)}<br>
+      <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
+      <div class="rli-actions">
+        ${!['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase) ? `<button class="btn ghost btn-sm" title="Stop this analysis (cancel the pipeline)" onclick="event.stopPropagation();stopRunConfirm('${r.name}')">⏹ Stop</button>` : ''}
+        <button class="btn ghost btn-sm" title="Re-ingest with the same Scoping Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
+        <button class="btn ghost btn-sm" title="${r.archived ? 'Unarchive' : 'Archive (hide from list)'}" onclick="event.stopPropagation();archiveRun('${r.name}',${r.archived ? 'false' : 'true'})">${r.archived ? 'Unarchive' : 'Archive'}</button>
+        <button class="btn danger btn-sm" title="Delete completely — irreversible" onclick="event.stopPropagation();deleteRunConfirm('${r.name}')">Delete</button>
+      </div>
+    </div>`;
+}
+
+// Diff-based render: reuses existing row elements keyed by run name,
+// rewrites innerHTML only when a row's fingerprint actually changed, and
+// reorders by detach-into-fragment + single re-append (one DOM op, no flash).
+// Replaces the previous wholesale-rebuild that blanked the list every poll.
+function renderRunsList() {
+  const el = document.getElementById('runsList');
+  if (!allRuns.length) {
+    el.innerHTML = '<div class="empty">No analyses found. Use + New Analysis to trigger one.</div>';
+    return;
+  }
+  const visible = allRuns.filter(_matchRunFilter);
+  if (!visible.length) {
+    el.innerHTML = '<div class="empty">No analyses match the filter.</div>';
+    return;
+  }
+  // Recover from a previous empty/loading/error placeholder cleanly
+  if (!el.querySelector('.run-list-item')) {
+    el.innerHTML = '';
+  }
+
+  // Index existing rows by run name
+  const existing = new Map();
+  for (const child of Array.from(el.querySelectorAll('.run-list-item'))) {
+    existing.set(child.dataset.runName, child);
+  }
+
+  // Build the new ordered set into a fragment, reusing rows where the
+  // fingerprint matches. Detaching into the fragment + a single appendChild
+  // at the end keeps the user's scroll position and avoids visible flash.
+  const fragment = document.createDocumentFragment();
+  for (const r of visible) {
+    const fp = _runItemFingerprint(r);
+    let item = existing.get(r.name);
+    if (item) {
+      existing.delete(r.name);
+      if (item.dataset.fingerprint !== fp) {
+        item.className = 'run-list-item' + (_rdName === r.name ? ' active' : '');
+        item.innerHTML = _renderRunItemHtml(r);
+        item.dataset.fingerprint = fp;
+      }
+    } else {
+      item = document.createElement('div');
+      item.className = 'run-list-item' + (_rdName === r.name ? ' active' : '');
+      item.dataset.runName = r.name;
+      item.dataset.fingerprint = fp;
+      item.innerHTML = _renderRunItemHtml(r);
+      item.addEventListener('click', () => selectRun(r.name));
+    }
+    fragment.appendChild(item);  // detaches from el if already attached
+  }
+
+  // Any rows still in `existing` are runs that disappeared — remove them
+  for (const orphan of existing.values()) orphan.remove();
+
+  // Single DOM op: re-attach the (possibly-reordered) rows
+  el.appendChild(fragment);
+  _renderRunSelectionBar();
+}
+
+// ── Run management (archive / complete delete) ──────────────────
+let _showArchivedRuns = false;
+document.getElementById('toggleArchivedRuns')?.addEventListener('click', function(){
+  _showArchivedRuns = !_showArchivedRuns;
+  this.style.color = _showArchivedRuns ? 'var(--accent)' : '';
+  this.title = _showArchivedRuns ? 'Hide archived runs' : 'Show archived runs';
+  loadRuns();
+});
+async function archiveRun(name, archived){
+  try {
+    await api(`/api/runs/${encodeURIComponent(name)}/archive`, {method:'POST', body: JSON.stringify({archived})});
+    loadRuns();
+  } catch(e){ toast(e.message, true); }
+}
+async function stopRunConfirm(name){
+  const r = allRuns.find(x => x.name === name);
+  const label = (r && r.session_name) || name;
+  if (!confirm(`Stop run "${label}"?\n\nThis cancels the pipeline — in-flight UC analyses are interrupted and won't complete. Any UCs already finished keep their results. This cannot be resumed (use Re-run to start over).`)) return;
+  try {
+    await api(`/api/runs/${encodeURIComponent(name)}/cancel`, {method:'POST'});
+    toast(`Stopping "${label}"…`);
+    loadRuns();
+  } catch(e){ toast(e.message, true); }
+}
+async function deleteRunConfirm(name){
+  const r = allRuns.find(x => x.name === name);
+  const label = (r && r.session_name) || name;
+  if (!confirm(`Delete analysis "${label}" COMPLETELY?\n\nThis removes its analysis output, workspace result files, and the Tekton PipelineRun. It cannot be undone.\n\nUse Archive instead to just hide it.`)) return;
+  try {
+    const resp = await api(`/api/runs/${encodeURIComponent(name)}`, {method:'DELETE'});
+    const rm = resp.removed || {};
+    toast(`Deleted "${label}" — ${rm.analysis_runs||0} analysis, ${rm.workspace_dirs||0} result dir(s), PipelineRun ${rm.pipelinerun?'removed':'—'}`);
+    if (_rdName === name) _rdName = null;
+    loadRuns();
+  } catch(e){ toast(e.message, true); }
+}
+
+// Multi-select for batch archive/delete (mirrors the Use Cases selection pattern).
+function toggleRunSelect(name, checked){
+  if (checked) _selectedRuns.add(name); else _selectedRuns.delete(name);
+  _renderRunSelectionBar();
+}
+function _renderRunSelectionBar(){
+  const bar = document.getElementById('runSelectionToolbar');
+  const count = document.getElementById('runSelectionCount');
+  if (!bar || !count) return;
+  const present = new Set(allRuns.map(r => r.name));
+  for (const n of [..._selectedRuns]) if (!present.has(n)) _selectedRuns.delete(n);
+  const n = _selectedRuns.size;
+  if (!n){ bar.style.display = 'none'; return; }
+  bar.style.display = 'flex';
+  count.textContent = `${n} run${n===1?'':'s'} selected`;
+}
+async function archiveSelectedRuns(){
+  const names = [..._selectedRuns];
+  if (!names.length) return;
+  let ok=0, fail=0;
+  for (const nm of names){ try { await api(`/api/runs/${encodeURIComponent(nm)}/archive`, {method:'POST', body: JSON.stringify({archived:true})}); ok++; } catch(e){ fail++; } }
+  _selectedRuns.clear();
+  toast(`Archived ${ok} ingestion${ok===1?'':'s'}${fail?`, ${fail} failed`:''}`, fail>0);
+  loadRuns();
+}
+async function deleteSelectedRuns(){
+  const names = [..._selectedRuns];
+  if (!names.length) return;
+  if (!confirm(`Delete ${names.length} analysis${names.length===1?'':'es'} COMPLETELY?\n\nRemoves each analysis's output, workspace result files, and Tekton PipelineRun. This cannot be undone.\n\nUse Archive to just hide them.`)) return;
+  let ok=0, fail=0;
+  for (const nm of names){ try { await api(`/api/runs/${encodeURIComponent(nm)}`, {method:'DELETE'}); ok++; } catch(e){ fail++; } }
+  _selectedRuns.clear();
+  toast(`Deleted ${ok} ingestion${ok===1?'':'s'}${fail?`, ${fail} failed`:''}`, fail>0);
+  loadRuns();
+}
+document.getElementById('runSelArchiveBtn')?.addEventListener('click', archiveSelectedRuns);
+document.getElementById('runSelDeleteBtn')?.addEventListener('click', deleteSelectedRuns);
+document.getElementById('runSelClearBtn')?.addEventListener('click', () => {
+  _selectedRuns.clear();
+  document.querySelectorAll('#runsList .run-sel-cb').forEach(cb => { cb.checked = false; });
+  _renderRunSelectionBar();
+});
+
+// Runs list filtering + select/deselect-all.
+let _runFilter = '';
+let _runPhaseFilter = '';
+function _matchRunFilter(r){
+  if (_runPhaseFilter && r.phase !== _runPhaseFilter) return false;
+  if (!_runFilter) return true;
+  const f = _runFilter.toLowerCase();
+  return (r.name||'').toLowerCase().includes(f)
+      || (r.session_name||'').toLowerCase().includes(f)
+      || (r.category||'').toLowerCase().includes(f)
+      || (r.phase||'').toLowerCase().includes(f);
+}
+document.getElementById('runFilter')?.addEventListener('input', function(){ _runFilter = this.value; renderRunsList(); });
+document.getElementById('runPhaseFilter')?.addEventListener('change', function(){ _runPhaseFilter = this.value; renderRunsList(); });
+document.getElementById('runSelectAllBtn')?.addEventListener('click', () => {
+  const visible = allRuns.filter(_matchRunFilter);
+  const allSel = visible.length && visible.every(r => _selectedRuns.has(r.name));
+  visible.forEach(r => { if (allSel) _selectedRuns.delete(r.name); else _selectedRuns.add(r.name); });
+  document.querySelectorAll('#runsList .run-sel-cb').forEach(cb => {
+    const nm = cb.closest('.run-list-item')?.dataset.runName;
+    if (nm) cb.checked = _selectedRuns.has(nm);
+  });
+  _renderRunSelectionBar();
+});
+
+// ── Run detail panel ──────────────────────────────────────────
+let _rdName = null;
+let _rdPollTimer = null;
+// Prompts/responses tail state — keyed by file (each UC × sample has its own)
+let _rdPromptsState = {
+  filesKnown: [],                  // list of turns files we've seen
+  perFile: {},                     // {file: {next_offset, records: []}}
+  autoScroll: true,
+  pollTimer: null,
+  // Per-record expand toggle (Set of record indices that are expanded).
+  // Re-derived from sorted order so cleared on each clear-buffer.
+  expanded: new Set(),
+  // Global default for new records: 'collapsed' (default) or 'expanded'.
+  // Persisted across drawer-opens via localStorage.
+  defaultMode: (() => { try { return localStorage.getItem('davPromptsDefaultMode') || 'collapsed'; } catch(e) { return 'collapsed'; } })(),
+};
+// Per-record collapsed display cap (characters before "show full" appears)
+const RD_PROMPTS_COLLAPSED_CHARS = 600;
+// Track metric value history so we can show "Xs since last change" and
+// flash cells when their value changes between polls.
+let _rdLastGpuValues  = {};   // {gpu_id: {metric: value}}
+let _rdLastVllmValues = {};   // {key: value}
+let _rdGpuLastChange  = 0;    // epoch seconds when any GPU metric last changed
+let _rdVllmLastChange = 0;    // epoch seconds when any vLLM metric last changed
+let _rdFreshTimer     = null; // separate timer that updates the "Xs ago" label every second
+// Session token baseline — captured on drawer open (first non-null counter
+// receipt). Used to compute "tokens this session" so the UI doesn't show
+// the entire cumulative-since-vLLM-start total. Reset if the underlying
+// counter regresses (process restart).
+let _rdTokenBaseline  = {gen: null, prompt: null};
+// Timeseries cache for sparklines. Loaded once per drawer session (or re-fetched
+// every 60s for in-flight runs). Null = not yet loaded.
+let _rdSparklines     = null;
+let _rdSparkTimer     = null;  // periodic re-fetch for in-flight runs
+let _rdSampleCount    = 1;     // ensemble samples/iterations per UC (run param)
+let _rdUcTotal        = null;  // run's total UC count — for "UC N of M" turn labels
+let _rdLastSnap       = null;  // most recent live snapshot — its values are
+                               // appended as each sparkline's latest point so
+                               // the graph tip always matches the live number.
+
+
+function rdRenderCompactStats(snap, vlive) {
+  // Single dense row for stacked/side/prompts layouts. snap is the metrics
+  // snapshot; vlive optionally has server-supplied session token deltas.
+  const el = document.getElementById('rdCompactStats');
+  if (!snap || !snap.available) { el.innerHTML = '<span style="color:var(--text-faint)">metrics unavailable</span>'; return; }
+  const gpus = snap.gpus || [];
+  const v = snap.vllm || {};
+  const gpuParts = gpus.map((g,i) => {
+    const gfx = g.gpu_gfx_activity, vp = g.used_vram_pct, pw = g.gpu_power_watts, t = g.gpu_edge_temp_c;
+    const tCls = t == null ? '' : (t > 90 ? 'hot' : t > 80 ? 'warn' : '');
+    return `<span><span class="label">G${g.gpu_id ?? i}</span><span class="v">${_fmtN(gfx,0)}%</span>` +
+           `<span class="sep">·</span><span class="v">${_fmtN(vp,0)}% vram</span>` +
+           `<span class="sep">·</span><span class="v">${_fmtN(pw,0)}W</span>` +
+           `<span class="sep">·</span><span class="v ${tCls}">${_fmtN(t,0)}°C</span></span>`;
+  }).join('<span class="sep">|</span>');
+  const sgen = (vlive && vlive.live_session_gen_tokens != null) ? vlive.live_session_gen_tokens : null;
+  const spr  = (vlive && vlive.live_session_prompt_tokens != null) ? vlive.live_session_prompt_tokens : null;
+  el.innerHTML = gpuParts + '<span class="sep">||</span>' +
+    `<span><span class="label">vLLM</span>` +
+    `<span class="v">${_fmtN(v.running_requests,0)} run</span>` +
+    `<span class="sep">·</span><span class="v">${_fmtN(v.waiting_requests,0)} q</span>` +
+    `<span class="sep">·</span><span class="v">${_fmtN(v.kv_cache_pct,0)}% KV</span>` +
+    `<span class="sep">·</span><span class="v">${_fmtN(v.generation_tps,1)} t/s gen</span>` +
+    `<span class="sep">·</span><span class="v">${_fmtN(v.prompt_tps,0)} t/s prompt</span>` +
+    (sgen != null ? `<span class="sep">·</span><span class="v">${(sgen||0).toLocaleString()} gen / ${(spr||0).toLocaleString()} prompt session</span>` : '') +
+    `</span>`;
+}
+
+async function rdRefreshPrompts() {
+  // Discover turns files every poll (cheap GET; the engine adds one new
+  // file when each UC starts, and we used to discover only once per
+  // drawer-open — so the second + third UC in a multi-UC run never
+  // showed up). Merge the discovered set into perFile without losing
+  // already-accumulated records.
+  if (!_rdName) return;
+  try {
+    const ls = await api(`/api/runs/${encodeURIComponent(_rdName)}/turns`).catch(() => ({}));
+    const discovered = ls.files || [];
+    for (const f of discovered) {
+      if (!_rdPromptsState.perFile[f]) _rdPromptsState.perFile[f] = {next_offset:0, records:[]};
+    }
+    _rdPromptsState.filesKnown = discovered.length ? discovered : _rdPromptsState.filesKnown;
+    // Poll each known file for delta
+    for (const f of _rdPromptsState.filesKnown) {
+      const st = _rdPromptsState.perFile[f];
+      const r = await api(`/api/runs/${encodeURIComponent(_rdName)}/turns?file=${encodeURIComponent(f)}&since=${st.next_offset}`).catch(() => null);
+      if (!r || !r.records) continue;
+      if (r.records.length) {
+        st.records.push(...r.records.map(rec => ({...rec, _file: f})));
+      }
+      st.next_offset = r.next_offset ?? st.next_offset;
+    }
+    rdRenderPrompts();
+  } catch (e) {
+    // silent
+  }
+}
+
+// Render one section of body text with optional collapse + show-full toggle.
+// Returns HTML. `idx` is the record index in `visible` (used as the toggle key).
+function _renderTurnBody(idx, label, text, originalLength) {
+  if (text == null || text === '') return '';
+  const cap = RD_PROMPTS_COLLAPSED_CHARS;
+  const len = (originalLength != null) ? originalLength : text.length;
+  // The toggle handler stores `a.dataset.rdToggle` as a string in the Scoping Set;
+  // matching here on a number meant `expanded.has(3)` after `add('3')`
+  // was always false, so "show full" never expanded. Force string both
+  // ways. Same fix applies to the `idx + ':args'` tool-arg variant — it's
+  // already a string so just match formats.
+  const key = String(idx);
+  const wantsExpanded = _rdPromptsState.expanded.has(key) || _rdPromptsState.defaultMode === 'expanded';
+  const truncatedByEngine = len > text.length;          // engine hit MAX_FIELD_BYTES
+  const truncatedByUI     = !wantsExpanded && text.length > cap;
+  const display = truncatedByUI ? text.slice(0, cap) : text;
+  const labelPrefix = label ? `<span class="sub">${esc(label)}:</span> ` : '';
+  let suffix = '';
+  if (truncatedByUI || truncatedByEngine) {
+    const showing = display.length;
+    const note = truncatedByEngine
+      ? `<span class="sub">… ${(len-text.length).toLocaleString()} chars not stored (engine cap)</span>`
+      : `<span class="sub">… ${(len - cap).toLocaleString()} more</span>`;
+    const action = truncatedByUI
+      ? `<a href="javascript:void(0)" data-rd-toggle="${esc(key)}" style="color:var(--accent);font-size:10px;margin-left:6px;">show full</a>`
+      : '';
+    suffix = `<div style="margin-top:2px">${note}${action}</div>`;
+  } else if (wantsExpanded && text.length > cap) {
+    suffix = `<div style="margin-top:2px"><a href="javascript:void(0)" data-rd-toggle="${esc(key)}" style="color:var(--text-faint);font-size:10px;">collapse</a></div>`;
+  }
+  return `<div>${labelPrefix}<span style="white-space:pre-wrap">${esc(display)}</span></div>${suffix}`;
+}
+
+function rdRenderPrompts() {
+  const all = [];
+  for (const f of Object.keys(_rdPromptsState.perFile)) {
+    all.push(..._rdPromptsState.perFile[f].records);
+  }
+  const el = document.getElementById('rdPrompts');
+  document.getElementById('rdPromptsCount').textContent = all.length
+    ? `· ${all.length} turn records · default ${_rdPromptsState.defaultMode}` : '';
+  if (!all.length) {
+    el.innerHTML = '<div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet · written by the engine as it analyzes each UC</div>';
+    return;
+  }
+  // Group turns by their sample (one agent loop = one UC+seed = one JSONL file)
+  // and keep each sample's turns contiguous, ordered by turn number. Previously
+  // every turn was sorted by a single global timestamp, which INTERLEAVED the
+  // turns of concurrently-running samples — the same iteration's "turn 0,1,2…"
+  // got scattered across the list and read as duplicated turns. Groups are
+  // ordered by when each iteration began (earliest ts in the group).
+  const _groupKey = r => r._file || `${r.uc_uuid || '?'}::${r.sample_seed ?? ''}`;
+  const _groups = new Map();
+  for (const r of all) {
+    const k = _groupKey(r);
+    if (!_groups.has(k)) _groups.set(k, []);
+    _groups.get(k).push(r);
+  }
+  for (const g of _groups.values())
+    g.sort((a,b) => (a.turn ?? 0) - (b.turn ?? 0) || (a.ts||'').localeCompare(b.ts||''));
+  const _groupList = [..._groups.entries()]
+    .sort((a,b) => ((a[1][0]||{}).ts||'').localeCompare((b[1][0]||{}).ts||''));
+  // Iteration number = 1-based index of this sample among its UC's samples in
+  // start order. Computed ONCE over the ordered groups, so it's stable and
+  // correct even under concurrency (the old per-flip increment double-counted).
+  const _ucCount = {};
+  const _groupIter = new Map();   // groupKey → iteration number within its UC
+  for (const [k, g] of _groupList) {
+    const uc = (g[0] && g[0].uc_uuid) || k;
+    _ucCount[uc] = (_ucCount[uc] || 0) + 1;
+    _groupIter.set(k, _ucCount[uc]);
+  }
+  const ordered = _groupList.flatMap(([, g]) => g);
+  // UC ordinal (1-based, first-seen order) → for "UC N of M" labels on the UC
+  // boundary row and every turn row. Total is the run's planned UC count when
+  // known, else the distinct UCs present in the records so far.
+  // Only the 'start' record of each sample carries uc_uuid; response/tool rows
+  // have uc_uuid=null. So derive the UC identity per GROUP (every record has a
+  // _file-based groupKey) and map groupKey → ucNum, so the label resolves on
+  // EVERY row, not just the start row.
+  const _ucOrder = new Map();      // uc identity → 1-based ordinal
+  const _groupUcNum = new Map();   // groupKey → ucNum
+  for (const [k, g] of _groupList) {
+    let ucId = null;
+    for (const rec of g) if (rec.uc_uuid) { ucId = rec.uc_uuid; break; }
+    // Fall back to the file name with the per-sample seed suffix stripped, so
+    // multiple seeds of one UC collapse to the same UC number.
+    if (!ucId) ucId = String(k).replace(/\.seed-\d+\.jsonl$/i, '').replace(/\.jsonl$/i, '');
+    if (!_ucOrder.has(ucId)) _ucOrder.set(ucId, _ucOrder.size + 1);
+    _groupUcNum.set(k, _ucOrder.get(ucId));
+  }
+  const _ucTotal = _rdUcTotal || _ucOrder.size || null;
+  // Cap to most recent 400 to keep DOM bounded
+  const visible = ordered.slice(-400);
+  let lastBoundaryKey = null;
+  const html = visible.map((r, idx) => {
+    const kind = r.kind || 'turn';
+    let head = `<span class="kind ${esc(kind)}">${esc(kind)}</span>`;
+    head += `turn ${r.turn ?? '?'}`;
+    // Per-turn UC tag so every row shows which UC (of how many) it belongs to.
+    const _ucNum = _groupUcNum.get(_groupKey(r));
+    if (_ucNum) head += ` · <span style="color:var(--text-faint)">UC ${_ucNum}${_ucTotal ? ' of '+_ucTotal : ''}</span>`;
+    // Per-turn iteration tag so every turn is tied to the ensemble sample it
+    // belongs to (not just the boundary banner) — disambiguates interleaved
+    // samples at a glance.
+    const _iterTag = _groupIter.get(_groupKey(r));
+    if (_iterTag) head += ` · <span style="color:var(--text-faint)">iter ${_iterTag}${_rdSampleCount ? '/'+_rdSampleCount : ''}</span>`;
+    if (r.tool_name) head += ` · ${esc(r.tool_name)}`;
+    if (r.tokens_total != null) head += ` · ${r.tokens_total.toLocaleString()} tok`;
+    if (r.content_length != null && kind === 'response') head += ` · ${r.content_length.toLocaleString()} chars`;
+    if (r.result_length != null && kind === 'tool')     head += ` · ${r.result_length.toLocaleString()} chars`;
+    let body = '';
+    if (kind === 'start') {
+      body  = `<div class="sub">UC ${esc(r.uc_uuid || '')}${r.sample_seed != null ? ' · seed '+r.sample_seed : ''} · max_tool_calls=${r.max_tool_calls ?? '?'}</div>`;
+      // System prompt: prefer the new full key, fall back to legacy preview key
+      const sys = r.system_prompt ?? r.system_prompt_preview;
+      if (sys) body += _renderTurnBody(idx, 'system', sys, r.system_prompt_length);
+      const usr = r.user_prompt ?? r.user_prompt_preview;
+      if (usr) body += _renderTurnBody(idx, 'user', usr, r.user_prompt_length);
+    } else if (kind === 'response') {
+      const content = r.content ?? r.content_preview;
+      if (content) body = _renderTurnBody(idx, null, content, r.content_length);
+      else {
+        const n = r.tool_call_count || 0;
+        body = `<div class="sub">↳ model went straight to ${n} tool call${n===1?'':'s'} — no narration this turn (normal for tool-using models like Qwen3)</div>`;
+      }
+    } else if (kind === 'tool') {
+      const args = r.args ? JSON.stringify(r.args, null, 2) : '';
+      body = _renderTurnBody(idx + ':args', 'args', args, args.length);
+      const result = r.result ?? r.result_preview;
+      if (result) body += _renderTurnBody(idx, null, result, r.result_length);
+    } else {
+      body = `<div>${esc(JSON.stringify(r).slice(0,300))}</div>`;
+    }
+    // Boundary banner whenever the UC *or* the ensemble sample (seed) changes.
+    // Each UC, and each ensemble sample within it, is a SEPARATE agent loop, so
+    // the turn counter restarts at 0 every time — without this the repeated
+    // "turn 0…N" blocks read like a glitch. One JSONL file = one UC+seed
+    // sequence, so the file path is the reliable boundary key.
+    let boundary = '';
+    const recUuid = r.uc_uuid || null;
+    const boundaryKey = r._file || (recUuid != null ? `${recUuid}::${r.sample_seed ?? ''}` : null);
+    if (boundaryKey && boundaryKey !== lastBoundaryKey) {
+      const ts = r.ts ? new Date(r.ts).toLocaleTimeString() : '';
+      let seed = (r.sample_seed != null) ? r.sample_seed : null;
+      if (seed == null && r._file) { const m = r._file.match(/seed-(\d+)/); if (m) seed = m[1]; }
+      const ucShort = recUuid || (r._file ? r._file.replace(/^.*\//, '').replace(/\.jsonl$/, '') : '?');
+      // Which ensemble iteration of THIS UC — count distinct seeds seen for the
+      // UC in order; total = the run's sample count.
+      const iter = _groupIter.get(boundaryKey) || 1;
+      const total = _rdSampleCount || null;
+      const ucNum = _groupUcNum.get(boundaryKey);
+      boundary = `<div class="uc-boundary">▶ Use case <span class="uc-uuid">${esc(ucShort)}</span>`
+        + (ucNum ? `<span class="uc-meta">· UC <b style="color:var(--accent)">${ucNum}</b>${_ucTotal ? ' of ' + _ucTotal : ''}</span>` : '')
+        + `<span class="uc-meta">· iteration <b style="color:var(--accent)">${iter}</b>${total ? ' of ' + total : ''}</span>`
+        + (seed != null ? `<span class="uc-meta">· seed ${esc(String(seed))}</span>` : '')
+        + (ts ? `<span class="uc-meta">· ${esc(ts)}</span>` : '')
+        + `<span class="uc-meta">· turns restart at 0</span></div>`;
+      lastBoundaryKey = boundaryKey;
+    }
+    return `${boundary}<div class="turn-rec kind-${esc(kind)}"><div class="head">${head}</div><div class="body">${body}</div></div>`;
+  }).join('');
+  el.innerHTML = html;
+  // Wire up per-record toggle links
+  el.querySelectorAll('[data-rd-toggle]').forEach(a => {
+    a.addEventListener('click', e => {
+      e.preventDefault();
+      const key = a.dataset.rdToggle;
+      if (_rdPromptsState.expanded.has(key)) _rdPromptsState.expanded.delete(key);
+      else _rdPromptsState.expanded.add(key);
+      rdRenderPrompts();
+    });
+  });
+  if (_rdPromptsState.autoScroll) el.scrollTop = el.scrollHeight;
+}
+
+// Kick off a run scoped to the UCs that have no current evaluation (un-evaluated or stale) —
+// the "evaluate what's missing" action. Opens the New Ingestion modal pre-filled with those UCs.
+let _auditNeedsEval = [];
+function _evaluateNeedsEval() {
+  if (!_auditNeedsEval.length) return;
+  // Open New Ingestion pre-selected to the Stale / un-ingested scope (UCs needing evaluation).
+  openNewRun(undefined, undefined, undefined, undefined, { set_id: '__stale__', selection_mode: 'selection' });
+}
+
+// 3c: the Runs view's default content is a UC-INGESTION AUDIT (decision 4b) — runs are the
+// ingestion event; this shows, per UC, what's been evaluated, when, by which run, and freshness.
+let _auditFilter = 'all';   // 'all' | 'failed' | 'stale'
+let _auditUCs = [];
+function _phaseBadge(phase) {
+  if (!phase) return '';
+  const map = { engine:['var(--red)','engine'], analysis:['var(--red)','analysis'],
+                ingest:['var(--red)','ingest'], not_emitted:['var(--amber,#d79a2b)','dropped'],
+                unreliable:['var(--amber,#d79a2b)','unreliable'] };
+  const [c, l] = map[phase] || ['var(--text-faint)', phase];
+  return `<span title="failure stage" style="font-size:8px;color:${c};border:1px solid ${c}55;border-radius:2px;padding:0 4px;margin-left:4px;text-transform:uppercase;letter-spacing:.04em;">${esc(l)}</span>`;
+}
+function _ucStateCell(u) {
+  if (u.failed) return `<span style="color:var(--red);font-size:10px;">✗ failed</span>${_phaseBadge(u.error_phase)}`;
+  if (u.stale) {
+    // #114: distinguish content-edit staleness from code-drift (repo HEAD moved since eval).
+    const tag = (u.stale_drifted && !u.stale_edited) ? ' · code'
+              : (u.stale_drifted ? ' · edited+code' : '');
+    const why = u.stale_drifted ? (u.stale_edited ? 'edited AND the code drifted since eval' : 'the code drifted since eval')
+                                : 'edited since eval';
+    return `<span title="Stale — ${why}" style="color:var(--amber,#d79a2b);font-size:10px;">● stale${tag}</span>`;
+  }
+  if (u.evaluated) return (u.error_phase === 'unreliable')
+    ? `<span style="color:var(--amber,#d79a2b);font-size:10px;">⚠ unreliable</span>`
+    : '<span style="color:var(--green);font-size:10px;">fresh</span>';
+  return '<span style="color:var(--text-faint);font-size:10px;">never ingested</span>';
+}
+function _reingestUC(uuid) {
+  if (!uuid) return;
+  openNewRun(undefined, undefined, { handles: [], uuids: [uuid], managed: [uuid] },
+    undefined, { selection_mode: 'selection' });
+}
+function setAuditFilter(f) { _auditFilter = f; _paintIngestionAudit(); }
+async function _renderIngestionAudit() {
+  const el = document.getElementById('rdRunBody');
+  if (!el || _rdName) return;   // only the default (no run open) state
+  el.innerHTML = '<div class="rd-empty">loading ingestion audit…</div>';
+  let r;
+  try { r = await api('/api/results/uc-latest'); }
+  catch (e) { el.innerHTML = `<div class="rd-empty" style="color:var(--red)">${esc(e.message)}</div>`; return; }
+  if (_rdName) return;   // a run got opened while loading
+  _auditUCs = r.ucs || [];
+  _auditMeta = { total: r.total || 0, evaluated: r.evaluated || 0, failed: r.failed || 0 };
+  _auditNeedsEval = _auditUCs.filter(u => !u.evaluated || u.stale).map(u => u.uc_uuid);
+  _paintIngestionAudit();
+}
+let _auditMeta = { total: 0, evaluated: 0, failed: 0 };
+function _paintIngestionAudit() {
+  const el = document.getElementById('rdRunBody');
+  if (!el || _rdName) return;
+  const ucs = _auditUCs || [];
+  const failedN = ucs.filter(u => u.failed).length;
+  const staleN  = ucs.filter(u => u.stale).length;
+  const needsN  = ucs.filter(u => !u.evaluated || u.stale).length;
+  const shown = ucs.filter(u =>
+    _auditFilter === 'failed' ? u.failed : _auditFilter === 'stale' ? u.stale : true);
+  const chip = (key, label, n, color) =>
+    `<button class="btn ${_auditFilter === key ? 'primary' : 'ghost'} btn-sm" style="font-size:10px;"
+             onclick="setAuditFilter('${key}')">${label}${n != null ? ` (${n})` : ''}</button>`;
+  const rows = shown.map(u => {
+    const needsReingest = u.failed || u.stale || !u.evaluated;
+    return `
+    <tr style="border-bottom:1px solid var(--border);${u.failed ? 'background:rgba(220,80,80,0.05);' : ''}">
+      <td style="padding:5px 8px;max-width:260px;">
+        <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(u.title || u.uc_handle || u.uc_uuid)}</div>
+        ${u.error_reason ? `<div title="${esc(u.error_reason)}" style="font-size:9px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px;">↳ ${esc(u.error_reason)}</div>` : ''}
+      </td>
+      <td style="padding:5px 8px;">${u.failed ? '<span style="color:var(--text-faint);font-size:10px;">—</span>' : (u.evaluated ? _verdictBadge(u.verdict) : '<span style="color:var(--text-faint);font-size:10px;">not evaluated</span>')}</td>
+      <td style="padding:5px 8px;color:var(--text-dim);font-size:10px;white-space:nowrap;">${u.analyzed_at ? _ago(u.analyzed_at) : '—'}</td>
+      <td style="padding:5px 8px;font-family:var(--mono,monospace);font-size:9px;color:var(--text-faint);">${u.run_id ? esc(u.run_id.slice(0, 18)) : '—'}</td>
+      <td style="padding:5px 8px;white-space:nowrap;">${_ucStateCell(u)}</td>
+      <td style="padding:5px 8px;white-space:nowrap;">${needsReingest ? `<button class="btn ghost btn-icon" title="Re-ingest just this use case" onclick="_reingestUC('${esc(u.uc_uuid)}')" style="font-size:11px;">↻</button>` : ''}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `
+    <div style="padding:10px 14px;">
+      <div style="font-size:13px;font-weight:600;margin-bottom:2px;">UC Ingestion Audit</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
+        <div style="font-size:11px;color:var(--text-faint);flex:1;min-width:160px;">
+          <strong>${_auditMeta.evaluated}/${_auditMeta.total}</strong> evaluated${failedN ? ` · <span style="color:var(--red);">${failedN} failed</span>` : ''} · latest ingestion per use case.</div>
+        ${needsN
+          ? `<button class="btn primary btn-sm" onclick="_evaluateNeedsEval()" title="Open a new ingestion scoped to the use cases needing evaluation (failed / stale / never ingested)">▶ Ingest ${needsN} needing evaluation</button>`
+          : '<span style="font-size:11px;color:var(--green);">all evaluated &amp; fresh</span>'}
+      </div>
+      <div style="display:flex;gap:5px;margin-bottom:8px;">
+        ${chip('all', 'All', ucs.length)}${chip('failed', 'Failed', failedN)}${chip('stale', 'Stale', staleN)}
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead><tr style="text-align:left;color:var(--text-faint);font-size:10px;text-transform:uppercase;letter-spacing:.05em;">
+          <th style="padding:4px 8px;">Use case</th><th style="padding:4px 8px;">Verdict</th><th style="padding:4px 8px;">Last eval</th><th style="padding:4px 8px;">Ingestion</th><th style="padding:4px 8px;">State</th><th style="padding:4px 8px;"></th>
+        </tr></thead>
+        <tbody>${rows || `<tr><td colspan="6" style="padding:12px;color:var(--text-faint);">${ucs.length ? 'No use cases match this filter.' : 'No use cases in this project.'}</td></tr>`}</tbody>
+      </table>
+    </div>`;
+}
+
+function selectRun(name) {
+  _rdName = name;
+  // This run is now the system's current run: if it has ingested analysis, make
+  // it the current analysis run (drives Results/Architecture/Engineering + masthead).
+  const _r = allRuns.find(x => x.name === name);
+  if (_r && _r.run_id && _r.run_id !== activeRunResultId) selectRunResult(_r.run_id);
+  // Highlight in list
+  document.querySelectorAll('.run-list-item').forEach(el =>
+    el.classList.toggle('active', el.querySelector('.rli-main .rli-name') &&
+      allRuns.find(r => r.name === name)?.session_name === el.querySelector('.rli-name')?.textContent ||
+      el.querySelector('.rli-sub')?.textContent?.startsWith(name)));
+  renderRunsList(); // re-render to show active state
+  // Show detail panel header + tabs
+  document.getElementById('rdPanelHeader').style.display = '';
+  // IA slice 3: the run-detail "Review & Plan" tab is retired — review/enhancement/PR
+  // generation has ONE home (Roadmaps), reached via the "Review this analysis →" header
+  // launcher (scopes Roadmaps to this analysis's Scoping Set). Keep the strip hidden; the
+  // embedded generator body (#rdReviewBody) stays in markup but unreachable, pending a
+  // dead-code removal pass.
+  document.getElementById('rdTabStrip').style.display = 'none';
+  try { rdSwitchTab('run'); } catch (_) {}   // force the Analysis body visible (the Review tab is retired)
+  document.getElementById('rdTitle').textContent = name;
+  document.getElementById('rdSub').textContent = 'loading…';
+  // Reset run body
+  const runBody = document.getElementById('rdRunBody');
+  runBody.innerHTML = `
+    <div class="run-section" id="rdSessionSection" style="display:none;">
+      <div class="run-section-title">Session</div>
+      <div id="rdSession" class="kv-grid" style="font-size:11px"></div>
+    </div>
+    <div class="run-section" id="rdProgressSection" style="display:none;">
+      <div class="run-section-title">UC progress (live)</div>
+      <div id="rdProgress"></div>
+    </div>
+    <!-- Operational stats: GPU + Inference side-by-side on wide screens (≥1100px) -->
+    <div class="rd-stats-grid">
+      <div class="run-section" id="rdGpusSection">
+        <div class="run-section-title">GPUs <span id="rdGpuMode">(live)</span><span id="rdGpuFresh" class="freshness-chip"></span></div>
+        <div id="rdGpus"><div class="empty" style="font-size:11px">loading metrics…</div></div>
+        <div style="font-size:10px;color:var(--text-faint);margin-top:6px;line-height:1.6;">
+          <b>VRAM</b> stays near 100% (vLLM pre-allocates). AMD <b>GFX activity</b> on RDNA4 latches at 100% under light load — use <b>power</b> and <b>KV cache %</b> as the real busy signal.
+        </div>
+      </div>
+      <div class="run-section" id="rdVllmSection">
+        <div class="run-section-title">Inference (vLLM, <span id="rdVllmMode">live</span>)<span id="rdVllmFresh" class="freshness-chip"></span></div>
+        <div id="rdVllm" class="vllm-grid"></div>
+      </div>
+    </div>
+    <!-- Pipeline output + prompt stream below the operational stats -->
+    <div class="rd-tail-section" id="rdTasksSection">
+      <div class="rd-tail-header" data-toggle="rdTasksSection" style="cursor:pointer;user-select:none;">
+        <span class="lbl">Pipeline tasks <span id="rdTasksCount" style="text-transform:none;letter-spacing:0;color:var(--text-faint)"></span></span>
+        <span class="ctl">click to collapse</span>
+      </div>
+      <div class="rd-tail-body" id="rdTasks"><div class="empty" style="font-size:11px">loading…</div></div>
+    </div>
+    <div class="rd-tail-section" id="rdPromptsSection">
+      <div class="rd-tail-header" data-toggle="rdPromptsSection" style="cursor:pointer;user-select:none;">
+        <span class="lbl">Prompts &amp; responses (live) <span id="rdPromptsCount" style="text-transform:none;letter-spacing:0;color:var(--text-faint)"></span></span>
+        <span class="ctl">
+          <button id="rdPromptsExpandBtn" title="default mode for new + reset records">expand all</button>
+          <button id="rdPromptsAutoBtn" title="toggle auto-scroll">⤓ auto</button>
+          <button id="rdPromptsClearBtn" title="clear visible buffer">clear</button>
+        </span>
+      </div>
+      <div class="rd-tail-body" id="rdPrompts"><div class="empty" style="font-size:11px;color:var(--text-faint)">no per-turn records yet</div></div>
+    </div>
+    <div class="run-section">
+      <div class="run-section-title">Params</div>
+      <div id="rdParams" class="kv-grid" style="font-size:11px"></div>
+    </div>`;
+  // Wire up re-created tail section toggles + prompt buttons
+  runBody.querySelectorAll('.rd-tail-header[data-toggle]').forEach(h => {
+    h.addEventListener('click', () => document.getElementById(h.dataset.toggle).classList.toggle('collapsed'));
+  });
+  _wirePromptButtons();
+
+  // Switch to run tab
+  rdSwitchTab('run');
+
+  // Reset state
+  _rdLastGpuValues = {}; _rdLastVllmValues = {};
+  _rdGpuLastChange = 0;  _rdVllmLastChange = 0;
+  _rdTokenBaseline = {gen: null, prompt: null};
+  _rdSparklines    = null;
+  if (_rdSparkTimer) { clearInterval(_rdSparkTimer); _rdSparkTimer = null; }
+  _rdPromptsState = {
+    filesKnown:[], perFile:{}, autoScroll:true, pollTimer:null,
+    expanded: new Set(),
+    defaultMode: (() => { try { return localStorage.getItem('davPromptsDefaultMode') || 'collapsed'; } catch(e) { return 'collapsed'; } })(),
+  };
+  // Initialize expand btn label
+  const expBtn = document.getElementById('rdPromptsExpandBtn');
+  if (expBtn) expBtn.textContent = _rdPromptsState.defaultMode === 'expanded' ? 'collapse all' : 'expand all';
+
+  // Update masthead chip
+  const run = allRuns.find(r => r.name === name);
+  updateRunChip(run?.session_name || name, run?.phase);
+
+  // Show "View Results" if results exist for this run
+  const resultBtn = document.getElementById('rdViewResultsBtn');
+  const hasResult = allResults.find(r => r.run_id === name);
+  resultBtn.style.display = hasResult ? '' : 'none';
+
+  // Show "Diagnose" — available for any run (the diagnoser resolves the run
+  // name to its workspace results dir; a clean run simply yields 0 proposals).
+  const diagBtn = document.getElementById('rdDiagnoseBtn');
+  if (diagBtn) diagBtn.style.display = '';
+
+  // Show "Review this analysis →" once results exist (review/enhancement/PRs need an
+  // analyzed corpus). The single generation home is Roadmaps; this just opens it scoped
+  // to the analysis (IA slice 3).
+  const reviewBtn = document.getElementById('rdReviewBtn');
+  if (reviewBtn) reviewBtn.style.display = hasResult ? '' : 'none';
+
+  // Start polling
+  stopRunPolling();
+  refreshRunDrawer();
+  _rdPollTimer = setInterval(refreshRunDrawer, 3000);
+  rdRefreshPrompts();
+  _rdPromptsState.pollTimer = setInterval(rdRefreshPrompts, 5000);
+  if (_rdFreshTimer) clearInterval(_rdFreshTimer);
+  _rdFreshTimer = setInterval(updateFreshnessLabels, 1000);
+}
+
+function stopRunPolling() {
+  if (_rdPollTimer)  { clearInterval(_rdPollTimer);  _rdPollTimer  = null; }
+  if (_rdFreshTimer) { clearInterval(_rdFreshTimer); _rdFreshTimer = null; }
+  if (_rdSparkTimer) { clearInterval(_rdSparkTimer); _rdSparkTimer = null; }
+  if (_rdPromptsState?.pollTimer) { clearInterval(_rdPromptsState.pollTimer); _rdPromptsState.pollTimer = null; }
+}
+
+function _wirePromptButtons() {
+  const autoBtn = document.getElementById('rdPromptsAutoBtn');
+  if (autoBtn) {
+    _setupAutoFollow(
+      document.getElementById('rdPrompts'),
+      autoBtn,
+      // Get/set are wired against the existing _rdPromptsState global so the
+      // rest of the prompt-rendering code is unchanged.
+      () => _rdPromptsState.autoScroll,
+      v => { _rdPromptsState.autoScroll = v; },
+    );
+  }
+  const clearBtn = document.getElementById('rdPromptsClearBtn');
+  if (clearBtn) clearBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    for (const f of Object.keys(_rdPromptsState.perFile)) _rdPromptsState.perFile[f].records = [];
+    _rdPromptsState.expanded = new Set();
+    rdRenderPrompts();
+  });
+  const expBtn = document.getElementById('rdPromptsExpandBtn');
+  if (expBtn) expBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    _rdPromptsState.defaultMode = (_rdPromptsState.defaultMode === 'expanded') ? 'collapsed' : 'expanded';
+    _rdPromptsState.expanded = new Set();
+    try { localStorage.setItem('davPromptsDefaultMode', _rdPromptsState.defaultMode); } catch(err) {}
+    e.target.textContent = _rdPromptsState.defaultMode === 'expanded' ? 'collapse all' : 'expand all';
+    rdRenderPrompts();
+  });
+}
+
+// Keep openRunDrawer as an alias used by openReviewPane / other callers
+function openRunDrawer(name) { selectRun(name); }
+function closeRunDrawer() { stopRunPolling(); }
+
+function _freshnessLabel(lastChangeEpoch) {
+  if (!lastChangeEpoch) return {text: '', cls: ''};
+  const ago = Math.max(0, Math.floor(Date.now()/1000 - lastChangeEpoch));
+  const cls = ago > 90 ? 'very-stale' : ago > 30 ? 'stale' : '';
+  // Show seconds up to 119, then "Xm Ys"
+  const text = ago < 120 ? `· no change ${ago}s` : `· no change ${Math.floor(ago/60)}m ${ago%60}s`;
+  return {text, cls};
+}
+
+function updateFreshnessLabels() {
+  for (const [el, last] of [
+    ['rdGpuFresh',  _rdGpuLastChange],
+    ['rdVllmFresh', _rdVllmLastChange],
+  ]) {
+    const e = document.getElementById(el); if (!e) continue;
+    const f = _freshnessLabel(last);
+    e.textContent = f.text;
+    e.className = 'freshness-chip ' + f.cls;
+  }
+}
+
+function _flashChanged(domId) {
+  const el = document.getElementById(domId); if (!el) return;
+  el.classList.add('metric-flash');
+  setTimeout(() => el.classList.remove('metric-flash'), 800);
+}
+
+// Build a small inline SVG sparkline from an array of [ts, val] pairs.
+// Returns an SVG element string (or empty string if no data).
+// `domain` (optional [lo,hi]) fixes the y-scale — pass [0,100] for percentage
+// metrics (GFX, KV) so a pinned-high value renders near the top instead of the
+// auto-scaled bottom. Without a domain, a perfectly flat series is drawn through
+// the vertical middle (a constant 100% GFX otherwise collapses to a misleading
+// bottom line — the "flat line at low utilization" artifact).
+function _sparklineSVG(pts, cls, w = 110, h = 22, domain = null) {
+  if (!pts || pts.length < 2) return '';
+  const vals = pts.map(p => p[1]);
+  const times = pts.map(p => p[0]);
+  const minV = domain ? domain[0] : Math.min(...vals);
+  const maxV = domain ? domain[1] : Math.max(...vals);
+  const flat = maxV === minV;
+  const rangeV = flat ? 1 : (maxV - minV);
+  const minT = times[0], maxT = times[times.length - 1];
+  const rangeT = maxT - minT || 1;
+  const pad = 2;
+  const points = pts.map(([t, v]) => {
+    const x = pad + ((t - minT) / rangeT) * (w - 2 * pad);
+    const frac = (flat && !domain) ? 0.5 : (v - minV) / rangeV;
+    const y = (h - pad) - Math.max(0, Math.min(1, frac)) * (h - 2 * pad);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  return `<svg class="sparkline" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <polyline class="${cls}" points="${points}"/>
+  </svg>`;
+}
+
+async function _fetchSparklines(startedAt, completedAt) {
+  if (!startedAt) return;
+  try {
+    const qp = `start=${encodeURIComponent(startedAt)}` +
+               (completedAt ? `&end=${encodeURIComponent(completedAt)}` : '');
+    const data = await api(`/api/metrics/timeseries?${qp}`);
+    if (data && data.available) {
+      _rdSparklines = data;
+      _renderSparklines();
+    }
+  } catch(e) {
+    // Metrics unavailable — silently skip sparklines
+  }
+}
+
+// Inject sparkline SVGs into the GPU tiles and vLLM cells that are
+// currently rendered in the drawer. Safe to call multiple times.
+// Append the current live snapshot value as the latest point of a series so the
+// graph's right edge always matches the live headline number (the timeseries
+// itself lags by its refresh interval). Synthetic +30s x so it sits just past
+// the last historical sample; the sparkline x-axis is relative so the value is
+// cosmetic. Returns a fresh values array (never mutates the cached series).
+function _liveTip(series, liveVal) {
+  const vals = (series && series.values) ? series.values.slice() : [];
+  // For a completed run the panel is historical — the series IS the run's data,
+  // so don't graft a "live" tip onto it.
+  if (_rdLastSnap && _rdLastSnap._historical) return vals;
+  if (vals.length && typeof liveVal === 'number' && isFinite(liveVal)) {
+    vals.push([vals[vals.length - 1][0] + 30, liveVal]);
+  }
+  return vals;
+}
+
+// Build a synthetic "snapshot" from the run's historical timeseries (per-GPU +
+// vLLM window averages / peaks) so a COMPLETED run's tiles show what it actually
+// used during its window — not the live cluster state. Mirrors the live
+// snapshot shape so renderRunDrawerMetrics consumes it unchanged.
+function _histSnapFromSparklines() {
+  const sp = _rdSparklines;
+  if (!sp) return null;
+  const avg  = (s) => (s && s.values && s.values.length) ? s.values.reduce((a,p)=>a+p[1],0)/s.values.length : null;
+  const peak = (s) => (s && s.values && s.values.length) ? Math.max(...s.values.map(p=>p[1])) : null;
+  const gpus = (sp.gpu_gfx_activity || []).map((s, i) => ({
+    gpu_id: (s.metric && s.metric.gpu_id) ?? i,
+    gpu_gfx_activity: avg(s),
+    used_vram_pct:    avg((sp.gpu_vram_pct  || [])[i]),
+    gpu_power_watts:  avg((sp.gpu_power_watts|| [])[i]),
+    gpu_edge_temp_c:  avg((sp.gpu_temp       || [])[i]),
+  }));
+  const v0 = (k) => (sp[k] || [])[0];
+  return {
+    available: true, _historical: true, gpus,
+    vllm: {
+      running_requests: avg(v0('vllm_running')),
+      waiting_requests: avg(v0('vllm_waiting')),
+      kv_cache_pct:     peak(v0('vllm_kv_pct')),     // peak is the meaningful one
+      generation_tps:   avg(v0('vllm_gen_tps')),
+      prompt_tps:       avg(v0('vllm_prompt_tps')),
+      ttft_p95_seconds: avg(v0('vllm_ttft_p95')),
+    },
+  };
+}
+
+function _renderSparklines() {
+  if (!_rdSparklines) return;
+  const sp = _rdSparklines;
+  const snapV = (_rdLastSnap && _rdLastSnap.vllm) || {};
+  const snapG = (_rdLastSnap && _rdLastSnap.gpus) || [];
+  // GPU: one sparkline per stat (GFX, VRAM, Power, Temp) under its value.
+  // [data-spk, timeseriesKey, liveValue, strokeClass, domain]. gpu_* timeseries
+  // return one series PER GPU (index by tile); % metrics get a fixed [0,100].
+  document.querySelectorAll('#rdGpus .gpu-tile').forEach((tile, idx) => {
+    const g = snapG[idx] || {};
+    const gpuSpk = [
+      ['gfx',   'gpu_gfx_activity', g.gpu_gfx_activity,                          'spk-gfx',   [0,100]],
+      ['vram',  'gpu_vram_pct',     g.used_vram_pct,                             'spk-vram',  [0,100]],
+      ['power', 'gpu_power_watts',  g.gpu_power_watts,                           'spk-power', null],
+      ['temp',  'gpu_temp',         (g.gpu_edge_temp_c ?? g.gpu_junction_temp_c),'spk-temp',  null],
+    ];
+    for (const [spk, tsKey, liveVal, cls, domain] of gpuSpk) {
+      const slot = tile.querySelector(`.gpu-spk-slot[data-spk="${spk}"]`);
+      if (!slot) continue;
+      const vals = _liveTip((sp[tsKey] || [])[idx], liveVal);
+      slot.innerHTML = vals.length >= 2
+        ? `<div class="sparkline-wrap">${_sparklineSVG(vals, cls, 110, 18, domain)}</div>` : '';
+    }
+  });
+  // vLLM: one sparkline per cell — [cellId, timeseriesKey, liveKey, cls, domain].
+  // Percentage metrics get a fixed [0,100] domain so a pinned value reads true.
+  for (const [cellId, tsKey, liveKey, cls, domain] of [
+    ['rdv-running',   'vllm_running',    'running_requests',  'spk-run',  null],
+    ['rdv-waiting',   'vllm_waiting',    'waiting_requests',  'spk-wait', null],
+    ['rdv-kv',        'vllm_kv_pct',     'kv_cache_pct',      'spk-kv',   [0,100]],
+    ['rdv-gentps',    'vllm_gen_tps',    'generation_tps',    'spk-tps',  null],
+    ['rdv-prompttps', 'vllm_prompt_tps', 'prompt_tps',        'spk-ptps', null],
+    ['rdv-ttft',      'vllm_ttft_p95',   'ttft_p95_seconds',  'spk-ttft', null],
+  ]) {
+    const cell = document.getElementById(cellId);
+    if (!cell) continue;
+    const parent = cell.closest('.vllm-cell');
+    if (!parent) continue;
+    const vals = _liveTip((sp[tsKey] || [])[0], snapV[liveKey]);
+    let spkWrap = parent.querySelector('.sparkline-wrap');
+    if (vals.length < 2) { if (spkWrap) spkWrap.remove(); continue; }
+    if (!spkWrap) {
+      spkWrap = document.createElement('div');
+      spkWrap.className = 'sparkline-wrap';
+      parent.appendChild(spkWrap);
+    }
+    spkWrap.innerHTML = _sparklineSVG(vals, cls, 110, 22, domain);
+  }
+}
+
+async function rdToggleLogs(runName, step, logsId, link) {
+  const el = document.getElementById(logsId);
+  if (!el) return;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none'; link.textContent = 'view logs'; return;
+  }
+  el.style.display = ''; link.textContent = 'hide logs';
+  if (el.dataset.loaded) return;
+  el.innerHTML = '<div style="color:var(--text-faint);font-size:10px;margin-top:6px">loading logs…</div>';
+  try {
+    const resp = await api(`/api/runs/${encodeURIComponent(runName)}/logs?task=${encodeURIComponent(step)}&tail=200`);
+    el.innerHTML = `<pre>${esc(resp.logs || '(empty)')}</pre>`
+                 + `<div style="color:var(--text-faint);font-size:10px;margin-top:4px">${resp.lines||0} lines · pod ${esc(resp.pod||'')}</div>`;
+    el.dataset.loaded = '1';
+  } catch (e) {
+    el.innerHTML = `<div style="color:var(--red);font-size:11px">log fetch failed: ${esc(e.message)}</div>`;
+  }
+}
+
+async function refreshRunDrawer() {
+  if (!_rdName) return;
+  // Two requests in parallel: run detail (Tekton) + live metrics snapshot
+  const [detail, snap] = await Promise.all([
+    api(`/api/runs/${encodeURIComponent(_rdName)}`).catch(e => ({_err: e.message})),
+    api('/api/metrics/snapshot').catch(e => ({_err: e.message})),
+  ]);
+  if (detail._err) {
+    document.getElementById('rdSub').innerHTML = `<span style="color:var(--red)">${esc(detail._err)}</span>`;
+  } else {
+    renderRunDrawerDetail(detail);
+    const isTerminal = ['Succeeded','Failed','Cancelled','TimedOut'].includes(detail.phase);
+    // Stop polling once the run is in a terminal state
+    if (isTerminal) {
+      if (_rdPollTimer) { clearInterval(_rdPollTimer); _rdPollTimer = null; }
+    }
+    // Sparklines (historical timeseries). In-flight: fetch + refresh every 20s.
+    // Terminal: fetched + awaited in the metrics block below.
+    const startedAt = detail.started_at || detail.created_at;
+    if (!isTerminal) {
+      if (startedAt && _rdSparklines === null) {
+        _fetchSparklines(startedAt, null);
+        if (_rdSparkTimer) clearInterval(_rdSparkTimer);
+        _rdSparkTimer = setInterval(() => _fetchSparklines(startedAt, null), 20000);
+      } else if (_rdSparklines) {
+        _renderSparklines();
+      }
+    }
+  }
+  // Metrics panel: live snapshot for in-flight runs; the run's OWN historical
+  // window (per-GPU + vLLM averages from its timeseries) for completed runs —
+  // the live snapshot would show current cluster state, not this run.
+  const _isTerminal = detail && !detail._err && ['Succeeded','Failed','Cancelled','TimedOut'].includes(detail.phase);
+  let metricsSnap = snap, metricsOpts = {};
+  if (_isTerminal) {
+    const startedAt = detail.started_at || detail.created_at;
+    if (_rdSparklines === null && startedAt) await _fetchSparklines(startedAt, detail.completed_at || null);
+    const hist = _histSnapFromSparklines();
+    if (hist) { metricsSnap = hist; metricsOpts = { historical: true }; }
+  }
+  // Session token totals + GPU energy (finalized for completed runs, else the
+  // live in-flight deltas) — injected into whichever snap we render.
+  if (metricsSnap && !metricsSnap._err && detail && !detail._err) {
+    metricsSnap.vllm = metricsSnap.vllm || {};
+    const sess = detail.session || {};
+    const gen = (sess.total_gen_tokens != null) ? sess.total_gen_tokens : detail.live_session_gen_tokens;
+    const prm = (sess.total_prompt_tokens != null) ? sess.total_prompt_tokens : detail.live_session_prompt_tokens;
+    if (gen !== undefined) metricsSnap.vllm._live_session_gen = gen;
+    if (prm !== undefined) metricsSnap.vllm._live_session_prompt = prm;
+    const energyJ = (sess.gpu_energy_joules ?? sess.live_gpu_energy_joules);
+    if (energyJ !== undefined && energyJ !== null) metricsSnap.vllm._gpu_energy_j = energyJ;
+  }
+  renderRunDrawerMetrics(metricsSnap, metricsOpts);
+  // Compact one-row stats — only visible in the non-detailed layouts (CSS-gated).
+  rdRenderCompactStats(metricsSnap, detail && !detail._err ? detail : null);
+}
+
+function _fmtEnergy(j) {
+  if (j === null || j === undefined) return '—';
+  // Joules to Wh: 1 Wh = 3600 J
+  const wh = j / 3600;
+  if (wh < 1) return `${j.toFixed(0)} J`;
+  if (wh < 1000) return `${wh.toFixed(1)} Wh`;
+  return `${(wh/1000).toFixed(2)} kWh`;
+}
+
+function renderRunDrawerDetail(d) {
+  const s = d.session || null;
+  const titleEl = document.getElementById('rdTitle');
+  if (titleEl) {
+    if (s && s.name) {
+      titleEl.innerHTML = `${esc(s.name)} <span style="font-family:var(--mono);font-size:10px;color:var(--text-faint);margin-left:8px">${esc(d.name)}</span>`;
+    } else {
+      titleEl.textContent = d.name;
+    }
+  }
+  // Update masthead chip with current phase
+  updateRunChip(s?.name || d.name, d.phase);
+
+  // ── Header strips: row 2 = time, row 3 = scope/estimate (folds in the old
+  //    session section; fills the wide-screen header width). ──
+  const _start = d.started_at || d.created_at;
+  const _startMs = _start ? Date.parse(_start) : null;
+  const _terminal = ['Succeeded','Failed','Cancelled','TimedOut'].includes(d.phase);
+  const ucCount = (d.progress && d.progress.total_ucs) || d.uc_total || (s && s.uc_total) || null;
+  const p = d.progress || {};
+  // Sample count (ensemble iterations per UC) — for the turn-record "iteration
+  // X of N" labels. From the run's param, else the mode default.
+  _rdSampleCount = parseInt((d.params || {})['sample-count'])
+    || ({verification:3, explore:10, reproduce:1}[(d.params || {}).mode] || 1);
+  _rdUcTotal = ucCount || null;   // for "UC N of M" labels in the prompts pane
+  // Live pace: actual seconds/UC observed so far THIS run (elapsed ÷ completed).
+  // It overrides the history/default estimate the moment ≥1 UC finishes — the
+  // only signal that's accurate for the run actually in flight.
+  const liveDone = p.completed || 0;
+  const livePerUc = (!_terminal && liveDone > 0 && p.elapsed_seconds)
+    ? (p.elapsed_seconds / liveDone) : null;
+  const perUc = livePerUc || d.est_per_uc_seconds || 1800;
+  const perUcLive = livePerUc != null;
+  const estTotal = ucCount ? ucCount * perUc : null;
+  // ETA: live = elapsed + remaining × pace; else started + total × per-UC.
+  let etaMs = null;
+  if (!_terminal && _startMs && estTotal) {
+    etaMs = (perUcLive && ucCount != null)
+      ? _startMs + (p.elapsed_seconds + (ucCount - liveDone) * perUc) * 1000
+      : _startMs + estTotal * 1000;
+  }
+  const toSec = d.timeout_seconds || null;
+  const killMs = (!_terminal && _startMs && toSec) ? _startMs + toSec * 1000 : null;
+  const willExceed = !!(etaMs && killMs && etaMs > killMs);
+  // Row 2 — time
+  let timeBits = `${phaseHtml(d.phase)} · started ${esc(fmtTs(_start))} · ${_terminal?'':'elapsed '}${esc(fmtDuration(_start, d.completed_at))}`;
+  if (!_terminal && etaMs) timeBits += ` · ETA ${esc(_fmtClock(etaMs))}${perUcLive?' <span style="color:var(--blue);font-size:9px">live</span>':''}`;
+  if (!_terminal && toSec) timeBits += ` · time allowed <b style="color:var(--text);font-family:var(--mono)">${esc(_fmtDurShort(toSec))}</b><span class="rd-hstat-edit" title="Edit time allowed (failsafe — don't go past this long; never auto-extended)" onclick="editRunTimeout('${esc(d.name)}',${toSec})">✎</span>`;
+  if (willExceed) timeBits += ` · <span style="color:var(--red);font-weight:500" title="At the current pace the ingestion won't finish before the time allowed — extend it (✎) or it will be stopped">⚠ exceeds time allowed</span>`;
+  if (_terminal && d.status_reason) timeBits += ` · <span style="color:var(--text-dim)">${esc(d.status_reason)}</span>`;
+  document.getElementById('rdSub').innerHTML = timeBits;
+  // Row 3 — scope / estimate
+  const hs = [];
+  if (ucCount != null) {
+    // Outcome split from the ingested analysis — a partial failure (e.g. 31/32)
+    // must read as exactly that, not as a blanket "Failed".
+    if (typeof d.uc_succeeded === 'number' && typeof d.uc_total === 'number') {
+      const failed = d.uc_failed || 0;
+      hs.push(`<span class="rd-hstat"><span class="l" style="text-transform:none">UCs</span>` +
+        `<b style="color:${failed > 0 ? 'var(--accent)' : 'var(--green)'}">${d.uc_succeeded}/${d.uc_total} ok</b>` +
+        (failed > 0 ? ` <b style="color:var(--red)">${failed} fail</b>` : '') + `</span>`);
+    } else {
+      hs.push(`<span class="rd-hstat"><span class="l" style="text-transform:none">UCs</span><b>${ucCount}</b></span>`);
+    }
+  }
+  if (!_terminal && ucCount != null) {
+    const tag = perUcLive
+      ? `<span style="color:var(--blue);font-size:9px;margin-left:3px" title="Live — actual pace observed this ingestion (${liveDone}/${ucCount} done)">live</span>`
+      : (d.est_per_uc_is_default ? `<span style="color:var(--text-faint);font-size:9px;margin-left:3px" title="No ingestion history yet — adjusts as ingestions complete + live once UCs finish">≈ default</span>` : '');
+    hs.push(`<span class="rd-hstat"><span class="l">est/UC</span><b>~${esc(_fmtDurShort(perUc))}</b>${tag}</span>`);
+    if (estTotal) hs.push(`<span class="rd-hstat"><span class="l">est total</span><b>~${esc(_fmtDurShort(estTotal))}</b></span>`);
+  }
+  if (_terminal && s && s.uc_total != null) {
+    hs.push(`<span class="rd-hstat"><span class="l">done</span><b style="color:${(s.uc_failed||0)>0?'var(--accent)':'var(--green)'}">${s.uc_succeeded ?? '?'}/${s.uc_total}</b>${(s.uc_failed||0)>0?` <span style="color:var(--red)">${s.uc_failed} fail</span>`:''}</span>`);
+  }
+  if (s && s.set_name) hs.push(`<span class="rd-hstat"><span class="l">set</span><b style="cursor:pointer;color:var(--accent)" onclick="switchView('usecases');setTimeout(()=>selectSet(${s.set_id}),100)">⊞ ${esc(s.set_name)}</b></span>`);
+  else if (s && s.selection_mode) { const _ml={set:'Set',selection:'Selection',individual:'Individual UC',corpus:'Full corpus'}; hs.push(`<span class="rd-hstat"><span class="l">scope</span><b>${esc(_ml[s.selection_mode]||s.selection_mode)}</b></span>`); }
+  if (s && s.category) hs.push(`<span class="rd-hstat"><span class="l">category</span><b>${esc(s.category)}</b></span>`);
+  if (_terminal && s && s.wall_time_seconds) hs.push(`<span class="rd-hstat"><span class="l">wall</span><b>${esc(_fmtDurShort(s.wall_time_seconds))}</b></span>`);
+  if (s && s.tags && s.tags.length) hs.push(`<span class="rd-hstat">${s.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join(' ')}</span>`);
+  document.getElementById('rdHeaderStats').innerHTML = hs.join('');
+
+  // Per-UC progress (in-flight only). Server computes from
+  // <run_dir>/run-progress.yaml the engine writes after each UC.
+  const progEl = document.getElementById('rdProgressSection');
+  if (d.progress && d.progress.total_ucs) {
+    progEl.style.display = '';
+    const p = d.progress;
+    const total = p.total_ucs || 0;
+    const succ = p.succeeded || 0;
+    const fail = p.failed || 0;
+    const completed = p.completed || 0;
+    const active = (p.phase === 'running' && p.current_index > completed) ? 1 : 0;
+    const succPct = total ? (succ/total*100) : 0;
+    const failPct = total ? (fail/total*100) : 0;
+    const actPct  = total ? (active/total*100) : 0;
+    const ucName = p.current_uc_path ? p.current_uc_path.split('/').slice(-1)[0].replace(/\.yaml$/,'') : null;
+    document.getElementById('rdProgress').innerHTML = `
+      <div class="uc-progress-counter">
+        <span class="big">${completed} <span style="color:var(--text-faint);font-size:13px">/ ${total}</span></span>
+        <span class="sub"><span class="succ">${succ} ok</span> · <span class="fail">${fail} failed</span> · ${Math.round(succPct + failPct)}% done</span>
+      </div>
+      <div class="uc-progress-bar" title="${succ} succeeded / ${fail} failed / ${active ? '1 active' : '0 active'} of ${total}">
+        <span class="seg-success" style="width:${succPct}%"></span>
+        <span class="seg-failed"  style="width:${failPct}%"></span>
+        <span class="seg-active"  style="width:${actPct}%"></span>
+      </div>
+      ${ucName && p.phase === 'running'
+        ? `<div class="uc-progress-current">running <b>${esc(ucName)}</b> · UC ${p.current_index} of ${total} · ${Math.round(p.elapsed_seconds||0)}s elapsed</div>`
+        : `<div class="uc-progress-current" style="color:var(--text-faint)">${esc(p.phase || 'unknown')} · ${Math.round(p.elapsed_seconds||0)}s elapsed</div>`}
+    `;
+  } else {
+    progEl.style.display = 'none';
+  }
+
+  // Session block — only render if we have a session row
+  // Session section folded into the header strips above — keep it hidden.
+  document.getElementById('rdSessionSection').style.display = 'none';
+  if (s && s.description) {
+    // Description is the one free-text field with no header home — show it as a
+    // subtle full-width line under the header stats.
+    const hsEl = document.getElementById('rdHeaderStats');
+    hsEl.innerHTML += `<span class="rd-hstat" style="flex-basis:100%;color:var(--text-faint);font-size:10px">${esc(s.description)}</span>`;
+  }
+
+  // Task ladder
+  const tasksEl = document.getElementById('rdTasks');
+  const tasks = d.tasks || [];
+  if (!tasks.length) {
+    tasksEl.innerHTML = '<div class="empty" style="font-size:11px">No tasks reported yet.</div>';
+  } else {
+    tasksEl.innerHTML = '';
+    tasks.forEach((t, idx) => {
+      const phaseCls = (t.phase||'pending').toLowerCase();
+      const marker = phaseCls === 'succeeded' ? '✓'
+                   : phaseCls === 'failed'    ? '✗'
+                   : phaseCls === 'running' || phaseCls === 'started' || phaseCls === 'pending' ? '●'
+                   : '○';
+      const dur = t.started_at ? fmtDuration(t.started_at, t.completed_at) : '—';
+      const isFailed = phaseCls === 'failed';
+      const stepName = t.step || t.name;
+      const logsId = `rd-logs-${idx}`;
+      const row = document.createElement('div');
+      row.className = 'task-row';
+      row.style.gridTemplateColumns = '18px 1fr 90px 80px';
+      row.innerHTML = `
+        <div class="task-marker ${phaseCls}">${marker}</div>
+        <div>
+          <div class="task-name">${esc(stepName)}</div>
+          ${t.message && !isFailed ? `<div class="task-step-sub">${esc(t.message.slice(0,140))}</div>` : ''}
+        </div>
+        <div class="task-time">${esc(t.phase || 'pending')}</div>
+        <div class="task-time">${esc(dur)}</div>
+        ${isFailed ? `
+          <div class="task-failure-block">
+            <div><b>Failure:</b> ${esc(t.message || 'no message')}
+              <span class="task-failure-toggle" onclick="rdToggleLogs('${esc(_rdName)}','${esc(stepName)}','${logsId}', this)">view logs</span>
+            </div>
+            <div id="${logsId}" style="display:none"></div>
+          </div>` : ''}`;
+      tasksEl.appendChild(row);
+    });
+  }
+
+  // Params
+  const pe = document.getElementById('rdParams');
+  pe.innerHTML = '';
+  Object.entries(d.params || {}).forEach(([k,v]) => {
+    pe.innerHTML += `<div class="kv-label">${esc(k)}</div><div class="kv-val" style="word-break:break-all">${esc(v)}</div>`;
+  });
+}
+
+function _fmtN(v, digits) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  return Number(v).toLocaleString(undefined, {maximumFractionDigits: digits ?? 1});
+}
+
+function renderRunDrawerMetrics(snap, opts) {
+  _rdLastSnap = snap;   // cache so _renderSparklines can append live tips
+  // Label the sections: live cluster state (in-flight) vs the run's own window
+  // averages (completed). Historical values come from the timeseries.
+  const _hist = !!(opts && opts.historical) || !!(snap && snap._historical);
+  const _gm = document.getElementById('rdGpuMode'); if (_gm) _gm.textContent = _hist ? '(during ingestion)' : '(live)';
+  const _vm = document.getElementById('rdVllmMode'); if (_vm) _vm.textContent = _hist ? 'during ingestion' : 'live';
+  const gpusEl = document.getElementById('rdGpus');
+  const vllmEl = document.getElementById('rdVllm');
+  if (snap._err) {
+    gpusEl.innerHTML = `<div class="empty" style="font-size:11px;color:var(--red)">metrics: ${esc(snap._err)}</div>`;
+    vllmEl.innerHTML = '';
+    return;
+  }
+  if (snap && !snap.available) {
+    gpusEl.innerHTML = `<div class="empty" style="font-size:11px;color:var(--text-faint)">metrics unavailable: ${esc(snap.reason||'')}</div>`;
+    vllmEl.innerHTML = '';
+    return;
+  }
+
+  // ── GPU tiles ───────────────────────────────────────────────
+  const gpus = (snap && snap.gpus) || [];
+  const newGpuValues = {};
+  let gpuChanged = false;
+  if (!gpus.length) {
+    gpusEl.innerHTML = '<div class="empty" style="font-size:11px;color:var(--text-faint)">No GPU metrics yet (exporter scrape pending).</div>';
+  } else {
+    gpusEl.innerHTML = '';
+    gpus.forEach((g, idx) => {
+      const gid = g.gpu_id ?? idx;
+      const gfx = g.gpu_gfx_activity ?? null;
+      const vramPct = g.used_vram_pct ?? null;
+      const power = g.gpu_power_watts ?? null;
+      const temp = g.gpu_edge_temp_c ?? g.gpu_junction_temp_c ?? null;
+      newGpuValues[gid] = {gfx, vramPct, power, temp};
+      const prev = _rdLastGpuValues[gid] || {};
+      ['gfx','vramPct','power','temp'].forEach(k => {
+        if (prev[k] !== undefined && prev[k] !== newGpuValues[gid][k]) gpuChanged = true;
+      });
+      const gfxCls = gfx === null ? '' : (gfx > 90 ? 'crit' : gfx > 70 ? 'high' : '');
+      const vCls   = vramPct === null ? '' : (vramPct > 95 ? 'crit' : vramPct > 80 ? 'high' : '');
+      const tCls   = temp === null ? '' : (temp > 90 ? 'hot' : temp > 80 ? 'warn' : '');
+      const idBase = `gpu${idx}`;
+      const tile = document.createElement('div');
+      tile.className = 'gpu-tile';
+      // 2×2 grid: GFX | VRAM on top, Power | Temp below. Each cell = value then
+      // its own sparkline graph, sharing half the row.
+      tile.innerHTML = `
+        <div class="gpu-tile-header">
+          <span class="gpu-tile-id">GPU ${esc(g.gpu_id ?? '?')}${g.model ? ' · '+esc(g.model) : ''}</span>
+          <span class="gpu-tile-node">${esc(g.node || '')}</span>
+        </div>
+        <div class="gpu-tile-stats2">
+          <div class="gpu-stat">
+            <div class="gpu-stat-label">GFX</div>
+            <div class="gpu-stat-value" id="${idBase}-gfx">${_fmtN(gfx, 0)}<span class="vllm-cell-unit">%</span></div>
+            <div class="gpu-spk-slot" data-spk="gfx"></div>
+          </div>
+          <div class="gpu-stat">
+            <div class="gpu-stat-label">VRAM</div>
+            <div class="gpu-stat-value" id="${idBase}-vram">${_fmtN(vramPct, 0)}<span class="vllm-cell-unit">%</span></div>
+            <div class="gpu-spk-slot" data-spk="vram"></div>
+          </div>
+          <div class="gpu-stat">
+            <div class="gpu-stat-label">Power</div>
+            <div class="gpu-stat-value" id="${idBase}-pwr">${_fmtN(power, 0)}<span class="vllm-cell-unit">W</span></div>
+            <div class="gpu-spk-slot" data-spk="power"></div>
+          </div>
+          <div class="gpu-stat">
+            <div class="gpu-stat-label">Temp</div>
+            <div class="gpu-stat-value ${tCls}" id="${idBase}-tmp">${_fmtN(temp, 0)}<span class="vllm-cell-unit">°C</span></div>
+            <div class="gpu-spk-slot" data-spk="temp"></div>
+          </div>
+        </div>`;
+      gpusEl.appendChild(tile);
+      // Flash any value that changed from the previous poll
+      if (prev.gfx     !== undefined && prev.gfx     !== gfx)     _flashChanged(`${idBase}-gfx`);
+      if (prev.vramPct !== undefined && prev.vramPct !== vramPct) _flashChanged(`${idBase}-vram`);
+      if (prev.power   !== undefined && prev.power   !== power)   _flashChanged(`${idBase}-pwr`);
+      if (prev.temp    !== undefined && prev.temp    !== temp)    _flashChanged(`${idBase}-tmp`);
+    });
+  }
+  // First render: don't claim "no change" — start the clock now
+  if (Object.keys(_rdLastGpuValues).length === 0 || gpuChanged) {
+    _rdGpuLastChange = Math.floor(Date.now()/1000);
+  }
+  _rdLastGpuValues = newGpuValues;
+
+  // ── vLLM aggregates ─────────────────────────────────────────
+  const v = (snap && snap.vllm) || {};
+
+  // Session token deltas: prefer server-supplied values (persisted baseline
+  // captured in run_sessions at trigger time — survives page reload). Fall
+  // back to client-side baseline when the server didn't include them
+  // (e.g. legacy run with no run_sessions row).
+  const sessGenTokens = (v._live_session_gen !== undefined && v._live_session_gen !== null)
+    ? v._live_session_gen
+    : (function(){
+        const b = _rdTokenBaseline.gen;
+        const c = v.gen_tokens_total;
+        if (c === null || c === undefined) return null;
+        if (b === null) { _rdTokenBaseline.gen = c; return 0; }
+        if (c < b)      { _rdTokenBaseline.gen = c; return 0; }
+        return c - b;
+      })();
+  const sessPromptTokens = (v._live_session_prompt !== undefined && v._live_session_prompt !== null)
+    ? v._live_session_prompt
+    : (function(){
+        const b = _rdTokenBaseline.prompt;
+        const c = v.prompt_tokens_total;
+        if (c === null || c === undefined) return null;
+        if (b === null) { _rdTokenBaseline.prompt = c; return 0; }
+        if (c < b)      { _rdTokenBaseline.prompt = c; return 0; }
+        return c - b;
+      })();
+  v.session_gen_tokens    = sessGenTokens;
+  v.session_prompt_tokens = sessPromptTokens;
+
+  const vKeys = [
+    ['running_requests',       'Running',          'rdv-running',  0, ''],
+    ['waiting_requests',       'Waiting',          'rdv-waiting',  0, ''],
+    ['kv_cache_pct',           'KV cache',         'rdv-kv',       0, '%'],
+    ['generation_tps',         'Gen tokens/s',     'rdv-gentps',   1, ''],
+    ['prompt_tps',             'Prompt tokens/s',  'rdv-prompttps',1, ''],
+    ['ttft_p95_seconds',       'TTFT p95',         'rdv-ttft',     2, 's'],
+    ['session_gen_tokens',     'Gen tokens (session)',    'rdv-sgen',  0, ''],
+    ['session_prompt_tokens',  'Prompt tokens (session)', 'rdv-sprm',  0, ''],
+    // Bottom-right: total GPU energy used by the run (custom formatter).
+    ['_gpu_energy_j',          'GPU energy',       'rdv-energy',   0, '', (j)=> (j==null ? '–' : _fmtEnergy(j))],
+  ];
+  vllmEl.innerHTML = vKeys.map(([k,label,id,prec,unit,fmt]) => `
+    <div class="vllm-cell"><div class="vllm-cell-label">${label}</div>
+      <div class="vllm-cell-value" id="${id}">${fmt ? fmt(v[k]) : _fmtN(v[k], prec)}${unit ? `<span class="vllm-cell-unit">${unit}</span>` : ''}</div></div>`).join('');
+  let vllmChanged = false;
+  vKeys.forEach(([k,_l,id]) => {
+    const prev = _rdLastVllmValues[k];
+    if (prev !== undefined && prev !== v[k]) { _flashChanged(id); vllmChanged = true; }
+    _rdLastVllmValues[k] = v[k];
+  });
+  if (Object.keys(_rdLastVllmValues).length === 0 || vllmChanged) {
+    _rdVllmLastChange = Math.floor(Date.now()/1000);
+  }
+  updateFreshnessLabels();
+
+  // Re-inject sparklines: this function wipes #rdGpus / vLLM cell
+  // innerHTML on every poll (every 3s for an in-flight run), which
+  // destroys the SVGs injected by _renderSparklines(). The timeseries
+  // is only re-fetched every 60s, so without this the sparklines flash
+  // in for one poll after each fetch then vanish for ~57s ("comes and
+  // goes while running"). _rdSparklines is cached between fetches, so
+  // re-rendering it here keeps them visible continuously. No-op when no
+  // data is cached yet (completed runs render once and already persist).
+  _renderSparklines();
+}
+
+async function loadNewRunDefaults(forcedSubpath) {
+  // Fetch current spec/corpus/inference state + detect UC subpath, populate fields.
+  // forcedSubpath: if set (e.g. when called from "Run set"), use that and skip auto-detect.
+  const detectedEl = document.getElementById('nrCorpusDetected');
+  detectedEl.textContent = '';
+  try {
+    const sourcesResp = await api('/api/sources').catch(() => ({sources:{}}));
+    const sources = sourcesResp.sources || {};
+    const spec    = sources.spec      || {};
+    const corpus  = sources.corpus    || {};
+    const inf     = sources.inference || {};
+    // Engine default for the new-run override picker comes from the Inference
+    // source (the path the pipeline actually reads), not model_defaults.
+    _engineDefaultLabel = inf.model || inf.endpoint || 'project inference default';
+    _populateOverrideSel('nrModelSel', '__engine__');
+    // Spec side: legacy single-source shows repo URL/branch inputs; multi-source
+    // mode (post-M11a) hides those and renders a read-only source list instead —
+    // editing happens in Config → Managed repos.
+    const specLegacy = document.getElementById('nrSpecLegacyWrap');
+    const specMulti  = document.getElementById('nrSpecSourcesWrap');
+    if (spec.multi_source && Array.isArray(spec.sources) && spec.sources.length) {
+      specLegacy.style.display = 'none';
+      specMulti.style.display = '';
+      const grid = document.getElementById('nrSpecSources');
+      grid.innerHTML = '';
+      spec.sources.forEach(s => {
+        const ns = s.namespace || '?';
+        const label = document.createElement('label');
+        label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;min-width:0;';
+        label.innerHTML = `<input type="checkbox" class="nr-spec-ns" value="${esc(ns)}" checked style="width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;"> <span style="font-weight:500;flex-shrink:0;">${esc(ns)}</span> <span style="color:var(--text-faint);font-size:10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.repo_url||'')}</span>`;
+        grid.appendChild(label);
+      });
+    } else {
+      specLegacy.style.display = '';
+      specMulti.style.display = 'none';
+      document.getElementById('nrSpecRepo').value    = spec.repo_url      || '';
+      document.getElementById('nrSpecBranch').value  = spec.repo_branch   || '';
+    }
+    // Corpus legacy URL/branch (the multi-source picker is handled separately
+    // by _populateCorpusSourcesPicker — that toggles nrCorpusLegacyWrap)
+    document.getElementById('nrCorpusRepo').value  = corpus.repo_url    || '';
+    document.getElementById('nrCorpusBranch').value= corpus.repo_branch || '';
+    const nrSel = document.getElementById('nrModelSel');
+    if (nrSel && !nrSel.value) {
+      // No user override — fall back to project default evaluation model
+      try {
+        const defaults = await api('/api/model-defaults');
+        if (defaults.evaluation) nrSel.value = String(defaults.evaluation);
+      } catch(_) { /* ignore */ }
+    }
+
+    if (forcedSubpath !== undefined) {
+      document.getElementById('nrCorpusSubpath').value = forcedSubpath || '';
+      document.getElementById('nrCorpusSubpath').placeholder = '';
+    } else if (corpus.multi_source) {
+      // Multi-source corpus: per-source root_path is baked into the projected
+      // ConfigMap; the legacy uc-subpath param is ignored. Leave the field
+      // editable for the rare advanced override but make the placeholder
+      // honest so nothing looks "stuck loading".
+      document.getElementById('nrCorpusSubpath').value = '';
+      document.getElementById('nrCorpusSubpath').placeholder = '(multi-source — per-source root_path applies; leave blank)';
+      detectedEl.innerHTML = `· <span style="color:var(--text-faint)">multi-source corpus (${(corpus.sources||[]).length} source(s))</span>`;
+    } else {
+      const detect = await api('/api/sources/corpus/uc-subpath').catch(() => ({}));
+      document.getElementById('nrCorpusSubpath').value = detect.detected || '';
+      document.getElementById('nrCorpusSubpath').placeholder = '';
+      if (detect.detected) {
+        detectedEl.textContent = `· auto-detected ${detect.detected}/`;
+      } else if (detect.corpus_dir_exists === false) {
+        detectedEl.innerHTML = `· <span style="color:var(--red)">corpus not cloned yet</span>`;
+      } else {
+        detectedEl.innerHTML = `· <span style="color:var(--text-faint)">no dav/ or use-cases/ found</span>`;
+      }
+    }
+    await _populateCorpusSourcesPicker();
+  } catch (e) {
+    toast('Could not load ingestion defaults: ' + e.message, true);
+  }
+}
+
+// ADR-007 / M11b: populate the per-run corpus source multi-select from
+// managed_repos. Hidden in legacy single-source mode (zero rows).
+async function _populateCorpusSourcesPicker() {
+  const wrap = document.getElementById('nrCorpusSourcesWrap');
+  const legacy = document.getElementById('nrCorpusLegacyWrap');
+  const grid = document.getElementById('nrCorpusSources');
+  if (!wrap || !grid) return;
+  try {
+    const resp = await api('/api/repos?role=corpus').catch(() => ({repos:[]}));
+    const rows = (resp.repos || []).filter(r => (r.roles || []).includes('corpus'));
+    if (!rows.length) {
+      wrap.style.display = 'none';
+      if (legacy) legacy.style.display = '';
+      grid.innerHTML = '';
+      return;
+    }
+    wrap.style.display = '';
+    if (legacy) legacy.style.display = 'none';   // multi-source supersedes legacy fields
+    grid.innerHTML = '';
+    rows.forEach(r => {
+      const ns = r.namespace || r.handle || '?';
+      const label = document.createElement('label');
+      label.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;min-width:0;';
+      label.innerHTML = `<input type="checkbox" class="nr-corpus-ns" value="${esc(ns)}" checked style="width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;"> <span style="font-weight:500;flex-shrink:0;">${esc(ns)}</span> <span style="color:var(--text-faint);font-size:10px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(r.repo_url||'')}</span>`;
+      grid.appendChild(label);
+    });
+  } catch (e) {
+    wrap.style.display = 'none';
+    if (legacy) legacy.style.display = '';
+  }
+}
+
+// Returns null when all sources are selected (server default = include all),
+// otherwise a list of namespaces. Also returns null in legacy single-source
+// mode (picker hidden).
+function _collectSelectedCorpusNamespaces() {
+  const wrap = document.getElementById('nrCorpusSourcesWrap');
+  if (!wrap || wrap.style.display === 'none') return null;
+  const boxes = Array.from(document.querySelectorAll('#nrCorpusSources .nr-corpus-ns'));
+  if (!boxes.length) return null;
+  const selected = boxes.filter(b => b.checked).map(b => b.value);
+  if (selected.length === boxes.length) return null;
+  return selected;
+}
+
+// Spec analog. Same null-means-all contract.
+function _collectSelectedSpecNamespaces() {
+  const wrap = document.getElementById('nrSpecSourcesWrap');
+  if (!wrap || wrap.style.display === 'none') return null;
+  const boxes = Array.from(document.querySelectorAll('#nrSpecSources .nr-spec-ns'));
+  if (!boxes.length) return null;
+  const selected = boxes.filter(b => b.checked).map(b => b.value);
+  if (selected.length === boxes.length) return null;
+  return selected;
+}
+
+// When the New Ingestion modal is opened with an explicit UC selection (Run a Scoping Set,
+// Test eval from a single UC, etc.), submitNewRun reads this to pass uc_handles
+// / uc_uuids through to the engine — engine-side filter scopes the run to
+// exactly these UCs instead of the whole directory. Cleared on close.
+let _pendingRunFilter = null;   // { handles: string[], uuids: string[], managed: string[] }
+let _pendingRunLineage = null;  // R2: { set_id?, set_name?, selection_mode: 'set'|'selection'|'individual'|'corpus' }
+const _selectedUCs = new Set(); // UUIDs of UCs checked in the list for batch ops
+let _lastVisibleUUIDs = [];      // UUIDs currently visible in the list (post-filter) — for Select-all
+// Select-all toggles the whole visible/filtered set: select all if any are unselected, else clear.
+function _toggleSelectAllUCs() {
+  const vis = _lastVisibleUUIDs;
+  if (!vis.length) { try { toast('No use cases to select', true); } catch {} return; }
+  const allSelected = vis.every(id => _selectedUCs.has(id));
+  if (allSelected) vis.forEach(id => _selectedUCs.delete(id));
+  else vis.forEach(id => _selectedUCs.add(id));
+  renderUCList();
+}
+
+// Apply a Scoping Set to the New Ingestion modal: sets _pendingRunFilter/_pendingRunLineage and
+// returns the {subpath, banner} to drive the corpus field + banner. Empty setId
+// = full corpus (no filter). Shared by the inline selector + openNewRun.
+let _runEstimate = null;   // cached {est_per_uc_seconds, is_default, buffer}
+async function _applySetToNewRun(setId) {
+  if (!setId) {
+    _pendingRunFilter = null;
+    _pendingRunLineage = { selection_mode: 'corpus' };
+    return { subpath: undefined, banner: null };
+  }
+  if (setId === '__stale__') {
+    // Synthetic "Stale / un-ingested" scope = UCs with no current evaluation (un-evaluated
+    // OR stale). Resolved from the latest-eval-per-UC read; engine-filtered to exactly these.
+    let needs = [];
+    try {
+      const r = await api('/api/results/uc-latest');
+      needs = (r.ucs || []).filter(u => !u.evaluated || u.stale).map(u => u.uc_uuid);
+    } catch (_) {}
+    _pendingRunFilter = { handles: [], uuids: needs.slice(), managed: needs.slice() };
+    _pendingRunLineage = { selection_mode: 'selection' };
+    return { subpath: undefined,
+             banner: `Stale / un-ingested — ${needs.length} use case${needs.length === 1 ? '' : 's'} needing evaluation · engine-filtered to exactly these.` };
+  }
+  if (setId === '__unassigned__') {
+    // Synthetic "Unassigned" scope = managed UCs in no Scoping Set. Resolve to a UC
+    // selection (engine-filtered to exactly these).
+    if (!(allUCs || []).length) { try { const r = await api('/api/use-cases'); allUCs = r.use_cases || []; } catch (_) {} }
+    const un = (allUCs || []).filter(u => !u.set_ids || !u.set_ids.length);
+    const uuids = un.map(u => u.uuid);
+    _pendingRunFilter = { handles: [], uuids: uuids.slice(), managed: uuids.slice() };
+    _pendingRunLineage = { selection_mode: 'selection' };
+    return { subpath: undefined,
+             banner: `Unassigned — ${uuids.length} use case${uuids.length === 1 ? '' : 's'} in no Scoping Set · engine-filtered to exactly these.` };
+  }
+  const set = (allSets || []).find(s => String(s.id) === String(setId));
+  try {
+    const setData = await api(`/api/sets/${setId}`);
+    const subpathInfo = await api(`/api/sets/${setId}/corpus-subpath`);
+    _pendingRunFilter = _filterFromSetMembers(setData.members || []);
+    _pendingRunLineage = { set_id: setId, set_name: set?.name, selection_mode: 'set' };  // raw id — Number('__all__') would be NaN
+    // Both kinds run: corpus UCs are engine-filtered in the corpus; managed UCs
+    // are fetched from the console API at run start (no push/promote needed).
+    const c = subpathInfo.corpus_count || 0, m = subpathInfo.managed_count || 0;
+    const ucCount = c + m;
+    // Suggest a "time allowed" (failsafe) from the data-driven per-UC estimate.
+    let estNote = '';
+    try {
+      if (!_runEstimate) _runEstimate = await api('/api/runs/estimate');
+      if (_runEstimate && ucCount > 0) {
+        const perUc = _runEstimate.est_per_uc_seconds || 1800;
+        const sec = ucCount * perUc + (_runEstimate.failsafe_buffer_seconds || 7200);
+        const taEl = document.getElementById('nrTimeAllowed');
+        if (taEl) taEl.value = (sec/3600).toFixed(1);
+        estNote = ` · est ~${(ucCount*perUc/3600).toFixed(1)}h (~${Math.round(perUc/60)}m/UC${_runEstimate.est_per_uc_is_default ? ', adjusts as runs complete' : ''})`;
+      }
+    } catch(_) {}
+    const bits = [];
+    if (m) bits.push(`${m} managed (fetched from API)`);
+    if (c) bits.push(`${c} corpus`);
+    const banner = `Running Set "${esc(set?.name || setId)}" — ${bits.join(' + ') || 'no UCs'} · engine-filtered to exactly these.${estNote}`;
+    return { subpath: subpathInfo.subpath || undefined, banner };
+  } catch(e) {
+    _pendingRunFilter = null; _pendingRunLineage = { selection_mode: 'corpus' };
+    return { subpath: undefined, banner: null };
+  }
+}
+function _populateNrSetSel(selectedId) {
+  const sel = document.getElementById('nrSetSel');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Full corpus (all corpus UCs, unfiltered)</option>' +
+    `<option value="__stale__"${String(selectedId)==='__stale__'?' selected':''}>Stale / un-ingested (use cases needing evaluation)</option>` +
+    `<option value="__unassigned__"${String(selectedId)==='__unassigned__'?' selected':''}>Unassigned (use cases in no Scoping Set)</option>` +
+    (allSets || []).map(s =>
+      `<option value="${s.id}"${String(s.id)===String(selectedId)?' selected':''}>${esc(s.name)}${s.is_default?' (default)':''}${s.member_count!=null?` — ${s.member_count} UC${s.member_count===1?'':'s'}`:''}</option>`
+    ).join('');
+  // Null-safe ('' = Full corpus); the synthetic set's id is the truthy
+  // '__all__' sentinel, so no falsy-0 special-casing is needed anymore.
+  sel.value = (selectedId !== null && selectedId !== undefined && selectedId !== '') ? String(selectedId) : '';
+}
+document.getElementById('nrSetSel')?.addEventListener('change', async function() {
+  const { subpath, banner } = await _applySetToNewRun(this.value);
+  const bannerEl = document.getElementById('newRunBanner');
+  if (banner) { bannerEl.innerHTML = banner; bannerEl.style.display = ''; } else { bannerEl.style.display = 'none'; }
+  await loadNewRunDefaults(subpath);
+});
+
+// Re-run an existing run: open New Ingestion pre-filled with the same Set (UC
+// selection) + category + a "Rerun:" name, for the operator to review + trigger.
+async function rerunRun(name) {
+  // Rerun must reproduce the original run regardless of UI state, list
+  // hydration, or Tekton PipelineRun pruning. Source of truth is the
+  // server-stored trigger payload (rerun-config); the modal does not open
+  // until it has loaded — never "defaults with a Rerun name".
+  let rc = null;
+  try { rc = await api(`/api/runs/${encodeURIComponent(name)}/rerun-config`); }
+  catch(e) { toast('Could not load the original ingestion configuration — not opening Re-ingest', true); return; }
+  const cfg = rc.config || null;            // exact RunTriggerIn payload (durable)
+  const P   = rc.params || (allRuns || []).find(x => x.name === name)?.params || {};
+  const sess = rc.session || {};
+  if (!cfg && !Object.keys(P).length) {
+    toast('Original configuration unavailable (pre-upgrade ingestion, PipelineRun pruned) — opening defaults', true);
+  }
+  let det = null;   // legacy fallback only: time-allowed lives in the payload now
+  if (!cfg) { try { det = await api(`/api/runs/${encodeURIComponent(name)}`); } catch(_) {} }
+
+  // UC scope: EXACT replay — handles/uuids/managed + subpath verbatim
+  // (re-deriving from the live Set diverged: normalized handles, '.' subpath,
+  // recomputed timeout). Set resolved for display/provenance only, including
+  // the synthetic "__all__" set whose lineage persists as set_id NULL.
+  const selMode = cfg?.selection_mode ?? sess.selection_mode ?? null;
+  const setName = cfg?.set_name ?? sess.set_name ?? null;
+  let rerunSetId = (selMode === 'set') ? (cfg?.set_id ?? sess.set_id ?? null) : null;
+  if (selMode === 'set' && rerunSetId == null && setName) {
+    if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
+    const byName = (allSets || []).find(s => s.name === setName);
+    if (byName) rerunSetId = byName.id;
+  }
+  let filter = null;
+  if (cfg) {
+    const f = { handles: cfg.uc_handles || [], uuids: cfg.uc_uuids || [],
+                managed: cfg.managed_uc_uuids || [] };
+    if (f.handles.length || f.uuids.length || f.managed.length) filter = f;
+  } else {
+    const f = {
+      handles: P['uc-handles']       ? P['uc-handles'].split(',')       : [],
+      uuids:   P['uc-uuids']         ? P['uc-uuids'].split(',')         : [],
+      managed: P['managed-uc-uuids'] ? P['managed-uc-uuids'].split(',') : [],
+    };
+    if (f.handles.length || f.uuids.length || f.managed.length) filter = f;
+  }
+  const lineage = { set_id: rerunSetId, set_name: setName,
+                    selection_mode: selMode || (filter ? 'selection' : 'corpus') };
+  const subpath = cfg ? (cfg.corpus_subpath || undefined) : (P['corpus-uc-subpath'] || undefined);
+  // Explicit subpath suppresses openNewRun's set re-application (the
+  // divergence source); _populateNrSetSel still shows the Scoping Set for context.
+  await openNewRun(undefined, subpath, filter, undefined, lineage);
+
+  const setVal = (id, v) => {
+    const el = document.getElementById(id);
+    if (el && v !== undefined && v !== null && v !== '') el.value = v;
+  };
+  const mode = cfg?.mode || P.mode;
+  if (mode) {
+    const m = document.getElementById('nrMode');
+    if (m) { m.value = mode; m.dispatchEvent(new Event('change')); }
+  }
+  setVal('nrSampleCount',   cfg ? cfg.sample_count        : P['sample-count']);
+  setVal('nrCorpusSubpath', cfg ? cfg.corpus_subpath      : P['corpus-uc-subpath']);
+  setVal('nrCorpusRepo',    cfg ? cfg.corpus_repo_url     : P['consumer-corpus-repo-url']);
+  setVal('nrCorpusBranch',  cfg ? cfg.corpus_repo_branch  : P['consumer-corpus-repo-branch']);
+  setVal('nrSpecRepo',      cfg ? cfg.spec_repo_url       : P['consumer-spec-repo-url']);
+  setVal('nrSpecBranch',    cfg ? cfg.spec_repo_branch    : P['consumer-spec-repo-branch']);
+  const halt = document.getElementById('nrHaltOnError');
+  if (halt) halt.checked = cfg ? !!cfg.halt_on_error : (P['halt-on-error'] === 'true');
+  // Model: select the registered model matching what actually ran.
+  const ep = cfg?.inference_endpoint || P['inference-endpoint'];
+  const mid = cfg?.inference_model || P['inference-model'];
+  if (ep && mid) {
+    const m = (_reviewModels || []).find(x => x.endpoint_url === ep && x.model_id === mid);
+    const sel = document.getElementById('nrModelSel');
+    if (m && sel && [...sel.options].some(o => o.value === String(m.id))) sel.value = String(m.id);
+  }
+  // Source-namespace narrowing (absent/null = all sources, leave defaults).
+  const restoreNs = (list, selector) => {
+    if (!list || !list.length) return;
+    const want = new Set(list);
+    document.querySelectorAll(selector).forEach(b => { b.checked = want.has(b.value); });
+  };
+  restoreNs(cfg ? cfg.corpus_namespaces : (P['corpus-namespaces'] ? P['corpus-namespaces'].split(',') : null),
+            '#nrCorpusSources .nr-corpus-ns');
+  restoreNs(cfg ? cfg.spec_namespaces : (P['spec-namespaces'] ? P['spec-namespaces'].split(',') : null),
+            '#nrSpecSources .nr-spec-ns');
+  // Failsafe time-allowed + session metadata.
+  const toSec = cfg?.time_allowed_seconds ?? det?.timeout_seconds;
+  if (toSec) setVal('nrTimeAllowed', String(+(toSec / 3600).toFixed(2)));
+  const nameEl = document.getElementById('nrSessionName');
+  if (nameEl) nameEl.value = `Rerun: ${sess.name || name}`;
+  setVal('nrDescription', cfg?.description ?? sess.description);
+  const cat = document.getElementById('nrCategory');
+  const catV = cfg?.category || sess.category;
+  if (cat && catV && [...cat.options].some(o => o.value === catV)) cat.value = catV;
+  const title = document.getElementById('newRunTitle');
+  if (title) title.textContent = 'Rerun';
+}
+
+async function openNewRun(banner, subpath, ucFilter, branchOverride, lineage) {
+  document.getElementById('newRunModal').classList.add('open');
+  document.getElementById('nrStatus').textContent = '';
+  document.getElementById('submitNewRun').disabled = false;
+  document.getElementById('newRunTitle').textContent = 'New ingestion';
+  document.getElementById('nrSessionName').value = '';
+  document.getElementById('nrDescription').value = '';
+  _pendingRunFilter = ucFilter || null;
+  _pendingRunLineage = lineage || null;
+  const bannerEl = document.getElementById('newRunBanner');
+
+  // Populate the inline Set selector. Reflect an explicit lineage Set; else,
+  // when opened plainly (no subpath/banner/filter), the project default Scoping Set;
+  // else none (custom UC filter, e.g. re-analyze a single UC).
+  if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
+  let effectiveSubpath = subpath;
+  let effectiveBanner = banner;
+  // ?? / == null (not ||): only true absence means "no set selected" — the
+  // synthetic set's id is the '__all__' string sentinel (always truthy).
+  let setForSel = lineage?.set_id ?? null;
+  if (subpath === undefined && !banner && !ucFilter && setForSel == null) {
+    const def = _getDefaultSet();
+    if (def) setForSel = def.id;
+  }
+  _populateNrSetSel(setForSel);
+  // Apply the Set (only when there's no explicit subpath/banner override) so the
+  // corpus field + filter + banner reflect it. Callers that pass their own
+  // subpath/banner (Run Set / re-analyze) keep those.
+  if (setForSel != null && subpath === undefined && !banner) {
+    const r = await _applySetToNewRun(setForSel);
+    if (r.subpath !== undefined) effectiveSubpath = r.subpath;
+    if (r.banner) effectiveBanner = r.banner;
+  }
+
+  if (effectiveBanner) { bannerEl.innerHTML = effectiveBanner; bannerEl.style.display = ''; }
+  else bannerEl.style.display = 'none';
+  await loadNewRunDefaults(effectiveSubpath);
+  if (branchOverride) {
+    const br = document.getElementById('nrCorpusBranch');
+    if (br) br.value = branchOverride;
+  }
+  loadRunCategories();
+  // Phase C of the infrastructure-confidence work: if the operator is about
+  // to run a known Set and the last few runs of that Scoping Set had UCs flagged with
+  // low or compromised infrastructure confidence, surface a pre-flight hint
+  // banner so they can switch to a long-context model BEFORE triggering.
+  try {
+    const sid = _pendingRunLineage?.set_id;
+    if (sid != null) {
+      const r = await api(`/api/runs/preflight-hint?set_id=${encodeURIComponent(sid)}`);
+      if (r && r.hint) {
+        const hintEl = document.getElementById('newRunPreflightHint') || (() => {
+          const h = document.createElement('div');
+          h.id = 'newRunPreflightHint';
+          h.style.cssText = 'margin:8px 0;padding:8px 12px;background:var(--accent-bg);border-left:3px solid var(--accent);font-size:11px;color:var(--text);border-radius:2px;';
+          document.querySelector('#newRunModal .modal-body').prepend(h);
+          return h;
+        })();
+        hintEl.innerHTML = `<strong>⚠ ${esc(r.hint.headline)}</strong><br>
+          <span style="color:var(--text-dim);font-size:11px;">${esc(r.hint.detail)}</span>`;
+        hintEl.style.display = '';
+      }
+    }
+  } catch(_) { /* hint is advisory; failures shouldn't block opening */ }
+}
+
+// Build {handles, uuids, managed} arrays from a Scoping Set's members[]. Corpus
+// members go to handles/uuids for the engine's corpus filter; managed
+// members go to `managed` and are fetched from the console API at run start.
+function _filterFromSetMembers(members) {
+  const handles = [], uuids = [], managed = [];
+  for (const m of members) {
+    if (m.uc_source === 'managed') {
+      managed.push(m.uc_uuid);
+    } else {
+      if (m.uc_handle) handles.push(m.uc_handle);
+      else if (m.uc_uuid) uuids.push(m.uc_uuid);
+    }
+  }
+  return (handles.length || uuids.length || managed.length)
+    ? {handles, uuids, managed} : null;
+}
+
+async function loadRunCategories() {
+  try {
+    const resp = await api('/api/runs/categories');
+    const sel = document.getElementById('nrCategory');
+    const prev = sel.value || 'ad-hoc';
+    sel.innerHTML = '';
+    (resp.categories || ['ad-hoc']).forEach(c => {
+      const o = document.createElement('option');
+      o.value = c; o.textContent = c;
+      sel.appendChild(o);
+    });
+    sel.value = prev;
+  } catch (e) {
+    // Endpoint might be unavailable; keep the hardcoded fallback option
+  }
+}
+
+function closeNewRun() {
+  document.getElementById('newRunModal').classList.remove('open');
+  _pendingRunFilter = null;
+  _pendingRunLineage = null;  // don't leak across modal openings
+}
+
+async function submitNewRun() {
+  const btn = document.getElementById('submitNewRun'), status = document.getElementById('nrStatus');
+  btn.disabled = true; status.textContent = 'submitting…';
+  const sc = document.getElementById('nrSampleCount').value.trim();
+  const nrResolved = _resolveEndpointModel('nrModelSel', 'nrLastModel');
+  let nrEndpoint = null, nrModelId = null;
+  if (nrResolved) {
+    if (nrResolved.model_config_id) {
+      const nrM = _reviewModels.find(r => r.id === nrResolved.model_config_id);
+      if (nrM) { nrEndpoint = nrM.endpoint_url; nrModelId = nrM.model_id; }
+    } else {
+      nrEndpoint = nrResolved.endpoint_url;
+      nrModelId = nrResolved.model_id;
+    }
+  }
+  const payload = {
+    mode:               document.getElementById('nrMode').value,
+    sample_count:       sc ? parseInt(sc) : null,
+    corpus_subpath:     document.getElementById('nrCorpusSubpath').value.trim() || null,
+    corpus_repo_url:    document.getElementById('nrCorpusRepo').value.trim() || null,
+    corpus_repo_branch: document.getElementById('nrCorpusBranch').value.trim() || null,
+    spec_repo_url:      document.getElementById('nrSpecRepo').value.trim() || null,
+    spec_repo_branch:   document.getElementById('nrSpecBranch').value.trim() || null,
+    inference_endpoint: nrEndpoint,
+    inference_model:    nrModelId,
+    halt_on_error:      document.getElementById('nrHaltOnError').checked,
+    name:               document.getElementById('nrSessionName').value.trim(),
+    description:        document.getElementById('nrDescription').value.trim(),
+    category:           document.getElementById('nrCategory').value || 'ad-hoc',
+    // Failsafe "time allowed" (hours → seconds). Blank = auto (server computes
+    // ETA + buffer from the data-driven per-UC estimate).
+    time_allowed_seconds: (function(){ const h = parseFloat(document.getElementById('nrTimeAllowed').value); return (h > 0) ? Math.round(h*3600) : null; })(),
+    // Optional engine-side UC filter — set by runSet / testRunUC. When
+    // present, engine processes only these UCs from within corpus_subpath.
+    uc_handles:         (_pendingRunFilter?.handles?.length ? _pendingRunFilter.handles : null),
+    uc_uuids:           (_pendingRunFilter?.uuids?.length   ? _pendingRunFilter.uuids   : null),
+    // Managed UCs are fetched from the console API by the engine at run
+    // start; lets reviewers test pre-promotion without pushing first.
+    managed_uc_uuids:   (_pendingRunFilter?.managed?.length ? _pendingRunFilter.managed : null),
+    // R2: lineage — which Set + selection mode produced this run.
+    set_id:             _pendingRunLineage?.set_id ?? null,
+    set_name:           _pendingRunLineage?.set_name || null,
+    selection_mode:     _pendingRunLineage?.selection_mode || (
+      _pendingRunFilter ? 'selection' : 'corpus'
+    ),
+    // ADR-007 / M11b: per-run corpus source filter. Null = all sources;
+    // a partial selection narrows the multi-source clone step in Tekton.
+    corpus_namespaces:  _collectSelectedCorpusNamespaces(),
+    // Spec analog. Soft enforcement: passed through to the engine as a
+    // focus hint; MCP itself still holds every spec namespace.
+    spec_namespaces:    _collectSelectedSpecNamespaces(),
+  };
+  try {
+    const resp = await api('/api/runs', {method:'POST', body:JSON.stringify(payload)});
+    const name = resp.run?.name || '?';
+    status.innerHTML = `<span style="color:var(--green)">triggered: ${esc(name)}</span>`;
+    toast(`Ingestion triggered: ${name}`);
+    // Navigate to the Runs tab and open this run's detail so the user can
+    // watch progress immediately. loadRuns() needs to finish first so the
+    // run shows up in allRuns before selectRun tries to find it.
+    setTimeout(async () => {
+      closeNewRun();
+      switchView('runs');
+      try { await loadRuns(); } catch(_) {}
+      if (name && name !== '?') selectRun(name);
+    }, 600);
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    toast('Trigger failed: ' + e.message, true); btn.disabled = false;
+  }
+}
+
+// ══════════════════════════ RESULTS ══════════════════════════
+
+async function loadResults() {
+  document.getElementById('resultList').innerHTML = '<div class="empty">loading…</div>';
+  try {
+    const resp = await api('/api/results');
+    allResults = resp.results || [];
+    document.getElementById('badgeResults').textContent = allResults.length;
+    _populateGlobalRunSel();
+    renderResultList();
+    if (!resp.available)
+      document.getElementById('resultList').innerHTML =
+        `<div class="empty">Workspace PVC not mounted.<br><small style="color:var(--text-faint)">${esc(resp.workspace_path||'')}</small></div>`;
+  } catch (e) {
+    document.getElementById('resultList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+  }
+}
+
+function renderResultList() {
+  const el = document.getElementById('resultList');
+  const filter = (document.getElementById('resultFilter').value||'').toLowerCase();
+  // Filter matches run_id, session name, description, or category
+  const filtered = allResults.filter(r => !filter
+    || (r.run_id||'').toLowerCase().includes(filter)
+    || (r.session_name||'').toLowerCase().includes(filter)
+    || (r.session_description||'').toLowerCase().includes(filter)
+    || (r.session_category||'').toLowerCase().includes(filter)
+  );
+  if (!filtered.length) { el.innerHTML = '<div class="empty">No results found.</div>'; return; }
+  el.innerHTML = '';
+  filtered.forEach(r => {
+    const item = document.createElement('div');
+    item.className = 'list-item' + (activeRunResultId === r.run_id ? ' active' : '');
+    const statusColor = r.failed > 0 ? 'var(--red)' : 'var(--green)';
+    const titleText = r.session_name || r.run_id;
+    item.innerHTML = `<div class="li-main">
+      <div class="li-title" title="${esc(r.run_id)}">${esc(titleText)}</div>
+      <div class="li-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.7;">${esc(r.run_id)}</div>
+      <div class="li-sub">
+        <span style="color:var(--text-dim)">${esc(r.mode||'?')}</span>
+        · <span style="color:${statusColor}">${r.successful}/${r.total_ucs} passed</span>
+        · ${esc(fmtTs(r.started_at))}
+      </div></div>`;
+    item.addEventListener('click', () => selectRunResult(r.run_id));
+    el.appendChild(item);
+  });
+}
+
+// The Results tab no longer has its own run list — it shows the current run's
+// analysis (run is picked once, in the masthead / Runs tab).
+function _showCurrentRunResults(){
+  // 3b: Results is scoped by UC/Set, not by run — show the latest eval per UC across the scope.
+  loadResultsScopeSel();
+  _showScopedResults();
+}
+
+// ── Shared "current Scoping Set" scope (uc-scoped-evaluation-design.md: Scope = a Scoping Set) ──
+// One app-wide scope drives Results, Cap Map, and Engineering. Selected in the masthead
+// (#globalScopeSel) next to Project; '' = all use cases. The per-view pickers are retired
+// in favour of this single shared context.
+let _activeScope = '';
+try { _activeScope = localStorage.getItem('davScope') || ''; } catch (_) {}
+let _curView = '';   // the active view name (set by switchView) — lets setScope refresh the right surface
+function scopeQuery() { return _activeScope ? '?set_id=' + encodeURIComponent(_activeScope) : ''; }
+function populateScopeSel() {
+  // NB: never call loadSets() here — loadSets() calls us back, which would recurse.
+  // Callers that need fresh data load sets first, then invoke this.
+  const sel = document.getElementById('globalScopeSel');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">All use cases</option>' +
+    '<option value="__unassigned__">Unassigned (no Scoping Set)</option>' +
+    (allSets || []).filter(s => typeof s.id === 'number')
+      .map(s => `<option value="${s.id}">⊞ ${esc(s.name)}</option>`).join('');
+  sel.value = _activeScope;
+}
+function setScope(v) {
+  _activeScope = v || '';
+  try { localStorage.setItem('davScope', _activeScope); } catch (_) {}
+  const sel = document.getElementById('globalScopeSel'); if (sel) sel.value = _activeScope;
+  // Refresh whichever scoped view is active + the freshness chip.
+  if (_curView === 'results') _showScopedResults();
+  else if (_curView === 'capmap') renderCapMap();
+  else if (_curView === 'review') { try { _rpUpdateScopeName(); _rpLoadCached(); } catch (_) {} }
+  else if (_curView === 'enhancement') { try { loadEnhancementWorkbench(); } catch (_) {} }
+  else if (_curView === 'engineering') { try { _loadEngCapMap(); } catch (_) {} }
+  try { loadFreshness(); } catch (_) {}
+  try { _persistUserSettings(); } catch (_) {}   // #129/sync: working context follows the user
+}
+document.getElementById('globalScopeSel')?.addEventListener('change', function () { setScope(this.value); });
+
+// ── Active CUSTOMER axis (matrix UI #130, slice 2b-i) — peer to Project/Scope ─────────
+// The other axis of the (customer × project) matrix. Filters customer-attributed surfaces
+// (today: the Use Cases list → UCs this customer requested) to the selected customer. Other
+// surfaces opt in via customerQuery() in later slices. Persists per-browser now; per-user (#129) later.
+let _activeCustomer = '';
+try { _activeCustomer = localStorage.getItem('davCustomer') || ''; } catch (_) {}
+function customerQuery() { return _activeCustomer ? 'customer_id=' + encodeURIComponent(_activeCustomer) : ''; }
+async function populateCustomerSel() {
+  const sel = document.getElementById('globalCustomerSel');
+  if (!sel) return;
+  let customers = [];
+  try { customers = (await api('/api/customers')).customers || []; } catch (_) {}
+  sel.innerHTML = '<option value="">All customers</option>' +
+    customers.map(c => `<option value="${c.id}">${esc(c.name)}${c.is_universal ? ' · internal' : ''}</option>`).join('');
+  sel.value = _activeCustomer;
+}
+function setCustomer(v) {
+  _activeCustomer = v || '';
+  try { localStorage.setItem('davCustomer', _activeCustomer); } catch (_) {}
+  const sel = document.getElementById('globalCustomerSel'); if (sel) sel.value = _activeCustomer;
+  if (_curView === 'usecases') { try { loadUCs(); } catch (_) {} }
+  try { _persistUserSettings(); } catch (_) {}   // #129/sync: working context follows the user
+}
+document.getElementById('globalCustomerSel')?.addEventListener('change', function () { setCustomer(this.value); });
+
+// UI lean slice 2: contextual masthead chrome. Scope (Scoping Set) and Customer
+// are FILTERS, not global context — they only do something on the views that
+// consume them. Show each chip only where it applies (standard adaptive-toolbar
+// pattern); hide it everywhere else so the masthead is Project + status + account
+// on the ~13 views that ignore them. This is contextual (filters for the current
+// surface), NOT nav reshuffling — the rail is unchanged.
+//   Scope  → set_id= on Results / Cap Map / Roadmap surfaces (scopeQuery()).
+//   Customer → customer_id= on the Use Cases list only (customerQuery(), 1 consumer).
+const _SCOPE_VIEWS    = new Set(['results', 'capmap', 'review', 'enhancement', 'engineering']);
+const _CUSTOMER_VIEWS = new Set(['usecases']);
+function _updateContextChrome(name) {
+  const sc = document.getElementById('scopeChip');
+  const cu = document.getElementById('customerChip');
+  if (sc) sc.style.display = _SCOPE_VIEWS.has(name) ? '' : 'none';
+  if (cu) cu.style.display = _CUSTOMER_VIEWS.has(name) ? '' : 'none';
+}
+
+// ── UC/Set-scoped results (uc-scoped-evaluation-design.md 3b) ──────────────────
+let _scopedUCs = [];
+function loadResultsScopeSel() {
+  // The local picker is retired — scope now lives in the masthead. Keep the masthead
+  // selector in sync (this is invoked when Results opens) and hide the old in-panel bar.
+  if (!(allSets || []).length) { try { loadSets(); } catch (_) {} }   // safe: loadSets→populateScopeSel no longer recurses
+  populateScopeSel();
+  const bar = document.getElementById('resultsScopeBar');
+  if (bar) bar.style.display = 'none';
+}
+function _verdictBadge(v) {
+  const map = { supported:['var(--green)','supported'], partially_supported:['var(--accent)','partial'],
+                not_supported:['var(--red)','not supported'], failed:['var(--red)','failed'] };
+  const [c, l] = map[v] || ['var(--text-faint)', v || '—'];
+  return `<span style="font-size:9px;color:${c};border:1px solid ${c}55;padding:0 5px;border-radius:2px;white-space:nowrap;">${esc(l)}</span>`;
+}
+function _renderScopedUCList() {
+  const el = document.getElementById('ucResultList');
+  if (!el) return;
+  if (!_scopedUCs.length) { el.innerHTML = '<div class="empty">No use cases in this scope.</div>'; return; }
+  // Honor the verdict filter (the scoped Results list — previously the filter was a no-op here
+  // because its handler only re-rendered the run-summary list).
+  const vf = (document.getElementById('ucVerdictFilter')?.value) || '';
+  const list = vf
+    ? _scopedUCs.filter(u => vf === 'failed' ? u.failed : (u.evaluated && u.verdict === vf))
+    : _scopedUCs;
+  if (!list.length) { el.innerHTML = '<div class="empty">No use cases match this filter.</div>'; return; }
+  el.innerHTML = list.map(u => `
+    <div class="list-item${activeUCResult === u.uc_uuid ? ' active' : ''}" style="cursor:pointer;"
+         onclick="selectScopedUC('${u.uc_uuid}', ${u.run_id ? `'${esc(u.run_id)}'` : 'null'})">
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(u.title || u.uc_handle || u.uc_uuid)}</span>
+        ${u.failed
+          ? `<span style="font-size:9px;color:var(--red);">✗ failed</span>${_phaseBadge(u.error_phase)}`
+          : (u.evaluated ? _verdictBadge(u.verdict) : '<span style="font-size:9px;color:var(--text-faint);">not evaluated</span>')}
+        ${u.stale ? '<span title="Edited since its last evaluation" style="font-size:9px;color:var(--amber,#d79a2b);">● stale</span>' : ''}
+      </div>
+    </div>`).join('');
+}
+async function _showScopedResults() {
+  const el = document.getElementById('ucResultList');
+  if (!el) return;
+  el.innerHTML = '<div class="empty">loading…</div>';
+  try {
+    const r = await api('/api/results/uc-latest' + scopeQuery());
+    _scopedUCs = r.ucs || [];
+    const hdr = document.getElementById('runResultsHeader');
+    if (hdr) {
+      hdr.style.display = '';
+      hdr.innerHTML = `<div style="font-size:12px;"><strong>${r.evaluated}/${r.total}</strong> use cases evaluated <span style="color:var(--text-faint);">· latest eval per UC (may span ingestions)</span></div>`;
+    }
+    _renderScopedUCList();
+    const p = document.getElementById('ucListPanel'); if (p) p.style.display = '';
+    _clearAnalysis('Select a use case.');
+  } catch (e) {
+    el.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+  }
+}
+async function selectScopedUC(ucUuid, runId) {
+  activeUCResult = ucUuid;
+  activeRunResultId = runId || null;   // the UC's latest-eval run, for the per-UC detail fetch
+  _renderScopedUCList();
+  _clearAnalysis('loading…');
+  // #121 mirror: a failed UC has no useful analysis to fetch — show WHY it failed + re-ingest.
+  const _m = (_scopedUCs || []).find(u => u.uc_uuid === ucUuid);
+  if (_m && _m.failed) {
+    document.getElementById('analysisDetail').innerHTML =
+      `<div class="detail-pane"><div style="padding:20px;max-width:640px;">
+        <div style="font-size:14px;font-weight:600;color:var(--red);margin-bottom:6px;">✗ Ingestion failed ${_phaseBadge(_m.error_phase)}</div>
+        <div style="font-size:12px;color:var(--text-dim);line-height:1.5;margin-bottom:14px;">${esc(_m.error_reason || 'No failure detail was recorded for this use case.')}</div>
+        <button class="btn primary btn-sm" onclick="_reingestUC('${esc(ucUuid)}')">↻ Re-ingest this use case</button>
+      </div></div>`;
+    return;
+  }
+  if (!runId) {
+    document.getElementById('analysisDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">This use case hasn’t been evaluated yet — trigger an ingestion in the Ingestions tab.</div></div>';
+    return;
+  }
+  try {
+    const data = await api(`/api/results/${encodeURIComponent(runId)}/uc/${encodeURIComponent(ucUuid)}`);
+    renderAnalysis(data, ucUuid);
+  } catch (e) {
+    _clearAnalysis();
+    document.getElementById('analysisDetail').innerHTML = `<div class="detail-pane"><div style="color:var(--red);padding:20px">${esc(e.message)}</div></div>`;
+  }
+}
+async function selectRunResult(runId) {
+  activeRunResultId = runId; activeUCResult = null;
+  // Keep the masthead run-status label in sync (whichever surface picked the run).
+  _populateGlobalRunSel();
+  renderResultList();
+  document.getElementById('ucResultList').innerHTML = '<div class="empty">loading…</div>';
+  document.getElementById('ucListPanel').style.display = '';
+  _clearAnalysis('Select a use case.');
+  // Show ingest button when a run is selected
+  document.getElementById('ingestResultBtn').style.display = '';
+  // Auto-ingest silently so arch review is available without a manual step.
+  // Ingest is idempotent (delete+reinsert), so safe to fire on every selection.
+  api(`/api/analysis/ingest/${encodeURIComponent(runId)}`, { method: 'POST' }).catch(() => {});
+  try {
+    const summary = await api(`/api/results/${encodeURIComponent(runId)}`);
+    activeRunSummary = summary;
+    renderRunSummaryHeader(summary);
+    renderUCResultList(summary);
+    _loadShallowness(runId);   // advisory grounding flags (#45a) — async, re-renders badges
+  } catch (e) {
+    document.getElementById('ucResultList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+  }
+}
+
+document.getElementById('ingestResultBtn').addEventListener('click', async () => {
+  if (!activeRunResultId) return;
+  const btn = document.getElementById('ingestResultBtn');
+  btn.disabled = true; btn.textContent = 'Ingesting…';
+  try {
+    const resp = await api(`/api/analysis/ingest/${encodeURIComponent(activeRunResultId)}`, { method: 'POST' });
+    toast(`Ingested ${resp.ingested_ucs} UCs, ${resp.ingested_gaps} gaps`);
+  } catch(e) {
+    toast('Ingest failed: ' + e.message, true);
+  } finally {
+    btn.disabled = false; btn.textContent = '↓ Ingest';
+  }
+});
+
+function renderRunSummaryHeader(s) {
+  // Renders into the persistent runResultsHeader strip — stays visible while
+  // the user drills into per-UC analysis. Compact one-row layout: title,
+  // mode, key counts, pass rate, wall time. The analysisDetail pane below
+  // gets the placeholder "← pick a use case" hint.
+  const pct = s.total_ucs > 0 ? Math.round((s.successful/s.total_ucs)*100) : 0;
+  const passColor = s.failed > 0 ? 'var(--red)' : 'var(--green)';
+  // Prefer the session name when available (joined onto allResults at /api/results)
+  const meta = (allResults || []).find(r => r.run_id === s.run_id) || {};
+  const title = meta.session_name || s.run_id;
+  const header = document.getElementById('runResultsHeader');
+  // R2: lineage line — Set + selection mode + (if any) the session name.
+  // Renders when at least one is populated; suppressed for unannotated runs.
+  const modeLabels = {set:'Set', selection:'Selection', individual:'Individual UC', corpus:'Full corpus'};
+  const lineageBits = [];
+  if (s.set_name) lineageBits.push(`<span style="cursor:pointer;color:var(--accent);" title="Filter UC tab to this Scoping Set" onclick="switchView('usecases');setTimeout(()=>selectSet(${s.set_id}),100);">⊞ ${esc(s.set_name)}</span>`);
+  if (s.selection_mode) lineageBits.push(`<span style="color:var(--text-faint);">${esc(modeLabels[s.selection_mode] || s.selection_mode)}</span>`);
+  const lineageRow = lineageBits.length
+    ? `<div style="font-size:11px;margin-top:6px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;"><span style="color:var(--text-faint);">Lineage:</span>${lineageBits.join('<span style="color:var(--border-bright);">·</span>')}</div>`
+    : '';
+  header.innerHTML = `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+      <div style="min-width:0;flex:1;">
+        <div style="font-family:var(--serif);font-size:14px;line-height:1.25;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(s.run_id)}">${esc(title)}</div>
+        <div style="font-family:var(--mono,monospace);font-size:10px;color:var(--text-faint);margin-top:2px;">${esc(s.run_id)} · ${esc(s.mode || '?')}</div>
+      </div>
+      <div style="display:flex;gap:14px;align-items:baseline;font-size:11px;flex-wrap:wrap;">
+        <span><strong style="color:${passColor};font-size:13px;">${s.successful}/${s.total_ucs}</strong> <span style="color:var(--text-faint);">UCs (${pct}%)</span></span>
+        ${s.failed > 0 ? `<span style="color:var(--red);">${s.failed} failed</span>` : ''}
+        <span style="color:var(--text-faint);">${s.total_samples || 0} samples</span>
+        <span style="color:var(--text-faint);">⏱ ${s.runner_total_seconds ? s.runner_total_seconds+'s' : '—'}</span>
+        <span style="color:var(--text-faint);">${esc(fmtTs(s.finished_at || s.started_at))}</span>
+      </div>
+    </div>
+    ${lineageRow}`;
+  header.style.display = '';
+  // Clear the per-UC area to its empty state — header stays
+  const bar = document.getElementById('analysisActionBar'); bar.innerHTML=''; bar.style.display='none';
+  document.getElementById('analysisDetail').innerHTML =
+    '<div class="detail-pane"><div class="detail-empty">← Select a use case to view its analysis.</div></div>';
+}
+
+// Order in which verdict groups render (top → bottom). 'failed' = stage-2
+// crash; 'unknown' = no verdict reported.
+const UC_VERDICT_GROUPS = [
+  ['not_supported',       'Not supported'],
+  ['partially_supported', 'Partial'],
+  ['supported',           'Supported'],
+  ['failed',              'Failed (errors)'],
+  ['unknown',             'Unknown'],
+];
+
+function _ucBucketKey(u) {
+  if (u.status === 'failed') return 'failed';
+  return u.verdict || 'unknown';
+}
+
+// Extract the category and display-label from a UC handle.
+// Handle convention: <prefix>/<category>/<descriptor>  (e.g. test/standard/vm-provision-happy)
+// When grouped by category the category segment is surfaced as the group header
+// and stripped from the displayed label so the row stays compact.
+function _ucHandleParts(handle) {
+  if (!handle) return { category: null, display: handle || '' };
+  const parts = handle.split('/');
+  if (parts.length >= 3) {
+    // Skip the first segment (conventional prefix like "test"), take next as category.
+    return { category: parts[1], display: parts.slice(2).join('/') };
+  }
+  if (parts.length === 2) {
+    return { category: parts[0], display: parts[1] };
+  }
+  return { category: null, display: handle };
+}
+
+async function _loadShallowness(runId) {
+  // Advisory per-UC grounding signal (#45a). Fetches /api/runs/{id}/shallowness
+  // and re-renders the UC list so thin-but-successful analyses get a badge.
+  _rdShallowByUuid = {}; _rdShallowSummary = null;
+  try {
+    const sh = await api(`/api/runs/${encodeURIComponent(runId)}/shallowness`);
+    (sh.ucs || []).forEach(u => { if (u.uc_uuid) _rdShallowByUuid[u.uc_uuid] = u; });
+    _rdShallowSummary = sh;
+  } catch (e) { /* advisory — stay silent when unavailable */ }
+  if (activeRunResultId === runId && activeRunSummary) {
+    renderUCResultList(activeRunSummary);
+  }
+}
+
+function _ucRowEl(u, { stripCategory = false } = {}) {
+  const item = document.createElement('div');
+  item.className = 'uc-row' + (activeUCResult===u.uc_uuid ? ' active' : '');
+  const vClass = u.status==='failed' ? 'verdict-error' : verdictClass(u.verdict);
+  const vLabel = u.status==='failed' ? 'failed'
+    : (u.verdict||'?').replace(/_/g,' ').replace('partially supported','partial').replace('not supported','not supp.');
+  const rawHandle = u.uc_handle || u.uc_uuid;
+  const displayHandle = stripCategory ? _ucHandleParts(rawHandle).display : rawHandle;
+  // R2: lifecycle_state_at_run badge — only shown when the UC was managed at
+  // run time. Color-coded so reviewers see at a glance which results came
+  // from pre-promotion vs approved UCs.
+  let stateBadge = '';
+  if (u.lifecycle_state_at_run) {
+    const stateColors = { draft:'var(--text-faint)', ready:'var(--blue)', in_review:'var(--accent)', approved:'var(--green)', deprecated:'var(--red)' };
+    const c = stateColors[u.lifecycle_state_at_run] || 'var(--text-faint)';
+    stateBadge = `<span style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;" title="UC lifecycle state when this ingestion was triggered">${esc(u.lifecycle_state_at_run)}</span>`;
+  }
+  // Advisory grounding flag (#45a): a thin-but-successful analysis.
+  let shallowBadge = '';
+  const _sh = _rdShallowByUuid[u.uc_uuid];
+  if (_sh && _sh.shallow) {
+    const _r = esc((_sh.reasons || []).join('; '));
+    shallowBadge = `<span style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;color:#d79a3a;border:1px solid #d79a3a;padding:0 4px;border-radius:2px;flex-shrink:0;" title="Thin grounding — ${_r}">⚠ thin</span>`;
+  }
+  // #121 mirror: failure reason/phase on a failed UC (hover for the full reason).
+  let failBadge = '';
+  if (u.status === 'failed') {
+    const phLabel = u.error_phase === 'not_emitted' ? 'dropped' : (u.error_phase || 'failed');
+    failBadge = `<span title="${esc(u.error_reason || 'The engine reported a failure for this use case.')}" style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;color:var(--red);border:1px solid var(--red);padding:0 4px;border-radius:2px;flex-shrink:0;">✗ ${esc(phLabel)}</span>`;
+  }
+  item.innerHTML = `
+    <span class="${vClass}" style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;flex-shrink:0;width:52px;padding-top:1px">${esc(vLabel)}</span>
+    <span class="uc-handle">${esc(displayHandle)}</span>
+    ${stateBadge}
+    ${failBadge}
+    ${shallowBadge}
+    <span class="uc-time">${u.wall_time_seconds ? u.wall_time_seconds+'s' : ''}</span>`;
+  item.addEventListener('click', () => selectUCResult(u.uc_uuid));
+  return item;
+}
+
+function _renderGrouped(el, items, keyFn, labelFn, storagePrefix, rowOpts = {}) {
+  const buckets = new Map();
+  const order = [];
+  for (const u of items) {
+    const k = keyFn(u);
+    if (!buckets.has(k)) { buckets.set(k, []); order.push(k); }
+    buckets.get(k).push(u);
+  }
+  for (const key of order) {
+    const groupItems = buckets.get(key);
+    const groupEl = document.createElement('div');
+    groupEl.className = 'uc-group';
+    const storKey = storagePrefix + key;
+    try {
+      if (localStorage.getItem('ucGroupCollapsed:' + storKey) === '1') groupEl.classList.add('collapsed');
+    } catch(e) {}
+    const header = document.createElement('div');
+    header.className = 'uc-group-header';
+    header.innerHTML = `<span>${esc(labelFn(key))}</span><span class="badge">${groupItems.length}</span>`;
+    header.addEventListener('click', () => {
+      groupEl.classList.toggle('collapsed');
+      try { localStorage.setItem('ucGroupCollapsed:'+storKey, groupEl.classList.contains('collapsed') ? '1' : '0'); } catch(e) {}
+    });
+    groupEl.appendChild(header);
+    const body = document.createElement('div');
+    body.className = 'uc-group-body';
+    groupItems.forEach(u => body.appendChild(_ucRowEl(u, rowOpts)));
+    groupEl.appendChild(body);
+    el.appendChild(groupEl);
+  }
+}
+
+function renderUCResultList(summary) {
+  const el = document.getElementById('ucResultList');
+  const vFilter = document.getElementById('ucVerdictFilter').value;
+  const groupBy  = document.getElementById('ucGroupBy').value;  // '' | 'verdict' | 'category'
+  const ucs = summary.ucs || [];
+  const filtered = vFilter
+    ? ucs.filter(u => vFilter==='failed' ? u.status==='failed' : u.verdict===vFilter)
+    : ucs;
+  if (!filtered.length) { el.innerHTML = '<div class="empty">No use cases match.</div>'; return; }
+  el.innerHTML = '';
+
+  if (groupBy === 'verdict') {
+    // Fixed-order verdict buckets
+    const buckets = {};
+    for (const u of filtered) {
+      const k = _ucBucketKey(u);
+      (buckets[k] = buckets[k] || []).push(u);
+    }
+    UC_VERDICT_GROUPS.forEach(([key, label]) => {
+      const items = buckets[key];
+      if (!items || !items.length) return;
+      const groupEl = document.createElement('div');
+      groupEl.className = 'uc-group';
+      try {
+        if (localStorage.getItem('ucGroupCollapsed:v:' + key) === '1') groupEl.classList.add('collapsed');
+      } catch(e) {}
+      const header = document.createElement('div');
+      header.className = 'uc-group-header';
+      header.innerHTML = `<span>${esc(label)}</span><span class="badge">${items.length}</span>`;
+      header.addEventListener('click', () => {
+        groupEl.classList.toggle('collapsed');
+        try { localStorage.setItem('ucGroupCollapsed:v:'+key, groupEl.classList.contains('collapsed') ? '1' : '0'); } catch(e) {}
+      });
+      groupEl.appendChild(header);
+      const body = document.createElement('div');
+      body.className = 'uc-group-body';
+      items.forEach(u => body.appendChild(_ucRowEl(u)));
+      groupEl.appendChild(body);
+      el.appendChild(groupEl);
+    });
+    return;
+  }
+
+  if (groupBy === 'category') {
+    // Group by UC category (2nd segment of handle), alpha-sorted groups.
+    // Within each group strip the category prefix from the displayed handle.
+    const catOf = u => _ucHandleParts(u.uc_handle || u.uc_uuid).category || '(uncategorized)';
+    const sorted = [...filtered].sort((a, b) => catOf(a).localeCompare(catOf(b)));
+    _renderGrouped(
+      el, sorted,
+      u => catOf(u),
+      k => k,
+      'cat:',
+      { stripCategory: true },
+    );
+    return;
+  }
+
+  // Flat list
+  filtered.forEach(u => el.appendChild(_ucRowEl(u)));
+}
+
+async function selectUCResult(ucUuid) {
+  activeUCResult = ucUuid; renderUCResultList(activeRunSummary);
+  _clearAnalysis('loading…');
+  try {
+    const data = await api(`/api/results/${encodeURIComponent(activeRunResultId)}/uc/${encodeURIComponent(ucUuid)}`);
+    renderAnalysis(data, ucUuid);
+  } catch (e) {
+    _clearAnalysis(); document.getElementById('analysisDetail').innerHTML = `<div class="detail-pane"><div style="color:var(--red);padding:20px">${esc(e.message)}</div></div>`;
+  }
+}
+
+// ══════════════════════════ COMPARISON ══════════════════════════
+
+let compareData = null;
+let cmpMode = false;
+let cmpFilter = 'all';
+let activeCompareUCUuid = null;
+
+function _enterCompareMode() {
+  cmpMode = true;
+  document.getElementById('ucNormalControls').style.display = 'none';
+  document.getElementById('cmpFilterRow').style.display = 'flex';
+  document.getElementById('ucPanelTitle').textContent = 'Comparison';
+  document.getElementById('cmpToggleBtn').style.color = 'var(--accent)';
+}
+
+function _exitCompareMode() {
+  cmpMode = false; compareData = null; activeCompareUCUuid = null; cmpFilter = 'all';
+  document.getElementById('ucNormalControls').style.display = '';
+  document.getElementById('cmpFilterRow').style.display = 'none';
+  document.getElementById('cmpPickerRow').style.display = 'none';
+  document.getElementById('ucPanelTitle').textContent = 'Use Cases';
+  document.getElementById('cmpToggleBtn').style.color = '';
+  if (activeRunSummary) renderUCResultList(activeRunSummary);
+  else document.getElementById('ucResultList').innerHTML = '<div class="empty">select an ingestion</div>';
+  _clearAnalysis();
+}
+
+document.getElementById('cmpToggleBtn').addEventListener('click', () => {
+  if (cmpMode) { _exitCompareMode(); return; }
+  if (!activeRunResultId) return;
+  // Populate run B picker with all other result runs
+  const sel = document.getElementById('cmpRunBSelect');
+  sel.innerHTML = '<option value="">— pick an ingestion —</option>';
+  allResults.forEach(r => {
+    if (r.run_id === activeRunResultId) return;
+    const opt = document.createElement('option');
+    opt.value = r.run_id;
+    opt.textContent = r.session_name
+      ? `${r.session_name} (${r.run_id.slice(0,16)}…)`
+      : r.run_id;
+    opt.title = r.run_id;
+    sel.appendChild(opt);
+  });
+  const activeRun = allResults.find(r => r.run_id === activeRunResultId);
+  document.getElementById('cmpRunALabel').textContent = activeRun?.session_name || activeRunResultId;
+  document.getElementById('cmpRunALabel').title = activeRunResultId;
+  document.getElementById('cmpPickerRow').style.display = 'flex';
+});
+
+document.getElementById('cmpCancelBtn').addEventListener('click', () => {
+  document.getElementById('cmpPickerRow').style.display = 'none';
+  if (cmpMode) _exitCompareMode();
+});
+
+document.getElementById('cmpRunBtn').addEventListener('click', async () => {
+  const runB = document.getElementById('cmpRunBSelect').value;
+  if (!runB) return;
+  document.getElementById('cmpPickerRow').style.display = 'none';
+  _enterCompareMode();
+  document.getElementById('ucResultList').innerHTML = '<div class="empty">loading comparison…</div>';
+  _clearAnalysis('Loading…');
+  try {
+    compareData = await api(`/api/results/compare?a=${encodeURIComponent(activeRunResultId)}&b=${encodeURIComponent(runB)}`);
+    renderCompareHeader();
+    renderCompareList();
+  } catch(e) {
+    document.getElementById('ucResultList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+  }
+});
+
+document.querySelectorAll('.cmp-filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.cmp-filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    cmpFilter = btn.dataset.cf;
+    if (compareData) renderCompareList();
+  });
+});
+
+function renderCompareHeader() {
+  if (!compareData) return;
+  const d = compareData.delta;
+  const sa = compareData.summary_a, sb = compareData.summary_b;
+  const dtSign = (v) => v === null ? '—' : (v > 0 ? '+' + v : '' + v);
+  const el = document.getElementById('analysisDetail');
+  el.innerHTML = `<div class="detail-pane">
+    <div class="detail-title">Ingestion <em>comparison</em></div>
+    <div class="detail-sub">${esc(compareData.run_a)} → ${esc(compareData.run_b)}</div>
+    <div class="stat-row">
+      <div class="stat-box"><div class="sv">${d.verdict_changes}</div><div class="sl">Verdict changes</div></div>
+      <div class="stat-box ${d.successful > 0 ? 'green' : (d.successful < 0 ? 'red' : '')}">
+        <div class="sv">${dtSign(d.successful)}</div><div class="sl">Successes</div></div>
+      <div class="stat-box ${d.failed < 0 ? 'green' : (d.failed > 0 ? 'red' : '')}">
+        <div class="sv">${dtSign(d.failed)}</div><div class="sl">Failures</div></div>
+      ${d.wall_time_seconds !== null ? `<div class="stat-box"><div class="sv" style="font-size:20px">${dtSign(d.wall_time_seconds)}s</div><div class="sl">Wall time Δ</div></div>` : ''}
+    </div>
+    <div class="cmp-side-grid">
+      <div class="cmp-side">
+        <div class="cmp-side-label">A · ${esc(compareData.run_a)}</div>
+        <div class="kv-grid">
+          <div class="kv-label">UCs</div><div class="kv-val">${sa.total_ucs ?? '—'}</div>
+          <div class="kv-label">Succeeded</div><div class="kv-val">${sa.successful ?? '—'}</div>
+          <div class="kv-label">Failed</div><div class="kv-val">${sa.failed ?? '—'}</div>
+          <div class="kv-label">Wall time</div><div class="kv-val">${sa.runner_total_seconds != null ? sa.runner_total_seconds+'s' : '—'}</div>
+        </div>
+      </div>
+      <div class="cmp-side">
+        <div class="cmp-side-label">B · ${esc(compareData.run_b)}</div>
+        <div class="kv-grid">
+          <div class="kv-label">UCs</div><div class="kv-val">${sb.total_ucs ?? '—'}</div>
+          <div class="kv-label">Succeeded</div><div class="kv-val">${sb.successful ?? '—'}</div>
+          <div class="kv-label">Failed</div><div class="kv-val">${sb.failed ?? '—'}</div>
+          <div class="kv-label">Wall time</div><div class="kv-val">${sb.runner_total_seconds != null ? sb.runner_total_seconds+'s' : '—'}</div>
+        </div>
+      </div>
+    </div>
+    <div style="color:var(--text-faint);font-family:var(--serif);font-style:italic;font-size:13px;margin-top:4px;">
+      ← Select a use case to view its verdict diff.
+    </div>
+  </div>`;
+}
+
+function _verdictArrow(va, vb) {
+  if (!va && !vb) return '';
+  if (!va) return `<span class="cmp-only-b">+ ${esc(vb)}</span>`;
+  if (!vb) return `<span class="cmp-only-a">− ${esc(va)}</span>`;
+  if (va === vb) return `<span style="color:var(--text-faint)">${esc(vb.replace(/_/g,' '))}</span>`;
+  const aClass = verdictClass(va), bClass = verdictClass(vb);
+  return `<span class="${aClass}" style="font-size:9px">${esc(va.replace(/_/g,' '))}</span>
+          <span style="color:var(--text-faint);font-size:9px">→</span>
+          <span class="${bClass}" style="font-size:9px">${esc(vb.replace(/_/g,' '))}</span>`;
+}
+
+function renderCompareList() {
+  if (!compareData) return;
+  const el = document.getElementById('ucResultList');
+  let diffs = compareData.uc_diffs || [];
+  if (cmpFilter === 'changed') diffs = diffs.filter(d => d.changed || d.only_a || d.only_b);
+  else if (cmpFilter === 'only_a') diffs = diffs.filter(d => d.only_a);
+  else if (cmpFilter === 'only_b') diffs = diffs.filter(d => d.only_b);
+  // Sort: changed first, then by handle
+  diffs = [...diffs].sort((a, b) => {
+    const ac = a.changed || a.only_a || a.only_b ? 0 : 1;
+    const bc = b.changed || b.only_a || b.only_b ? 0 : 1;
+    if (ac !== bc) return ac - bc;
+    return (a.uc_handle || a.uc_uuid || '').localeCompare(b.uc_handle || b.uc_uuid || '');
+  });
+  if (!diffs.length) { el.innerHTML = '<div class="empty">No diffs match filter.</div>'; return; }
+  el.innerHTML = '';
+  diffs.forEach(d => {
+    const row = document.createElement('div');
+    const changed = d.changed || d.only_a || d.only_b;
+    const isActive = activeCompareUCUuid === d.uc_uuid;
+    row.className = 'cmp-row' + (changed ? ' changed' : '') + (isActive ? ' active' : '');
+    row.innerHTML = `
+      <span class="cmp-handle">${esc(d.uc_handle || d.uc_uuid)}</span>
+      <span class="cmp-arrow">${_verdictArrow(d.verdict_a, d.verdict_b)}</span>`;
+    row.addEventListener('click', () => selectCompareUC(d));
+    el.appendChild(row);
+  });
+}
+
+function selectCompareUC(diff) {
+  activeCompareUCUuid = diff.uc_uuid;
+  renderCompareList();
+  const bar = document.getElementById('analysisActionBar'); bar.innerHTML=''; bar.style.display='none';
+  const el = document.getElementById('analysisDetail');
+  const va = diff.verdict_a, vb = diff.verdict_b;
+  const gapsAdded   = diff.gaps_added || [];
+  const gapsRemoved = diff.gaps_removed || [];
+  let gapHtml = '';
+  if (gapsAdded.length || gapsRemoved.length) {
+    gapHtml = '<div class="detail-section"><div class="detail-section-title">Gap changes</div><div class="cmp-gap-list">';
+    gapsAdded.forEach(g => { gapHtml += `<div class="added">+ ${esc(g)}</div>`; });
+    gapsRemoved.forEach(g => { gapHtml += `<div class="removed">− ${esc(g)}</div>`; });
+    gapHtml += '</div></div>';
+  }
+  el.innerHTML = `<div class="detail-pane">
+    <div class="detail-title">Verdict <em>diff</em></div>
+    <div class="detail-sub">${esc(diff.uc_handle || diff.uc_uuid)}</div>
+    <div class="cmp-side-grid" style="margin-bottom:16px;">
+      <div class="cmp-side">
+        <div class="cmp-side-label">A</div>
+        ${diff.only_a ? '<span class="cmp-only-a">only in ingestion A</span>' : ''}
+        ${!diff.only_a ? `<span class="${verdictClass(va)}" style="font-size:18px;font-family:var(--serif);font-weight:300">${esc((va||'—').replace(/_/g,' '))}</span>` : ''}
+        ${diff.wall_time_a != null ? `<div style="font-size:10px;color:var(--text-faint);margin-top:6px">${diff.wall_time_a}s</div>` : ''}
+      </div>
+      <div class="cmp-side">
+        <div class="cmp-side-label">B</div>
+        ${diff.only_b ? '<span class="cmp-only-b">only in ingestion B</span>' : ''}
+        ${!diff.only_b ? `<span class="${verdictClass(vb)}" style="font-size:18px;font-family:var(--serif);font-weight:300">${esc((vb||'—').replace(/_/g,' '))}</span>` : ''}
+        ${diff.wall_time_b != null ? `<div style="font-size:10px;color:var(--text-faint);margin-top:6px">${diff.wall_time_b}s</div>` : ''}
+      </div>
+    </div>
+    ${gapHtml}
+    ${!diff.changed && !diff.only_a && !diff.only_b ? '<div style="color:var(--text-faint);font-style:italic;font-size:12px;">Verdict unchanged between ingestions.</div>' : ''}
+  </div>`;
+}
+
+function _clearAnalysis(msg) {
+  _lastAnalysisData = null;
+  const bar = document.getElementById('analysisActionBar');
+  bar.innerHTML = ''; bar.style.display = 'none';
+  document.getElementById('analysisDetail').innerHTML =
+    `<div class="detail-pane"><div class="detail-empty">${msg||'Select a use case to view its analysis.'}</div></div>`;
+}
+
+function _fmtSec(sec) {
+  if (!sec) return '—';
+  const s = Math.round(sec);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), r = s % 60;
+  return r ? `${m}m ${r}s` : `${m}m`;
+}
+
+function _collapsibleAnalysisSection(title, rowsHtml) {
+  if (!rowsHtml.length) return '';
+  const id = 'cb-' + Math.random().toString(36).slice(2,8);
+  return `<div class="detail-section"><div class="detail-section-title">${esc(title)} (${rowsHtml.length})</div>
+    <div class="analysis-block">
+      <button class="collapsible-hdr" onclick="document.getElementById('${id}').classList.toggle('open');this.querySelector('.chev').textContent=document.getElementById('${id}').classList.contains('open')?'▲':'▼'">
+        <span>Show ${rowsHtml.length} item${rowsHtml.length===1?'':'s'}</span><span class="chev">▼</span>
+      </button>
+      <div class="collapsible-body-inner" id="${id}">${rowsHtml.join('')}</div>
+    </div></div>`;
+}
+
+function _specRefChips(refs) {
+  return (refs||[]).map(r =>
+    `<button class="spec-ref-chip" onclick="_copySpecRef('${esc(r)}')" title="Click to copy spec ref path">${esc(r)}</button>`
+  ).join('');
+}
+
+function _copySpecRef(ref) {
+  navigator.clipboard.writeText(ref).catch(()=>{});
+  toast('Copied: ' + ref);
+}
+
+function _copyGapReport() {
+  if (!_lastAnalysisData) return;
+  const data    = _lastAnalysisData;
+  const summary = data.summary || {};
+  const gaps    = data.gaps_identified || [];
+  const ucEntry = (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===activeUCResult);
+  const handle  = ucEntry?.uc_handle || activeUCResult || '';
+  let md = `## DAV Analysis: ${handle}\n\n`;
+  md += `**Verdict:** ${(summary.verdict||'unknown').replace(/_/g,' ')}  \n`;
+  if (summary.overall_confidence) {
+    const conf = typeof summary.overall_confidence==='object' ? summary.overall_confidence.label : summary.overall_confidence;
+    md += `**Confidence:** ${conf}  \n`;
+  }
+  if (summary.notes) md += `\n**Assessment:**\n${summary.notes}\n`;
+  if (gaps.length) {
+    md += `\n### Gaps (${gaps.length})\n`;
+    gaps.forEach((g,i) => {
+      const sev = typeof g.severity==='object' ? g.severity.label : (g.severity||'unknown');
+      md += `\n#### ${i+1}. [${sev.toUpperCase()}] ${g.description}\n`;
+      if (g.rationale) md += `\n**Rationale:** ${g.rationale}\n`;
+      if (g.recommendation) md += `\n**Recommendation:** ${g.recommendation}\n`;
+      const refs = g.spec_refs_consulted||[];
+      if (refs.length) md += `\n**Spec refs:** ${refs.join(', ')}\n`;
+      if (g.spec_refs_missing) md += `\n**Missing from spec:** ${g.spec_refs_missing}\n`;
+    });
+  }
+  navigator.clipboard.writeText(md).catch(()=>{});
+  toast('Gap report copied to clipboard');
+}
+
+function _reanalyzeUC(ucUuid, ucHandle) {
+  openNewRun(`Re-analyze: ${ucHandle||ucUuid}`, null);
+}
+
+function renderAnalysis(data, ucUuid) {
+  _lastAnalysisData = data;
+  const el = document.getElementById('analysisDetail');
+
+  const actionBar = document.getElementById('analysisActionBar');
+  if (data._source === 'failure') {
+    actionBar.innerHTML = `<div class="analysis-action-bar">
+        <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','')">↺ Re-analyze</button>
+      </div>`;
+    actionBar.style.display = '';
+    el.innerHTML = `<div class="detail-pane">
+      <div class="detail-title" style="color:var(--red)">Analysis <em>failed</em></div>
+      <div class="detail-sub">${esc(ucUuid)}</div>
+      <div class="analysis-block"><div class="analysis-block-header">Error</div>
+        <div class="analysis-block-body"><pre style="white-space:pre-wrap;word-break:break-word">${esc(data.error)}</pre></div>
+      </div></div>`; return;
+  }
+  if (data._source === 'explore') { renderExploreAnalysis(data, ucUuid); return; }
+
+  const summary = data.summary || {};
+  const verdict = summary.verdict || '?';
+  const conf    = typeof summary.overall_confidence==='object' ? summary.overall_confidence.label : (summary.overall_confidence||'?');
+  const notes   = summary.notes || '';
+  const meta    = data.analysis_metadata || {};
+  const sa      = data.sample_annotations;
+  const gaps    = data.gaps_identified || [];
+  const comps   = data.components_required || [];
+  const dm      = data.data_model_touched || [];
+  const caps    = data.capabilities_invoked || [];
+  const pols    = data.policy_modes_required || [];
+
+  const ucEntry  = (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid);
+  const ucHandle = ucEntry?.uc_handle || ucUuid;
+
+  actionBar.innerHTML = `<div class="analysis-action-bar">
+    <button class="btn ghost btn-sm" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(ucUuid)}'),200)" title="Open this UC in the editor">✏ Edit UC</button>
+    <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')" title="Open ingestion trigger pre-filled for re-analysis">↺ Re-analyze</button>
+    <button class="btn ghost btn-sm" onclick="_copyGapReport()" title="Copy gap report as markdown">⧉ Copy report</button>
+    <button class="btn ghost btn-sm" onclick="openReviewPane('uc','${esc(ucUuid)}','review')" title="Get an architectural review of these findings">Arch Review</button>
+    <button class="btn ghost btn-sm" onclick="openReviewPane('uc','${esc(ucUuid)}','enhance')" title="Plan enhancements to address these findings">Enhancements</button>
+    <span style="flex:1"></span>
+    <span style="font-size:10px;color:var(--text-faint)" title="${esc(ucUuid)}">${esc(ucUuid.slice(0,8))}…</span>
+  </div>`;
+  actionBar.style.display = '';
+
+  let html = `<div class="detail-pane">
+    <div class="detail-title">${esc(ucHandle)}</div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap">
+      <span class="verdict-large ${verdictClass(verdict)}">${esc(verdict.replace(/_/g,' '))}</span>
+      <span class="sev-label">${esc(conf)} confidence</span>
+      ${sa ? `<span style="font-size:11px;color:var(--text-dim)">${sa.sample_count} samples · ${Object.entries(sa.verdict_votes||{}).map(([k,v])=>k.replace(/_/g,' ')+': '+v).join(', ')}</span>` : ''}
+    </div>`;
+
+  if (notes) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Overall assessment</div>
+      <div class="analysis-notes">${esc(notes)}</div>
+    </div>`;
+  }
+
+  // Gaps
+  if (gaps.length) {
+    html += `<div class="detail-section"><div class="detail-section-title">Gaps identified (${gaps.length})</div>`;
+    gaps.forEach(g => {
+      const sev     = typeof g.severity==='object' ? g.severity : {};
+      const sevLabel= sev.label || (typeof g.severity==='string' ? g.severity : 'minor');
+      const sevBand = sev.band ? ' · '+sev.band : '';
+      const gConf   = typeof g.confidence==='object' ? g.confidence.label : (g.confidence||'?');
+      const refs    = g.spec_refs_consulted||[];
+      html += `<div class="gap-card">
+        <div class="gap-card-header">
+          <span class="sev-label ${sevClass(sevLabel)}">${esc(sevLabel)}${esc(sevBand)}</span>
+          <span style="font-size:10px;color:var(--text-faint)">${esc(gConf)} confidence</span>
+        </div>
+        <div class="gap-desc">${esc(g.description)}</div>
+        ${g.rationale ? `<div class="gap-sub"><span class="gap-sub-label">Rationale</span>${esc(g.rationale)}</div>` : ''}
+        ${g.recommendation ? `<div class="gap-recommendation"><span class="gap-sub-label">Recommendation</span>${esc(g.recommendation)}</div>` : ''}
+        ${refs.length ? `<div class="gap-sub"><span class="gap-sub-label">Spec refs</span>${_specRefChips(refs)}</div>` : ''}
+        ${g.spec_refs_missing ? `<div class="gap-sub" style="color:var(--red)"><span class="gap-sub-label" style="color:var(--red)">Missing from spec</span>${esc(g.spec_refs_missing)}</div>` : ''}
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  // Components (collapsible)
+  if (comps.length) {
+    html += _collapsibleAnalysisSection('Components required', comps.map(c => {
+      const cConf = typeof c.confidence==='object' ? c.confidence.label : (c.confidence||'?');
+      return `<div class="comp-row">
+        <div class="comp-id">${esc(c.id)}</div>
+        <div class="comp-role">${esc(c.role)}</div>
+        ${c.rationale ? `<div class="comp-rat">${esc(c.rationale)}</div>` : ''}
+        <div style="margin-top:5px;display:flex;align-items:center;gap:4px;flex-wrap:wrap">
+          <span class="sev-label">${esc(cConf)}</span>${_specRefChips(c.spec_refs)}
+        </div></div>`;
+    }));
+  }
+
+  // Data model (collapsible)
+  if (dm.length) {
+    html += _collapsibleAnalysisSection('Data model touched', dm.map(d =>
+      `<div class="comp-row">
+        <div class="comp-id">${esc(d.entity)}</div>
+        <div class="comp-role">${esc((d.fields_accessed||[]).join(', '))} · ops: ${esc((d.operations||[]).join(', '))}</div>
+        ${d.rationale ? `<div class="comp-rat">${esc(d.rationale)}</div>` : ''}
+        ${(d.spec_refs||[]).length ? `<div style="margin-top:5px">${_specRefChips(d.spec_refs)}</div>` : ''}
+      </div>`
+    ));
+  }
+
+  // Capabilities (collapsible)
+  if (caps.length) {
+    html += _collapsibleAnalysisSection('Capabilities invoked', caps.map(c =>
+      `<div class="comp-row">
+        <div class="comp-id">${esc(c.id)}</div>
+        <div class="comp-role">${esc(c.usage)}</div>
+        ${c.rationale ? `<div class="comp-rat">${esc(c.rationale)}</div>` : ''}
+        ${(c.spec_refs||[]).length ? `<div style="margin-top:5px">${_specRefChips(c.spec_refs)}</div>` : ''}
+      </div>`
+    ));
+  }
+
+  // Policy modes (collapsible)
+  if (pols.length) {
+    html += _collapsibleAnalysisSection('Policy modes required', pols.map(p =>
+      `<div class="comp-row">
+        <div class="comp-id">${esc(p.mode)}</div>
+        ${p.rationale ? `<div class="comp-rat">${esc(p.rationale)}</div>` : ''}
+        ${(p.spec_refs||[]).length ? `<div style="margin-top:5px">${_specRefChips(p.spec_refs)}</div>` : ''}
+      </div>`
+    ));
+  }
+
+  // Run metadata
+  const hasMetaRow = meta.model||meta.mode||meta.sample_count||meta.tool_call_count||meta.total_tokens||meta.wall_time_seconds||meta.engine_version||meta.endpoint_url;
+  if (hasMetaRow) {
+    html += `<div class="detail-section"><div class="detail-section-title">Ingestion metadata</div><div class="kv-grid">
+      ${meta.mode          ? `<div class="kv-label">mode</div><div class="kv-val">${esc(meta.mode)}</div>` : ''}
+      ${meta.model         ? `<div class="kv-label">model</div><div class="kv-val">${esc(meta.model)}</div>` : ''}
+      ${meta.sample_count  ? `<div class="kv-label">samples</div><div class="kv-val">${meta.sample_count}</div>` : ''}
+      ${meta.tool_call_count ? `<div class="kv-label">tool calls</div><div class="kv-val">${meta.tool_call_count}</div>` : ''}
+      ${meta.total_tokens  ? `<div class="kv-label">tokens</div><div class="kv-val">${(meta.total_tokens||0).toLocaleString()}</div>` : ''}
+      ${meta.wall_time_seconds ? `<div class="kv-label">wall time</div><div class="kv-val">${_fmtSec(meta.wall_time_seconds)}</div>` : ''}
+      ${meta.engine_version? `<div class="kv-label">engine</div><div class="kv-val">${esc(meta.engine_version)}</div>` : ''}
+      ${meta.endpoint_url  ? `<div class="kv-label">endpoint</div><div class="kv-val" style="word-break:break-all">${esc(meta.endpoint_url)}</div>` : ''}
+    </div></div>`;
+  }
+
+  html += '</div>'; // close detail-pane
+  el.innerHTML = html;
+}
+
+function renderExploreAnalysis(data, ucUuid) {
+  _lastAnalysisData = data;
+  const samples  = data.samples || [];
+  const ucEntry  = (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid);
+  const ucHandle = ucEntry?.uc_handle || ucUuid;
+  const actionBar = document.getElementById('analysisActionBar');
+
+  actionBar.innerHTML = `<div class="analysis-action-bar">
+    <button class="btn ghost btn-sm" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(ucUuid)}'),200)">✏ Edit UC</button>
+    <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')">↺ Re-analyze</button>
+    <button class="btn ghost btn-sm" onclick="openReviewPane('uc','${esc(ucUuid)}','review')" title="Get an architectural review of these findings">Arch Review</button>
+    <button class="btn ghost btn-sm" onclick="openReviewPane('uc','${esc(ucUuid)}','enhance')" title="Plan enhancements to address these findings">Enhancements</button>
+    <span style="flex:1"></span>
+    <span style="font-size:10px;color:var(--text-faint)" title="${esc(ucUuid)}">${esc(ucUuid.slice(0,8))}…</span>
+  </div>`;
+  actionBar.style.display = '';
+
+  let html = `<div class="detail-pane">
+    <div class="detail-title">${esc(ucHandle)}</div>
+    <div style="font-size:12px;color:var(--text-dim);margin-bottom:16px">Explore mode · ${samples.length} sample${samples.length===1?'':'s'}</div>`;
+
+  if (data.variance) {
+    const va = data.variance;
+    const consensusVerdict = (va.sample_annotations||{}).consensus_verdict;
+    if (consensusVerdict) {
+      html += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+        <span class="verdict-large ${verdictClass(consensusVerdict)}">${esc(consensusVerdict.replace(/_/g,' '))}</span>
+        <span style="font-size:11px;color:var(--text-dim)">consensus</span></div>`;
+    }
+    html += `<div class="detail-section"><div class="detail-section-title">Variance report</div>
+      <div class="analysis-block"><div class="analysis-block-body">
+        <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px;margin:0">${esc(JSON.stringify(va,null,2))}</pre>
+      </div></div></div>`;
+  }
+
+  samples.forEach((s,i) => {
+    const sv = (s.summary||{}).verdict || s.verdict || '?';
+    const sNotes = (s.summary||{}).notes || s.overall_assessment || '';
+    const sGaps  = s.gaps_identified || [];
+    html += `<div class="detail-section"><div class="detail-section-title">Sample ${i}</div>
+      <div class="analysis-block">
+        <div class="analysis-block-header">
+          <span class="${verdictClass(sv)}">${esc(sv.replace(/_/g,' '))}</span>
+          ${sGaps.length ? `<span style="font-size:10px;color:var(--text-dim)">${sGaps.length} gap${sGaps.length===1?'':'s'}</span>` : ''}
+        </div>
+        ${sNotes ? `<div class="analysis-block-body">${esc(sNotes)}</div>` : ''}
+      </div>`;
+    if (sGaps.length) {
+      sGaps.forEach(g => {
+        const sev = typeof g.severity==='object' ? g.severity.label : (g.severity||'minor');
+        html += `<div class="gap-card" style="margin-left:0">
+          <div class="gap-card-header"><span class="sev-label ${sevClass(sev)}">${esc(sev)}</span></div>
+          <div class="gap-desc">${esc(g.description)}</div>
+          ${g.recommendation ? `<div class="gap-recommendation"><span class="gap-sub-label">Recommendation</span>${esc(g.recommendation)}</div>` : ''}
+        </div>`;
+      });
+    }
+    html += '</div>';
+  });
+
+  document.getElementById('analysisDetail').innerHTML = html + '</div>';
+}
+
+// ══════════════════════════ USE CASES ══════════════════════════
+
+// #243 — populate the corpus repo/branch filter from the namespaces present in the loaded UCs.
+// Merge-in (never drop) so options persist once a single-repo filter is applied; preserve selection.
+function _populateRepoFilter(ucs) {
+  const sel = document.getElementById('ucRepoFilter');
+  if (!sel) return;
+  const seen = new Map();   // namespace -> branch (for the label)
+  for (const u of (ucs || [])) {
+    if (u && u.namespace) seen.set(u.namespace, u.branch || '');
+  }
+  if (!seen.size) return;
+  const cur = sel.value;
+  const have = new Set(Array.from(sel.options).map(o => o.value));
+  for (const [ns, br] of Array.from(seen.entries()).sort()) {
+    if (have.has(ns)) continue;
+    const o = document.createElement('option');
+    o.value = ns;
+    o.textContent = br ? `${ns} (${br})` : ns;
+    sel.appendChild(o);
+  }
+  if (cur && Array.from(sel.options).some(o => o.value === cur)) sel.value = cur;
+}
+async function loadUCs() {
+  document.getElementById('ucList').innerHTML = '<div class="empty">loading…</div>';
+  const src = document.getElementById('ucSourceFilter').value;
+  const repoNs = (document.getElementById('ucRepoFilter') || {}).value || '';  // #243 repo/branch
+  const scope = (document.getElementById('ucScopeFilter') || {}).value || '';
+  _ucPoolMode = (scope === 'pool');
+  // Lazy-fetch corpus-push status once per tab session so the Push button
+  // can render with the right disabled/tooltip state.
+  if (_corpusPushStatus === null) _loadCorpusPushStatus();
+  try {
+    const qp = [];
+    if (src) qp.push('source=' + src);
+    if (repoNs) qp.push('namespace=' + encodeURIComponent(repoNs));   // #243 corpus repo/branch filter
+    // #43 "available to apply" pool = managed UCs from other projects in this tenant, not referenced
+    // here. Force source=managed (corpus is repo-driven, not appliable) and request applied=0.
+    if (_ucPoolMode) { qp.length = 0; qp.push('source=managed', 'applied=0'); }
+    if (_activeCustomer) qp.push(customerQuery());   // matrix #130: filter to this customer's requested UCs
+    const q = qp.length ? '?' + qp.join('&') : '';
+    const resp = await api('/api/use-cases' + q);
+    allUCs = resp.use_cases || [];
+    _populateRepoFilter(allUCs);   // #243: refresh repo/branch options from the loaded corpus UCs
+    // Badge = active UCs (deprecated are hidden by default), so it reconciles with the list + masthead.
+    document.getElementById('badgeUC').textContent = allUCs.filter(u => u.lifecycle_state !== 'deprecated').length;
+    renderUCList();
+    // Counts in the rail depend on allUCs — refresh whenever UCs reload
+    renderSetFilterRail();
+    _loadUCHealth();   // #122: per-UC validity → flag invalid UCs in the list
+  } catch (e) {
+    document.getElementById('ucList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+  }
+}
+// #43 — reference a managed UC into the active project (use_case_projects M:N). From the
+// "available to apply" pool; on success it leaves the pool and appears in the project list.
+async function applyUCToProject(uuid) {
+  try {
+    await api('/api/use-case-projects', { method: 'POST', body: JSON.stringify({ uc_uuids: [uuid] }) });
+    toast('Applied to this project');
+    await loadUCs(); loadFreshness();
+  } catch (e) { toast('Apply failed: ' + e.message, true); }
+}
+// Remove a referenced UC from the active project (un-apply the M:N; the UC itself is untouched).
+async function removeUCFromProject(uuid) {
+  if (!confirm('Remove this referenced use case from the active project? The use case itself is not deleted.')) return;
+  try {
+    await api('/api/use-case-projects/remove', { method: 'POST', body: JSON.stringify({ uc_uuids: [uuid] }) });
+    toast('Removed from this project');
+    await loadUCs(); loadFreshness();
+  } catch (e) { toast('Remove failed: ' + e.message, true); }
+}
+
+// #122 — UC health: per-UC validity (managed UCs), used to flag invalid UCs in the list + offer repair.
+let _ucHealth = {};   // uuid -> {valid, errors[], repairable}
+async function _loadUCHealth() {
+  try {
+    const h = await api('/api/use-cases/health');
+    _ucHealth = {};
+    (h.ucs || []).forEach(x => { _ucHealth[x.uuid] = x; });
+    renderUCList();
+    const pill = document.getElementById('ucHealthPill');
+    if (pill) {
+      const repairable = (h.ucs || []).filter(u => u.repairable).length;
+      if (!h.invalid) { pill.style.display = 'none'; pill.innerHTML = ''; }
+      else {
+        pill.style.display = '';
+        pill.innerHTML = `<span title="Use cases failing engine validation" style="color:var(--red);font-size:10px;">⚠ ${h.invalid} invalid</span>`
+          + (repairable ? ` <button class="btn ghost btn-sm" style="font-size:10px;padding:0 6px;border-radius:999px;" onclick="_repairAllUCs()" title="Backfill a missing handle (from the title) + save, for each repairable UC">⚕ Repair ${repairable}</button>` : '');
+      }
+    }
+  } catch (_) {}
+}
+async function _repairAllUCs() {
+  const repairable = Object.values(_ucHealth).filter(u => u.repairable);
+  if (!repairable.length) return;
+  if (!confirm(`Auto-repair ${repairable.length} use case(s)? This backfills a handle derived from each title (e.g. "managed/standard/secure-model-training") and saves it.`)) return;
+  let ok = 0, fail = 0;
+  for (const u of repairable) {
+    try { const r = await api(`/api/use-cases/${encodeURIComponent(u.uuid)}/repair`, { method: 'POST' });
+          ((r.repaired || []).length) ? ok++ : fail++; }
+    catch (_) { fail++; }
+  }
+  toast(`Repaired ${ok}${fail ? `, ${fail} unchanged/failed` : ''}`);
+  await loadUCs();
+}
+
+function renderUCList() {
+  const el = document.getElementById('ucList');
+  // Set-membership filter from the left rail (skipped in the #43 "available to apply" pool —
+  // pool UCs belong to other projects, so set-rail filtering would spuriously empty it).
+  let setFiltered = allUCs;
+  if (!_ucPoolMode) {
+    if (activeSetId === '__none__') {
+      setFiltered = allUCs.filter(u => !u.set_ids || !u.set_ids.length);
+    } else if (typeof activeSetId === 'number') {
+      setFiltered = allUCs.filter(u => (u.set_ids || []).includes(activeSetId));
+    }
+  }
+  const filter = (document.getElementById('ucFilter').value||'').toLowerCase();
+  let filtered = setFiltered.filter(u =>
+    !filter ||
+    (u.uuid||'').toLowerCase().includes(filter) ||
+    (u.title||'').toLowerCase().includes(filter) ||
+    (u.handle||'').toLowerCase().includes(filter) ||
+    (u.tags||[]).some(t => t.toLowerCase().includes(filter))
+  );
+  // '__all__' shows every state (incl. deprecated); a specific state filters to it; the default
+  // ('active') hides deprecated UCs — they're sunset (often imported under a corpus deprecated/ dir).
+  if (ucStateFilter === '__all__') { /* no state filter */ }
+  else if (ucStateFilter) filtered = filtered.filter(u => u.source==='corpus' || u.lifecycle_state===ucStateFilter);
+  else filtered = filtered.filter(u => u.source==='corpus' || u.lifecycle_state !== 'deprecated');
+  if (ucPriorityFilter) filtered = filtered.filter(u => u.priority === ucPriorityFilter);
+  // Assignment filter (unified with the Scoping Sets palette): unassigned = in no Scoping Set.
+  if (ucAssignFilter === 'unassigned') filtered = filtered.filter(u => !u.set_ids || !u.set_ids.length);
+  else if (ucAssignFilter === 'assigned') filtered = filtered.filter(u => (u.set_ids || []).length);
+  // Health filter (#122): invalid = managed UC failing engine validation (from _ucHealth).
+  if (ucHealthFilter === 'invalid') filtered = filtered.filter(u => _ucHealth[u.uuid] && !_ucHealth[u.uuid].valid);
+  else if (ucHealthFilter === 'valid') filtered = filtered.filter(u => !_ucHealth[u.uuid] || _ucHealth[u.uuid].valid);
+  _lastVisibleUUIDs = filtered.map(u => u.uuid);   // for Select-all (operates on the visible/filtered set)
+
+  // Roadmap-weight ordering (DCM feature #1): highest priority.score first,
+  // unranked UCs last. Sorts within each source group below.
+  if (ucSortByPriority) {
+    const w = u => (u.priority_score == null ? -1 : u.priority_score);
+    filtered = filtered.slice().sort((a, b) => w(b) - w(a));
+  }
+  const _ucCnt = document.getElementById('ucCount');
+  if (_ucCnt) _ucCnt.textContent = `${filtered.length} / ${(allUCs || []).length}`;
+
+  if (!filtered.length) { el.innerHTML = `<div class="empty">${_ucPoolMode ? 'No other-project use cases available to apply.' : 'No use cases match.'}</div>`; return; }
+  el.innerHTML = '';
+  if (_ucPoolMode) {
+    const b = document.createElement('div');
+    b.style.cssText = 'font-size:10px;color:var(--text-dim);padding:4px 8px;border-bottom:1px solid var(--border);margin-bottom:4px;';
+    b.textContent = 'Available to apply — managed use cases from other projects in this tenant. Apply to reference one into this project.';
+    el.appendChild(b);
+  }
+
+  const managed = filtered.filter(u => u.source==='managed');
+  const corpus  = filtered.filter(u => u.source==='corpus');
+
+  const renderGroup = (items, label) => {
+    if (!items.length) return;
+    const gl = document.createElement('div');
+    gl.className = 'list-group-label'; gl.textContent = label;
+    el.appendChild(gl);
+    items.forEach(u => {
+      const item = document.createElement('div');
+      item.className = 'list-item' + (activeUCId===u.uuid ? ' active' : '');
+      item.draggable = true;
+      item.title = 'Drag to a Scoping Set in the left rail · Checkbox selects for batch ops';
+      item.dataset.ucUuid = u.uuid;
+      item.dataset.ucSource = u.source;
+      item.dataset.ucHandle = u.handle || '';
+      item.dataset.ucPath = u.path || '';
+      const tags = (u.tags||[]).slice(0,2).map(t => `<span class="tag">${esc(t)}</span>`).join('');
+      const titleText = u.title || u.handle || u.uuid || '?';
+      const subText = (u.handle && u.handle !== titleText) ? u.handle : u.uuid;
+      const isChecked = _selectedUCs.has(u.uuid);
+      // When the list is filtered to a single Set, show a small × to remove
+      // this UC from THAT set in-place (no need to leave the list).
+      const setRemoveBtn = (typeof activeSetId === 'number')
+        ? `<button class="li-set-remove" title="Remove from this Scoping Set"
+                   style="background:none;border:none;color:var(--red);font-size:14px;line-height:1;padding:0 4px;cursor:pointer;opacity:0.6;align-self:flex-start;margin-top:1px;"
+                   onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'"
+           >×</button>`
+        : '';
+      // #43 cross-project reference: Apply (pool mode) / Remove (a UC referenced from another project).
+      const applyCtl = (canEdit('project.usecases') && u.source === 'managed')
+        ? (_ucPoolMode
+            ? `<button class="btn ghost btn-sm" style="font-size:9px;padding:0 7px;border-radius:999px;" onclick="event.stopPropagation();applyUCToProject('${esc(u.uuid)}')" title="Reference this use case into the active project">+ Apply</button>`
+            : (u.referenced
+                ? `<span title="Referenced from another project in this tenant — not authored here" style="font-size:8px;background:var(--surface-2,#2a2a2a);color:var(--text-dim);border-radius:2px;padding:0 4px;">↪ ref</span>
+                   <button class="btn ghost btn-sm" style="font-size:9px;padding:0 7px;border-radius:999px;color:var(--red);" onclick="event.stopPropagation();removeUCFromProject('${esc(u.uuid)}')" title="Remove this referenced UC from the active project (the use case itself is untouched)">Remove</button>`
+                : ''))
+        : '';
+      item.innerHTML = `
+        <input type="checkbox" class="uc-sel-cb" ${isChecked ? 'checked' : ''}
+               style="margin:2px 6px 0 0;width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;align-self:flex-start;cursor:pointer;"
+               title="Select for batch test / add-to-set" />
+        <div class="li-main">
+          <div class="li-title">${esc(titleText)}</div>
+          <div class="li-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.7;">${esc(subText || '')}</div>
+          ${tags ? `<div style="margin-top:3px">${tags}</div>` : ''}
+        </div>
+        <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end;flex-shrink:0;">
+          ${u.lifecycle_state
+              ? (canEdit('project.usecases')
+                  ? `<span onclick="event.stopPropagation();_lcMenu(event,'${esc(u.uuid)}','${esc(u.lifecycle_state)}')" title="Change status" style="cursor:pointer;">${lcHtml(u.lifecycle_state)} <span style="font-size:8px;opacity:.55;">▾</span></span>`
+                  : lcHtml(u.lifecycle_state))
+              : `<span class="src-badge src-${u.source}">${u.source}</span>`}
+          ${(_ucHealth[u.uuid] && !_ucHealth[u.uuid].valid)
+              ? `<span title="Fails engine validation: ${esc((_ucHealth[u.uuid].errors || []).join('; '))}${_ucHealth[u.uuid].repairable ? ' — auto-repairable (open + ⚕ Repair)' : ''}" style="font-size:8px;background:var(--red);color:#fff;border-radius:2px;padding:0 4px;cursor:help;">⚠ invalid</span>`
+              : ''}
+          ${prioHtml(u.priority, u.priority_score)}
+          ${readinessHtml(u.readiness_score)}
+          ${demandHtml(u)}
+          ${dupHtml(u)}
+          ${applyCtl}
+        </div>
+        ${setRemoveBtn}`;
+      // Row click selects/opens the UC; checkbox toggles batch selection
+      // (checkbox click stops propagation so it doesn't also open the UC)
+      const cb = item.querySelector('input.uc-sel-cb');
+      cb.addEventListener('click', e => e.stopPropagation());
+      cb.addEventListener('change', e => {
+        if (e.target.checked) _selectedUCs.add(u.uuid);
+        else _selectedUCs.delete(u.uuid);
+        _renderUCSelectionToolbar();
+      });
+      const removeBtn = item.querySelector('button.li-set-remove');
+      if (removeBtn) {
+        removeBtn.addEventListener('click', e => {
+          e.stopPropagation();   // don't trigger row select
+          const setName = (allSets.find(s => s.id === activeSetId) || {}).name || '';
+          _removeUCFromSet(activeSetId, u.uuid, setName);
+        });
+      }
+      item.addEventListener('click', () => selectUC(u.uuid));
+      item.addEventListener('dragstart', e => {
+        e.dataTransfer.effectAllowed = 'copy';
+        e.dataTransfer.setData('application/x-dav-uc', JSON.stringify({
+          uuid: u.uuid, source: u.source, handle: u.handle || null, path: u.path || null,
+        }));
+        item.style.opacity = '0.55';
+      });
+      item.addEventListener('dragend', () => { item.style.opacity = ''; });
+      el.appendChild(item);
+    });
+  };
+
+  renderGroup(managed, 'Managed');
+  renderGroup(corpus,  'Corpus');
+  _renderUCSelectionToolbar();
+}
+
+// ── Multi-select batch operations on the UC list ─────────────────────────────
+
+function _renderUCSelectionToolbar() {
+  const bar   = document.getElementById('ucSelectionToolbar');
+  const count = document.getElementById('ucSelectionCount');
+  if (!bar || !count) return;
+  // Stale selection cleanup: drop UUIDs no longer in allUCs
+  const present = new Set(allUCs.map(u => u.uuid));
+  for (const uuid of [..._selectedUCs]) {
+    if (!present.has(uuid)) _selectedUCs.delete(uuid);
+  }
+  const n = _selectedUCs.size;
+  if (!n) { bar.style.display = 'none'; return; }
+  const selected = allUCs.filter(u => _selectedUCs.has(u.uuid));
+  const managedCount = selected.filter(u => u.source === 'managed').length;
+  const corpusCount  = selected.length - managedCount;
+  bar.style.display = 'flex';
+  // All UCs are testable now — managed via console-API fetch, corpus via the
+  // usual handle filter. Surface the split so reviewers understand the scope.
+  let label = `${n} selected`;
+  if (managedCount && corpusCount)       label += ` (${corpusCount} corpus + ${managedCount} managed — fetched from API)`;
+  else if (managedCount && !corpusCount) label += ` (managed — fetched from API)`;
+  count.textContent = label;
+  document.getElementById('ucSelTestBtn').disabled = false;
+  document.getElementById('ucSelTestBtn').style.opacity = '';
+}
+
+function _clearUCSelection() {
+  _selectedUCs.clear();
+  renderUCList();   // re-render to uncheck boxes + hide toolbar
+}
+
+async function _batchTestSelectedUCs() {
+  const selected = allUCs.filter(u => _selectedUCs.has(u.uuid));
+  if (!selected.length) {
+    toast('Nothing selected to test', true);
+    return;
+  }
+  const handles = [], uuids = [], managed = [], paths = [];
+  for (const u of selected) {
+    if (u.source === 'managed') {
+      managed.push(u.uuid);
+    } else {
+      if (u.handle) handles.push(u.handle);
+      else          uuids.push(u.uuid);
+      if (u.path)   paths.push(u.path);
+    }
+  }
+  const subpath = paths.length ? _narrowestSubpath(paths) : '';
+  const counts = [
+    handles.length || uuids.length ? `${handles.length+uuids.length} corpus` : null,
+    managed.length ? `${managed.length} managed (fetched from API)` : null,
+  ].filter(Boolean).join(' + ');
+  const banner = `Batch test eval: ${counts} · engine-filtered`;
+  // R2: if the user filtered the list to a Scoping Set and then ran the selection,
+  // record that Scoping Set as lineage; otherwise mark as ad-hoc selection.
+  const lineage = (typeof activeSetId === 'number')
+    ? { set_id: activeSetId, set_name: (allSets.find(s => s.id===activeSetId)||{}).name, selection_mode: 'selection' }
+    : { selection_mode: 'selection' };
+  await openNewRun(banner, subpath, {handles, uuids, managed}, undefined, lineage);
+  const sn = document.getElementById('nrSessionName');
+  if (sn && !sn.value) sn.value = `batch test: ${selected.length} UCs`.slice(0, 120);
+}
+
+async function _openBatchAddSetPopover(anchor) {
+  const pop = document.getElementById('ucSelAddSetPopover');
+  if (!pop) return;
+  if (pop.style.display === 'block') { pop.style.display = 'none'; return; }
+  if (!allSets || !allSets.length) {
+    pop.innerHTML = '<div style="padding:10px 12px;font-size:11px;color:var(--text-faint);">No Scoping Sets. Create one with + New in the left rail.</div>';
+    pop.style.display = 'block';
+    return;
+  }
+  let h = '<div style="padding:4px 0;font-size:12px;">';
+  allSets.filter(s => s.id !== ALL_SET_ID).forEach(s => {
+    h += `<div style="padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;"
+             onmouseover="this.style.background='var(--bg-raised)'" onmouseout="this.style.background=''"
+             onclick="_batchAddSelectedToSet(${s.id}, ${attrJson(s.name)})">
+      <span style="flex:1;">${esc(s.name)}</span>
+      ${s.is_default ? '<span style="font-size:9px;color:var(--accent);">DEFAULT</span>' : ''}
+      <span style="font-size:10px;color:var(--text-faint);">${s.member_count}</span>
+    </div>`;
+  });
+  h += '</div>';
+  pop.innerHTML = h;
+  pop.style.display = 'block';
+  setTimeout(() => {
+    const close = e => {
+      if (!pop.contains(e.target) && e.target !== anchor) {
+        pop.style.display = 'none';
+        document.removeEventListener('click', close);
+      }
+    };
+    document.addEventListener('click', close);
+  }, 0);
+}
+
+async function _batchAddSelectedToSet(setId, setName) {
+  document.getElementById('ucSelAddSetPopover').style.display = 'none';
+  const selected = allUCs.filter(u => _selectedUCs.has(u.uuid));
+  let added = 0, dup = 0, fail = 0;
+  for (const u of selected) {
+    try {
+      await api(`/api/sets/${setId}/members`, {
+        method: 'POST',
+        body: JSON.stringify({
+          uc_uuid:   u.uuid,
+          uc_source: u.source || 'managed',
+          uc_handle: u.handle || null,
+          uc_path:   u.path || null,
+        }),
+      });
+      added++;
+    } catch (e) {
+      if (/already/i.test(e.message)) dup++;
+      else { fail++; console.warn('add to set failed', u.uuid, e.message); }
+    }
+  }
+  const summary = [
+    added ? `${added} added` : null,
+    dup   ? `${dup} already in set` : null,
+    fail  ? `${fail} failed` : null,
+  ].filter(Boolean).join(' · ');
+  toast(`"${setName}": ${summary || 'no-op'}`, fail > 0);
+  await loadSets();
+  await loadUCs();
+  _refreshSetMgmt();
+}
+
+async function selectUC(uuid) {
+  activeUCId = uuid; renderUCList();
+  renderUCDetailLoading();
+  try {
+    const data = await api(`/api/use-cases/${encodeURIComponent(uuid)}`);
+    let lifecycle = null;
+    if (data.source === 'managed') {
+      try { lifecycle = await api(`/api/use-cases/${encodeURIComponent(uuid)}/lifecycle`); } catch {}
+    }
+    renderUCDetail(data, lifecycle);
+  } catch (e) {
+    document.getElementById('ucDetail').innerHTML =
+      `<div class="detail-pane"><div style="color:var(--red);padding-top:40px">${esc(e.message)}</div></div>`;
+  }
+}
+
+function renderUCDetailLoading() {
+  document.getElementById('ucDetail').innerHTML =
+    '<div class="detail-pane"><div class="detail-empty">loading…</div></div>';
+}
+
+function renderUCDetail(data, lifecycle) {
+  const el = document.getElementById('ucDetail');
+  if (!data) { el.innerHTML = '<div class="detail-pane"><div class="detail-empty">Select a use case.</div></div>'; return; }
+
+  const isManaged = data.source === 'managed';
+  const parsed = data.parsed || {};
+  const scenario = parsed.scenario || {};
+  const tags = data.tags || parsed.tags || [];
+  const uuid = data.uuid;
+  const state = data.lifecycle_state || 'draft';
+  const sets = data.sets || [];
+  const titleText = parsed.title || data.title || parsed.handle || uuid;
+  const handleText = parsed.handle || data.handle || '';
+  // Priority (DCM feature #1): prefer the projected column (managed UCs), fall
+  // back to the raw YAML value (corpus UCs / shorthand or nested form).
+  const _pr = parsed.priority;
+  const prioLabel = data.priority || (typeof _pr === 'string' ? _pr : (_pr && _pr.label)) || null;
+  const prioScore = (data.priority_score != null) ? data.priority_score
+                    : (_pr && typeof _pr === 'object' ? _pr.score : null);
+
+  let html = `<div class="detail-pane">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px">
+      <div style="min-width:0;flex:1">
+        <div class="detail-title" style="font-family:var(--serif);font-size:18px;line-height:1.25;">${esc(titleText)}</div>
+        <div class="detail-sub" style="font-family:var(--mono,monospace);font-size:11px;color:var(--text-faint);margin-top:4px;">
+          ${handleText ? `<span title="handle">⌘ ${esc(handleText)}</span> · ` : ''}<span title="UUID">id ${esc(uuid)}</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-shrink:0;margin-top:4px">
+        ${isManaged
+          ? `${_renderPushToCorpusBtn(data)}
+             ${_renderManagedTestBtn(data, titleText)}
+             <button class="btn ghost" onclick="editUC('${esc(uuid)}')">Edit</button>
+             <button class="btn danger" onclick="deleteUC('${esc(uuid)}',this)">Delete</button>`
+          : `<button class="btn primary" title="Ingest just this UC now (project defaults) and jump to the ingestion" onclick="testRunUC('${esc(uuid)}', ${attrJson(data.path||'')}, ${attrJson(titleText)})">▶ Ingest this UC</button>
+             <button class="btn ghost" onclick="cloneUC('${esc(uuid)}')">Clone to managed</button>`}
+      </div>
+    </div>
+    <div style="margin-bottom:14px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      ${prioLabel ? prioHtml(prioLabel, prioScore) : ''}
+      ${readinessHtml(data.readiness_score)}
+      ${tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}
+    </div>`;
+
+  // ── Lifecycle state machine (managed only)
+  if (isManaged) {
+    const transitions = LC_TRANSITIONS[state] || [];
+    html += `<div class="lc-machine">
+      <div class="lc-machine-row">
+        <span class="lc-machine-label">State</span>
+        ${lcHtml(state)}
+      </div>
+      ${transitions.length ? `<div class="lc-machine-row">
+        <span class="lc-machine-label">Transition</span>
+        <div class="lc-actions">
+          ${transitions.map(t =>
+            `<button class="${t.cls}" onclick="openLCModal('${esc(uuid)}','${t.to}','${esc(t.label)}')">${esc(t.label)}</button>`
+          ).join('')}
+        </div></div>` : ''}
+    </div>`;
+
+    // Lifecycle history
+    if (lifecycle && lifecycle.events && lifecycle.events.length) {
+      html += `<div class="detail-section">
+        <div class="detail-section-title">Lifecycle history</div>
+        <div class="analysis-block"><div class="analysis-block-body" style="padding:4px 0">`;
+      lifecycle.events.forEach(e => {
+        html += `<div class="lc-history-row">
+          ${e.from_state ? lcHtml(e.from_state) : '<span style="color:var(--text-faint);font-size:10px">created</span>'}
+          <span class="lc-history-arrow">→</span>
+          ${lcHtml(e.to_state)}
+          <span class="lc-history-who">${esc(e.actor)}</span>
+          ${e.notes ? `<span style="color:var(--text-dim);font-size:11px">${esc(e.notes)}</span>` : ''}
+          <span class="lc-history-ts">${esc(fmtTs(e.created_at))}</span>
+        </div>`;
+      });
+      html += '</div></div></div>';
+    }
+
+    // Set memberships — interactive chips (click chip = filter list; × = remove)
+    const ucPathEsc = (data.path || '').replace(/'/g,"\\'");
+    const ucHandleEsc = (parsed.handle || data.handle || '').replace(/'/g,"\\'");
+    const chipsHtml = sets.length
+      ? sets.map(s => `<span class="set-chip" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px;" title="Click to filter list to this Scoping Set">
+            <span onclick="selectSet(${s.id})">⊞ ${esc(s.name)}</span>
+            <span style="cursor:pointer;color:var(--red);font-weight:600;padding:0 2px;" title="Remove from Set" onclick="event.stopPropagation();_removeUCFromSet(${s.id},'${esc(uuid)}','${esc(s.name)}')">×</span>
+          </span>`).join('')
+      : '<span style="color:var(--text-faint);font-size:11px">Not in any set yet</span>';
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Scoping Sets</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;position:relative;">
+        ${chipsHtml}
+        <span class="set-chip" id="ucDetailAddSetBtn" style="cursor:pointer;background:var(--bg-input);border:1px dashed var(--border-bright);color:var(--text-faint);"
+              onclick="_openAddSetPicker('${esc(uuid)}', '${esc(data.source||'managed')}', '${ucHandleEsc}', '${ucPathEsc}', this)">+ Add to Set</span>
+        <div id="ucDetailAddSetPopover" style="display:none;position:absolute;top:100%;left:0;margin-top:6px;z-index:60;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:3px;box-shadow:0 4px 12px rgba(0,0,0,0.35);min-width:240px;max-height:280px;overflow-y:auto;"></div>
+      </div>
+      <div style="font-size:10px;color:var(--text-faint);margin-top:6px;">Tip: drag a UC from the list onto a Scoping Set in the left rail to add it there too.</div>
+    </div>`;
+  }
+
+  if (scenario.description) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title">Scenario</div>
+      <div style="font-size:13px;font-family:var(--serif);line-height:1.7;color:var(--text)">${esc(scenario.description)}</div>
+    </div>`;
+  }
+
+  const dims = scenario.dimensions || {};
+  if (Object.keys(dims).length) {
+    html += `<div class="detail-section"><div class="detail-section-title">Dimensions</div><div class="kv-grid">`;
+    Object.entries(dims).forEach(([k,v]) => {
+      html += `<div class="kv-label">${esc(k.replace(/_/g,' '))}</div><div class="kv-val">${esc(v)}</div>`;
+    });
+    html += '</div></div>';
+  }
+
+  const criteria = scenario.success_criteria || [];
+  if (criteria.length) {
+    html += `<div class="detail-section"><div class="detail-section-title">Success criteria</div><ul style="list-style:none;padding:0">`;
+    criteria.forEach(c => {
+      html += `<li style="font-size:12px;color:var(--text-dim);padding:3px 0;padding-left:14px;position:relative">
+        <span style="position:absolute;left:0;color:var(--accent)">·</span>${esc(c)}</li>`;
+    });
+    html += '</ul></div>';
+  }
+
+  const di = scenario.expected_domain_interactions || [];
+  if (di.length) {
+    html += `<div class="detail-section"><div class="detail-section-title">Domain interactions</div><div class="analysis-block">`;
+    di.forEach(d => {
+      html += `<div class="finding-row">
+        <div style="font-size:10px;color:var(--accent)">${esc(d.domain||'')}</div>
+        <div style="font-size:12px;color:var(--text-dim)">${esc(d.interaction||'')}</div>
+        <div></div></div>`;
+    });
+    html += '</div></div>';
+  }
+
+  if (scenario.actor) {
+    const a = scenario.actor;
+    html += `<div class="detail-section"><div class="detail-section-title">Actor</div><div class="kv-grid">
+      ${a.persona ? `<div class="kv-label">persona</div><div class="kv-val">${esc(a.persona)}</div>` : ''}
+      ${a.profile ? `<div class="kv-label">profile</div><div class="kv-val">${esc(a.profile)}</div>` : ''}
+    </div></div>`;
+  }
+
+  const genBy = parsed.generated_by || {};
+  if (data.created_by || genBy.source) {
+    html += `<div class="detail-section"><div class="detail-section-title">Provenance</div><div class="kv-grid">
+      ${data.created_by ? `<div class="kv-label">created by</div><div class="kv-val">${esc(data.created_by)}</div>` : ''}
+      ${data.created_at ? `<div class="kv-label">created</div><div class="kv-val">${esc(fmtTs(data.created_at))}</div>` : ''}
+      ${data.updated_by && data.updated_by!==data.created_by ? `<div class="kv-label">updated by</div><div class="kv-val">${esc(data.updated_by)}</div>` : ''}
+      ${data.updated_at ? `<div class="kv-label">updated</div><div class="kv-val">${esc(fmtTs(data.updated_at))}</div>` : ''}
+      ${genBy.source ? `<div class="kv-label">gen source</div><div class="kv-val">${esc(genBy.source)}</div>` : ''}
+      ${genBy.mode   ? `<div class="kv-label">gen mode</div><div class="kv-val">${esc(genBy.mode)}</div>` : ''}
+    </div></div>`;
+  }
+
+  // Customer demand placeholder — populated async by _loadUCDemand() (managed only).
+  // Demand = distinct customers (multi-tenant importance); avoids one customer's
+  // repeat asks poisoning priority. Foundation for compatibility-aware dedup-on-ingest.
+  if (isManaged) {
+    html += `<div class="detail-section" id="ucDemandSection">
+      <div class="detail-section-title">Customer demand</div>
+      <div id="ucDemandBody" class="analysis-block">
+        <div class="analysis-block-body" style="padding:8px 12px;color:var(--text-faint);font-size:11px">loading…</div>
+      </div>
+    </div>`;
+  }
+
+  // Test history placeholder — populated async by loadUCTestHistory()
+  html += `<div class="detail-section" id="ucTestHistorySection">
+    <div class="detail-section-title">Test history</div>
+    <div id="ucTestHistoryBody" class="analysis-block">
+      <div class="analysis-block-body" style="padding:8px 12px;color:var(--text-faint);font-size:11px">loading…</div>
+    </div>
+  </div>`;
+
+  if (data.yaml_content) {
+    html += `<div class="detail-section">
+      <div class="detail-section-title" style="cursor:pointer" onclick="toggleRaw(this)">
+        Raw YAML <span style="color:var(--text-faint);font-size:9px">(click to toggle)</span>
+      </div>
+      <div class="raw-yaml-block" style="display:none">
+        <div class="analysis-block"><div class="analysis-block-body">
+          <pre style="white-space:pre-wrap;word-break:break-word;font-size:11px">${esc(data.yaml_content)}</pre>
+        </div></div>
+      </div></div>`;
+  }
+
+  html += '</div>';
+  el.innerHTML = html;
+  loadUCTestHistory(uuid);
+  if (isManaged) _loadUCDemand(uuid);
+}
+
+// ── Customer demand (async; fills the placeholder after detail renders) ───────
+// Log/view per-customer requests for a UC. Importance = distinct customers, so
+// re-logging the same customer is fine (real repeat-demand signal) but doesn't
+// inflate the multi-tenant count. Refreshes the list badge after a change.
+async function _loadUCDemand(uuid) {
+  const body = document.getElementById('ucDemandBody');
+  if (!body) return;
+  let d;
+  try { d = await api(`/api/use-cases/${encodeURIComponent(uuid)}/customer-requests`); }
+  catch (e) { body.innerHTML = `<div style="padding:8px 12px;color:var(--red);font-size:11px">${esc(e.message)}</div>`; return; }
+  const reqs = d.requests || [];
+  const mt = d.multi_tenant;
+  let h = `<div style="padding:8px 12px;">
+    <div style="display:flex;gap:12px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px;">
+      <span style="font-size:20px;font-weight:600;color:${mt ? 'var(--blue)' : 'var(--text)'};">${d.distinct_customers}</span>
+      <span style="font-size:11px;color:var(--text-dim);">distinct customer${d.distinct_customers === 1 ? '' : 's'}${mt ? ' · multi-tenant 🏢' : ''}</span>
+      <span style="font-size:11px;color:var(--text-faint);">${d.total_requests} total request${d.total_requests === 1 ? '' : 's'}</span>
+    </div>`;
+  if ((d.by_customer || []).length) {
+    h += `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px;">`
+      + d.by_customer.map(c => `<span class="tag" title="${c.count} request${c.count === 1 ? '' : 's'}">${esc(c.customer)}${c.count > 1 ? ` ×${c.count}` : ''}</span>`).join('')
+      + `</div>`;
+  }
+  h += `<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+      <input id="ucDemandCustomer" placeholder="customer / tenant name" style="flex:1;min-width:160px;font-size:12px;" />
+      <button class="btn ghost btn-sm" id="ucDemandLogBtn" type="button">+ Log request</button>
+      <span id="ucDemandMsg" style="font-size:10px;color:var(--text-faint);"></span>
+    </div>`;
+  if (reqs.length) {
+    h += `<div style="font-size:9px;color:var(--text-faint);text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px;">Request log</div>`
+      + reqs.slice(0, 25).map(r => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;border-bottom:1px solid var(--border);padding:3px 0;font-size:11px;">
+          <span style="min-width:0;flex:1;"><strong>${esc(r.customer)}</strong>${r.note ? ` — <span style="color:var(--text-dim);">${esc(r.note)}</span>` : ''}</span>
+          <span style="color:var(--text-faint);white-space:nowrap;">${esc(r.source || '')} · ${esc(fmtTs(r.requested_at))}</span>
+          <button class="btn ghost btn-sm" title="Remove this request" data-rid="${r.id}" style="color:var(--red);padding:0 5px;">✕</button>
+        </div>`).join('');
+  }
+  h += `</div>`;
+  body.innerHTML = h;
+  const logReq = async () => {
+    const inp = document.getElementById('ucDemandCustomer');
+    const msg = document.getElementById('ucDemandMsg');
+    const customer = (inp.value || '').trim();
+    if (!customer) { msg.style.color = 'var(--red)'; msg.textContent = 'enter a customer'; return; }
+    try {
+      await api(`/api/use-cases/${encodeURIComponent(uuid)}/customer-requests`,
+        { method: 'POST', body: JSON.stringify({ customer, source: 'manual' }) });
+      _loadUCDemand(uuid); loadUCs();   // refresh the list badge too
+    } catch (e) { msg.style.color = 'var(--red)'; msg.textContent = e.message; }
+  };
+  document.getElementById('ucDemandLogBtn')?.addEventListener('click', logReq);
+  document.getElementById('ucDemandCustomer')?.addEventListener('keydown', e => { if (e.key === 'Enter') logReq(); });
+  body.querySelectorAll('button[data-rid]').forEach(b => b.addEventListener('click', async () => {
+    try {
+      await api(`/api/use-cases/${encodeURIComponent(uuid)}/customer-requests/${b.dataset.rid}`, { method: 'DELETE' });
+      _loadUCDemand(uuid); loadUCs();
+    } catch (e) { toast(e.message, true); }
+  }));
+}
+
+// ── UC test history (async, fills the placeholder section after detail renders) ─
+
+const _verdictColor = {
+  supported:             'var(--green)',
+  partially_supported:   'var(--accent)',
+  not_supported:         'var(--red)',
+  error:                 'var(--red)',
+};
+
+async function _openUCRunResult(runId, ucUuid) {
+  // Switch to Results, select the run, then open the per-UC analysis.
+  // selectRunResult is async and sets activeRunResultId before selectUCResult
+  // tries to read it.
+  switchView('results');
+  await selectRunResult(runId);
+  await selectUCResult(ucUuid);
+}
+
+async function loadUCTestHistory(uuid) {
+  const body = document.getElementById('ucTestHistoryBody');
+  if (!body) return;
+  try {
+    const resp = await api(`/api/use-cases/${encodeURIComponent(uuid)}/runs?limit=10`);
+    const runs = resp.runs || [];
+    if (!runs.length) {
+      body.innerHTML = '<div class="analysis-block-body" style="padding:8px 12px;color:var(--text-faint);font-size:11px">No ingestions have processed this UC yet.</div>';
+      return;
+    }
+    let h = '<div class="analysis-block-body" style="padding:4px 0">';
+    runs.forEach(r => {
+      const when = r.analyzed_at || r.ingested_at;
+      const verdictColor = _verdictColor[r.verdict] || 'var(--text-faint)';
+      const verdictTxt = r.verdict ? esc(r.verdict.replace(/_/g,' ')) : (r.status || '—');
+      const wt = r.wall_time_seconds ? `${r.wall_time_seconds.toFixed(1)}s` : '';
+      const gaps = r.gap_count ? `${r.gap_count} gap${r.gap_count!==1?'s':''}` : '';
+      // Infrastructure confidence chip (Phase B of A+C+D+E follow-on).
+      // Distinct from analytical verdict — answers "was the analysis run
+      // under clean infrastructure conditions?" rather than "is the answer
+      // right?". Tooltip carries the engine's explanation + recommendations.
+      const ic = r.infrastructure_confidence;
+      let icChip = '';
+      if (ic && ic.label) {
+        const colors = {
+          high:        ['var(--green)','rgba(80,180,80,0.12)'],
+          medium:      ['var(--accent)','var(--accent-bg)'],
+          low:         ['#cf7416','rgba(207,116,22,0.15)'],
+          compromised: ['var(--red)','rgba(217,101,58,0.18)'],
+        };
+        const [fg, bg] = colors[ic.label] || ['var(--text-faint)','transparent'];
+        const tip = [
+          `infrastructure confidence: ${ic.label} (${ic.score}/100)`,
+          ic.explanation || '',
+          (ic.signals && ic.signals.length) ? 'signals: ' + ic.signals.join(', ') : '',
+          (ic.recommendations && ic.recommendations.length) ? 'recommendations:\n - ' + ic.recommendations.join('\n - ') : '',
+        ].filter(Boolean).join('\n\n');
+        icChip = `<span title="${esc(tip)}" style="font-size:9px;padding:1px 6px;background:${bg};color:${fg};border-radius:8px;text-transform:uppercase;letter-spacing:.04em;font-weight:600;cursor:help;">infra: ${esc(ic.label)}</span>`;
+      }
+      h += `<div style="display:flex;align-items:center;gap:10px;padding:5px 12px;font-size:11px;border-top:1px solid var(--border);cursor:pointer"
+              onclick="_openUCRunResult('${esc(r.run_id)}','${esc(uuid)}')"
+              title="Open in Results tab">
+        <span style="color:${verdictColor};font-weight:500;min-width:120px;">${verdictTxt}</span>
+        ${icChip}
+        <span style="font-family:var(--mono,monospace);font-size:10px;color:var(--text-dim);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.run_id)}</span>
+        <span style="color:var(--text-faint);font-size:10px;min-width:60px;text-align:right">${esc(wt)}</span>
+        <span style="color:var(--text-faint);font-size:10px;min-width:60px;text-align:right">${esc(gaps)}</span>
+        <span style="color:var(--text-faint);font-size:10px;min-width:140px;text-align:right">${esc(fmtTs(when))}</span>
+      </div>`;
+    });
+    h += '</div>';
+    body.innerHTML = h;
+  } catch (e) {
+    body.innerHTML = `<div class="analysis-block-body" style="padding:8px 12px;color:var(--red);font-size:11px">Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+
+// ── Test-run-from-UC: open New Ingestion scoped to the narrowest dir containing this UC ─
+
+function _narrowestSubpath(ucPaths) {
+  const cleaned = ucPaths.filter(Boolean);
+  if (!cleaned.length) return '';
+  // For a single UC, the subpath is the file's parent dir.
+  // For multiple, fall back to the common ancestor.
+  const dirs = cleaned.map(p => {
+    const i = p.lastIndexOf('/');
+    return i >= 0 ? p.slice(0, i) : '';
+  });
+  let common = dirs[0];
+  for (let i = 1; i < dirs.length; i++) {
+    while (common && dirs[i].indexOf(common) !== 0) {
+      const j = common.lastIndexOf('/');
+      common = j > 0 ? common.slice(0, j) : '';
+    }
+  }
+  return common;
+}
+
+async function testRunUC(uuid, ucPath, title, branchOverride) {
+  // Three paths converge here:
+  //   • Corpus UC: ucPath is the corpus file path → engine filters within
+  //     that directory.
+  //   • Managed UC, never pushed: ucPath empty → engine fetches the YAML
+  //     from the console API via the managed_uc_uuids materialize path.
+  //   • Managed UC pushed: ucPath = corpus_synced_path + branchOverride =
+  //     the PR branch → engine clones at that branch and filters to the UC.
+  const uc = (allUCs || []).find(u => u.uuid === uuid);
+  const isManagedDirect = !ucPath && uc && uc.source === 'managed';
+
+  let subpath = '';
+  let filter = null;
+  if (isManagedDirect) {
+    // Managed direct: no corpus filter, no subpath — engine fetches the UC
+    // from the console API via managed_uc_uuids.
+    filter = {handles: [], uuids: [], managed: [uuid]};
+  } else {
+    subpath = _narrowestSubpath([ucPath]);
+    filter = (uc && uc.handle)
+      ? {handles: [uc.handle], uuids: [], managed: []}
+      : {handles: [], uuids: [uuid], managed: []};
+  }
+  // Run THIS UC directly — submit immediately with project defaults and jump to
+  // the run. No New-Run config page. Null model/repo are resolved server-side
+  // from the project's configured defaults (see /api/runs trigger_run).
+  const payload = {
+    mode: 'verification',
+    corpus_subpath:   subpath || null,
+    corpus_repo_branch: branchOverride || null,
+    halt_on_error:    false,
+    name:             `test: ${title}`.slice(0, 120),
+    category:         'ad-hoc',
+    selection_mode:   'individual',
+    uc_handles:       filter.handles?.length ? filter.handles : null,
+    uc_uuids:         filter.uuids?.length   ? filter.uuids   : null,
+    managed_uc_uuids: filter.managed?.length ? filter.managed : null,
+  };
+  toast(`Running ${title}…`);
+  try {
+    const resp = await api('/api/runs', { method: 'POST', body: JSON.stringify(payload) });
+    const name = resp.run?.name || '?';
+    toast(`Ingestion triggered: ${name}`);
+    switchView('runs');
+    try { await loadRuns(); } catch (_) {}
+    if (name && name !== '?') selectRun(name);
+  } catch (e) {
+    toast('Ingestion failed: ' + e.message, true);
+  }
+}
+
+// Push a managed UC to the corpus repo, then immediately open a Test
+// evaluation scoped to the resulting PR branch. Unblocks "test before merge"
+// for managed UCs without requiring two round-trips.
+async function pushAndTestUC(uuid) {
+  if (!confirm('Push this UC to the corpus repo and then test it on the PR branch?')) return;
+  toast('Pushing…');
+  let pushResult;
+  try {
+    pushResult = await api(`/api/use-cases/${encodeURIComponent(uuid)}/push-to-corpus`, {
+      method: 'POST',
+      body: JSON.stringify({override: true}),  // bypass lifecycle gate for the test loop
+    });
+  } catch (e) {
+    toast('Push failed: ' + e.message, true);
+    return;
+  }
+  toast(`Push ${pushResult.action} — branch ${pushResult.branch}. Running this UC…`);
+  // Re-fetch the UC to get the canonical corpus_synced_path / corpus_branch
+  // (push response already has these but reloading the UC re-renders the detail).
+  let data;
+  try { data = await api(`/api/use-cases/${encodeURIComponent(uuid)}`); }
+  catch (e) { toast('Reload failed: ' + e.message, true); return; }
+  const titleText = data.parsed?.title || data.title || data.parsed?.handle || uuid;
+  // testRunUC now submits directly and navigates to the run — don't re-select
+  // the UC afterward (that would yank the view back). The PR badge refreshes
+  // next time the UC is opened.
+  await testRunUC(uuid, pushResult.path, titleText, pushResult.branch);
+}
+
+function toggleRaw(el) {
+  const b = el.nextElementSibling; if (b) b.style.display = b.style.display==='none' ? '' : 'none';
+}
+
+// ── Lifecycle transition modal ──────────────────────────────
+async function openLCModal(uuid, toState, label) {
+  lcPendingUCId = uuid; lcPendingTo = toState;
+  document.getElementById('lcModalTitle').textContent = label;
+  document.getElementById('lcModalDesc').textContent =
+    `Move "${uuid}" to "${toState.replace(/_/g,' ')}"`;
+  document.getElementById('lcModalNotes').value = '';
+  document.getElementById('lcModalStatus').textContent = '';
+  document.getElementById('confirmLCModal').disabled = false;
+  // Reset gate UI
+  const gate = document.getElementById('lcApprovalGate');
+  const overrideRow = document.getElementById('lcOverrideRow');
+  const overrideBox = document.getElementById('lcOverrideCheckbox');
+  const notesLabel  = document.getElementById('lcModalNotesLabel');
+  gate.style.display = 'none';
+  overrideRow.style.display = 'none';
+  overrideBox.checked = false;
+  notesLabel.textContent = 'Notes (optional)';
+  document.getElementById('lcModal').classList.add('open');
+  // For 'approved' transitions, surface the passing-run status before the
+  // user commits, so they understand whether they need an override.
+  if (toState === 'approved') {
+    gate.style.display = 'block';
+    gate.style.background = 'var(--bg-input)';
+    gate.style.border = '1px solid var(--border)';
+    gate.innerHTML = '<span style="color:var(--text-faint);">Checking for passing ingestions…</span>';
+    try {
+      const resp = await api(`/api/use-cases/${encodeURIComponent(uuid)}/runs?limit=50`);
+      const passing = (resp.runs || []).filter(r =>
+        r.status === 'success' && (r.verdict === 'supported' || r.verdict === 'partially_supported')
+      );
+      if (passing.length) {
+        gate.style.background = 'rgba(146,194,92,0.10)';
+        gate.style.border = '1px solid var(--green)';
+        gate.innerHTML = `<strong style="color:var(--green);">✓ ${passing.length} passing ingestion${passing.length>1?'s':''} on file</strong> — approval is unblocked.`;
+      } else {
+        gate.style.background = 'rgba(224,122,79,0.10)';
+        gate.style.border = '1px solid var(--red)';
+        gate.innerHTML = `<strong style="color:var(--red);">⚠ No passing ingestions on file.</strong> Approval is gated. Either run a test evaluation first (push to corpus → run a Scoping Set containing this UC), or tick the override below and explain why.`;
+        overrideRow.style.display = '';
+        notesLabel.textContent = 'Notes (REQUIRED when overriding)';
+      }
+    } catch (e) {
+      gate.innerHTML = `<span style="color:var(--red);">Could not check test history: ${esc(e.message)}</span>`;
+    }
+  }
+}
+function closeLCModal() { document.getElementById('lcModal').classList.remove('open'); }
+
+async function confirmLCTransition() {
+  if (!lcPendingUCId || !lcPendingTo) return;
+  const btn = document.getElementById('confirmLCModal'), status = document.getElementById('lcModalStatus');
+  btn.disabled = true; status.textContent = 'saving…';
+  const notes = document.getElementById('lcModalNotes').value.trim();
+  const override = document.getElementById('lcOverrideCheckbox').checked;
+  try {
+    await api(`/api/use-cases/${encodeURIComponent(lcPendingUCId)}/transition`, {
+      method:'POST', body:JSON.stringify({to_state:lcPendingTo, notes, override})
+    });
+    toast(`UC moved to ${lcPendingTo.replace(/_/g,' ')}`);
+    closeLCModal();
+    // Refresh the UC in-place
+    const data = await api(`/api/use-cases/${encodeURIComponent(lcPendingUCId)}`);
+    let lifecycle = null;
+    try { lifecycle = await api(`/api/use-cases/${encodeURIComponent(lcPendingUCId)}/lifecycle`); } catch {}
+    renderUCDetail(data, lifecycle);
+    // Update list badge
+    const uc = allUCs.find(u => u.uuid === lcPendingUCId);
+    if (uc) { uc.lifecycle_state = lcPendingTo; renderUCList(); }
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    btn.disabled = false;
+  }
+}
+
+// ── UC CRUD ──────────────────────────────────────────────────
+
+// Top-level `title:` extraction / injection. Regex-based to avoid a
+// YAML-parsing dependency in the browser. Matches only at column 0 so
+// nested `title:` keys inside block scalars or sub-mappings are left alone.
+function _extractTitleFromYaml(yaml) {
+  const m = /^title:[ \t]*(.+?)[ \t]*$/m.exec(yaml || '');
+  if (!m) return '';
+  let v = m[1];
+  // strip inline comment
+  const hash = v.indexOf(' #');
+  if (hash !== -1) v = v.slice(0, hash).trim();
+  // strip wrapping quotes (single or double)
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+    v = v.slice(1, -1);
+  }
+  return v;
+}
+function _injectTitleIntoYaml(yaml, title) {
+  const safe = title ? JSON.stringify(title) : '""';  // double-quoted, escapes embedded quotes/newlines
+  const line = `title: ${safe}`;
+  const re = /^title:[ \t]*.*$/m;
+  if (re.test(yaml)) return yaml.replace(re, line);
+  // No existing title — prepend after any leading comment block
+  const lines = (yaml || '').split('\n');
+  let i = 0;
+  while (i < lines.length && (lines[i].trimStart().startsWith('#') || lines[i].trim() === '')) i++;
+  lines.splice(i, 0, line);
+  return lines.join('\n');
+}
+
+function openUCModal(uuid, yamlContent, tags) {
+  editingUCId = uuid || null;
+  document.getElementById('ucModalTitle').textContent = uuid ? 'Edit use case' : 'New use case';
+  let content = yamlContent;
+  if (!content) {
+    // Engine requires UC uuid to start with `uc-`. The template carries the
+    // `uc-` prefix as static text; only the placeholder body is replaced so
+    // we don't risk dropping or doubling it.
+    const rawUuid = (typeof crypto !== 'undefined' && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2, 10);
+    content = UC_TEMPLATE.replace('<your-uuid-here>', rawUuid);
+  }
+  document.getElementById('ucYamlEditor').value = content;
+  document.getElementById('ucNameInput').value = _extractTitleFromYaml(content);
+  document.getElementById('ucTagsInput').value = (tags||[]).join(', ');
+  document.getElementById('ucModalStatus').textContent = '';
+  document.getElementById('saveUCModal').disabled = false;
+  document.getElementById('ucModal').classList.add('open');
+  // Focus the Name field on new UC; on edit, leave focus on the modal
+  if (!uuid) setTimeout(() => document.getElementById('ucNameInput').focus(), 50);
+}
+async function editUC(uuid) {
+  try { const d = await api(`/api/use-cases/${encodeURIComponent(uuid)}`); openUCModal(uuid, d.yaml_content, d.tags); }
+  catch (e) { toast('Load failed: ' + e.message, true); }
+}
+async function cloneUC(uuid) {
+  try { const d = await api(`/api/use-cases/${encodeURIComponent(uuid)}`); openUCModal(null, d.yaml_content, d.tags); }
+  catch (e) { toast('Load failed: ' + e.message, true); }
+}
+async function deleteUC(uuid, btn) {
+  if (!btn) return;
+  _armDeleteBtn(btn, async () => {
+    const choice = await _confirmDeleteImpact('uc', uuid, uuid);
+    if (!choice) return;
+    try {
+      await api(`/api/use-cases/${encodeURIComponent(uuid)}?purge_analyses=${choice.purge ? 'true' : 'false'}`, {method:'DELETE'});
+      toast(`Deleted ${uuid}${choice.purge ? ' + analyses purged' : ''}`); activeUCId = null;
+      document.getElementById('ucDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">Deleted.</div></div>';
+      loadUCs();
+    } catch (e) { toast('Delete failed: ' + e.message, true); }
+  });
+}
+function closeUCModal() {
+  document.getElementById('ucModal').classList.remove('open');
+  editingUCId = null;
+  // Close assist panel too so next open starts fresh
+  _ucAssistClose();
+}
+
+// ══════════════════════════ UC ASSIST PANEL ══════════════════════════
+
+let _ucAssistAvailable = null;  // null=unknown, true/false
+
+function _ucAssistCheckAvail() {
+  if (_ucAssistAvailable !== null) return Promise.resolve(_ucAssistAvailable);
+  // Effective model = per-panel override, else the Config UC-authoring default.
+  const override = _overrideModelBody('ucAssistPanelModelSel');
+  const effId = override.model_config_id || _modelDefaults['uc-authoring'];
+  _ucAssistAvailable = !!(effId || _reviewModels.some(m => m.enabled));
+  const statusEl = document.getElementById('ucAssistStatus');
+  if (statusEl) {
+    const m = _reviewModels.find(r => r.id === effId);
+    statusEl.textContent = m ? _modelKindLabel(m)
+      : (_ucAssistAvailable ? 'using default' : 'not configured');
+  }
+  return Promise.resolve(_ucAssistAvailable);
+}
+
+// R4: track prompts the user sends during this Assist session so we can
+// stamp them into the UC YAML as a comment header when the user applies a
+// suggestion. Reset on panel open so each editing session is its own trail.
+let _ucAssistPrompts = [];
+
+function _ucAssistOpen() {
+  const panel = document.getElementById('ucAssistPanel');
+  panel.style.display = 'flex';
+  _populateOverrideSel('ucAssistPanelModelSel', 'uc-authoring');
+  _ucAssistAvailable = null; // re-check on open
+  _ucAssistCheckAvail();
+  _ucAssistPrompts = [];   // reset prompt trail for this session
+  // Blank value is the valid "use default" choice now — focus the input.
+  document.getElementById('ucAssistInput').focus();
+}
+
+// Build a top-of-YAML comment block that preserves the prompts that produced
+// the applied content. If the YAML already has an "# UC Assist prompts:" header
+// (e.g. from a prior session that was applied + re-edited), replace it. Other
+// leading comments are preserved.
+function _injectAssistPromptsAsComment(yaml, prompts) {
+  if (!prompts || !prompts.length) return yaml;
+  const header = '# UC Assist prompts (this UC was iterated from these messages):';
+  const block = [
+    header,
+    ...prompts.map((p, i) => {
+      const lines = String(p).split('\n');
+      return lines.map((ln, j) =>
+        j === 0 ? `#   ${i + 1}. ${ln}` : `#      ${ln}`
+      ).join('\n');
+    }),
+    '#',
+  ].join('\n');
+
+  // Strip any existing block from a previous Apply
+  const lines = yaml.split('\n');
+  let i = 0, end = -1;
+  while (i < lines.length && lines[i].startsWith(header)) {
+    // Find the end of an existing block (first line not starting with `#` or first blank `#`-only line)
+    let j = i + 1;
+    while (j < lines.length && lines[j].startsWith('#')) j++;
+    end = j;
+    i = j;
+    break;
+  }
+  if (end >= 0) {
+    return block + '\n' + lines.slice(end).join('\n');
+  }
+  return block + '\n' + yaml;
+}
+
+function _ucAssistClose() {
+  const panel = document.getElementById('ucAssistPanel');
+  if (panel) panel.style.display = 'none';
+}
+
+function _ucAssistAppendMessage(role, text, yaml, error) {
+  const hist = document.getElementById('ucAssistHistory');
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex; flex-direction:column; gap:4px;';
+  const bubble = document.createElement('div');
+  const isUser = role === 'user';
+  bubble.style.cssText = `font-size:11px; line-height:1.6; padding:7px 10px; border-radius:3px;
+    background:${isUser ? 'var(--accent-bg)' : 'var(--bg-input)'};
+    color:${isUser ? 'var(--text)' : 'var(--text)'};
+    border:1px solid ${isUser ? 'var(--accent-soft)' : 'var(--border)'};
+    align-self:${isUser ? 'flex-end' : 'flex-start'}; max-width:95%;
+    ${error ? 'color:var(--red);' : ''}`;
+  bubble.textContent = text;
+  wrap.appendChild(bubble);
+  if (yaml) {
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'btn success';
+    applyBtn.style.cssText = 'font-size:9px; padding:3px 10px; align-self:flex-start;';
+    applyBtn.textContent = '↑ Apply to editor';
+    applyBtn.addEventListener('click', () => {
+      // R4: stamp the prompts that produced this YAML as a top-of-file
+      // comment block so reviewers can see what the author asked for.
+      const stamped = _injectAssistPromptsAsComment(yaml, _ucAssistPrompts);
+      document.getElementById('ucYamlEditor').value = stamped;
+      const titleFromYaml = _extractTitleFromYaml(stamped);
+      if (titleFromYaml) document.getElementById('ucNameInput').value = titleFromYaml;
+      applyBtn.textContent = '✓ Applied';
+      applyBtn.disabled = true;
+    });
+    wrap.appendChild(applyBtn);
+  }
+  hist.appendChild(wrap);
+  hist.scrollTop = hist.scrollHeight;
+}
+
+async function _ucAssistSend() {
+  const input = document.getElementById('ucAssistInput');
+  const msg = (input.value || '').trim();
+  if (!msg) return;
+  const avail = await _ucAssistCheckAvail();
+  if (!avail) {
+    _ucAssistAppendMessage('assistant', 'No model selected. Use the selector at the top of this panel to pick a model, then try again.', null, true);
+    document.getElementById('ucAssistPanelModelSel').focus();
+    return;
+  }
+  _ucAssistPrompts.push(msg);   // R4: record for later YAML stamping
+  _ucAssistAppendMessage('user', msg);
+  input.value = '';
+  const btn = document.getElementById('ucAssistSendBtn');
+  btn.disabled = true; btn.textContent = '…';
+  const currentYaml = document.getElementById('ucYamlEditor').value || '';
+  try {
+    const ucPayload = { message: msg, current_yaml: currentYaml,
+                        ..._overrideModelBody('ucAssistPanelModelSel') };
+    const resp = await api('/api/uc-assist', {
+      method: 'POST',
+      body: JSON.stringify(ucPayload),
+    });
+    const explanation = resp.explanation || (resp.error ? `Error: ${resp.error}` : '(no response)');
+    _ucAssistAppendMessage('assistant', explanation, resp.yaml_suggestion || null, !!resp.error);
+  } catch(e) {
+    _ucAssistAppendMessage('assistant', `Request failed: ${e.message}`, null, true);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Send';
+  }
+}
+
+document.getElementById('ucAssistToggleBtn').addEventListener('click', () => {
+  const panel = document.getElementById('ucAssistPanel');
+  if (panel.style.display === 'none' || !panel.style.display) {
+    _ucAssistOpen();
+    document.getElementById('ucAssistToggleBtn').style.color = 'var(--accent)';
+  } else {
+    _ucAssistClose();
+    document.getElementById('ucAssistToggleBtn').style.color = '';
+  }
+});
+
+document.getElementById('ucAssistSendBtn').addEventListener('click', _ucAssistSend);
+document.getElementById('ucAssistInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); _ucAssistSend(); }
+});
+document.getElementById('ucAssistClearBtn').addEventListener('click', () => {
+  document.getElementById('ucAssistHistory').innerHTML = '';
+  document.getElementById('ucAssistInput').value = '';
+});
+async function saveUC() {
+  const btn = document.getElementById('saveUCModal'), status = document.getElementById('ucModalStatus');
+  btn.disabled = true; status.textContent = 'saving…';
+  const nameInput = (document.getElementById('ucNameInput').value || '').trim();
+  let yamlContent = document.getElementById('ucYamlEditor').value;
+  // Sync the Name field into the YAML's top-level title: before persisting,
+  // so the editor's two halves never disagree.
+  if (nameInput) yamlContent = _injectTitleIntoYaml(yamlContent, nameInput);
+  const tags = document.getElementById('ucTagsInput').value.split(',').map(t => t.trim()).filter(Boolean);
+  const payload = {yaml_content: yamlContent, tags};
+  try {
+    let resp;
+    if (editingUCId)
+      resp = await api(`/api/use-cases/${encodeURIComponent(editingUCId)}`, {method:'PUT', body:JSON.stringify(payload)});
+    else
+      resp = await api('/api/use-cases', {method:'POST', body:JSON.stringify(payload)});
+    toast(`Saved ${resp.uuid}`); closeUCModal(); activeUCId = resp.uuid;
+    await loadUCs(); selectUC(resp.uuid);
+  } catch (e) {
+    // Parse structured 400s from _validate_uc_yaml into a friendlier list
+    const vd = (e.status === 400 && e.body)
+      && (e.body.detail?.detail === 'uc_validation_failed' ? e.body.detail
+          : (e.body.detail === 'uc_validation_failed' ? e.body : null));
+    if (vd && vd.errors) {
+      status.innerHTML = `<span style="color:var(--red)">${esc(vd.message)}</span>
+        <ul style="margin:6px 0 0 16px;padding:0;font-size:11px;color:var(--red);">
+          ${vd.errors.map(err => `<li>${esc(err)}</li>`).join('')}
+        </ul>`;
+    } else {
+      status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    }
+    btn.disabled = false;
+  }
+}
+
+async function validateUC() {
+  const status = document.getElementById('ucModalStatus');
+  const nameInput = (document.getElementById('ucNameInput').value || '').trim();
+  let yamlContent = document.getElementById('ucYamlEditor').value;
+  if (nameInput) yamlContent = _injectTitleIntoYaml(yamlContent, nameInput);
+  status.textContent = 'validating…'; status.style.color = '';
+  try {
+    const resp = await api('/api/use-cases/validate', {
+      method: 'POST',
+      body: JSON.stringify({ yaml_content: yamlContent, tags: [] }),
+    });
+    if (resp.ok) {
+      status.innerHTML = '<span style="color:var(--green)">✓ Validation passed — ready to save.</span>';
+    } else {
+      status.innerHTML = `<span style="color:var(--red)">⚠ ${resp.errors.length} error${resp.errors.length>1?'s':''}:</span>
+        <ul style="margin:6px 0 0 16px;padding:0;font-size:11px;color:var(--red);">
+          ${resp.errors.map(err => `<li>${esc(err)}</li>`).join('')}
+        </ul>`;
+    }
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">Validate failed: ${esc(e.message)}</span>`;
+  }
+}
+document.getElementById('validateUCBtn').addEventListener('click', validateUC);
+
+// #122 — auto-repair the UC being edited (server-side: backfill a missing handle, etc.) and reload.
+async function repairUC() {
+  const status = document.getElementById('ucModalStatus');
+  if (!editingUCId) {
+    status.innerHTML = '<span style="color:var(--amber,#d79a2b)">Save the use case first — Repair fixes a saved UC (e.g. backfills a missing handle).</span>';
+    return;
+  }
+  status.textContent = 'repairing…'; status.style.color = '';
+  try {
+    const r = await api(`/api/use-cases/${encodeURIComponent(editingUCId)}/repair`, { method: 'POST' });
+    if (r.yaml_content) document.getElementById('ucYamlEditor').value = r.yaml_content;
+    const did = r.repaired || [];
+    let html = did.length
+      ? `<span style="color:var(--green)">⚕ Repaired: ${did.map(esc).join('; ')}.</span>`
+      : `<span style="color:var(--text-dim)">${esc(r.message || 'Nothing to auto-repair.')}</span>`;
+    if ((r.remaining_errors || []).length) {
+      html += `<ul style="margin:6px 0 0 16px;padding:0;font-size:11px;color:var(--red);">${r.remaining_errors.map(e => `<li>${esc(e)}</li>`).join('')}</ul>`;
+    }
+    status.innerHTML = html;
+    if (did.length) { try { await loadUCs(); } catch (_) {} }   // refresh the list's validity flags
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">Repair failed: ${esc(e.message)}</span>`;
+  }
+}
+document.getElementById('repairUCBtn')?.addEventListener('click', repairUC);
+
+// UC readiness check (DCM feature #4) — advisory definition-quality feedback.
+async function checkReadiness() {
+  const status = document.getElementById('ucModalStatus');
+  const nameInput = (document.getElementById('ucNameInput').value || '').trim();
+  let yamlContent = document.getElementById('ucYamlEditor').value;
+  if (nameInput) yamlContent = _injectTitleIntoYaml(yamlContent, nameInput);
+  status.textContent = 'scoring…'; status.style.color = '';
+  try {
+    const resp = await api('/api/use-cases/readiness', {
+      method: 'POST',
+      body: JSON.stringify({ yaml_content: yamlContent, tags: [] }),
+    });
+    if (!resp.ok) {
+      status.innerHTML = `<span style="color:var(--red)">Readiness: ${esc(resp.error || 'could not parse YAML')}</span>`;
+      return;
+    }
+    const band = (resp.band || '').replace('_', ' ');
+    const col = READINESS_COLORS[resp.band] || 'var(--text-faint)';
+    const failing = (resp.checks || []).filter(c => !c.ok);
+    let html = `<span style="color:${col}">⊹ Readiness ${resp.score}/100 (${esc(band)}) — ${resp.passed}/${resp.total} checks pass</span>`;
+    if (failing.length) {
+      html += `<ul style="margin:6px 0 0 16px;padding:0;font-size:11px;color:var(--text-dim);">`
+        + failing.map(c => `<li>${esc(c.hint)}</li>`).join('') + `</ul>`;
+    } else {
+      html += ` <span style="color:var(--green)">— well-defined.</span>`;
+    }
+    status.innerHTML = html;
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">Readiness failed: ${esc(e.message)}</span>`;
+  }
+}
+document.getElementById('readinessUCBtn').addEventListener('click', checkReadiness);
+
+const UC_TEMPLATE = `# DAV Use Case — v1.0
+title: ""
+uuid: uc-<your-uuid-here>
+handle: <category>/<descriptor>
+
+scenario:
+  description: |
+    Describe the scenario in 2-3 sentences.
+
+  actor:
+    persona: <persona>
+    profile: standard
+
+  intent: |
+    What the actor is trying to accomplish.
+
+  success_criteria:
+    - First observable success condition
+    - Second observable success condition
+
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: hard_dependencies
+    policy_complexity: single_gating
+    provider_landscape: multiple_eligible
+    governance_context: standard_governance
+    failure_mode: happy_path
+
+  profile: standard
+
+  expected_domain_interactions:
+    - domain: <domain-name>
+      interaction: Description of how this domain is involved
+
+generated_by:
+  mode: authoring
+  source: human-authored
+
+tags:
+  - <tag>
+`;
+
+// ══════════════════════════ BULK IMPORT (M12a / ADR-008) ══════════════════════════
+//
+// Paste a transcript / notes; the LLM extracts N distinct UC drafts; reviewer
+// trims and saves; then chooses Set assignment (skip / new / existing / individual).
+//
+// State lives only on the modal — no globals — so reopening starts fresh.
+
+let _biExtracted = [];   // [{yaml_content, rationale, source_excerpt, _keep, _ucUuid?}]
+let _biSavedUCs = [];    // [{uuid, title}] populated after Step 2 save
+
+function openBulkImport() {
+  document.getElementById('bulkImportModal').classList.add('open');
+  document.getElementById('biStep1').style.display = '';
+  document.getElementById('biStep2').style.display = 'none';
+  document.getElementById('biStep3').style.display = 'none';
+  document.getElementById('biSourceText').value = '';
+  document.getElementById('biContext').value = '';
+  document.getElementById('biStatus').textContent = '';
+  document.getElementById('biExtractStatus').textContent = '';
+  document.getElementById('biResults').innerHTML = '';
+  document.getElementById('biSavedSummary').textContent = '';
+  document.getElementById('biSetNewName').value = '';
+  document.getElementById('biBackBtn').style.display = 'none';
+  const primary = document.getElementById('biPrimaryBtn');
+  primary.textContent = 'Extract UCs';
+  primary.disabled = false;
+  primary.onclick = biRunExtract;
+  _biExtracted = [];
+  _biSavedUCs = [];
+  _populateOverrideSel('biModelSel', 'uc-authoring');
+  const txtRadio = document.querySelector('input[name="biSource"][value="text"]'); if (txtRadio) txtRadio.checked = true;
+  const recFile = document.getElementById('biRecordingFile'); if (recFile) recFile.value = '';
+  const recProg = document.getElementById('biRecordingProgress'); if (recProg) recProg.innerHTML = '';
+  _biSetSource('text');
+}
+
+function closeBulkImport() {
+  document.getElementById('bulkImportModal').classList.remove('open');
+}
+
+// Source toggle: paste text vs upload a recording (#176). The recording path uploads to
+// the dav-recording-worker (local transcribe + extract) and funnels drafts into the same
+// review step. (Browser-side transcription is the privacy-preferred enhancement — #180.)
+let _biMode = 'text';
+function _biSetSource(mode) {
+  _biMode = mode;
+  const t = document.getElementById('biTextRow'), r = document.getElementById('biRecordingRow');
+  if (t) t.style.display = mode === 'text' ? '' : 'none';
+  if (r) r.style.display = (mode === 'recording' || mode === 'browser') ? '' : 'none';
+  const note = document.getElementById('biSourceNote');
+  if (note) {
+    if (mode === 'recording') {
+      note.innerHTML = '<span style="color:var(--orange,#c8861a);">⚠ This uploads the recording to a remote server for transcription.</span> For better privacy &amp; security, prefer <strong>🔒 Transcribe in browser</strong> — that keeps the recording on your device and sends only the transcript text.';
+    } else if (mode === 'browser') {
+      note.innerHTML = 'Audio/video is transcribed <strong>in your browser</strong> (whisper; video audio via ffmpeg.wasm) — the recording never leaves your device. Only the resulting <strong>transcript text</strong> is then sent to the remote model, which creates the UCs. First run downloads the model(s) (then cached).';
+    } else { note.innerHTML = ''; }
+  }
+}
+
+// Shared "drafts → review step" transition, used by both the text and recording paths.
+function _biShowDrafts(items) {
+  const primary = document.getElementById('biPrimaryBtn');
+  _biExtracted = items.map(it => ({ ...it, _keep: true }));
+  biRenderResults();
+  document.getElementById('biStep1').style.display = 'none';
+  document.getElementById('biStep2').style.display = '';
+  document.getElementById('biBackBtn').style.display = '';
+  document.getElementById('biBackBtn').onclick = () => {
+    document.getElementById('biStep1').style.display = '';
+    document.getElementById('biStep2').style.display = 'none';
+    document.getElementById('biBackBtn').style.display = 'none';
+    primary.textContent = 'Extract UCs';
+    primary.onclick = biRunExtract;
+  };
+  primary.textContent = 'Save selected →';
+  primary.disabled = false;
+  primary.onclick = biSaveSelected;
+  document.getElementById('biStatus').textContent = '';
+  document.getElementById('biExtractStatus').textContent =
+    `${items.length} draft${items.length === 1 ? '' : 's'} proposed — uncheck the ones to skip, then click Save selected.`;
+}
+
+async function biRunExtractFromRecording() {
+  const fileEl = document.getElementById('biRecordingFile');
+  const file = fileEl && fileEl.files && fileEl.files[0];
+  if (!file) { toast('Choose a recording file first', true); return; }
+  const primary = document.getElementById('biPrimaryBtn');
+  primary.disabled = true;
+  const prog = document.getElementById('biRecordingProgress');
+  const setProg = (m) => { if (prog) prog.innerHTML = m; };
+  document.getElementById('biStatus').textContent = '';
+  setProg('<span class="llm-spinner"></span>uploading…');
+  const PHASE = {
+    queued: 'queued…', claimed: 'starting…', transcribing: 'transcribing audio locally (whisper)…',
+    'extracting-ucs': 'extracting use cases…', done: 'done', failed: 'failed',
+  };
+  try {
+    const mb = _overrideModelBody('biModelSel');
+    const fd = new FormData();
+    fd.append('file', file);
+    const ctx = document.getElementById('biContext').value.trim();
+    if (ctx) fd.append('context', ctx);
+    if (mb.model_config_id) fd.append('model_config_id', mb.model_config_id);
+    const res = await fetch(API + '/api/use-cases/from-recording', {
+      method: 'POST',
+      headers: { ...(typeof _activeProject !== 'undefined' && _activeProject ? { 'X-DAV-Project': _activeProject } : {}) },
+      body: fd,
+    });
+    if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+    const { job_id } = await res.json();
+    let tries = 0;
+    for (;;) {
+      await new Promise(r => setTimeout(r, 4000));
+      let j;
+      try { j = await api('/api/use-cases/from-recording/' + job_id); }
+      catch (e) { setProg(`<span style="color:var(--red)">${esc(e.message)}</span>`); primary.disabled = false; return; }
+      const ph = j.phase || j.status;
+      setProg(`<span class="llm-spinner"></span>${esc(PHASE[ph] || ph)}${j.transcript_ready ? ' · transcript ready' : ''}`);
+      if (j.status === 'done') {
+        const items = j.items || [];
+        if (!items.length) { setProg('Transcribed, but the model found nothing UC-shaped in it.'); primary.disabled = false; return; }
+        setProg(`Transcribed + extracted ${items.length} draft${items.length === 1 ? '' : 's'}.`);
+        _biShowDrafts(items);
+        return;
+      }
+      if (j.status === 'failed' || j.status === 'cancelled') {
+        setProg(`<span style="color:var(--red)">${esc(j.error || j.status)}</span>`);
+        primary.disabled = false;
+        return;
+      }
+      if (++tries > 450) { setProg('<span style="color:var(--red)">timed out waiting for the worker</span>'); primary.disabled = false; return; }
+    }
+  } catch (e) {
+    setProg(`<span style="color:var(--red)">${esc(e.message)}</span>`);
+    primary.disabled = false;
+  }
+}
+
+// ── In-browser transcription (#180) — the audio NEVER leaves the device. ──
+// Whisper runs client-side via Transformers.js (WebGPU, WASM fallback); only the
+// resulting transcript text is sent to the remote model for extraction. The speech
+// model downloads from a CDN on first use and is cached in the browser (no audio uploads).
+const _BS_TJS_URL = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3';
+const _BS_MODEL = 'Xenova/whisper-base.en';   // base.en = good speed/quality for the browser
+let _bsTranscriber = null;
+
+// ffmpeg.wasm (in-browser) — extracts the audio track from any container (video too),
+// single-threaded core so it runs without cross-origin isolation. The file never leaves.
+const _BS_FFMPEG_VER = '0.12.10', _BS_FFMPEG_UTIL_VER = '0.12.1', _BS_FFMPEG_CORE_VER = '0.12.6';
+let _bsFfmpeg = null;
+let _bsFfProgressCb = null;
+async function _bsGetFfmpeg(setProg) {
+  if (_bsFfmpeg) return _bsFfmpeg;
+  if (setProg) setProg('<span class="llm-spinner"></span>loading ffmpeg in-browser (~30 MB first run; cached after)…');
+  const FF = await import(`https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@${_BS_FFMPEG_VER}/dist/esm/index.js`);
+  const U = await import(`https://cdn.jsdelivr.net/npm/@ffmpeg/util@${_BS_FFMPEG_UTIL_VER}/dist/esm/index.js`);
+  const ffmpeg = new FF.FFmpeg();
+  ffmpeg.on('progress', ({ progress }) => { if (_bsFfProgressCb) _bsFfProgressCb(progress); });
+  const base = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${_BS_FFMPEG_CORE_VER}/dist/esm`;
+  await ffmpeg.load({
+    coreURL: await U.toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
+    wasmURL: await U.toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),
+  });
+  _bsFfmpeg = ffmpeg;
+  return ffmpeg;
+}
+async function _bsFfmpegExtractWav(file, setProg) {
+  const ffmpeg = await _bsGetFfmpeg(setProg);
+  const ext = (file.name && file.name.includes('.')) ? file.name.split('.').pop().toLowerCase().replace(/[^a-z0-9]/g, '') : 'bin';
+  const inName = 'in.' + (ext || 'bin'), outName = 'out.wav';
+  _bsFfProgressCb = (p) => { if (setProg) setProg(`<span class="llm-spinner"></span>extracting audio from the file (ffmpeg) — ${Math.round((p || 0) * 100)}%…`); };
+  if (setProg) setProg('<span class="llm-spinner"></span>extracting audio from the file (ffmpeg, in-browser)…');
+  try {
+    await ffmpeg.writeFile(inName, new Uint8Array(await file.arrayBuffer()));
+    await ffmpeg.exec(['-i', inName, '-vn', '-ar', '16000', '-ac', '1', '-f', 'wav', outName]);
+    const data = await ffmpeg.readFile(outName);
+    try { await ffmpeg.deleteFile(inName); await ffmpeg.deleteFile(outName); } catch {}
+    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+  } finally { _bsFfProgressCb = null; }
+}
+async function _bsDecodeTo16kMono(file, setProg) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) throw new Error('Web Audio API not available in this browser.');
+  const isVideo = (file.type && file.type.startsWith('video/')) ||
+    /\.(mp4|mov|mkv|webm|avi|m4v|wmv|flv|ts|mpg|mpeg)$/i.test(file.name || '');
+  let abuf = isVideo ? await _bsFfmpegExtractWav(file, setProg) : await file.arrayBuffer();
+  const ac = new AC();
+  let decoded;
+  try {
+    decoded = await ac.decodeAudioData(abuf.slice(0));
+  } catch (e) {
+    if (!isVideo) {
+      // audio codec the browser can't decode natively (e.g. some m4a/opus) → ffmpeg, then retry
+      try { abuf = await _bsFfmpegExtractWav(file, setProg); decoded = await ac.decodeAudioData(abuf.slice(0)); }
+      catch (e2) { try { ac.close(); } catch {} throw new Error('Could not decode this file in-browser. Try the "Upload recording" path (server worker).'); }
+    } else {
+      try { ac.close(); } catch {}
+      throw new Error('Could not decode the extracted audio. Try the "Upload recording" path (server worker).');
+    }
+  }
+  try { ac.close(); } catch {}
+  const rate = 16000;
+  const frames = Math.max(1, Math.ceil(decoded.duration * rate));
+  const off = new OfflineAudioContext(1, frames, rate);
+  const src = off.createBufferSource();
+  src.buffer = decoded;
+  src.connect(off.destination);
+  src.start(0);
+  const rendered = await off.startRendering();
+  return rendered.getChannelData(0);
+}
+function _bsFmtEta(s) { s = Math.round(s); if (s < 60) return s + 's'; const m = Math.floor(s / 60), r = s % 60; return m + 'm' + (r ? ' ' + r + 's' : ''); }
+
+async function _bsGetTranscriber(setProg) {
+  if (_bsTranscriber) return _bsTranscriber;
+  const mod = await import(_BS_TJS_URL);
+  const { pipeline, env } = mod;
+  try { env.allowLocalModels = false; } catch {}
+  // No cross-origin isolation (no COOP/COEP) → SharedArrayBuffer is unavailable, so force
+  // single-threaded WASM; otherwise onnxruntime-web's threaded path fails on the fallback.
+  try { env.backends.onnx.wasm.numThreads = 1; } catch {}
+  const device = (typeof navigator !== 'undefined' && navigator.gpu) ? 'webgpu' : 'wasm';
+  _bsTranscriber = await pipeline('automatic-speech-recognition', _BS_MODEL, {
+    device,
+    progress_callback: (p) => {
+      if (p && p.status === 'progress' && p.file) {
+        setProg(`<span class="llm-spinner"></span>downloading speech model (${device}): ${esc(p.file)} ${Math.round(p.progress || 0)}%`);
+      }
+    },
+  });
+  return _bsTranscriber;
+}
+
+async function biRunExtractInBrowser() {
+  const fileEl = document.getElementById('biRecordingFile');
+  const file = fileEl && fileEl.files && fileEl.files[0];
+  if (!file) { toast('Choose a recording file first', true); return; }
+  const primary = document.getElementById('biPrimaryBtn');
+  primary.disabled = true;
+  const prog = document.getElementById('biRecordingProgress');
+  const setProg = (m) => { if (prog) prog.innerHTML = m; };
+  document.getElementById('biStatus').textContent = '';
+  try {
+    setProg('<span class="llm-spinner"></span>decoding audio locally…');
+    const audio = await _bsDecodeTo16kMono(file, setProg);
+    setProg('<span class="llm-spinner"></span>loading the speech model (first run downloads it; cached after)…');
+    const transcriber = await _bsGetTranscriber(setProg);
+    const totalSec = audio.length / 16000;
+    const t0 = Date.now();
+    const updateProg = (curSec) => {
+      const frac = Math.max(0, Math.min(0.99, curSec / Math.max(1, totalSec)));
+      const elapsed = (Date.now() - t0) / 1000;
+      const eta = frac > 0.03 ? (elapsed * (1 - frac) / frac) : null;
+      setProg(`<span class="llm-spinner"></span>transcribing in your browser — ${Math.round(frac * 100)}%${eta ? ` · ~${_bsFmtEta(eta)} left` : ''} (audio never leaves this device)`);
+    };
+    setProg('<span class="llm-spinner"></span>transcribing in your browser — the recording never leaves this device…');
+    let streamer = null;
+    try {
+      const { WhisperTextStreamer } = await import(_BS_TJS_URL);
+      const tp = transcriber.processor.feature_extractor.config.chunk_length / transcriber.model.config.max_source_positions;
+      streamer = new WhisperTextStreamer(transcriber.tokenizer, {
+        time_precision: tp,
+        on_chunk_start: (t) => updateProg(t),
+        on_chunk_end: (t) => updateProg(t),
+      });
+    } catch (_) { streamer = null; }
+    const opts = { chunk_length_s: 30, stride_length_s: 5, return_timestamps: true };
+    if (streamer) opts.streamer = streamer;
+    const out = await transcriber(audio, opts);
+    const transcript = ((out && out.text) || '').trim();
+    if (!transcript) { setProg('No speech detected in the recording.'); primary.disabled = false; return; }
+    document.getElementById('biSourceText').value = transcript;
+    const txtRadio = document.querySelector('input[name="biSource"][value="text"]'); if (txtRadio) txtRadio.checked = true;
+    _biSetSource('text');
+    setProg(`Transcribed locally (${transcript.length} chars). Only this transcript is sent for extraction.`);
+    await biRunExtract();   // text path — sends just the transcript to the remote model
+  } catch (e) {
+    setProg(`<span style="color:var(--red)">${esc(e.message)}</span>`);
+    primary.disabled = false;
+  }
+}
+
+async function biRunExtract() {
+  if (_biMode === 'recording') return biRunExtractFromRecording();
+  if (_biMode === 'browser') return biRunExtractInBrowser();
+  const text = document.getElementById('biSourceText').value.trim();
+  if (!text) { toast('Paste some text first', true); return; }
+  const primary = document.getElementById('biPrimaryBtn');
+  primary.disabled = true;
+  document.getElementById('biStatus').innerHTML = '<span class="llm-spinner"></span>extracting UCs…';
+  const payload = {
+    text,
+    context: document.getElementById('biContext').value.trim() || null,
+    ..._overrideModelBody('biModelSel'),
+  };
+  const pane = document.getElementById('biStep1');
+  const approxMin = Math.max(1, Math.ceil(text.length / 4000));
+  const hideBusy = _showBusy(pane, `Extracting UCs from your text — large transcripts can take ${approxMin}–${approxMin * 2} min on local models. Don't close this window.`);
+  try {
+    const resp = await api('/api/use-cases/bulk-from-text', {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+    const items = resp.items || [];
+    if (!items.length) {
+      const why = resp.no_ucs_reason || 'Model found nothing UC-shaped in the source text.';
+      document.getElementById('biStatus').innerHTML =
+        `<span style="color:var(--text-faint)">${esc(why)}</span>`;
+      primary.disabled = false;
+      return;
+    }
+    _biShowDrafts(items);
+  } catch (e) {
+    document.getElementById('biStatus').innerHTML =
+      `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    primary.disabled = false;
+  } finally {
+    hideBusy();
+  }
+}
+
+function biRenderResults() {
+  const el = document.getElementById('biResults');
+  el.innerHTML = '';
+  _biExtracted.forEach((it, idx) => {
+    const card = document.createElement('div');
+    const failed = !!it._biSaveError;
+    const saved  = !!it._ucUuid;
+    const accent = failed ? 'var(--red)' : (saved ? 'var(--green)' : 'var(--border)');
+    card.style.cssText = `border:1px solid ${accent}; border-radius:2px; background:var(--bg-input); padding:8px 10px;`;
+    const titleMatch = /^title:\s*(.+)$/m.exec(it.yaml_content || '');
+    const title = titleMatch ? titleMatch[1].trim().replace(/^["']|["']$/g, '') : '(untitled draft)';
+    const detailOpen = failed ? '' : 'none';
+    const statusBadge = saved
+      ? `<span style="font-size:9px; padding:2px 6px; background:var(--green-bg, rgba(80,180,80,0.15)); color:var(--green); border-radius:2px; font-weight:600;">SAVED</span>`
+      : failed
+        ? `<span style="font-size:9px; padding:2px 6px; background:rgba(217,101,58,0.15); color:var(--red); border-radius:2px; font-weight:600;">FAILED</span>`
+        : '';
+    card.innerHTML = `
+      <div style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" data-idx="${idx}" class="bi-keep" ${it._keep ? 'checked' : ''}
+               ${saved ? 'disabled' : ''}
+               style="width:auto; height:auto; accent-color:var(--accent);" />
+        <strong style="flex:1; font-size:13px;">${esc(title)}</strong>
+        ${statusBadge}
+        <button class="btn ghost btn-sm" data-idx="${idx}" data-act="toggle" style="font-size:10px;">▾ details</button>
+      </div>
+      ${failed ? `<div style="margin-top:6px; padding:6px 8px; background:rgba(217,101,58,0.10); border-left:3px solid var(--red); font-size:11px; color:var(--text);">
+        <strong>Validation failed:</strong> ${esc(it._biSaveError)}<br>
+        <span style="color:var(--text-faint); font-size:10px;">Fix the YAML below (expand details ▾) and click <strong>↻ Retry save</strong>.</span>
+      </div>` : ''}
+      <div data-detail="${idx}" style="display:${detailOpen}; margin-top:6px;">
+        ${it.rationale ? `<div style="font-size:11px; color:var(--text-faint); margin-bottom:4px;"><strong>why:</strong> ${esc(it.rationale)}</div>` : ''}
+        ${it.source_excerpt ? `<div style="font-size:11px; color:var(--text-faint); margin-bottom:4px; font-style:italic;">"${esc(it.source_excerpt)}"</div>` : ''}
+        <textarea data-idx="${idx}" class="bi-yaml" rows="10" spellcheck="false" style="width:100%; font-family:ui-monospace, monospace; font-size:11px; line-height:1.5;">${esc(it.yaml_content || '')}</textarea>
+      </div>`;
+    el.appendChild(card);
+  });
+  el.querySelectorAll('input.bi-keep').forEach(box => {
+    box.addEventListener('change', e => {
+      _biExtracted[parseInt(e.target.dataset.idx, 10)]._keep = e.target.checked;
+    });
+  });
+  el.querySelectorAll('textarea.bi-yaml').forEach(t => {
+    t.addEventListener('input', e => {
+      _biExtracted[parseInt(e.target.dataset.idx, 10)].yaml_content = e.target.value;
+    });
+  });
+  el.querySelectorAll('button[data-act="toggle"]').forEach(b => {
+    b.addEventListener('click', e => {
+      const idx = e.currentTarget.dataset.idx;
+      const detail = el.querySelector(`[data-detail="${idx}"]`);
+      detail.style.display = detail.style.display === 'none' ? '' : 'none';
+    });
+  });
+}
+
+async function biSaveSelected() {
+  const toSave = _biExtracted.filter(it => it._keep);
+  if (!toSave.length) { toast('Nothing selected to save', true); return; }
+  const primary = document.getElementById('biPrimaryBtn');
+  primary.disabled = true;
+  const status = document.getElementById('biStatus');
+  _biSavedUCs = [];
+  const failures = [];   // { index, title, error_detail }
+  for (let i = 0; i < toSave.length; i++) {
+    const it = toSave[i];
+    status.textContent = `saving ${i+1}/${toSave.length}…`;
+    const titleMatch = /^title:\s*(.+)$/m.exec(it.yaml_content || '');
+    const title = titleMatch ? titleMatch[1].trim().replace(/^["']|["']$/g, '') : `(item ${i+1} — untitled)`;
+    try {
+      const resp = await api('/api/use-cases', {
+        method: 'POST',
+        body: JSON.stringify({yaml_content: it.yaml_content, tags: []}),
+      });
+      const uuid = resp.uuid || resp.use_case?.uuid;
+      _biSavedUCs.push({uuid, title, yaml_content: it.yaml_content});
+      it._ucUuid = uuid;
+      it._biSaveError = null;
+    } catch (e) {
+      // Best-effort extract validation errors from the structured 400 body
+      let detail = e.message;
+      try {
+        const parsed = JSON.parse(e.message.replace(/^[^{]*/, ''));
+        const inner = parsed.detail && typeof parsed.detail === 'object' ? parsed.detail : parsed;
+        if (inner.errors && Array.isArray(inner.errors)) {
+          detail = inner.errors.join('; ');
+        } else if (inner.message) {
+          detail = inner.message;
+        }
+      } catch(_) { /* keep raw message */ }
+      failures.push({index: i+1, title, error: detail, _it: it});
+      it._biSaveError = detail;
+    }
+  }
+  status.textContent = '';
+  biRenderResults();   // re-render cards so failed UCs show their inline error
+  const okN = _biSavedUCs.length;
+  const failN = failures.length;
+  const summaryEl = document.getElementById('biSavedSummary');
+  // Hard block on zero successes — DON'T silently proceed to Set creation
+  if (okN === 0) {
+    summaryEl.style.color = 'var(--red)';
+    summaryEl.innerHTML =
+      `<strong>0 UCs saved</strong> — all ${failN} failed engine validation.<br>`
+      + `<div style="margin-top:6px;font-size:11px;color:var(--text-dim);">Each failed card below shows its specific error inline; common cause is a value put in the wrong <code>dimensions.*</code> slot (e.g., <code>expiry_enforcement</code> belongs in <code>lifecycle_phase</code>, not <code>failure_mode</code>). Fix the YAML in-place and click <strong>↻ Retry save</strong>, or click <strong>← Back</strong> to re-extract.</div>`;
+    primary.textContent = '↻ Retry save';
+    primary.disabled = false;
+    primary.onclick = biSaveSelected;   // retry path
+    // Re-show Back so the user can re-extract or pivot
+    const backBtn = document.getElementById('biBackBtn');
+    if (backBtn) backBtn.style.display = '';
+    return;
+  }
+  summaryEl.style.color = '';
+  summaryEl.innerHTML =
+    `<strong>${okN}</strong> UC${okN===1?'':'s'} saved as drafts.` +
+    (failN ? ` <span style="color:var(--red)">${failN} failed</span> — see inline errors on the cards above; fix and re-extract if you want them too.` : '');
+  document.getElementById('biStep2').style.display = 'none';
+  document.getElementById('biStep3').style.display = '';
+  await biPrepStep3();
+  document.getElementById('biBackBtn').style.display = 'none';
+  primary.textContent = 'Finish';
+  primary.disabled = false;
+  primary.onclick = biApplySetAssignment;
+}
+
+async function biPrepStep3() {
+  // ALWAYS re-fetch sets so the dropdown reflects current server state.
+  // (Using cached `allSets` once cost us: a set deleted earlier in the
+  // session showed up in the dropdown, member-add POSTs 404'd, errors
+  // were silently swallowed, and the user ended up thinking the Scoping Set
+  // assignment had deleted the set when really it never wrote a member.)
+  try { await loadSets(); } catch(_) {}
+  const sel = document.getElementById('biSetExistingSel');
+  sel.innerHTML = '<option value="">— pick a set —</option>' +
+    (allSets || []).filter(s => s.id !== ALL_SET_ID).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
+  // Individual-pickers grid
+  const grid = document.getElementById('biIndividualPickers');
+  grid.innerHTML = '';
+  _biSavedUCs.forEach(uc => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; gap:6px; font-size:11px;';
+    const opts = '<option value="">— none —</option>' +
+      (allSets || []).filter(s => s.id !== ALL_SET_ID).map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+    row.innerHTML = `<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${esc(uc.title)}</span>
+      <select data-ucuuid="${esc(uc.uuid)}" class="bi-indiv-sel" style="flex:0 0 200px;">${opts}</select>`;
+    grid.appendChild(row);
+  });
+  // Wire radio→subfield visibility
+  document.querySelectorAll('input[name="biSetMode"]').forEach(r => {
+    r.addEventListener('change', () => {
+      const mode = document.querySelector('input[name="biSetMode"]:checked').value;
+      document.getElementById('biIndividualPickers').style.display = (mode === 'individual') ? '' : 'none';
+    });
+  });
+}
+
+async function biApplySetAssignment() {
+  const mode = document.querySelector('input[name="biSetMode"]:checked').value;
+  const primary = document.getElementById('biPrimaryBtn');
+  primary.disabled = true;
+  const status = document.getElementById('biStatus');
+  try {
+    let targetSetId = null;
+    if (mode === 'new') {
+      const name = document.getElementById('biSetNewName').value.trim();
+      if (!name) { toast('Name the new Set or pick another option', true); primary.disabled = false; return; }
+      status.textContent = 'creating set…';
+      const created = await api('/api/sets', {method:'POST', body:JSON.stringify({name, description: 'created from bulk import'})});
+      targetSetId = created.id || created.set?.id;
+    } else if (mode === 'existing') {
+      const v = document.getElementById('biSetExistingSel').value;
+      if (!v) { toast('Pick an existing Set', true); primary.disabled = false; return; }
+      targetSetId = parseInt(v, 10);
+    }
+    // Track per-UC member-add outcomes so the operator gets a clear final
+    // summary instead of a silent "success" toast when many adds 404'd.
+    // The bug this guards against: a stale set id from a deleted-but-cached
+    // dropdown entry → all member-adds 404 → bulk modal claims success →
+    // operator thinks the bulk flow deleted the set when it never wrote.
+    const addOk = []; const addFail = [];
+    if (mode === 'skip') {
+      // Nothing to do — drafts already saved
+    } else if (mode === 'individual') {
+      const sels = document.querySelectorAll('select.bi-indiv-sel');
+      for (const s of sels) {
+        const sid = s.value ? parseInt(s.value, 10) : null;
+        if (!sid) continue;
+        status.textContent = `assigning ${s.dataset.ucuuid.slice(0,8)}…`;
+        try {
+          await api(`/api/sets/${sid}/members`, {
+            method: 'POST',
+            body: JSON.stringify({uc_uuid: s.dataset.ucuuid, uc_source: 'managed'}),
+          });
+          addOk.push(s.dataset.ucuuid);
+        } catch (e) {
+          addFail.push({uc_uuid: s.dataset.ucuuid, set_id: sid, error: e.message});
+        }
+      }
+    } else if (targetSetId) {
+      for (const uc of _biSavedUCs) {
+        status.textContent = `adding ${uc.title.slice(0,30)}…`;
+        try {
+          await api(`/api/sets/${targetSetId}/members`, {
+            method: 'POST',
+            body: JSON.stringify({uc_uuid: uc.uuid, uc_source: 'managed'}),
+          });
+          addOk.push(uc.uuid);
+        } catch (e) {
+          addFail.push({uc_uuid: uc.uuid, title: uc.title, set_id: targetSetId, error: e.message});
+        }
+      }
+    }
+    if (addFail.length) {
+      // Don't close the modal — show the failures so the operator can
+      // pick a different set / new set / skip and recover.
+      const summary = document.getElementById('biSavedSummary');
+      const setLabel = mode === 'existing'
+        ? (allSets.find(s => s.id === targetSetId)?.name || `id=${targetSetId}`)
+        : (mode === 'new' ? 'new set' : 'individual selections');
+      summary.style.color = '';
+      summary.innerHTML = `<strong>${_biSavedUCs.length}</strong> UC${_biSavedUCs.length===1?'':'s'} saved as drafts.<br>`
+        + `<span style="color:var(--red);"><strong>${addFail.length}</strong> set membership${addFail.length===1?'':'s'} failed</strong> — ${esc(setLabel)} may have been deleted, or the UC was rejected.</span>`
+        + `<details style="margin-top:6px;font-size:11px;"><summary style="cursor:pointer;color:var(--text-faint);">show failure details</summary>`
+        + `<ul style="margin:4px 0 0 16px;padding:0;">`
+        + addFail.map(f => `<li>${esc(f.title || f.uc_uuid.slice(0,12))}: ${esc(f.error)}</li>`).join('')
+        + `</ul></details>`
+        + `<div style="margin-top:8px;font-size:11px;color:var(--text-dim);">The UCs themselves are saved (visible in the Use Cases list). Pick a different set option above and click <strong>Finish</strong> again to retry; the already-added members won't be duplicated (the API is idempotent on conflict).</div>`;
+      primary.disabled = false;
+      return;   // stay on step 3
+    }
+    toast(`Bulk import complete: ${_biSavedUCs.length} UC(s) saved, ${addOk.length} added to set`);
+    closeBulkImport();
+    try { await loadUCs(); } catch(_) {}
+    try { await loadSets(); } catch(_) {}
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+    primary.disabled = false;
+  }
+}
+
+function log_failures(uuid, e) {
+  console.warn('bulk: set assignment failed for', uuid, e);
+}
+
+// ══════════════════════════ UC WIZARD (M12b / ADR-008) ══════════════════════════
+//
+// 5-step guided creation: scenario → generate → review → assign → save.
+// State is wholly local to the modal (no globals beyond _wizardState) so
+// re-opening starts fresh. Reuses /api/uc-assist for steps 2+3 refinement
+// and the same POST /api/use-cases + /api/sets/{id}/members endpoints as
+// M12a for the actual persistence.
+
+let _wizardState = null;   // { step, scenario, context, modelResolved, yaml, explanation, tags[], setMode, setNewName, setExistingId, savedUcUuid }
+
+// M12 — show / hide a busy overlay over an element while an LLM call is in flight.
+// Returns a function that hides the overlay; call it in a finally{} block.
+function _showBusy(parentEl, msg) {
+  if (!parentEl) return () => {};
+  parentEl.classList.add('wz-busy');
+  const overlay = document.createElement('div');
+  overlay.className = 'wz-busy-msg';
+  overlay.innerHTML = `<span class="llm-spinner"></span><span>${esc(msg || 'working…')}</span>`;
+  parentEl.appendChild(overlay);
+  return () => {
+    parentEl.classList.remove('wz-busy');
+    overlay.remove();
+  };
+}
+
+function openUcWizard() {
+  document.getElementById('ucWizardModal').classList.add('open');
+  _wizardState = {
+    step: 1,
+    scenario: '',
+    context: '',
+    modelResolved: null,
+    yaml: '',
+    explanation: '',
+    tags: [],
+    setMode: 'skip',
+    setNewName: '',
+    setExistingId: null,
+    savedUcUuid: null,
+  };
+  document.getElementById('wzScenario').value = '';
+  document.getElementById('wzContext').value = '';
+  document.getElementById('wzYaml').value = '';
+  document.getElementById('wzYamlReview').value = '';
+  document.getElementById('wzYamlFinal').value = '';
+  document.getElementById('wzRefineInput').value = '';
+  document.getElementById('wzTags').value = '';
+  document.getElementById('wzSetNewName').value = '';
+  document.getElementById('wzExplanation').style.display = 'none';
+  document.getElementById('wzValidateStatus').textContent = '';
+  document.getElementById('wzStatus').textContent = '';
+  _populateOverrideSel('wzModelSel', 'uc-authoring');
+  wzShowStep(1);
+}
+
+function closeUcWizard() {
+  document.getElementById('ucWizardModal').classList.remove('open');
+  _wizardState = null;
+}
+
+function wzShowStep(n) {
+  _wizardState.step = n;
+  document.querySelectorAll('#ucWizardModal .wz-pane').forEach(p => {
+    p.style.display = (parseInt(p.dataset.step, 10) === n) ? '' : 'none';
+  });
+  document.querySelectorAll('#ucWizardModal .wz-step').forEach(s => {
+    const sn = parseInt(s.dataset.step, 10);
+    s.classList.remove('active', 'done');
+    if (sn === n) s.classList.add('active');
+    else if (sn < n) s.classList.add('done');
+  });
+  // Back button visibility
+  document.getElementById('wzBackBtn').style.display = (n > 1) ? '' : 'none';
+  // Primary button label
+  const primary = document.getElementById('wzPrimaryBtn');
+  const labels = {1:'Next: Generate →', 2:'Next: Review →', 3:'Next: Assign →', 4:'Next: Save →', 5:'Save use case'};
+  primary.textContent = labels[n];
+  primary.disabled = false;
+  document.getElementById('wzStatus').textContent = '';
+  // Step-specific entry hooks
+  if (n === 2) wzEnterStep2();
+  else if (n === 3) wzEnterStep3();
+  else if (n === 4) wzEnterStep4();
+  else if (n === 5) wzEnterStep5();
+}
+
+async function wzNext() {
+  const n = _wizardState.step;
+  if (n === 1) {
+    const scenario = document.getElementById('wzScenario').value.trim();
+    if (!scenario) { toast('Describe the scenario first', true); return; }
+    _wizardState.scenario = scenario;
+    _wizardState.context = document.getElementById('wzContext').value.trim();
+    // Blank ⇒ use the Config UC-authoring default; else the chosen override.
+    _wizardState.modelResolved = _overrideModelBody('wzModelSel');
+    wzShowStep(2);
+  } else if (n === 2) {
+    const yaml = document.getElementById('wzYaml').value.trim();
+    if (!yaml) { toast('Generate or paste a draft first', true); return; }
+    _wizardState.yaml = yaml;
+    wzShowStep(3);
+  } else if (n === 3) {
+    _wizardState.yaml = document.getElementById('wzYamlReview').value;
+    wzShowStep(4);
+  } else if (n === 4) {
+    _wizardState.tags = document.getElementById('wzTags').value
+      .split(',').map(t => t.trim()).filter(Boolean);
+    _wizardState.setMode = document.querySelector('input[name="wzSetMode"]:checked').value;
+    _wizardState.setNewName = document.getElementById('wzSetNewName').value.trim();
+    const sv = document.getElementById('wzSetExistingSel').value;
+    _wizardState.setExistingId = sv ? parseInt(sv, 10) : null;
+    wzShowStep(5);
+  } else if (n === 5) {
+    await wzFinalSave();
+  }
+}
+
+function wzBack() {
+  if (_wizardState.step > 1) wzShowStep(_wizardState.step - 1);
+}
+
+// ── Step 2: auto-generate if YAML is empty ─────────────────────────────────────
+async function wzEnterStep2() {
+  if (_wizardState.yaml) {
+    document.getElementById('wzYaml').value = _wizardState.yaml;
+    if (_wizardState.explanation) {
+      const ex = document.getElementById('wzExplanation');
+      ex.textContent = _wizardState.explanation;
+      ex.style.display = '';
+    }
+    return;
+  }
+  await wzGenerate();
+}
+
+async function wzGenerate() {
+  const status = document.getElementById('wzGenStatus');
+  status.innerHTML = '<span class="llm-spinner"></span>generating draft…';
+  const primary = document.getElementById('wzPrimaryBtn');
+  primary.disabled = true;
+  const pane = document.querySelector('#ucWizardModal .wz-pane[data-step="2"]');
+  const hideBusy = _showBusy(pane, 'Generating UC draft via LLM — this can take 30–90s for larger models…');
+  try {
+    const payload = {
+      message: _wizardState.scenario,
+      context: _wizardState.context || null,
+      ...(_wizardState.modelResolved || {}),
+    };
+    const resp = await api('/api/uc-assist', {method:'POST', body:JSON.stringify(payload)});
+    if (resp.yaml_suggestion) {
+      _wizardState.yaml = resp.yaml_suggestion;
+      document.getElementById('wzYaml').value = resp.yaml_suggestion;
+    }
+    _wizardState.explanation = resp.explanation || '';
+    if (resp.explanation) {
+      const ex = document.getElementById('wzExplanation');
+      ex.textContent = resp.explanation;
+      ex.style.display = '';
+    }
+    status.textContent = '';
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+  } finally {
+    hideBusy();
+    primary.disabled = false;
+  }
+}
+
+async function wzRefine() {
+  const req = document.getElementById('wzRefineInput').value.trim();
+  if (!req) { toast('Type a refinement request first', true); return; }
+  const current = document.getElementById('wzYaml').value.trim();
+  if (!current) { toast('Generate a draft first', true); return; }
+  const status = document.getElementById('wzGenStatus');
+  status.innerHTML = '<span class="llm-spinner"></span>refining…';
+  const btn = document.getElementById('wzRefineBtn');
+  btn.disabled = true;
+  const pane = document.querySelector('#ucWizardModal .wz-pane[data-step="2"]');
+  const hideBusy = _showBusy(pane, 'Asking the LLM to refine the draft…');
+  try {
+    const payload = {
+      message: req,
+      current_yaml: current,
+      context: _wizardState.context || null,
+      ...(_wizardState.modelResolved || {}),
+    };
+    const resp = await api('/api/uc-assist', {method:'POST', body:JSON.stringify(payload)});
+    if (resp.yaml_suggestion) {
+      _wizardState.yaml = resp.yaml_suggestion;
+      document.getElementById('wzYaml').value = resp.yaml_suggestion;
+    }
+    if (resp.explanation) {
+      const ex = document.getElementById('wzExplanation');
+      ex.textContent = resp.explanation;
+      ex.style.display = '';
+      _wizardState.explanation = resp.explanation;
+    }
+    document.getElementById('wzRefineInput').value = '';
+    status.textContent = '';
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+  } finally {
+    hideBusy();
+    btn.disabled = false;
+  }
+}
+
+// ── Step 3: parsed fields preview + editable YAML ─────────────────────────────
+function wzEnterStep3() {
+  document.getElementById('wzYamlReview').value = _wizardState.yaml || '';
+  wzRenderParsedPreview();
+  document.getElementById('wzYamlReview').oninput = () => {
+    _wizardState.yaml = document.getElementById('wzYamlReview').value;
+    wzRenderParsedPreview();
+  };
+}
+
+function wzRenderParsedPreview() {
+  const yaml = _wizardState.yaml || '';
+  const fields = {
+    title:             /^title:\s*(.+)$/m,
+    uuid:              /^uuid:\s*(.+)$/m,
+    handle:            /^handle:\s*(.+)$/m,
+    lifecycle_phase:   /lifecycle_phase:\s*(\w+)/,
+    failure_mode:      /failure_mode:\s*(\w+)/,
+    profile:           /^\s*profile:\s*(\w+)/m,
+    'generated_by.mode':   /^\s*mode:\s*(\w+)/m,
+    'generated_by.source': /^\s*source:\s*([\w-]+)/m,
+  };
+  const rows = Object.entries(fields).map(([k, re]) => {
+    const m = re.exec(yaml);
+    const val = m ? m[1].trim().replace(/^["']|["']$/g, '') : '<em style="color:var(--text-faint);">unset</em>';
+    return `<div style="display:flex; gap:8px; padding:2px 0;"><span style="min-width:180px; color:var(--text-faint); font-family:var(--mono,monospace);">${esc(k)}</span><span style="color:var(--text);">${val}</span></div>`;
+  }).join('');
+  document.getElementById('wzParsed').innerHTML =
+    '<div style="font-size:10px; text-transform:uppercase; letter-spacing:0.10em; color:var(--text-faint); margin-bottom:4px;">parsed fields</div>' + rows;
+}
+
+async function wzValidate() {
+  const status = document.getElementById('wzValidateStatus');
+  status.innerHTML = '<span class="llm-spinner"></span>validating…';
+  try {
+    const resp = await api('/api/use-cases/validate', {
+      method:'POST',
+      body: JSON.stringify({yaml_content: document.getElementById('wzYamlReview').value, tags: []}),
+    });
+    if (resp.ok) {
+      status.innerHTML = '<span style="color:var(--green)">✓ valid</span>';
+    } else {
+      const errs = (resp.errors || []).join('; ');
+      status.innerHTML = `<span style="color:var(--red)">✗ ${esc(errs || 'invalid')}</span>`;
+    }
+  } catch (e) {
+    // Endpoint returns 400 with structured errors on invalid YAML
+    let detail = e.message;
+    try {
+      const parsed = JSON.parse(e.message.replace(/^[^{]*/, ''));
+      if (parsed.errors) detail = parsed.errors.join('; ');
+    } catch(_) {}
+    status.innerHTML = `<span style="color:var(--red)">${esc(detail)}</span>`;
+  }
+}
+
+// ── Step 4: tags + Set assignment ─────────────────────────────────────────────
+async function wzEnterStep4() {
+  // Pre-fill tags from YAML
+  const yaml = _wizardState.yaml || '';
+  const tagsMatch = /^tags:\s*\n((?:\s+-\s+.+\n?)+)/m.exec(yaml);
+  let tags = [];
+  if (tagsMatch) {
+    tags = tagsMatch[1].split('\n').map(l => {
+      const t = /^\s+-\s+(.+)$/.exec(l);
+      return t ? t[1].trim().replace(/^["']|["']$/g, '') : '';
+    }).filter(Boolean);
+  }
+  if (!_wizardState.tags.length) _wizardState.tags = tags;
+  document.getElementById('wzTags').value = _wizardState.tags.join(', ');
+  // Populate existing Scoping Sets dropdown
+  if (!allSets || !allSets.length) { try { await loadSets(); } catch(_) {} }
+  const sel = document.getElementById('wzSetExistingSel');
+  sel.innerHTML = '<option value="">— pick a set —</option>' +
+    (allSets || []).filter(s => s.id !== ALL_SET_ID).map(s => `<option value="${s.id}">${esc(s.name)}${s.is_default?' (default)':''}</option>`).join('');
+}
+
+// ── Step 5: summary + save ────────────────────────────────────────────────────
+function wzEnterStep5() {
+  document.getElementById('wzYamlFinal').value = _wizardState.yaml || '';
+  const titleMatch = /^title:\s*(.+)$/m.exec(_wizardState.yaml || '');
+  const title = titleMatch ? titleMatch[1].trim().replace(/^["']|["']$/g, '') : '(untitled)';
+  let setDest = 'Skip — leave unassigned';
+  if (_wizardState.setMode === 'new') setDest = `Create new Set "${_wizardState.setNewName || '(name missing)'}"`;
+  else if (_wizardState.setMode === 'existing') {
+    const found = (allSets || []).find(s => s.id === _wizardState.setExistingId);
+    setDest = `Add to existing Set "${found ? found.name : '(none picked)'}"`;
+  }
+  document.getElementById('wzSummary').innerHTML = `
+    <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.10em; color:var(--text-faint); margin-bottom:4px;">ready to save</div>
+    <div style="font-size:13px; font-weight:600; margin-bottom:4px;">${esc(title)}</div>
+    <div style="font-size:11px; color:var(--text-dim);">tags: ${_wizardState.tags.length ? _wizardState.tags.map(esc).join(', ') : '<em>none</em>'}</div>
+    <div style="font-size:11px; color:var(--text-dim);">destination: ${esc(setDest)}</div>`;
+}
+
+async function wzFinalSave() {
+  const primary = document.getElementById('wzPrimaryBtn');
+  primary.disabled = true;
+  const status = document.getElementById('wzStatus');
+  status.innerHTML = '<span class="llm-spinner"></span>saving UC…';
+  const pane = document.querySelector('#ucWizardModal .wz-pane[data-step="5"]');
+  const hideBusy = _showBusy(pane, 'Persisting UC + Set assignment…');
+  try {
+    const resp = await api('/api/use-cases', {
+      method:'POST',
+      body: JSON.stringify({yaml_content: _wizardState.yaml, tags: _wizardState.tags}),
+    });
+    _wizardState.savedUcUuid = resp.uuid || resp.use_case?.uuid;
+    // Set assignment
+    let targetSetId = null;
+    if (_wizardState.setMode === 'new') {
+      if (!_wizardState.setNewName) { toast('New Scoping Set needs a name', true); primary.disabled = false; status.textContent = ''; return; }
+      status.textContent = 'creating set…';
+      const created = await api('/api/sets', {method:'POST', body:JSON.stringify({name: _wizardState.setNewName, description: 'created from UC wizard'})});
+      targetSetId = created.id;
+    } else if (_wizardState.setMode === 'existing') {
+      targetSetId = _wizardState.setExistingId;
+    }
+    if (targetSetId) {
+      status.textContent = 'adding to set…';
+      await api(`/api/sets/${targetSetId}/members`, {
+        method:'POST',
+        body: JSON.stringify({uc_uuid: _wizardState.savedUcUuid, uc_source: 'managed'}),
+      });
+    }
+    toast(`UC saved: ${_wizardState.savedUcUuid}`);
+    closeUcWizard();
+    try { await loadUCs(); } catch(_) {}
+    try { await loadSets(); } catch(_) {}
+  } catch (e) {
+    let detail = e.message;
+    try {
+      const parsed = JSON.parse(e.message.replace(/^[^{]*/, ''));
+      if (parsed.errors) detail = 'validation: ' + parsed.errors.join('; ');
+      else if (parsed.message) detail = parsed.message;
+    } catch(_) {}
+    status.innerHTML = `<span style="color:var(--red)">${esc(detail)}</span>`;
+    primary.disabled = false;
+  } finally {
+    hideBusy();
+  }
+}
+
+// Hand off the in-progress wizard state to the legacy ucModal for power-user edits
+function wzToAdvanced() {
+  const yaml = document.getElementById('wzYamlReview').value
+    || document.getElementById('wzYaml').value
+    || _wizardState?.yaml || '';
+  const tags = (_wizardState?.tags || []).join(', ');
+  closeUcWizard();
+  openUCModal(null, yaml, tags);
+}
+
+// ══════════════════════════ SETS ══════════════════════════
+
+async function loadSets() {
+  // In the merged UC/Scoping Sets view, "loadSets" populates the left-rail filter.
+  // It's also called by openNewRun → _getDefaultSet() to find the project default.
+  const rail = document.getElementById('setFilterRail');
+  if (rail) rail.innerHTML = '<div class="empty">loading…</div>';
+  try {
+    const resp = await api('/api/sets');
+    allSets = resp.sets || [];
+    renderSetFilterRail();
+    renderUCListSetBanner();
+    // Keep the masthead scope selector current; drop a stale scope if its Set vanished.
+    if (_activeScope && !(allSets || []).some(s => String(s.id) === String(_activeScope))) {
+      _activeScope = '';
+      try { localStorage.setItem('davScope', ''); } catch (_) {}
+    }
+    populateScopeSel();
+  } catch (e) {
+    if (rail) rail.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+  }
+}
+
+function renderSetFilterRail() {
+  const el = document.getElementById('setFilterRail');
+  if (!el) return;
+  // Compute counts from allUCs (loaded by loadUCs). May be empty on first render —
+  // loadUCs() calls renderUCList which re-renders independently; the rail just shows
+  // counts from whatever's currently in allUCs.
+  const totalUCs = (allUCs || []).length;
+  const noSetUCs = (allUCs || []).filter(u => !u.set_ids || !u.set_ids.length).length;
+  const items = [];
+  items.push({key: '__all__',   label: 'All Use Cases', count: totalUCs, isAll: true});
+  items.push({key: '__none__',  label: '(No set)', count: noSetUCs});
+  // The synthetic "All Use Cases" set (id '__all__') is represented by the __all__ item
+  // above in the rail — skip the duplicate from /api/sets here.
+  (allSets || []).filter(s => s.id !== ALL_SET_ID).forEach(s => items.push({
+    key: s.id, label: s.name, count: s.member_count, isDefault: s.is_default,
+  }));
+
+  el.innerHTML = '';
+  items.forEach(it => {
+    const isActive =
+      (it.key === '__all__'  && activeSetId === null) ||
+      (it.key === '__none__' && activeSetId === '__none__') ||
+      (typeof it.key === 'number' && activeSetId === it.key);
+    const item = document.createElement('div');
+    item.className = 'list-item' + (isActive ? ' active' : '');
+    item.style.cssText = 'padding:6px 10px;cursor:pointer;display:flex;align-items:center;gap:6px;';
+    const defaultBadge = it.isDefault
+      ? '<span style="font-size:8px;color:var(--accent);border:1px solid var(--accent-soft);padding:0 4px;border-radius:2px;">DEF</span>'
+      : '';
+    item.innerHTML = `
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;${it.isAll ? 'font-weight:500;' : ''}">
+        ${esc(it.label)}
+      </span>
+      ${defaultBadge}
+      <span style="font-size:10px;color:var(--text-faint);min-width:24px;text-align:right">${it.count}</span>
+    `;
+    item.addEventListener('click', () => selectSet(it.key));
+    // Real Set rail items (numeric key) are drop targets for UC drag-add
+    if (typeof it.key === 'number') {
+      const setId = it.key;
+      item.addEventListener('dragover', e => {
+        if (!e.dataTransfer.types.includes('application/x-dav-uc')) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        item.style.background = 'var(--accent-bg)';
+        item.style.boxShadow = 'inset 0 0 0 1px var(--accent)';
+      });
+      item.addEventListener('dragleave', () => {
+        item.style.background = '';
+        item.style.boxShadow = '';
+      });
+      item.addEventListener('drop', async e => {
+        e.preventDefault();
+        item.style.background = '';
+        item.style.boxShadow = '';
+        const raw = e.dataTransfer.getData('application/x-dav-uc');
+        if (!raw) return;
+        let uc;
+        try { uc = JSON.parse(raw); } catch { return; }
+        await _addUCToSet(setId, uc, it.label);
+      });
+    }
+    el.appendChild(item);
+  });
+}
+
+// ── Push to corpus (managed UC → PR in corpus repo) ──────────────────────────
+
+let _corpusPushStatus = null;  // {configured, corpus_url, host, env_var}
+
+async function _loadCorpusPushStatus() {
+  try { _corpusPushStatus = await api('/api/corpus-push/status'); }
+  catch { _corpusPushStatus = null; }
+}
+
+function _renderManagedTestBtn(data, titleText) {
+  // Managed-UC test eval (v0.9.29+): the engine fetches the UC YAML from
+  // the console API at run start, so no push or branch is required. Two
+  // states presented:
+  //   1. Direct test (always available for managed UCs) — engine
+  //      materializes the UC from the console API and runs gap analysis.
+  //   2. Push & test (offered as a secondary action if push is configured)
+  //      — push to a PR branch AND test against that branch. Useful when
+  //      the reviewer wants the test recorded against a corpus path.
+  const uuid = data.uuid;
+  const direct = `<button class="btn primary" title="Ingest just this managed UC now — engine fetches the YAML from the console API at ingestion start, no push required; jumps to the ingestion" onclick="testRunUC('${esc(uuid)}', '', ${attrJson(titleText)})">▶ Ingest this UC</button>`;
+  const st = _corpusPushStatus || {configured:false, host:'unknown'};
+  const pushReady = st.host === 'github' && st.configured;
+  if (data.corpus_synced_path && data.corpus_branch) {
+    // Already pushed — surface the PR-branch test path as the secondary
+    const branchBtn = `<button class="btn ghost btn-sm" title="Test on the existing PR branch '${esc(data.corpus_branch)}'" onclick="testRunUC('${esc(uuid)}', ${attrJson(data.corpus_synced_path)}, ${attrJson(titleText)}, ${attrJson(data.corpus_branch)})">▶ on PR branch</button>`;
+    return direct + branchBtn;
+  }
+  if (pushReady) {
+    return direct + `<button class="btn ghost btn-sm" title="Push to corpus AND test the PR branch — useful when you want the test recorded against a corpus path" onclick="pushAndTestUC('${esc(uuid)}')">↑↦▶ Push &amp; test</button>`;
+  }
+  return direct;
+}
+
+function _renderPushToCorpusBtn(data) {
+  // Called inside renderUCDetail for managed UCs.
+  // _corpusPushStatus is loaded lazily on UC tab init; treat null as "unknown — show but disabled with hint".
+  const uuid = data.uuid;
+  const prUrl = data.corpus_pr_url || '';
+  const prState = data.corpus_pr_state || '';
+  const lcState = data.lifecycle_state || 'draft';
+
+  // Already pushed → show the PR link + a re-push action (re-push allowed
+  // for any state since the PR already exists; updating the YAML is fine)
+  if (prUrl) {
+    const stateLabel = prState === 'merged' ? '✓ merged' :
+                       prState === 'closed' ? '⊘ closed' : '⇡ PR open';
+    return `<a href="${esc(prUrl)}" target="_blank" rel="noopener" class="btn ghost" title="Open PR in GitHub" style="text-decoration:none;">${stateLabel}</a>
+            <button class="btn primary" title="Push the latest YAML to the existing PR branch" onclick="pushUCToCorpus('${esc(uuid)}', true, false)">↻ Update PR</button>`;
+  }
+
+  // Not pushed yet — gate on host + token + lifecycle state
+  const st = _corpusPushStatus || {configured:false, host:'unknown'};
+  let disabled = '', tip = '', overrideHint = '';
+  if (st.host === 'none')        { disabled = 'disabled'; tip = 'No corpus repo URL configured (Config → Sources)'; }
+  else if (st.host === 'unsupported') { disabled = 'disabled'; tip = `Corpus host ${st.corpus_url} not supported yet (only GitHub today)`; }
+  else if (!st.configured)       { disabled = 'disabled'; tip = `Push token not set — add ${st.env_var || 'DAV_CORPUS_PUSH_TOKEN'} to the consumer Secret`; }
+  else if (lcState !== 'approved') {
+    // Lifecycle gate: show as warning (clickable to override path), not hard-disabled
+    tip = `UC is in '${lcState}'. Push requires 'approved'. Move it through ready → in_review → approved, or use force-push (Shift-click) to override.`;
+    overrideHint = `<button class="btn ghost btn-sm" title="Force-push this UC despite not being approved (will be noted in the PR body)" onclick="pushUCToCorpus('${esc(uuid)}', false, true)" style="font-size:9px;">⚠ Force push</button>`;
+    return `<button class="btn primary" title="${esc(tip)}" disabled style="opacity:0.55;cursor:not-allowed;">↑ Push to corpus</button>
+            ${overrideHint}`;
+  }
+  else                           { tip = 'Open a PR adding this UC to the corpus repo'; }
+  return `<button class="btn primary" title="${esc(tip)}" ${disabled} style="${disabled?'opacity:0.55;cursor:not-allowed;':''}" onclick="${disabled?'':`pushUCToCorpus('${esc(uuid)}', false, false)`}">↑ Push to corpus</button>`;
+}
+
+async function pushUCToCorpus(uuid, isRepush, override) {
+  if (!isRepush) {
+    const msg = override
+      ? '⚠ Force-push this UC even though it is not in "approved" state? This will be noted in the PR body.'
+      : 'Open a PR adding this UC to the corpus repo?';
+    if (!confirm(msg)) return;
+  }
+  toast(isRepush ? 'Updating PR…' : 'Opening PR…');
+  try {
+    const resp = await api(`/api/use-cases/${encodeURIComponent(uuid)}/push-to-corpus`, {
+      method: 'POST',
+      body: JSON.stringify({override: !!override}),
+    });
+    toast(`PR ${resp.action} — ${resp.pr_url}`, false);
+    // Refresh the UC so the button flips to PR-link / Update mode
+    if (activeUCId === uuid) selectUC(uuid);
+  } catch (e) {
+    toast('Push failed: ' + e.message, true);
+  }
+}
+
+// ── Add-to-Set picker (popover on UC detail's Scoping Sets section) ───────────────────
+function _openAddSetPicker(ucUuid, ucSource, ucHandle, ucPath, anchorEl) {
+  const pop = document.getElementById('ucDetailAddSetPopover');
+  if (!pop) return;
+  if (pop.style.display === 'block') { pop.style.display = 'none'; return; }
+  if (!allSets || !allSets.length) {
+    pop.innerHTML = '<div style="padding:10px 12px;font-size:11px;color:var(--text-faint);">No Scoping Sets yet. Use + New in the left rail to create one.</div>';
+    pop.style.display = 'block';
+    return;
+  }
+  // Figure out which sets this UC is already in (from the loaded UC detail's `sets` array)
+  const uc = (allUCs || []).find(u => u.uuid === ucUuid);
+  const memberOf = new Set((uc && uc.set_ids) || []);
+  let h = '<div style="padding:4px 0;">';
+  allSets.filter(s => s.id !== ALL_SET_ID).forEach(s => {
+    const isMember = memberOf.has(s.id);
+    h += `<div style="padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:12px;${isMember ? 'background:var(--accent-bg);' : ''}"
+             onmouseover="this.style.background='var(--bg-raised)'" onmouseout="this.style.background='${isMember ? 'var(--accent-bg)' : ''}'"
+             onclick="_toggleUCSetMembership(${s.id}, '${esc(ucUuid)}', '${esc(ucSource)}', '${esc(ucHandle)}', '${esc(ucPath)}', ${isMember}, ${attrJson(s.name)})">
+      <span style="font-family:var(--mono,monospace);color:${isMember ? 'var(--green)' : 'var(--text-faint)'};min-width:14px;">${isMember ? '✓' : ''}</span>
+      <span style="flex:1;">${esc(s.name)}</span>
+      ${s.is_default ? '<span style="font-size:9px;color:var(--accent);">DEFAULT</span>' : ''}
+      <span style="font-size:10px;color:var(--text-faint);">${s.member_count}</span>
+    </div>`;
+  });
+  h += '</div>';
+  pop.innerHTML = h;
+  pop.style.display = 'block';
+  // Close on outside click
+  setTimeout(() => {
+    const close = e => {
+      if (!pop.contains(e.target) && e.target !== anchorEl) {
+        pop.style.display = 'none';
+        document.removeEventListener('click', close);
+      }
+    };
+    document.addEventListener('click', close);
+  }, 0);
+}
+
+async function _toggleUCSetMembership(setId, ucUuid, ucSource, ucHandle, ucPath, isMember, setName) {
+  try {
+    if (isMember) {
+      await api(`/api/sets/${setId}/members/${encodeURIComponent(ucUuid)}`, {method: 'DELETE'});
+      toast(`Removed from "${setName}"`);
+    } else {
+      await api(`/api/sets/${setId}/members`, {
+        method: 'POST',
+        body: JSON.stringify({
+          uc_uuid: ucUuid,
+          uc_source: ucSource || 'managed',
+          uc_handle: ucHandle || null,
+          uc_path: ucPath || null,
+        }),
+      });
+      toast(`Added to "${setName}"`);
+    }
+    document.getElementById('ucDetailAddSetPopover').style.display = 'none';
+    await loadSets();
+    await loadUCs();
+    // Re-render the UC detail to refresh the chip strip
+    if (activeUCId === ucUuid) selectUC(ucUuid);
+    _refreshSetMgmt();
+  } catch (e) {
+    if (/already/i.test(e.message)) toast(`Already in "${setName}"`);
+    else toast('Failed: ' + e.message, true);
+  }
+}
+
+async function _removeUCFromSet(setId, ucUuid, setName) {
+  try {
+    await api(`/api/sets/${setId}/members/${encodeURIComponent(ucUuid)}`, {method: 'DELETE'});
+    toast(`Removed from "${setName}"`);
+    await loadSets();
+    await loadUCs();
+    if (activeUCId === ucUuid) selectUC(ucUuid);
+    _refreshSetMgmt();
+  } catch (e) { toast('Remove failed: ' + e.message, true); }
+}
+
+async function _addUCToSet(setId, uc, setLabel) {
+  try {
+    await api(`/api/sets/${setId}/members`, {
+      method: 'POST',
+      body: JSON.stringify({
+        uc_uuid:   uc.uuid,
+        uc_source: uc.source || 'managed',
+        uc_handle: uc.handle || null,
+        uc_path:   uc.path || null,
+      }),
+    });
+    toast(`Added to "${setLabel}"`);
+    await loadSets();
+    await loadUCs();
+    _refreshSetMgmt();
+  } catch (e) {
+    // Idempotent-ish — duplicate adds return 409
+    if (/already/i.test(e.message)) toast(`Already in "${setLabel}"`);
+    else toast('Add failed: ' + e.message, true);
+  }
+}
+
+function _getDefaultSet() {
+  return (allSets || []).find(s => s.is_default) || null;
+}
+
+// In the merged view, selectSet sets the UC-list filter rather than opening
+// a Scoping Set detail pane. Accepts a numeric set id, '__none__' (no set), or null/'__all__'.
+function selectSet(key) {
+  if (key === '__all__' || key === null || key === undefined) activeSetId = null;
+  else activeSetId = key;
+  renderSetFilterRail();
+  renderUCListSetBanner();
+  renderUCList();
+}
+
+function renderUCListSetBanner() {
+  const banner = document.getElementById('ucListSetBanner');
+  const label  = document.getElementById('ucListSetBannerLabel');
+  if (!banner || !label) return;
+  if (activeSetId === null) {
+    // "All Use Cases" — the synthetic set. Runnable (run/arch-review against
+    // everything), but not editable: no Manage, no Clear (it IS the cleared state).
+    banner.style.display = 'flex';
+    const n = (allUCs || []).length;
+    label.textContent = `All Use Cases (${n} UC${n !== 1 ? 's' : ''})`;
+    document.getElementById('ucListSetBannerRunBtn').style.display = '';
+    document.getElementById('ucListSetBannerManageBtn').style.display = 'none';
+    document.getElementById('ucListSetBannerClearBtn').style.display = 'none';
+    return;
+  }
+  // Real sets (and No-set) show the clear (×) control.
+  document.getElementById('ucListSetBannerClearBtn').style.display = '';
+  if (activeSetId === '__none__') {
+    banner.style.display = 'flex';
+    label.textContent = 'Filtered: (No set)';
+    document.getElementById('ucListSetBannerRunBtn').style.display = 'none';
+    document.getElementById('ucListSetBannerManageBtn').style.display = 'none';
+    return;
+  }
+  const set = (allSets || []).find(s => s.id === activeSetId);
+  if (!set) { banner.style.display = 'none'; return; }
+  banner.style.display = 'flex';
+  const defBit = set.is_default ? ' · DEFAULT' : '';
+  label.textContent = `Scoping Set: ${set.name} (${set.member_count} UC${set.member_count !== 1 ? 's' : ''})${defBit}`;
+  document.getElementById('ucListSetBannerRunBtn').style.display = '';
+  document.getElementById('ucListSetBannerManageBtn').style.display = '';
+}
+
+// ── Manage Scoping Sets modal ─────────────────────────────────────────────────────────
+
+// ── Scoping Set management — shared by the Authoring → Scoping Sets tab (primary) and the
+// legacy ⚙ modal. The tab is now canonical; the modal trigger redirects to it so the row
+// ids (setMembers-N, exportSetMenu-N) only ever live in one DOM subtree.
+
+function openManageSetsModal() {
+  // Legacy trigger (⚙ in the UC view) — now opens the Scoping Sets tab.
+  switchView('scopingsets');
+}
+function closeManageSetsModal() {
+  const m = document.getElementById('manageSetsModal');
+  if (m) m.classList.remove('open');
+}
+
+// Authoring → Scoping Sets tab — TWO PANES. Left: a static, filterable full Use Case list
+// (drag source, "rows of use cases" format + the Use Cases-tab filters incl. an Unassigned
+// filter). Right: the vertical Scoping Set accordion (_renderSetMgmtInto), each set a drop
+// target. Drag a UC from the left onto a set to ADD it (a UC can be in many sets).
+let _ssAllUcs = [];          // full, source-filter-independent UC list for the palette
+let _ssFiltersWired = false;
+async function _ssLoadAll() {
+  await loadSets();
+  try {
+    const r = await api('/api/use-cases');
+    _ssAllUcs = r.use_cases || [];
+    allUCs = _ssAllUcs;   // keep the shared list current so accordion member-title lookup works
+  } catch (_) {}
+}
+async function loadScopingSets() {
+  const list = document.getElementById('scopingSetsList');
+  if (list) list.innerHTML = '<div class="empty" style="padding:24px;">loading…</div>';
+  _ssWirePaletteFilters();
+  await _ssLoadAll();
+  renderScopingSetsBoard();
+}
+// Aliases so the shared mutation path (_refreshSetMgmt) + legacy callers land here.
+function renderScopingSetsList() { renderScopingSetsBoard(); }
+function renderManageSetsList()  { _renderSetMgmtInto('manageSetsList'); }
+function _refreshSetMgmt() {
+  const m = document.getElementById('manageSetsModal');
+  if (m && m.classList.contains('open')) { renderManageSetsList(); return; }
+  // Scoping Sets tab: reload the full UC list (membership badges) + re-render both panes.
+  loadScopingSets();
+}
+// Render both panes (called after data load).
+function renderScopingSetsBoard() {
+  _ssRenderPalette();
+  _renderSetMgmtInto('scopingSetsList');
+  _ssWireSetDrops();
+}
+// One-time: wire palette filter inputs + drag-source delegation (the shell is static markup).
+function _ssWirePaletteFilters() {
+  if (_ssFiltersWired) return;
+  const pal = document.getElementById('ssUcPalette');
+  if (!pal) return;
+  _ssFiltersWired = true;
+  ['ssUcSearch', 'ssUcAssign', 'ssUcSource', 'ssUcState'].forEach(id => {
+    const e = document.getElementById(id);
+    if (e) e.addEventListener(id === 'ssUcSearch' ? 'input' : 'change', _ssRenderPalette);
+  });
+  pal.addEventListener('dragstart', e => {
+    const row = e.target.closest('.ss-uc'); if (!row) return;
+    e.dataTransfer.effectAllowed = 'copy';
+    e.dataTransfer.setData('application/x-dav-uc', JSON.stringify({
+      uuid: row.dataset.uuid, source: row.dataset.source,
+      handle: row.dataset.handle || null, path: row.dataset.path || null }));
+    row.classList.add('ss-dragging');
+  });
+  pal.addEventListener('dragend', e => {
+    const row = e.target.closest('.ss-uc'); if (row) row.classList.remove('ss-dragging');
+  });
+}
+function _ssRenderPalette() {
+  const el = document.getElementById('ssUcPalette');
+  if (!el) return;
+  const q = (document.getElementById('ssUcSearch')?.value || '').toLowerCase();
+  const assign = document.getElementById('ssUcAssign')?.value || '';
+  const source = document.getElementById('ssUcSource')?.value || '';
+  const state = document.getElementById('ssUcState')?.value || '';
+  const setName = {};
+  (allSets || []).forEach(s => { setName[s.id] = s.name; });
+  let list = (_ssAllUcs || []).filter(u => {
+    const nSets = (u.set_ids || []).length;
+    if (assign === 'unassigned' && nSets) return false;
+    if (assign === 'assigned' && !nSets) return false;
+    if (source && (u.source || 'managed') !== source) return false;
+    if (state && u.source !== 'corpus' && u.lifecycle_state !== state) return false;
+    if (q) {
+      const hay = `${u.title || ''} ${u.uuid || ''} ${u.handle || ''} ${(u.tags || []).join(' ')}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  const cnt = document.getElementById('ssUcCount');
+  if (cnt) cnt.textContent = `${list.length} / ${(_ssAllUcs || []).length}`;
+  if (!list.length) { el.innerHTML = '<div class="empty" style="padding:18px;">No use cases match.</div>'; return; }
+  el.innerHTML = list.map(u => {
+    const title = u.title || u.handle || u.uuid || '?';
+    const sub = (u.handle && u.handle !== title) ? u.handle : u.uuid;
+    const ids = u.set_ids || [];
+    const sets = ids.length
+      ? ids.map(id => `<span class="ss-uc-setchip">${esc(setName[id] || ('#' + id))}</span>`).join('')
+      : '<span class="ss-uc-unassigned">unassigned</span>';
+    return `<div class="ss-uc" draggable="true" data-uuid="${esc(u.uuid)}" data-source="${esc(u.source || 'managed')}"
+                 data-handle="${esc(u.handle || '')}" data-path="${esc(u.path || '')}" title="Drag onto a Scoping Set to add">
+      <span class="ss-uc-grip" aria-hidden="true">⋮⋮</span>
+      <div class="ss-uc-main">
+        <div class="ss-uc-title">${esc(title)}</div>
+        <div class="ss-uc-sub">${esc(sub || '')}</div>
+        <div class="ss-uc-sets">${sets}</div>
+      </div>
+      <span class="src-badge src-${esc(u.source || 'managed')}" style="font-size:8px;flex-shrink:0;">${esc(u.source || 'managed')}</span>
+    </div>`;
+  }).join('');
+}
+// Make each set row in the accordion a drop target for UC drags (application/x-dav-uc).
+function _ssWireSetDrops() {
+  const list = document.getElementById('scopingSetsList');
+  if (!list) return;
+  list.querySelectorAll('[data-set-row]').forEach(row => {
+    const setId = parseInt(row.getAttribute('data-set-row'), 10);
+    if (!Number.isFinite(setId)) return;
+    row.addEventListener('dragover', e => {
+      if (!e.dataTransfer.types.includes('application/x-dav-uc')) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = 'copy';
+      row.classList.add('ss-drop');
+    });
+    row.addEventListener('dragleave', e => { if (e.target === row) row.classList.remove('ss-drop'); });
+    row.addEventListener('drop', async e => {
+      e.preventDefault(); row.classList.remove('ss-drop');
+      const raw = e.dataTransfer.getData('application/x-dav-uc');
+      if (!raw) return;
+      let uc; try { uc = JSON.parse(raw); } catch (_) { return; }
+      const name = (allSets || []).find(s => s.id === setId)?.name || `set ${setId}`;
+      await _ssDropAddUC(setId, uc, name);
+    });
+  });
+}
+async function _ssDropAddUC(setId, uc, label) {
+  try {
+    await api(`/api/sets/${setId}/members`, {
+      method: 'POST',
+      body: JSON.stringify({ uc_uuid: uc.uuid, uc_source: uc.source || 'managed',
+                             uc_handle: uc.handle || null, uc_path: uc.path || null }),
+    });
+    toast(`Added to "${label}"`);
+  } catch (e) {
+    if (/already/i.test(e.message)) toast(`Already in "${label}"`);
+    else { toast('Add failed: ' + e.message, true); return; }
+  }
+  await _ssLoadAll();
+  renderScopingSetsBoard();
+}
+
+function _renderSetMgmtInto(elId) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  if (!allSets || !allSets.length) {
+    el.innerHTML = '<div class="empty" style="padding:24px;">No Scoping Sets yet. Use + New Scoping Set to create one.</div>';
+    return;
+  }
+  let h = '';
+  allSets.filter(s => s.id !== ALL_SET_ID).forEach(s => {
+    const defBadge = s.is_default
+      ? '<span style="font-size:9px;color:var(--accent);border:1px solid var(--accent-soft);padding:1px 5px;border-radius:2px;margin-left:8px;">DEFAULT</span>'
+      : '';
+    const defBtn = s.is_default
+      ? `<button class="btn ghost btn-sm" title="Clear default" onclick="clearDefaultSet(${s.id}).then(_refreshSetMgmt)">Clear default</button>`
+      : `<button class="btn ghost btn-sm" title="Mark as project default" onclick="setDefaultSet(${s.id}).then(_refreshSetMgmt)">★ Default</button>`;
+    h += `<div data-set-row="${s.id}" style="border-top:1px solid var(--border);">
+      <div style="display:flex;align-items:center;gap:8px;padding:10px 16px;">
+        <button class="btn ghost btn-icon" title="Show / hide members" onclick="_toggleSetMembers(${s.id}, this)" style="min-width:18px;padding:2px 6px;">▶</button>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:13px;font-weight:500;">${esc(s.name)}${defBadge}</div>
+          <div style="font-size:11px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            ${esc(s.description || '—')} · ${s.member_count} UC${s.member_count !== 1 ? 's' : ''}
+          </div>
+          ${(s.created_at || s.updated_at) ? `<div style="font-size:9px;color:var(--text-faint);margin-top:2px;" title="${esc((s.created_by ? 'created by ' + s.created_by + ' · ' : '') + (s.created_at ? new Date(s.created_at).toLocaleString() : '') + (s.updated_at ? ' · updated ' + new Date(s.updated_at).toLocaleString() : ''))}">
+            ${s.created_at ? 'created ' + esc(fmtTs(s.created_at)) : ''}${s.updated_at ? ' · updated ' + esc(fmtTs(s.updated_at)) : ''}
+          </div>` : ''}
+        </div>
+        <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${attrJson(s.name)})">▶ Ingest</button>
+        ${defBtn}
+        <button class="btn ghost btn-sm" onclick="openSetModal(${s.id})">Edit</button>
+        <button class="btn ghost btn-sm" onclick="openPromoteModal(${s.id}, ${attrJson(s.name)})">↑ Promote</button>
+        <div style="position:relative;display:inline-block;">
+          <button class="btn ghost btn-sm" onclick="toggleExportSetMenu(${s.id}, event)">↓ Export</button>
+          <div id="exportSetMenu-${s.id}" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:140px;">
+            <button class="dropdown-item" onclick="exportSet(${s.id},'tar.gz')">tar.gz (gzip)</button>
+            <button class="dropdown-item" onclick="exportSet(${s.id},'zip')">zip</button>
+            <button class="dropdown-item" onclick="exportSet(${s.id},'tar')">tar (uncompressed)</button>
+          </div>
+        </div>
+        <button class="btn ghost btn-sm" onclick="openAddMember(${s.id})" title="Add a UC to this Scoping Set">+ UC</button>
+        <button class="btn danger btn-sm" onclick="deleteSet(${s.id}, this)">×</button>
+      </div>
+      <div id="setMembers-${s.id}" style="display:none;padding:0 0 10px 50px;"></div>
+    </div>`;
+  });
+  el.innerHTML = h;
+}
+
+async function _toggleSetMembers(setId, btn) {
+  const box = document.getElementById(`setMembers-${setId}`);
+  if (!box) return;
+  if (box.style.display !== 'none') {
+    box.style.display = 'none';
+    btn.textContent = '▶';
+    return;
+  }
+  btn.textContent = '▼';
+  box.style.display = 'block';
+  box.innerHTML = '<div style="padding:4px 8px;color:var(--text-faint);font-size:11px;">loading…</div>';
+  try {
+    const data = await api(`/api/sets/${setId}`);
+    const members = data.members || [];
+    if (!members.length) {
+      box.innerHTML = '<div style="padding:4px 8px;color:var(--text-faint);font-size:11px;">No members. Use + UC to add.</div>';
+      return;
+    }
+    const rows = members.map(m => {
+      // Best-effort title: look up in allUCs to get the human-readable name
+      const uc = (allUCs || []).find(u => u.uuid === m.uc_uuid);
+      const title = (uc && uc.title) || m.uc_handle || m.uc_uuid;
+      return `<div style="display:flex;align-items:center;gap:6px;padding:3px 8px;border-bottom:1px solid var(--border);font-size:11px;">
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:var(--accent);"
+              onclick="closeManageSetsModal();selectUC('${esc(m.uc_uuid)}');"
+              title="${esc(m.uc_uuid)}">${esc(title)}</span>
+        <span class="src-badge src-${m.uc_source}" style="font-size:9px;">${m.uc_source}</span>
+        <button class="btn danger btn-icon" style="font-size:11px;padding:0 6px;" title="Remove from set"
+                onclick="_removeMemberFromManage(${setId}, '${esc(m.uc_uuid)}', ${attrJson(data.name)})">×</button>
+      </div>`;
+    }).join('');
+    box.innerHTML = `<div style="background:var(--bg-input);border:1px solid var(--border);border-radius:2px;">${rows}</div>`;
+  } catch (e) {
+    box.innerHTML = `<div style="padding:4px 8px;color:var(--red);font-size:11px;">Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+
+async function _removeMemberFromManage(setId, ucUuid, setName) {
+  try {
+    await api(`/api/sets/${setId}/members/${encodeURIComponent(ucUuid)}`, {method:'DELETE'});
+    toast(`Removed from "${setName}"`);
+    await loadSets();
+    await loadUCs();
+    _refreshSetMgmt();
+    // Auto-re-expand the same set so the change is visible
+    const btn = document.querySelector(`[data-set-row="${setId}"] button[onclick^="_toggleSetMembers"]`);
+    if (btn) _toggleSetMembers(setId, btn);
+  } catch (e) { toast('Remove failed: ' + e.message, true); }
+}
+
+async function setDefaultSet(setId) {
+  try {
+    await api(`/api/sets/${setId}/default`, {method: 'PUT'});
+    toast('Marked as default Scoping Set');
+    await loadSets();
+  } catch (e) { toast('Failed: ' + e.message, true); }
+}
+async function clearDefaultSet(setId) {
+  try {
+    await api(`/api/sets/${setId}/default`, {method: 'DELETE'});
+    toast('Default cleared');
+    await loadSets();
+  } catch (e) { toast('Failed: ' + e.message, true); }
+}
+
+async function runSet(setId, setName) {
+  try {
+    const info = await api(`/api/sets/${setId}/corpus-subpath`);
+    const set  = await api(`/api/sets/${setId}`);
+    const filter = _filterFromSetMembers(set.members || []);
+    const total = (set.members || []).length;
+    if (!total) {
+      toast(`"${setName}" is empty — add UCs first (drag from the UC list, or use + UC in the Manage Scoping Sets modal).`, true);
+      return;
+    }
+    const bits = [];
+    if (info.corpus_count) bits.push(`${info.corpus_count} corpus`);
+    if (info.managed_count) bits.push(`${info.managed_count} managed (fetched from API)`);
+    const banner = `Running set "${setName}" — ${bits.join(' + ')} · engine-filtered to exactly these UCs`;
+    openNewRun(banner, info.subpath || '', filter, undefined,
+               { set_id: setId, set_name: setName, selection_mode: 'set' });
+  } catch (e) { toast('Could not compute set scope: ' + e.message, true); }
+}
+
+function openSetModal(id) {
+  editingSetId = id || null;
+  const existing = id ? allSets.find(s => s.id===id) : null;
+  document.getElementById('setModalTitle').textContent = id ? 'Edit set' : 'New set';
+  document.getElementById('setModalName').value  = existing ? existing.name        : '';
+  document.getElementById('setModalDesc').value  = existing ? existing.description : '';
+  document.getElementById('setModalStatus').textContent = '';
+  document.getElementById('saveSetModal').disabled = false;
+  document.getElementById('setModal').classList.add('open');
+}
+function closeSetModal() { document.getElementById('setModal').classList.remove('open'); editingSetId = null; }
+
+async function saveSet() {
+  const btn = document.getElementById('saveSetModal'), status = document.getElementById('setModalStatus');
+  btn.disabled = true; status.textContent = 'saving…';
+  const payload = {
+    name:        document.getElementById('setModalName').value.trim(),
+    description: document.getElementById('setModalDesc').value.trim(),
+  };
+  if (!payload.name) { status.innerHTML = '<span style="color:var(--red)">name required</span>'; btn.disabled = false; return; }
+  try {
+    let resp;
+    if (editingSetId)
+      resp = await api(`/api/sets/${editingSetId}`, {method:'PUT', body:JSON.stringify(payload)});
+    else
+      resp = await api('/api/sets', {method:'POST', body:JSON.stringify(payload)});
+    toast(editingSetId ? 'Set updated' : 'Set created');
+    closeSetModal();
+    await loadSets();
+    _refreshSetMgmt();
+    // For brand-new sets, filter the UC list to show "what's in it" (empty initially)
+    const newId = resp.id || editingSetId;
+    if (newId && !editingSetId) selectSet(newId);
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; btn.disabled = false;
+  }
+}
+
+async function deleteSet(setId, btn) {
+  if (!btn) return;
+  const s = allSets.find(x => x.id===setId);
+  _armDeleteBtn(btn, async () => {
+    if (!(await _confirmDeleteImpact('set', setId, s ? s.name : ('set ' + setId)))) return;
+    try {
+      await api(`/api/sets/${setId}`, {method:'DELETE'});
+      toast('Set deleted');
+      if (activeSetId === setId) activeSetId = null;
+      await loadSets();
+      await loadUCs();  // set_ids on UCs may have changed
+      _refreshSetMgmt();
+    } catch (e) { toast('Delete failed: ' + e.message, true); }
+  });
+}
+
+async function removeMember(setId, ucUuid) {
+  try {
+    await api(`/api/sets/${setId}/members/${encodeURIComponent(ucUuid)}`, {method:'DELETE'});
+    toast('Removed from set');
+    await loadSets();
+    await loadUCs();
+    _refreshSetMgmt();
+  } catch (e) { toast('Remove failed: ' + e.message, true); }
+}
+
+// ── Add member modal ─────────────────────────────────────────
+function openAddMember(setId) {
+  addMemberSetId = setId; selectedMember = null;
+  document.getElementById('memberSearchInput').value = '';
+  document.getElementById('memberDropdown').style.display = 'none';
+  document.getElementById('memberDropdown').innerHTML = '';
+  document.getElementById('selectedMemberPreview').style.display = 'none';
+  document.getElementById('addMemberStatus').textContent = '';
+  document.getElementById('saveAddMember').disabled = true;
+  document.getElementById('addMemberModal').classList.add('open');
+  setTimeout(() => document.getElementById('memberSearchInput').focus(), 80);
+}
+function closeAddMember() { document.getElementById('addMemberModal').classList.remove('open'); }
+
+let memberSearchTimer = null;
+function onMemberSearch(val) {
+  clearTimeout(memberSearchTimer);
+  if (!val.trim()) { document.getElementById('memberDropdown').style.display = 'none'; return; }
+  memberSearchTimer = setTimeout(() => renderMemberDropdown(val.toLowerCase()), 180);
+}
+
+function renderMemberDropdown(query) {
+  const dd = document.getElementById('memberDropdown');
+  const matches = allUCs.filter(u =>
+    (u.uuid||'').toLowerCase().includes(query) ||
+    (u.title||'').toLowerCase().includes(query) ||
+    (u.handle||'').toLowerCase().includes(query)
+  ).slice(0, 12);
+
+  if (!matches.length) { dd.style.display = 'none'; return; }
+  dd.innerHTML = '';
+  matches.forEach(u => {
+    const item = document.createElement('div');
+    item.className = 'uc-dropdown-item';
+    item.innerHTML = `
+      <span class="uid">${esc(u.uuid||u.handle)}</span>
+      <span class="uhandle">${esc(u.title||u.handle||'')}</span>
+      <span class="src-badge src-${u.source}">${u.source}</span>`;
+    item.addEventListener('mousedown', (e) => { e.preventDefault(); selectMember(u); });
+    dd.appendChild(item);
+  });
+  dd.style.display = '';
+}
+
+function selectMember(u) {
+  selectedMember = u;
+  document.getElementById('memberSearchInput').value = u.uuid || u.handle;
+  document.getElementById('memberDropdown').style.display = 'none';
+  document.getElementById('selectedMemberLabel').textContent = (u.uuid||u.handle) + (u.title ? ' — '+u.title : '');
+  document.getElementById('selectedMemberPreview').style.display = '';
+  document.getElementById('saveAddMember').disabled = false;
+}
+
+async function saveAddMember() {
+  if (!selectedMember || !addMemberSetId) return;
+  const btn = document.getElementById('saveAddMember'), status = document.getElementById('addMemberStatus');
+  btn.disabled = true; status.textContent = 'adding…';
+  const payload = {
+    uc_uuid:   selectedMember.uuid || selectedMember.handle,
+    uc_source: selectedMember.source || 'corpus',
+    uc_handle: selectedMember.handle || null,
+    uc_path:   selectedMember.path || null,
+  };
+  try {
+    await api(`/api/sets/${addMemberSetId}/members`, {method:'POST', body:JSON.stringify(payload)});
+    toast('Added to set');
+    closeAddMember();
+    await loadSets();
+    await loadUCs();
+    _refreshSetMgmt();
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; btn.disabled = false;
+  }
+}
+
+// ══════════════════════════ THEME PICKER ══════════════════════════
+
+const THEMES = ['amber', 'slate', 'solarized', 'redhat'];
+const MODES  = ['auto', 'light', 'dark'];
+const THEME_LABEL = { amber:'Amber', slate:'Slate', solarized:'Solarized' };
+const MODE_LABEL  = { auto:'Auto', light:'Light', dark:'Dark' };
+
+let currentTheme = 'amber';
+let currentMode  = 'auto';  // user selection: 'auto' | 'light' | 'dark'
+
+function getResolvedMode() {
+  if (currentMode !== 'auto') return currentMode;
+  return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+}
+
+function applyTheme() {
+  document.documentElement.setAttribute('data-theme', currentTheme);
+  document.documentElement.setAttribute('data-mode', getResolvedMode());
+  // Mark the active appearance options in the account menu.
+  document.querySelectorAll('#acctMenu [data-mode]').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === currentMode));
+  document.querySelectorAll('#acctMenu [data-theme]').forEach(b =>
+    b.classList.toggle('active', b.dataset.theme === currentTheme));
+}
+
+function setTheme(t) {
+  if (!THEMES.includes(t)) return;
+  currentTheme = t;
+  try { localStorage.setItem('davTheme', t); } catch(e) {}
+  applyTheme();
+  try { _persistUserSettings(); } catch {}
+}
+function setMode(m) {
+  if (!MODES.includes(m)) return;
+  currentMode = m;
+  try { localStorage.setItem('davMode', m); } catch(e) {}
+  applyTheme();
+  try { _persistUserSettings(); } catch {}
+}
+
+function initTheme() {
+  try {
+    currentTheme = localStorage.getItem('davTheme') || 'amber';
+    currentMode  = localStorage.getItem('davMode')  || 'auto';
+  } catch(e) {}
+  if (!THEMES.includes(currentTheme)) currentTheme = 'amber';
+  if (!MODES.includes(currentMode))   currentMode  = 'auto';
+  applyTheme();
+
+  // Re-apply when the system preference changes (only matters in 'auto' mode)
+  if (window.matchMedia) {
+    const mql = window.matchMedia('(prefers-color-scheme: light)');
+    const onChange = () => { if (currentMode === 'auto') applyTheme(); };
+    if (mql.addEventListener) mql.addEventListener('change', onChange);
+    else if (mql.addListener) mql.addListener(onChange);
+  }
+
+  // Wire up the account menu (appearance + account actions).
+  document.getElementById('acctChipBtn').addEventListener('click', e => {
+    e.stopPropagation();
+    document.getElementById('acctMenu').classList.toggle('open');
+  });
+  document.querySelectorAll('#acctMenu [data-mode]').forEach(b =>
+    b.addEventListener('click', () => setMode(b.dataset.mode)));
+  document.querySelectorAll('#acctMenu [data-theme]').forEach(b =>
+    b.addEventListener('click', () => setTheme(b.dataset.theme)));
+  document.getElementById('acctLogout').addEventListener('click', async () => {
+    try { await api('/api/auth/logout', { method:'POST' }); } catch(e) {}
+    location.reload();
+  });
+  document.getElementById('acctChangePw').addEventListener('click', () => {
+    document.getElementById('acctMenu').classList.remove('open');
+    const c = document.getElementById('pwChangeCancel'); if (c) c.style.display = '';
+    const sub = document.getElementById('pwChangeSub'); if (sub) sub.textContent = 'Enter your current password and a new one.';
+    document.getElementById('pwChangeOverlay').style.display = 'flex';
+  });
+  document.getElementById('pwChangeCancel')?.addEventListener('click', () => {
+    document.getElementById('pwChangeOverlay').style.display = 'none';
+    document.getElementById('pwChangeCur').value = ''; document.getElementById('pwChangeNew').value = '';
+    document.getElementById('pwChangeMsg').textContent = '';
+  });
+  document.addEventListener('click', e => {
+    const menu = document.getElementById('acctMenu');
+    const btn  = document.getElementById('acctChipBtn');
+    if (!menu.contains(e.target) && !btn.contains(e.target)) menu.classList.remove('open');
+  });
+}
+
+// ══════════════════════════ EXPORT / IMPORT / PROMOTE ══════════════════════════
+
+function exportUCs(format) {
+  document.getElementById('exportUCMenu').style.display = 'none';
+  const url = `/api/export?format=${encodeURIComponent(format)}`;
+  _triggerDownload(url);
+}
+
+function exportSet(setId, format) {
+  const menuId = `exportSetMenu-${setId}`;
+  const m = document.getElementById(menuId); if (m) m.style.display = 'none';
+  const url = `/api/export?format=${encodeURIComponent(format)}&set_id=${setId}`;
+  _triggerDownload(url);
+}
+
+function _triggerDownload(url) {
+  const a = document.createElement('a');
+  a.href = url; a.download = '';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+function toggleExportSetMenu(setId, event) {
+  event.stopPropagation();
+  const menuId = `exportSetMenu-${setId}`;
+  const m = document.getElementById(menuId);
+  if (!m) return;
+  const visible = m.style.display !== 'none';
+  // Close any other open menus
+  document.querySelectorAll('[id^="exportSetMenu-"],[id="exportUCMenu"]').forEach(el => el.style.display = 'none');
+  if (!visible) m.style.display = '';
+}
+
+// Close dropdowns on outside click
+document.addEventListener('click', () => {
+  document.querySelectorAll('[id^="exportSetMenu-"],[id="exportUCMenu"]').forEach(el => el.style.display = 'none');
+});
+
+function openImportModal() {
+  document.getElementById('importFile').value = '';
+  document.getElementById('importResult').style.display = 'none';
+  document.getElementById('importResult').innerHTML = '';
+  document.getElementById('submitImportBtn').disabled = false;
+  document.getElementById('importModal').classList.add('open');
+}
+function closeImportModal() { document.getElementById('importModal').classList.remove('open'); }
+
+async function submitImport() {
+  const fileInput = document.getElementById('importFile');
+  if (!fileInput.files.length) { toast('No file selected', true); return; }
+  const btn = document.getElementById('submitImportBtn');
+  btn.disabled = true;
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  try {
+    const res = await fetch('/api/import', {method: 'POST', body: formData});
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`${res.status}: ${err}`);
+    }
+    const result = await res.json();
+    const resultEl = document.getElementById('importResult');
+    resultEl.style.display = '';
+    const hasErrors = result.errors && result.errors.length;
+    resultEl.innerHTML = `<div style="color:var(--green);margin-bottom:${hasErrors?'8px':'0'}">
+      ✓ Created: ${result.created} · Updated: ${result.updated} · Transitioned: ${result.transitioned}${result.skipped ? ` · Skipped: ${result.skipped}` : ''}
+    </div>${hasErrors ? `<div style="color:var(--red)">${result.errors.map(e => `<div>${esc(e)}</div>`).join('')}</div>` : ''}`;
+    toast(`Import done: ${result.created} new, ${result.updated} updated`);
+    await loadUCs(); await loadSets();
+  } catch (e) {
+    toast('Import failed: ' + e.message, true);
+  } finally { btn.disabled = false; }
+}
+
+// ── Promote set modal ─────────────────────────────────────────
+function openPromoteModal(setId, setName) {
+  promoteSetId = setId;
+  document.getElementById('promoteModalSetName').textContent = setName;
+  document.getElementById('promoteNotes').value = '';
+  document.getElementById('promoteStatus').textContent = '';
+  document.getElementById('confirmPromoteModal').disabled = false;
+  document.getElementById('promoteModal').classList.add('open');
+}
+function closePromoteModal() { document.getElementById('promoteModal').classList.remove('open'); promoteSetId = null; }
+
+async function confirmPromote() {
+  if (!promoteSetId) return;
+  const fromState = document.getElementById('promoteFromState').value;
+  const toState   = document.getElementById('promoteToState').value;
+  const notes     = document.getElementById('promoteNotes').value.trim();
+  const btn = document.getElementById('confirmPromoteModal'), status = document.getElementById('promoteStatus');
+  btn.disabled = true; status.textContent = 'promoting…';
+  try {
+    const resp = await api(`/api/sets/${promoteSetId}/promote`, {
+      method: 'POST',
+      body: JSON.stringify({from_state: fromState, to_state: toState, notes}),
+    });
+    toast(`Promoted ${resp.promoted} UC${resp.promoted!==1?'s':''}: ${fromState} → ${toState}`);
+    closePromoteModal();
+    await loadUCs();
+    await loadSets();
+    _refreshSetMgmt();
+  } catch (e) {
+    status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; btn.disabled = false;
+  }
+}
+
+// ══════════════════════════ CONFIG / SOURCES ══════════════════════════
+
+const sourcesPollers = {spec:null,corpus:null};
+const sourcesState   = {spec:null,corpus:null,inference:null};
+
+const SOURCE_UI = {
+  spec:   {repo:'srcSpecRepo',branch:'srcSpecBranch',when:'srcSpecWhen',who:'srcSpecWho',status:'srcSpecStatus',
+           repoInput:'srcSpecRepoInput',branchSelect:'srcSpecBranchSelect',branchInput:'srcSpecBranchInput',
+           refreshBranchesBtn:'srcSpecRefreshBranches',applyBtn:'srcSpecApplyBtn',msg:'srcSpecMsg'},
+  corpus: {repo:'srcCorpusRepo',branch:'srcCorpusBranch',when:'srcCorpusWhen',who:'srcCorpusWho',status:'srcCorpusStatus',
+           repoInput:'srcCorpusRepoInput',branchSelect:'srcCorpusBranchSelect',branchInput:'srcCorpusBranchInput',
+           refreshBranchesBtn:'srcCorpusRefreshBranches',applyBtn:'srcCorpusApplyBtn',msg:'srcCorpusMsg'},
+};
+
+async function loadConfig() {
+  // Load review models, MCP, code repos, UC assist, repos registry, and setup config nav
+  loadAccessPanels();          // Users & Access (admin-only; no-op otherwise)
+  await loadCredentials();     // Shared credentials (M9) — load first so the
+                               // Repos form's PAT/webhook-secret dropdowns can
+                               // hydrate from the freshest list
+  await loadRepos();           // Managed repos registry (M3) — load before sources panels
+                               // since sources are now projections over the registry
+  await loadReviewModels();
+  renderModelList();
+  _updateArchModelInfo();
+  _populateOverrideSel('nrModelSel', '__engine__');
+  await loadUCAssistConfig();  // populates ucAssistModelSel from _reviewModels
+  await loadEvalDefault();    // populates evalDefaultModelSel from DB
+  await loadArchDefault();    // populates archDefaultModelSel from DB
+  await loadMCPServers();
+  await loadCodeRepos();
+  await loadMCPRefreshStatus();   // populates configMCPRefreshPanel
+  loadCorpusCacheStatus();        // corpus-files cache freshness
+  setupConfigNav();
+  try {
+    const resp = await api('/api/sources');
+    const data = resp.sources || {};
+    for (const kind of ['spec','corpus']) { sourcesState[kind] = data[kind]||null; renderSourcePanel(kind); }
+  } catch (e) {
+    for (const kind of ['spec','corpus'])
+      document.getElementById(SOURCE_UI[kind].msg).innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+  }
+  // Surface detected UC subpath on the corpus panel
+  try {
+    const detect = await api('/api/sources/corpus/uc-subpath');
+    const el = document.getElementById('srcCorpusSubpath');
+    if (detect.detected) el.textContent = detect.detected + '/';
+    else if (detect.corpus_dir_exists === false) {
+      el.innerHTML = '<span style="color:var(--red)">corpus not cloned yet</span>';
+    } else {
+      el.innerHTML = '<span style="color:var(--text-faint)">no dav/ or use-cases/ found</span>';
+    }
+  } catch {}
+}
+
+
+function renderSourcePanel(kind) {
+  const s = sourcesState[kind]; if (!s) return;
+  // Spec (M4) and corpus (M11) both read-only views projected from the
+  // managed_repos registry.
+  if (kind === 'spec')   return _renderSpecPanelReadOnly(s);
+  if (kind === 'corpus') return _renderCorpusPanelReadOnly(s);
+
+  const ui = SOURCE_UI[kind];
+  document.getElementById(ui.repo).textContent   = s.repo_url    || '—';
+  document.getElementById(ui.branch).textContent = s.repo_branch || '—';
+  document.getElementById(ui.when).textContent   = fmtTs(s.last_applied_at);
+  document.getElementById(ui.who).textContent    = s.last_applied_by || '—';
+  const statusEl = document.getElementById(ui.status);
+  if (s.rollout) {
+    const r = s.rollout;
+    statusEl.innerHTML = r.rolled_out
+      ? `<span style="color:var(--green)">rolled out</span> · ${r.replicas_ready}/${r.replicas_desired} ready`
+      : `<span style="color:var(--blue)">applying</span> · ${r.replicas_ready}/${r.replicas_desired} ready`;
+  } else statusEl.textContent = '(deployment not found)';
+  if (s.deployment_annotations) {
+    const da = s.deployment_annotations;
+    if ((da.source_repo_url && da.source_repo_url!==s.repo_url) || (da.source_repo_branch && da.source_repo_branch!==s.repo_branch))
+      statusEl.innerHTML += ' <span style="color:var(--red)" title="Annotations lag ConfigMap">⚠ drift</span>';
+  }
+  const repoInput = document.getElementById(ui.repoInput);
+  if (!repoInput.value && !repoInput.dataset.userEdited) {
+    repoInput.value = s.repo_url || '';
+    loadBranches(kind, s.repo_url).then(() => {
+      const sel = document.getElementById(ui.branchSelect);
+      for (const opt of sel.options) { if (opt.value===s.repo_branch) { sel.value=s.repo_branch; break; } }
+    });
+  }
+}
+
+// Spec is multi-source and managed via the registry (ADR-003). The panel
+// renders a read-only summary; the source list comes from sourcesState.spec
+// which the API populates with the parsed `sources` field of the ConfigMap.
+function _renderSpecPanelReadOnly(s) {
+  const listEl = document.getElementById('srcSpecSourceList');
+  if (s.multi_source && Array.isArray(s.sources) && s.sources.length) {
+    listEl.innerHTML = s.sources.map(src => `
+      <div style="display:flex;gap:6px;align-items:baseline;font-size:11px;margin-bottom:3px;">
+        <span style="font-weight:600;min-width:60px;">${esc(src.namespace || '')}</span>
+        <span style="font-family:var(--mono,monospace);color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${esc(src.repo_url || '')}</span>
+        <span style="color:var(--accent);font-family:var(--mono,monospace);">${esc(src.repo_branch || '')}</span>
+        ${src.root_path ? `<span style="color:var(--text-faint);font-family:var(--mono,monospace);font-size:10px;">/${esc(src.root_path)}</span>` : ''}
+      </div>`).join('');
+  } else if (s.repo_url) {
+    // Legacy single-source ConfigMap shape. Should be rare after the M2
+    // projection has run, but render it so operators on older configs
+    // still see meaningful state.
+    listEl.innerHTML = `
+      <div style="display:flex;gap:6px;align-items:baseline;font-size:11px;">
+        <span style="color:var(--text-faint);font-style:italic;">legacy single-source:</span>
+        <span style="font-family:var(--mono,monospace);color:var(--text-dim);">${esc(s.repo_url)}</span>
+        <span style="color:var(--accent);font-family:var(--mono,monospace);">${esc(s.repo_branch || '')}</span>
+      </div>
+      <div style="font-size:10px;color:var(--accent);margin-top:4px;">
+        ConfigMap is in legacy shape — run <strong>↻ Project</strong> on the Managed repos panel to convert to multi-source.
+      </div>`;
+  } else {
+    listEl.innerHTML = '<span style="color:var(--text-faint);font-style:italic;">no spec sources configured</span>';
+  }
+  document.getElementById('srcSpecWhen').textContent = fmtTs(s.last_applied_at);
+  document.getElementById('srcSpecWho').textContent  = s.last_applied_by || '—';
+  const statusEl = document.getElementById('srcSpecStatus');
+  if (s.rollout) {
+    const r = s.rollout;
+    statusEl.innerHTML = r.rolled_out
+      ? `<span style="color:var(--green)">rolled out</span> · ${r.replicas_ready}/${r.replicas_desired} ready`
+      : `<span style="color:var(--blue)">applying</span> · ${r.replicas_ready}/${r.replicas_desired} ready`;
+  } else {
+    statusEl.textContent = '(deployment not found)';
+  }
+}
+
+// Corpus is multi-source post-M11 (ADR-007), projected from managed_repos
+// rows with role=corpus. Same shape as the spec read-only renderer; the
+// only differences are no Deployment-rollout (Tekton reads ConfigMap
+// fresh per run) and the namespace-keyed UC subpath display.
+function _renderCorpusPanelReadOnly(s) {
+  const listEl = document.getElementById('srcCorpusSourceList');
+  if (s.multi_source && Array.isArray(s.sources) && s.sources.length) {
+    listEl.innerHTML = s.sources.map(src => `
+      <div style="display:flex;gap:6px;align-items:baseline;font-size:11px;margin-bottom:3px;">
+        <span style="font-weight:600;min-width:60px;">${esc(src.namespace || '')}</span>
+        <span style="font-family:var(--mono,monospace);color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${esc(src.repo_url || '')}</span>
+        <span style="color:var(--accent);font-family:var(--mono,monospace);">${esc(src.repo_branch || '')}</span>
+        ${src.root_path ? `<span style="color:var(--text-faint);font-family:var(--mono,monospace);font-size:10px;">/${esc(src.root_path)}</span>` : ''}
+      </div>`).join('');
+  } else if (s.repo_url) {
+    listEl.innerHTML = `
+      <div style="display:flex;gap:6px;align-items:baseline;font-size:11px;">
+        <span style="color:var(--text-faint);font-style:italic;">legacy single-source:</span>
+        <span style="font-family:var(--mono,monospace);color:var(--text-dim);">${esc(s.repo_url)}</span>
+        <span style="color:var(--accent);font-family:var(--mono,monospace);">${esc(s.repo_branch || '')}</span>
+      </div>
+      <div style="font-size:10px;color:var(--accent);margin-top:4px;">
+        ConfigMap is in legacy shape — run <strong>↻ Project all</strong> on the Managed repos panel to convert to multi-source.
+      </div>`;
+  } else {
+    listEl.innerHTML = '<span style="color:var(--text-faint);font-style:italic;">no corpus sources configured</span>';
+  }
+  document.getElementById('srcCorpusWhen').textContent = fmtTs(s.last_applied_at);
+  document.getElementById('srcCorpusWho').textContent  = s.last_applied_by || '—';
+  const statusEl = document.getElementById('srcCorpusStatus');
+  // Corpus has no Deployment to roll; show static "n/a"
+  statusEl.innerHTML = '<span style="color:var(--text-faint);">no rollout — Tekton reads ConfigMap fresh per ingestion</span>';
+}
+
+async function loadBranches(kind, repoUrl) {
+  const sel = document.getElementById(SOURCE_UI[kind].branchSelect);
+  if (!repoUrl) { sel.innerHTML = '<option value="">(enter a repo URL first)</option>'; return; }
+  sel.innerHTML = '<option value="">(loading…)</option>';
+  try {
+    const resp = await api('/api/sources/branches?repo_url=' + encodeURIComponent(repoUrl));
+    const branches = resp.branches || [];
+    if (!branches.length) { sel.innerHTML = '<option value="">(no branches — use free-text)</option>'; return; }
+    sel.innerHTML = '<option value="">(select a branch)</option>';
+    branches.forEach(b => { const o=document.createElement('option'); o.value=b; o.textContent=b; sel.appendChild(o); });
+  } catch { sel.innerHTML = '<option value="">(GitHub API failed — use free-text)</option>'; }
+}
+
+async function applySource(kind) {
+  const ui = SOURCE_UI[kind];
+  const repoUrl = document.getElementById(ui.repoInput).value.trim();
+  const branch  = document.getElementById(ui.branchInput).value.trim() || document.getElementById(ui.branchSelect).value;
+  const msg = document.getElementById(ui.msg), btn = document.getElementById(ui.applyBtn);
+  if (!repoUrl) { msg.innerHTML = '<span style="color:var(--red)">repo URL required</span>'; return; }
+  if (!branch)  { msg.innerHTML = '<span style="color:var(--red)">branch required</span>';   return; }
+  const current = sourcesState[kind];
+  if (current && current.repo_url===repoUrl && current.repo_branch===branch) {
+    msg.innerHTML = '<span style="color:var(--text-faint)">same as current — nothing to do</span>'; return;
+  }
+  btn.disabled = true; msg.innerHTML = '<span style="color:var(--blue)">applying…</span>';
+  try {
+    const resp = await api(`/api/sources/${kind}`, {method:'POST', body:JSON.stringify({repo_url:repoUrl,repo_branch:branch})});
+    sourcesState[kind] = resp.state; renderSourcePanel(kind);
+    msg.innerHTML = '<span style="color:var(--green)">applied · rolling out</span>';
+    toast(`${kind}: applied ${repoUrl}#${branch}`); startSourcePoll(kind);
+    document.getElementById(ui.repoInput).dataset.userEdited = '';
+    document.getElementById(ui.branchInput).value = '';
+  } catch (e) {
+    msg.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`; toast('Apply failed: '+e.message, true);
+  } finally { btn.disabled = false; }
+}
+
+function startSourcePoll(kind) {
+  if (sourcesPollers[kind]) clearInterval(sourcesPollers[kind]);
+  sourcesPollers[kind] = setInterval(async () => {
+    try {
+      const resp = await api('/api/sources/'+kind);
+      sourcesState[kind] = resp.state; renderSourcePanel(kind);
+      if (resp.state.rollout?.rolled_out) {
+        clearInterval(sourcesPollers[kind]); sourcesPollers[kind] = null;
+        document.getElementById(SOURCE_UI[kind].msg).innerHTML = '<span style="color:var(--green)">rolled out</span>';
+        toast(`${kind}: rollout complete`);
+      }
+    } catch {}
+  }, 3000);
+  setTimeout(() => { if (sourcesPollers[kind]) { clearInterval(sourcesPollers[kind]); sourcesPollers[kind]=null; } }, 5*60*1000);
+}
+
+function wireSourcesPanel(kind) {
+  const ui = SOURCE_UI[kind];
+  document.getElementById(ui.repoInput).addEventListener('change', () => {
+    document.getElementById(ui.repoInput).dataset.userEdited = '1';
+    loadBranches(kind, document.getElementById(ui.repoInput).value.trim());
+  });
+  document.getElementById(ui.branchSelect).addEventListener('change', () => {
+    if (document.getElementById(ui.branchSelect).value) document.getElementById(ui.branchInput).value = '';
+  });
+  document.getElementById(ui.branchInput).addEventListener('input', () => {
+    if (document.getElementById(ui.branchInput).value) document.getElementById(ui.branchSelect).value = '';
+  });
+  document.getElementById(ui.refreshBranchesBtn).addEventListener('click', () =>
+    loadBranches(kind, document.getElementById(ui.repoInput).value.trim()));
+  document.getElementById(ui.applyBtn).addEventListener('click', () => applySource(kind));
+}
+
+// ── Wire-up ──────────────────────────────────────────────────
+
+// Sidebar nav: .pf-nav-item clicks drive switchView. Items with data-cfg also
+// jump to a specific Config panel (Users & roles / Projects nav shortcuts).
+// Rail clicks → switch domain. Event-delegated on the container so it survives
+// renderDomainRail() re-renders and binds once (the anchors are created dynamically).
+document.querySelector('.pf-nav-items')?.addEventListener('click', (e) => {
+  const a = e.target.closest('.pf-nav-item[data-domain]');
+  if (a) switchDomain(a.dataset.domain);
+});
+
+// Workspace focus switcher (Architecture ⇄ Assessment) + read-only View-mode toggle.
+document.getElementById('personaSel')?.addEventListener('change', (e) => setPersona(e.target.value));
+document.getElementById('viewModeToggle')?.addEventListener('click', toggleViewMode);
+
+// ── Analysis freshness chip (#112 / uc-scoped-evaluation-design.md step 4) ────
+// Coverage (evaluated/total) + content staleness for the active project. Status, not selection.
+async function loadFreshness() {
+  const sumEl = document.getElementById('freshSummary');
+  const dot = document.getElementById('freshDot');
+  if (!sumEl) return;
+  let f;
+  try { f = await api('/api/freshness'); }
+  catch { sumEl.textContent = '—'; if (dot) dot.style.background = 'var(--text-faint)'; return; }
+  const total = f.total || 0, ingested = f.ingested || 0, stale = f.stale || 0;
+  const managed = (f.managed != null ? f.managed : total), corpus = f.corpus || 0;
+  // Pill = evaluated / total-available (managed + corpus, regardless of ingest status).
+  sumEl.textContent = total ? `${ingested}/${total}${stale ? ` · ${stale} stale` : ''}` : 'no UCs';
+  if (dot) {
+    // green = managed UCs all evaluated + fresh; amber = managed stale/uncovered; faint = nothing
+    // evaluated. Corpus (defined-but-not-ingested) isn't evaluatable, so it doesn't force amber.
+    const attn = !!(ingested && (stale || ingested < managed));   // needs attention
+    let c = 'var(--text-faint)';
+    if (ingested) c = attn ? 'var(--amber, #d79a2b)' : 'var(--ok, var(--green))';
+    dot.style.background = c;
+    dot.classList.toggle('pulse', attn);   // pulse only when attention is warranted
+  }
+  const pop = document.getElementById('freshnessPopover');
+  if (pop) {
+    const row = (l, v) => `<div style="display:flex;justify-content:space-between;gap:16px;padding:2px 0;"><span style="color:var(--text-dim);">${l}</span><span>${v}</span></div>`;
+    pop.innerHTML =
+      `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:5px;">Analysis freshness</div>`
+      + row('Use cases (this project)', total)
+      // Breakdown: managed (ingested into the DB) + corpus from the project's corpus repos (#199).
+      // Both count toward the total — the pill is the complete story (drift in either re-runs).
+      + row('<span style="color:var(--text-faint);">├ Managed (ingested)</span>', `<span style="color:var(--text-faint);">${managed}</span>`)
+      + (corpus ? row('<span style="color:var(--text-faint);">├ Corpus (from repos)</span>', `<span style="color:var(--text-faint);">${corpus}</span>`) : '')
+      + (f.deprecated ? row('<span style="color:var(--text-faint);">Deprecated (excluded)</span>', `<span style="color:var(--text-faint);">${f.deprecated}</span>`) : '')
+      + row('Evaluated', `${ingested} / ${managed}${f.uncovered ? ` <span style="color:var(--text-faint);">(${f.uncovered} unevaluated)</span>` : ''}`)
+      + (f.failed ? row('Failed', `<span style="color:var(--red);">${f.failed}</span>`) : '')
+      + row('Stale', `${stale}${stale ? ` <span style="color:var(--text-faint);">(${f.stale_edited || 0} edited · ${f.stale_drifted || 0} code-drifted)</span>` : ''}`)
+      + row('Last evaluation', f.last_eval ? _ago(f.last_eval) : '—')
+      + ((stale + (f.uncovered || 0)) > 0
+          ? `<button class="btn primary btn-sm" style="margin-top:8px;width:100%;" onclick="ingestStaleUCs()" title="Open a new ingestion scoped to the un-evaluated / stale use cases">▶ Ingest ${stale + (f.uncovered || 0)} un-evaluated / stale</button>`
+          : `<div style="margin-top:6px;font-size:10px;color:var(--green);">All use cases evaluated &amp; fresh.</div>`);
+  }
+}
+// One-click "ingest what's missing" from the masthead freshness popover (mirrors the
+// Ingestions-tab audit button, but self-contained so it works from anywhere).
+async function ingestStaleUCs() {
+  // Open New Ingestion pre-selected to the Stale / un-ingested scope (UCs needing evaluation).
+  const pop = document.getElementById('freshnessPopover'); if (pop) pop.style.display = 'none';
+  openNewRun(undefined, undefined, undefined, undefined, { set_id: '__stale__', selection_mode: 'selection' });
+}
+document.getElementById('freshnessChip')?.addEventListener('click', () => {
+  const pop = document.getElementById('freshnessPopover');
+  if (pop) pop.style.display = pop.style.display === 'none' ? '' : 'none';
+});
+document.getElementById('freshnessPopover')?.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('click', (e) => {
+  const chip = document.getElementById('freshnessChip');
+  const pop = document.getElementById('freshnessPopover');
+  if (pop && pop.style.display !== 'none' && chip && !chip.contains(e.target)) pop.style.display = 'none';
+});
+
+// ── Live run-progress chip (#112) — aggregate in-progress runs from allRuns ───
+function _runIsActive(r) {
+  return r && !r.archived && !['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase);
+}
+function _fmtEta(ms) {
+  if (!ms || !isFinite(ms) || ms < 0) return '';
+  const s = Math.round(ms / 1000);
+  if (s < 90) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 90) return `${m}m`;
+  const h = Math.floor(m / 60); return `${h}h${m % 60}m`;
+}
+// The masthead Analysis pill is ALWAYS the aggregate stats — never the name of a run in
+// progress (no flipping). Format: <#runs> · <#done>/<#UCs across all active runs> · ✓<succ> ✗<fail>.
+function _renderRunChipLive() {
+  const active = (allRuns || []).filter(_runIsActive);
+  const dot = document.getElementById('rccDot');
+  const nm = document.getElementById('rccName');
+  const lbl = document.getElementById('rccLabel');
+  if (!nm) return;
+  if (!active.length) {
+    if (lbl) lbl.textContent = 'Analysis';
+    nm.textContent = '— none —';              // idle: neutral, NOT a run name
+    if (dot) dot.classList.remove('pulse');
+    return;
+  }
+  if (lbl) lbl.textContent = 'Analysis';      // label stays "Analysis"; the dot pulses + stats lead with "# active"
+  let ucs = 0, succ = 0, fail = 0;
+  active.forEach(r => { ucs += (r.uc_total || 0); succ += (r.uc_succeeded || 0); fail += (r.uc_failed || 0); });
+  const done = succ + fail;
+  // "<N> active · <done>/<total> UC · ✓ ok ✗ failed".
+  nm.textContent = `${active.length} active · ${done}/${ucs} UC · ✓${succ} ✗${fail}`;
+  const chip = document.getElementById('runContextChip');
+  if (chip) chip.title = `${active.length} analysis run${active.length > 1 ? 's' : ''} active · ` +
+    `${done} of ${ucs} use cases processed (✓${succ} succeeded, ✗${fail} failed) · click for per-run progress`;
+  if (dot) dot.classList.add('pulse');
+}
+function _renderRunChipPopover() {
+  const pop = document.getElementById('runChipPopover');
+  if (!pop) return;
+  const active = (allRuns || []).filter(_runIsActive);
+  if (!active.length) { pop.innerHTML = '<div style="color:var(--text-faint);">No analyses in progress.</div>'; return; }
+  pop.innerHTML =
+    `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:5px;">Running (${active.length}) — click to open</div>`
+    + active.map(r => {
+        const t = r.uc_total || 0, s = r.uc_succeeded || 0, f = r.uc_failed || 0;
+        return `<div class="rcc-pop-run" data-run="${esc(r.name)}" style="display:flex;flex-direction:column;gap:3px;padding:5px 4px;border-radius:3px;cursor:pointer;">
+          <div style="display:flex;justify-content:space-between;gap:10px;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:190px;">${esc(r.session_name || r.name)}</span><span style="color:var(--text-faint);">${s + f}/${t}</span></div>
+          <div class="uc-progress-bar" style="margin:0;"><span class="seg-success" style="width:${t ? s / t * 100 : 0}%"></span><span class="seg-failed" style="width:${t ? f / t * 100 : 0}%"></span></div>
+        </div>`;
+      }).join('');
+  pop.querySelectorAll('.rcc-pop-run').forEach(el => el.addEventListener('click', () => {
+    pop.style.display = 'none';
+    switchView('runs');
+    setTimeout(() => { try { openRunDrawer(el.dataset.run); } catch {} }, 60);
+  }));
+}
+document.getElementById('runContextChip')?.addEventListener('click', () => {
+  const pop = document.getElementById('runChipPopover');
+  if (!pop) return;
+  if (pop.style.display === 'none') { _renderRunChipPopover(); pop.style.display = ''; }
+  else pop.style.display = 'none';
+});
+document.getElementById('runChipPopover')?.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('click', (e) => {
+  const chip = document.getElementById('runContextChip');
+  const pop = document.getElementById('runChipPopover');
+  if (pop && pop.style.display !== 'none' && chip && !chip.contains(e.target)) pop.style.display = 'none';
+});
+// Persistent, adaptive heartbeat so the masthead pill stays live on EVERY tab (and while a
+// run is watched via the drawer, which only refreshes the single run, not allRuns). Fast
+// while any ingestion is active; a slow heartbeat when idle so a newly-started run is picked
+// up without visiting the Ingestions tab. Self-reschedules; guarded against double-arming.
+let _runChipPollTimer = null;
+function _ensureRunChipPoll() {
+  if (_runChipPollTimer) return;            // already scheduled — the tick reschedules itself
+  // NB: tick must NOT null _runChipPollTimer before awaiting loadRuns — loadRuns() itself calls
+  // _ensureRunChipPoll(), and a null would let it arm a SECOND timer → the chain doubles every
+  // cycle (a /api/runs flood). Keep the (expired) id truthy so that re-entrant call short-circuits;
+  // tick is the sole re-armer.
+  const tick = async () => {
+    try { await loadRuns({ silent: true }); } catch {}   // refreshes allRuns + _renderRunChipLive
+    const active = (allRuns || []).some(_runIsActive);
+    _runChipPollTimer = setTimeout(tick, active ? 7000 : 30000);
+  };
+  const active = (allRuns || []).some(_runIsActive);
+  _runChipPollTimer = setTimeout(tick, active ? 7000 : 30000);
+}
+try { _applyViewMode(); } catch (e) { console.warn('view-mode init failed', e); }
+
+// Masthead hamburger toggle
+document.getElementById('navToggleBtn').addEventListener('click', toggleNav);
+
+// Masthead run STATUS (read-only): reflect the active run. The run is *working context*,
+// not global chrome — selection happens in Execution → Runs (ux-paradigm-design.md). Kept
+// as a function so its existing callers (runs-list refresh, run selection) keep the label fresh.
+function _populateGlobalRunSel(){
+  // Retained for its many callers (runs-list refresh, run selection) — the masthead pill is
+  // now always the aggregate stats, so just refresh those rather than writing a run name.
+  _renderRunChipLive();
+}
+// Loading indicator while a run change pulls fresh data for the shown page: the run-chip
+// spinner plus a light, non-blocking overlay over the content area.
+function _runLoading(on) {
+  const sp = document.getElementById('runLoadSpinner');
+  if (sp) sp.style.display = on ? '' : 'none';
+  let ov = document.getElementById('runLoadOverlay');
+  if (on) {
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.id = 'runLoadOverlay';
+      ov.style.cssText = 'position:fixed;left:0;right:0;top:48px;bottom:0;z-index:60;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(0,0,0,0.12);pointer-events:none;';
+      ov.innerHTML = '<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);background:var(--bg-panel);border:1px solid var(--border);border-radius:3px;padding:8px 14px;box-shadow:0 4px 14px rgba(0,0,0,0.3);"><span class="llm-spinner"></span>Loading ingestion…</div>';
+      document.body.appendChild(ov);
+    }
+    ov.style.display = '';
+  } else if (ov) { ov.style.display = 'none'; }
+}
+
+// (The masthead run selector is retired — run selection lives in Execution → Runs, which
+// calls selectRunResult directly. The masthead shows read-only run status; see #rccName.)
+
+// View Results button in run detail header
+document.getElementById('rdViewResultsBtn')?.addEventListener('click', () => {
+  if (activeRunResultId) {
+    switchView('results');
+    // loadResults will auto-select the active run
+  } else {
+    switchView('results');
+  }
+});
+
+// "Review this analysis →" — IA slice 3: review/enhancement/PR generation has ONE home
+// (Roadmaps). This scopes Roadmaps to the analysis's originating Scoping Set (runs record
+// set_id) and opens Arch Review. No set_id (corpus/ad-hoc run) → scope to all use cases.
+document.getElementById('rdReviewBtn')?.addEventListener('click', () => {
+  const setId = activeRunSummary?.set_id;
+  try { setScope(setId != null ? String(setId) : ''); } catch (_) {}
+  switchView('review');
+});
+
+// Diagnose button in run detail header — jump to the Improve tab, preselect
+// this run, and run the diagnoser.
+document.getElementById('rdDiagnoseBtn')?.addEventListener('click', async () => {
+  const run = _rdName;
+  if (!run) return;
+  switchView('improve');
+  await loadImproveQueue();
+  const sel = document.getElementById('improveRunSelect');
+  if (sel) {
+    if (![...sel.options].some(o => o.value === run)) {
+      sel.add(new Option(run, run), 0);
+    }
+    sel.value = run;
+  }
+  diagnoseSelectedRun();
+});
+
+document.getElementById('newRunBtn').addEventListener('click', () => openNewRun());
+document.getElementById('closeNewRun').addEventListener('click', closeNewRun);
+document.getElementById('cancelNewRun').addEventListener('click', closeNewRun);
+document.getElementById('submitNewRun').addEventListener('click', submitNewRun);
+document.getElementById('nrReloadDefaults').addEventListener('click', () => loadNewRunDefaults());
+document.getElementById('nrModelSel').addEventListener('change', e => localStorage.setItem('nrLastModel', e.target.value));
+document.getElementById('refreshRunsBtn').addEventListener('click', loadRuns);
+
+document.getElementById('refreshResultsBtn').addEventListener('click', loadResults);
+document.getElementById('resultFilter').addEventListener('input', renderResultList);
+document.getElementById('ucVerdictFilter').addEventListener('change', () => {
+  if (activeRunSummary) renderUCResultList(activeRunSummary);
+  else _renderScopedUCList();   // scoped Results list (no run summary)
+});
+document.getElementById('ucGroupBy').addEventListener('change', () => {
+  try { localStorage.setItem('ucGroupByMode', document.getElementById('ucGroupBy').value); } catch(e) {}
+  if (activeRunSummary) renderUCResultList(activeRunSummary);
+  else _renderScopedUCList();
+});
+// Restore group-by preference on load
+try {
+  const saved = localStorage.getItem('ucGroupByMode');
+  if (saved !== null) document.getElementById('ucGroupBy').value = saved;
+} catch(e) {}
+
+// ── Generic split-resizer: any .split-resizer[data-rs-left=<panelId>][data-rs-storage=<key>]
+// resizes the left-of-it panel. Width persisted in localStorage if storage key given.
+(function() {
+  function attachResizer(handle) {
+    const targetId = handle.dataset.rsLeft;
+    const storeKey = handle.dataset.rsStorage;
+    const target = document.getElementById(targetId);
+    if (!target) return;
+    // Restore saved width
+    if (storeKey) {
+      try {
+        const saved = localStorage.getItem(storeKey);
+        if (saved) target.style.width = saved + 'px';
+      } catch(e) {}
+    }
+    let dragging = false; let startX = 0; let startW = 0;
+    handle.addEventListener('mousedown', e => {
+      dragging = true; startX = e.clientX; startW = target.getBoundingClientRect().width;
+      handle.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', e => {
+      if (!dragging) return;
+      const newW = Math.max(160, Math.min(900, startW + (e.clientX - startX)));
+      target.style.width = newW + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false;
+      handle.classList.remove('dragging');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (storeKey) {
+        try { localStorage.setItem(storeKey, parseInt(target.style.width, 10)); } catch(e) {}
+      }
+    });
+  }
+  document.querySelectorAll('.split-resizer').forEach(attachResizer);
+})();
+
+document.getElementById('newUCBtn').addEventListener('click', () => openUcWizard());
+document.getElementById('bulkImportUCBtn').addEventListener('click', () => openBulkImport());
+document.getElementById('closeBulkImport').addEventListener('click', closeBulkImport);
+document.getElementById('cancelBulkImport').addEventListener('click', closeBulkImport);
+document.getElementById('closeUcWizard').addEventListener('click', closeUcWizard);
+document.getElementById('cancelUcWizard').addEventListener('click', closeUcWizard);
+document.getElementById('wzBackBtn').addEventListener('click', wzBack);
+document.getElementById('wzPrimaryBtn').addEventListener('click', wzNext);
+document.getElementById('wzRefineBtn').addEventListener('click', wzRefine);
+document.getElementById('wzValidateBtn').addEventListener('click', wzValidate);
+document.getElementById('wzAdvancedBtn').addEventListener('click', wzToAdvanced);
+document.getElementById('closeUCModal').addEventListener('click', closeUCModal);
+document.getElementById('cancelUCModal').addEventListener('click', closeUCModal);
+document.getElementById('saveUCModal').addEventListener('click', saveUC);
+document.getElementById('ucFilter').addEventListener('input', renderUCList);
+document.getElementById('ucSourceFilter').addEventListener('change', () => loadUCs());
+document.getElementById('ucPriorityFilter').addEventListener('change', e => {
+  ucPriorityFilter = e.target.value;
+  renderUCList();
+});
+document.getElementById('ucSortPriority').addEventListener('click', e => {
+  ucSortByPriority = !ucSortByPriority;
+  e.currentTarget.style.borderColor = ucSortByPriority ? 'var(--accent)' : 'var(--border-bright)';
+  e.currentTarget.style.color = ucSortByPriority ? 'var(--accent)' : '';
+  renderUCList();
+});
+
+// Lifecycle state filter chips
+// Lifecycle-state + assignment filters (unified select style, matching the Scoping Sets palette).
+document.getElementById('ucStateFilter')?.addEventListener('change', e => {
+  ucStateFilter = e.target.value; renderUCList();
+});
+document.getElementById('ucAssignFilter')?.addEventListener('change', e => {
+  ucAssignFilter = e.target.value; renderUCList();
+});
+document.getElementById('ucHealthFilter')?.addEventListener('change', e => {
+  ucHealthFilter = e.target.value; renderUCList();
+});
+
+// LC transition modal
+document.getElementById('closeLCModal').addEventListener('click', closeLCModal);
+document.getElementById('cancelLCModal').addEventListener('click', closeLCModal);
+document.getElementById('confirmLCModal').addEventListener('click', confirmLCTransition);
+
+// Scoping Sets (now merged into the UC tab)
+document.getElementById('newSetBtn').addEventListener('click', () => openSetModal());
+document.getElementById('closeSetModal').addEventListener('click', closeSetModal);
+document.getElementById('cancelSetModal').addEventListener('click', closeSetModal);
+document.getElementById('saveSetModal').addEventListener('click', saveSet);
+// Manage Scoping Sets modal
+document.getElementById('manageSetsBtn').addEventListener('click', openManageSetsModal);
+document.getElementById('closeManageSetsModal').addEventListener('click', closeManageSetsModal);
+document.getElementById('manageSetsDoneBtn').addEventListener('click', closeManageSetsModal);
+document.getElementById('manageSetsNewBtn').addEventListener('click', () => { closeManageSetsModal(); openSetModal(); });
+// Active-set banner buttons
+document.getElementById('ucListSetBannerRunBtn').addEventListener('click', () => {
+  if (activeSetId === null) { runSet(0, 'All Use Cases'); return; }  // synthetic All set
+  if (typeof activeSetId !== 'number') return;
+  const s = (allSets || []).find(x => x.id === activeSetId);
+  if (s) runSet(s.id, s.name);
+});
+document.getElementById('ucListSetBannerManageBtn').addEventListener('click', openManageSetsModal);
+document.getElementById('ucListSetBannerClearBtn').addEventListener('click', () => selectSet('__all__'));
+// Multi-select toolbar
+document.getElementById('ucSelTestBtn').addEventListener('click', _batchTestSelectedUCs);
+document.getElementById('ucSelAddSetBtn').addEventListener('click', e => _openBatchAddSetPopover(e.currentTarget));
+document.getElementById('ucSelClearBtn').addEventListener('click', _clearUCSelection);
+
+// Import / export
+document.getElementById('importUCBtn').addEventListener('click', openImportModal);
+document.getElementById('exportUCBtn').addEventListener('click', e => {
+  e.stopPropagation();
+  const m = document.getElementById('exportUCMenu');
+  const visible = m.style.display !== 'none';
+  document.querySelectorAll('[id^="exportSetMenu-"],[id="exportUCMenu"]').forEach(el => el.style.display = 'none');
+  if (!visible) m.style.display = '';
+});
+document.getElementById('closeImportModal').addEventListener('click', closeImportModal);
+document.getElementById('cancelImportModal').addEventListener('click', closeImportModal);
+document.getElementById('submitImportBtn').addEventListener('click', submitImport);
+
+// Promote set
+document.getElementById('closePromoteModal').addEventListener('click', closePromoteModal);
+document.getElementById('cancelPromoteModal').addEventListener('click', closePromoteModal);
+document.getElementById('confirmPromoteModal').addEventListener('click', confirmPromote);
+
+// Add member modal
+document.getElementById('closeAddMember').addEventListener('click', closeAddMember);
+document.getElementById('cancelAddMember').addEventListener('click', closeAddMember);
+document.getElementById('saveAddMember').addEventListener('click', saveAddMember);
+document.getElementById('memberSearchInput').addEventListener('input', e => onMemberSearch(e.target.value));
+document.getElementById('memberSearchInput').addEventListener('blur', () => {
+  setTimeout(() => { document.getElementById('memberDropdown').style.display = 'none'; }, 200);
+});
+
+// Close modals on overlay click
+['newRunModal','ucModal','setModal','addMemberModal','lcModal','importModal','promoteModal','bulkImportModal','ucWizardModal'].forEach(id => {
+  document.getElementById(id).addEventListener('click', e => {
+    if (e.target===document.getElementById(id)) document.getElementById(id).classList.remove('open');
+  });
+});
+
+// Post-M11: both spec and corpus are read-only views projected from
+// managed_repos. wireSourcesPanel is no longer called for either —
+// inference endpoint is the only remaining editable Sources panel.
+
+// Jump-to-Repos buttons on the read-only spec + corpus panels
+for (const btnId of ['srcSpecJumpToRepos', 'srcCorpusJumpToRepos']) {
+  document.getElementById(btnId)?.addEventListener('click', () => {
+    const target = document.getElementById('configReposPanel');
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+
+// ── Review Models ────────────────────────────────────────────────────────────
+
+let _reviewModels = [];   // cached from /api/models
+let _mfEditId = null;     // ID of model being edited (null = create)
+
+// Two-click arm/confirm for delete buttons (replaces confirm() which is
+// suppressed by the OCP OAuth proxy). First click: shows "Sure?" + red outline.
+// Second click on the same button fires action(). Auto-resets after 4 s.
+function _armDeleteBtn(btn, action) {
+  if (btn.dataset.armed) {
+    delete btn.dataset.armed;
+    btn.textContent = btn.dataset.origText;
+    btn.style.outline = '';
+    action();
+    return;
+  }
+  btn.dataset.origText = btn.textContent;
+  btn.dataset.armed = '1';
+  btn.textContent = 'Sure?';
+  btn.style.outline = '1px solid var(--red)';
+  setTimeout(() => {
+    if (btn.dataset.armed) {
+      delete btn.dataset.armed;
+      btn.textContent = btn.dataset.origText;
+      btn.style.outline = '';
+    }
+  }, 4000);
+}
+
+// Delete-propagation warning: fetch the server's impact preview and show what a delete cascades to,
+// so deletion (allowed for sovereignty/right-to-erase) is informed. The server also audits it.
+// Returns null if cancelled, else {purge:bool} (purge = also erase a UC's historical analyses).
+// Falls back to a plain confirm if the preview can't be fetched.
+async function _confirmDeleteImpact(kind, id, label) {
+  let impact;
+  try {
+    const path = kind === 'uc'
+      ? `/api/use-cases/${encodeURIComponent(id)}/delete-impact`
+      : `/api/sets/${id}/delete-impact`;
+    impact = (await api(path)).impact;
+  } catch (_) {
+    return confirm(`Delete ${label}? This cannot be undone (and is audited).`) ? { purge: false } : null;
+  }
+  const lines = [];
+  if (kind === 'uc') {
+    const r = impact.removed || {}, k = impact.retained || {};
+    lines.push(`Deleting use case "${label}" also removes:`);
+    lines.push(`  • ${r.set_memberships || 0} scoping-set membership(s)`);
+    lines.push(`  • ${r.project_refs || 0} project reference(s)`);
+    lines.push(`  • ${r.customer_requests || 0} customer-demand record(s)`);
+    lines.push(`  • ${r.lifecycle_events || 0} lifecycle event(s)`);
+    if (k.past_analyses)
+      lines.push(`\n${k.past_analyses} past analysis result(s) reference this UC.`);
+    lines.push(`\nThis action is audited. Continue?`);
+    if (!confirm(lines.join('\n'))) return null;
+    // Sovereignty erasure choice — only when there are analyses to purge.
+    let purge = false;
+    if (k.past_analyses) {
+      purge = confirm(
+        `This use case has ${k.past_analyses} historical analysis result(s).\n\n` +
+        `OK  = ALSO permanently erase them (full sovereignty erasure — audited).\n` +
+        `Cancel = keep them as a historical record (the UC is still deleted).`);
+    }
+    return { purge };
+  }
+  const r = impact.removed || {}, d = impact.detached || {};
+  lines.push(`Deleting scoping set "${label}":`);
+  lines.push(`  • removes ${r.memberships || 0} membership(s) — the use cases themselves are kept`);
+  if (d.past_runs)
+    lines.push(`  • detaches ${d.past_runs} past run(s) — they keep the recorded set name, but the live link is cleared`);
+  lines.push(`\nThis action is audited. Continue?`);
+  return confirm(lines.join('\n')) ? { purge: false } : null;
+}
+
+async function loadReviewModels() {
+  try {
+    _reviewModels = await api('/api/models');
+  } catch(e) {
+    _reviewModels = [];
+  }
+}
+
+function renderModelList() {
+  const el = document.getElementById('modelList');
+  if (!el) return;
+  if (!_reviewModels.length) {
+    el.innerHTML = '<div style="padding:14px 16px;font-size:12px;color:var(--text-faint)">No models configured. Click "+ Add model" to add one.</div>';
+    return;
+  }
+  el.innerHTML = _reviewModels.map(m => `
+    <div class="model-manager-row">
+      <span class="model-pill ${m.is_local ? 'local' : 'frontier'}">${m.is_local ? 'local' : 'frontier'}</span>
+      <span style="font-weight:500;color:var(--text);flex:1">${esc(m.name)}${m.from_bundle ? ' <span class="model-pill" style="background:var(--bg-raised);" title="Provided by an attached bundle — manage it in Config → Platform → Bundles">bundle</span>' : ''}</span>
+      <span style="color:var(--text-faint);font-size:11px;">${esc(m.provider)} · ${esc(m.model_id)}</span>
+      ${!m.enabled ? '<span class="model-pill disabled">disabled</span>' : ''}
+      ${m.from_bundle
+        ? '<span style="color:var(--text-faint);font-size:11px;">read-only</span>'
+        : `<button class="btn ghost btn-sm" onclick="editModel(${m.id})">Edit</button>
+      <button class="btn ghost btn-sm" style="color:var(--red)" onclick="deleteModel(${m.id},this)">✕</button>`}
+    </div>`).join('');
+}
+
+function _populateModelSel(selId, storageKey) {
+  const sel = document.getElementById(selId);
+  if (!sel) return;
+  const enabled = _reviewModels.filter(m => m.enabled);
+  sel.innerHTML = '<option value="">— select a model —</option>' +
+    enabled.map(m => {
+      const suffix = m.is_local ? 'local' : 'frontier';
+      const label = m.name.toLowerCase().includes(`(${suffix})`) ? m.name : `${m.name} (${suffix})`;
+      return `<option value="${m.id}">${esc(label)}</option>`;
+    }).join('');
+  const stored = localStorage.getItem(storageKey);
+  if (stored === '__custom__') {
+    const ep = localStorage.getItem(storageKey + '_ep');
+    const mi = localStorage.getItem(storageKey + '_mi');
+    if (ep && mi) {
+      // If a newly registered model now covers this custom selection, switch to it
+      const match = enabled.find(m => m.endpoint_url === ep && m.model_id === mi);
+      if (match) {
+        sel.value = String(match.id);
+        localStorage.setItem(storageKey, String(match.id));
+      } else {
+        const opt = document.createElement('option');
+        opt.value = '__custom__';
+        opt.textContent = `Custom: ${mi}`;
+        sel.appendChild(opt);
+        sel.value = '__custom__';
+      }
+    }
+  } else if (stored && enabled.find(m => String(m.id) === stored)) {
+    sel.value = stored;
+  }
+}
+
+function _resolveEndpointModel(selId, storageKey) {
+  const sel = document.getElementById(selId);
+  if (!sel || !sel.value) return null;
+  if (sel.value === '__custom__') {
+    const ep = localStorage.getItem(storageKey + '_ep');
+    const mi = localStorage.getItem(storageKey + '_mi');
+    if (!ep || !mi) return null;
+    return { endpoint_url: ep, model_id: mi };
+  }
+  const id = parseInt(sel.value, 10);
+  if (!id) return null;
+  return { model_config_id: id };
+}
+
+// ── Model default resolution (bypasses DOM, reads localStorage directly) ──────
+
+function _resolveFromStorage(storageKey) {
+  const stored = localStorage.getItem(storageKey);
+  if (!stored) return null;
+  if (stored === '__custom__') {
+    const ep = localStorage.getItem(storageKey + '_ep');
+    const mi = localStorage.getItem(storageKey + '_mi');
+    return (ep && mi) ? { endpoint_url: ep, model_id: mi } : null;
+  }
+  const id = parseInt(stored, 10);
+  return id ? { model_config_id: id } : null;
+}
+
+// ── Project-scoped evaluation model default ────────────────────────────────────
+
+let _evalDefaultModelId = null;
+
+function _populateEvalDefaultSel(modelId) {
+  const sel = document.getElementById('evalDefaultModelSel');
+  if (!sel) return;
+  const enabled = _reviewModels.filter(m => m.enabled);
+  sel.innerHTML = '<option value="">— no default set —</option>' +
+    enabled.map(m => {
+      const suffix = m.is_local ? 'local' : 'frontier';
+      const label = m.name.toLowerCase().includes(`(${suffix})`) ? m.name : `${m.name} (${suffix})`;
+      return `<option value="${m.id}">${esc(label)}</option>`;
+    }).join('');
+  if (modelId) sel.value = String(modelId);
+}
+
+async function loadEvalDefault() {
+  try {
+    const defaults = await api('/api/model-defaults');
+    _evalDefaultModelId = defaults.evaluation || null;
+  } catch(e) {
+    _evalDefaultModelId = null;
+  }
+  _populateEvalDefaultSel(_evalDefaultModelId);
+}
+
+document.getElementById('saveEvalDefaultBtn').addEventListener('click', async () => {
+  const sel = document.getElementById('evalDefaultModelSel');
+  const val = sel.value;
+  if (val === '__custom__') {
+    document.getElementById('evalDefaultMsg').textContent = 'Custom endpoints cannot be a project default — register the endpoint in Model Endpoints first.';
+    return;
+  }
+  const modelId = val ? parseInt(val, 10) : null;
+  const btn = document.getElementById('saveEvalDefaultBtn');
+  const msgEl = document.getElementById('evalDefaultMsg');
+  btn.disabled = true; msgEl.textContent = '';
+  try {
+    await api('/api/model-defaults/evaluation', {
+      method: 'PUT',
+      body: JSON.stringify({ model_config_id: modelId }),
+    });
+    _evalDefaultModelId = modelId;
+    msgEl.textContent = modelId ? 'Default saved' : 'Default cleared';
+    msgEl.style.color = 'var(--green)';
+    setTimeout(() => { msgEl.textContent = ''; msgEl.style.color = ''; }, 2500);
+  } catch(e) {
+    msgEl.textContent = 'Save failed: ' + e.message;
+    msgEl.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
+});
+
+// ── Project-scoped arch-review model default ───────────────────────────────────
+// Mirrors the evaluation default above. Backed by model_defaults
+// (key='arch-review'); /api/arch-review reads it when the caller omits an
+// explicit model_config_id / endpoint_url+model_id override.
+
+let _archDefaultModelId = null;
+let _archDefaultLoaded = false;
+
+function _populateArchDefaultSel(modelId) {
+  const sel = document.getElementById('archDefaultModelSel');
+  if (!sel) return;
+  // Only show models with use_arch_review=true (the per-row gate column).
+  const eligible = _reviewModels.filter(m => m.enabled && m.use_arch_review);
+  sel.innerHTML = '<option value="">— no default set —</option>' +
+    eligible.map(m => {
+      const suffix = m.is_local ? 'local' : 'frontier';
+      const label = m.name.toLowerCase().includes(`(${suffix})`) ? m.name : `${m.name} (${suffix})`;
+      return `<option value="${m.id}">${esc(label)}</option>`;
+    }).join('');
+  if (modelId) sel.value = String(modelId);
+}
+
+async function loadArchDefault() {
+  // Single loader for ALL project model defaults (arch-review, enhancement,
+  // uc-authoring, evaluation). Populates each Config default selector.
+  try {
+    _modelDefaults = (await api('/api/model-defaults')) || {};
+  } catch(e) {
+    _modelDefaults = {};
+  }
+  _archDefaultModelId = _modelDefaults['arch-review'] || null;
+  _archDefaultLoaded = true;   // set before _updateArchModelInfo to break recursion
+  _populateArchDefaultSel(_archDefaultModelId);
+  _populateDefaultSel('enhDefaultModelSel', _modelDefaults['enhancement'] || null);
+  _populateDefaultSel('ucAssistModelSel',   _modelDefaults['uc-authoring'] || null);
+  _populateDefaultSel('assessIngestDefaultModelSel', _modelDefaults['assessment-ingest'] || null);
+  _updateArchModelInfo();
+}
+
+// Reflect the Config "Default Arch Review model" into the Architecture view's
+// read-only label, so the operator sees which model a run will use. The model
+// itself is never chosen in the Architecture view — single source of truth is
+// the Config default (model_defaults key='arch-review'), which the API applies.
+// ── Two-tier model selection ────────────────────────────────────────────────
+// Tier 1 (Config): per-use "default" selectors, server-backed via model_defaults.
+// Tier 2 (views): per-use "override" selectors — first option "Use default —
+//   <name>"; a blank value sends no model so the endpoint resolves the default.
+//   Uses: arch-review, enhancement (chains to arch-review), uc-authoring
+//   (assist panel + wizard + bulk import), and __engine__ (new-run; default
+//   comes from the Config Inference source, not model_defaults).
+let _modelDefaults = {};                 // {key: model_config_id}
+let _engineDefaultLabel = 'project inference default';
+
+function _modelKindLabel(m) {
+  const suffix = m.is_local ? 'local' : 'frontier';
+  return m.name.toLowerCase().includes(`(${suffix})`) ? m.name : `${m.name} (${suffix})`;
+}
+
+// Effective default model NAME for a use-key (enhancement chains to arch-review).
+function _defaultModelName(key) {
+  if (key === '__engine__') return _engineDefaultLabel;
+  const m = (_reviewModels || []).find(x => String(x.id) === String(_modelDefaults[key]));
+  if (m) return _modelKindLabel(m);
+  if (key === 'enhancement' && _modelDefaults['arch-review']) {
+    return _defaultModelName('arch-review') + ' (via Arch Review)';
+  }
+  return 'not set';
+}
+
+// Tier-2 override selector. Blank value ⇒ use the Config default for `key`.
+function _populateOverrideSel(selId, key) {
+  const sel = document.getElementById(selId);
+  if (!sel) return;
+  const enabled = (_reviewModels || []).filter(m => m.enabled);
+  const prev = sel.value;
+  sel.innerHTML = `<option value="">Use default — ${esc(_defaultModelName(key))}</option>` +
+    enabled.map(m => `<option value="${m.id}">${esc(_modelKindLabel(m))}</option>`).join('');
+  if (prev && Array.prototype.some.call(sel.options, o => o.value === prev)) sel.value = prev;
+}
+
+// Body fragment for a request: {} ⇒ use Config default; else explicit override.
+function _overrideModelBody(selId) {
+  const sel = document.getElementById(selId);
+  const v = sel && sel.value;
+  return v ? { model_config_id: parseInt(v, 10) } : {};
+}
+
+// Repopulate every per-view override selector (after models/defaults (re)load).
+function _refreshAllOverrides() {
+  _populateOverrideSel('rpRevModelSel', 'arch-review');
+  _populateOverrideSel('rpEnhModelSel', 'enhancement');
+  _populateOverrideSel('rdRevModelSel', 'arch-review');
+  _populateOverrideSel('rdEnhModelSel', 'enhancement');
+  _populateOverrideSel('biModelSel',    'uc-authoring');
+  _populateOverrideSel('wzModelSel',    'uc-authoring');
+  _populateOverrideSel('ucAssistPanelModelSel', 'uc-authoring');
+  _populateOverrideSel('nrModelSel',    '__engine__');
+}
+
+// Back-compat name — older call sites invoke this to refresh the arch/enh
+// pickers; it now refreshes every override selector.
+async function _updateArchModelInfo() {
+  if (!_reviewModels || !_reviewModels.length) { try { await loadReviewModels(); } catch(e){} }
+  if (!_archDefaultLoaded) { try { await loadArchDefault(); } catch(e){} }
+  _refreshAllOverrides();
+}
+
+// Generic Config "default model" selector populate — one consistent component
+// for every model-use. gateField (optional) limits eligibility (e.g. arch
+// review requires use_arch_review=true).
+function _populateDefaultSel(selId, modelId, gateField) {
+  const sel = document.getElementById(selId);
+  if (!sel) return;
+  const eligible = (_reviewModels || []).filter(m => m.enabled && (!gateField || m[gateField]));
+  sel.innerHTML = '<option value="">— no default set —</option>' +
+    eligible.map(m => `<option value="${m.id}">${esc(_modelKindLabel(m))}</option>`).join('');
+  if (modelId) sel.value = String(modelId);
+}
+
+// Generic save for a Config default selector → model_defaults[key] (server-side).
+async function _saveModelDefault(key, selId, msgId, btnId) {
+  const sel = document.getElementById(selId);
+  const val = sel ? sel.value : '';
+  const msgEl = document.getElementById(msgId);
+  const btn = document.getElementById(btnId);
+  if (val === '__custom__') {
+    if (msgEl) { msgEl.textContent = 'Custom endpoints cannot be a project default — register the endpoint in Model Endpoints first.'; msgEl.style.color = 'var(--red)'; }
+    return;
+  }
+  const modelId = val ? parseInt(val, 10) : null;
+  if (btn) btn.disabled = true;
+  if (msgEl) msgEl.textContent = '';
+  try {
+    await api(`/api/model-defaults/${key}`, {
+      method: 'PUT',
+      body: JSON.stringify({ model_config_id: modelId }),
+    });
+    _modelDefaults[key] = modelId;
+    if (key === 'arch-review') _archDefaultModelId = modelId;
+    _refreshAllOverrides();   // every override's "Use default — <name>" reflects it
+    if (msgEl) {
+      msgEl.textContent = modelId ? 'Default saved' : 'Default cleared';
+      msgEl.style.color = 'var(--green)';
+      setTimeout(() => { if (msgEl) { msgEl.textContent = ''; msgEl.style.color = ''; } }, 2500);
+    }
+  } catch(e) {
+    if (msgEl) { msgEl.textContent = 'Save failed: ' + e.message; msgEl.style.color = 'var(--red)'; }
+  }
+  if (btn) btn.disabled = false;
+}
+
+document.getElementById('saveArchDefaultBtn').addEventListener('click',
+  () => _saveModelDefault('arch-review', 'archDefaultModelSel', 'archDefaultMsg', 'saveArchDefaultBtn'));
+document.getElementById('saveEnhDefaultBtn')?.addEventListener('click',
+  () => _saveModelDefault('enhancement', 'enhDefaultModelSel', 'enhDefaultMsg', 'saveEnhDefaultBtn'));
+document.getElementById('saveAssessIngestDefaultBtn')?.addEventListener('click',
+  () => _saveModelDefault('assessment-ingest', 'assessIngestDefaultModelSel', 'assessIngestDefaultMsg', 'saveAssessIngestDefaultBtn'));
+
+// ── MCP refresh (Config panel: Pipeline Sources → MCP refresh) ────────────────
+
+function _mcpRefreshFmtRolloutChip(rollout) {
+  if (!rollout) return '—';
+  const ready = rollout.ready_replicas || 0;
+  const desired = rollout.replicas || 0;
+  const updated = rollout.updated_replicas || 0;
+  const phase = (ready === desired && updated === desired && desired > 0)
+    ? `<span style="color:var(--ok)">stable</span>`
+    : `<span style="color:var(--accent)">rolling</span>`;
+  return `${phase} (${ready}/${desired} ready, ${updated} updated)`;
+}
+
+async function loadCorpusCacheStatus() {
+  const el = document.getElementById('corpusCacheStatus');
+  if (!el) return;
+  try {
+    const s = await api('/api/corpus/sync-status');
+    const r = s.result || {};
+    const age = s.age_seconds;
+    const ago = (age == null) ? 'pending'
+      : age < 90 ? `${age}s ago` : age < 5400 ? `${Math.round(age/60)}m ago` : `${(age/3600).toFixed(1)}h ago`;
+    const repos = (r.repos || []).map(x => x.error ? `${x.namespace} ⚠` : `${x.namespace} ${x.files}`).join(' · ');
+    el.textContent = `cache: ${r.files_seen != null ? r.files_seen + ' files' : '—'}${repos ? ' (' + repos + ')' : ''} · synced ${ago}`;
+  } catch(e) { el.textContent = ''; }
+}
+async function resyncCorpusCache() {
+  const btn = document.getElementById('corpusResyncBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '↻ Resyncing…'; }
+  try {
+    const r = await api('/api/corpus/resync', {method:'POST'});
+    toast(`Corpus cache resynced — ${r.files_seen} files, ${r.pruned} pruned`);
+  } catch(e) { toast(e.message, true); }
+  finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↻ Resync corpus cache'; }
+    loadCorpusCacheStatus();
+  }
+}
+document.getElementById('corpusResyncBtn')?.addEventListener('click', resyncCorpusCache);
+
+async function loadMCPRefreshStatus() {
+  try {
+    const s = await api('/api/mcp/refresh-status');
+    document.getElementById('mcpRefreshWhen').textContent =
+      s.last_pod_restart_at || s.last_refreshed_at || 'never';
+    document.getElementById('mcpRefreshSource').textContent =
+      s.last_pod_restart_reason || s.last_refreshed_source || '—';
+    document.getElementById('mcpRefreshWho').textContent =
+      s.last_refreshed_by || '—';
+    document.getElementById('mcpRefreshRollout').innerHTML =
+      _mcpRefreshFmtRolloutChip(s.rollout);
+    document.getElementById('mcpRefreshStatus').textContent =
+      s.rollout && s.rollout.ready_replicas === s.rollout.replicas && s.rollout.replicas > 0
+        ? 'ready' : 'rolling';
+  } catch (e) {
+    document.getElementById('mcpRefreshStatus').textContent = 'status read failed';
+  }
+}
+
+document.getElementById('mcpRefreshNowBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('mcpRefreshNowBtn');
+  const msgEl = document.getElementById('mcpRefreshMsg');
+  if (!confirm('Refresh the MCP now? This rolls the dav-docs-mcp pod (~30-60s) and the MCP is briefly unavailable.')) return;
+  btn.disabled = true; msgEl.textContent = 'triggering…';
+  try {
+    const r = await api('/api/mcp/refresh-now', { method: 'POST', body: '{}' });
+    msgEl.textContent = `triggered at ${r.triggered_at} by ${r.triggered_by}`;
+    msgEl.style.color = 'var(--green)';
+    setTimeout(() => loadMCPRefreshStatus(), 1500);
+    setTimeout(() => { msgEl.textContent = ''; msgEl.style.color = ''; }, 4000);
+  } catch (e) {
+    msgEl.textContent = 'refresh failed: ' + (e.message || e);
+    msgEl.style.color = 'var(--red)';
+  }
+  btn.disabled = false;
+});
+
+document.getElementById('mcpRefreshReloadBtn').addEventListener('click', () => loadMCPRefreshStatus());
+
+// ── Model Browser ─────────────────────────────────────────────────────────────
+
+let _mbContext = null; // { selId, storageKey }
+
+function _uniqueEndpoints() {
+  const seen = new Set();
+  return _reviewModels.filter(m => m.enabled && m.endpoint_url).filter(m => {
+    if (seen.has(m.endpoint_url)) return false;
+    seen.add(m.endpoint_url); return true;
+  });
+}
+
+function _openModelBrowser(selId, storageKey) {
+  _mbContext = { selId, storageKey };
+  const epSel = document.getElementById('mbEndpointSel');
+  const eps = _uniqueEndpoints();
+  epSel.innerHTML = eps.map(m => `<option value="${esc(m.endpoint_url)}">${esc(m.endpoint_url)}</option>`).join('')
+    + '<option value="__custom__">Custom…</option>';
+  // Pre-select endpoint based on current selector value
+  const sel = document.getElementById(selId);
+  if (sel && sel.value === '__custom__') {
+    const ep = localStorage.getItem(storageKey + '_ep') || '';
+    const matched = eps.find(e => e.endpoint_url === ep);
+    epSel.value = matched ? ep : '__custom__';
+    if (!matched) document.getElementById('mbCustomEp').value = ep;
+  } else if (sel && sel.value && sel.value !== '') {
+    const m = _reviewModels.find(r => String(r.id) === sel.value);
+    if (m && m.endpoint_url && eps.find(e => e.endpoint_url === m.endpoint_url)) epSel.value = m.endpoint_url;
+  }
+  _mbUpdateCustomEpRow();
+  document.getElementById('mbModelSel').innerHTML = '<option value="">— probe to list models —</option>';
+  document.getElementById('mbManualModel').value = localStorage.getItem(storageKey + '_mi') || '';
+  document.getElementById('mbProbeStatus').textContent = '';
+  const overlay = document.getElementById('modelBrowserOverlay');
+  overlay.style.display = 'flex';
+  _mbProbe();
+}
+
+function _mbUpdateCustomEpRow() {
+  const isCustom = document.getElementById('mbEndpointSel').value === '__custom__';
+  document.getElementById('mbCustomEpRow').style.display = isCustom ? '' : 'none';
+}
+
+function _mbGetEndpoint() {
+  const epSel = document.getElementById('mbEndpointSel');
+  return epSel.value === '__custom__'
+    ? document.getElementById('mbCustomEp').value.trim()
+    : epSel.value;
+}
+
+async function _mbProbe() {
+  const ep = _mbGetEndpoint();
+  const statusEl = document.getElementById('mbProbeStatus');
+  const btn = document.getElementById('mbProbeBtn');
+  const modelSel = document.getElementById('mbModelSel');
+  if (!ep) {
+    modelSel.innerHTML = '<option value="">— probe to list models —</option>';
+    statusEl.textContent = '';
+    return;
+  }
+  btn.disabled = true; statusEl.textContent = 'Probing…';
+  try {
+    const result = await api(`/api/sources/inference/models?endpoint=${encodeURIComponent(ep)}`);
+    const models = result.models || [];
+    if (result.error && !result.reachable) {
+      modelSel.innerHTML = '<option value="">— probe failed —</option>';
+      statusEl.textContent = result.error;
+    } else if (!models.length) {
+      modelSel.innerHTML = '<option value="">— no models returned —</option>';
+      statusEl.textContent = result.error || 'No models found at this endpoint';
+    } else {
+      modelSel.innerHTML = '<option value="">— select —</option>' +
+        models.map(id => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
+      statusEl.textContent = `${models.length} model${models.length === 1 ? '' : 's'} found`;
+    }
+  } catch(e) {
+    statusEl.textContent = 'Probe failed: ' + e.message;
+  }
+  btn.disabled = false;
+}
+
+document.getElementById('mbEndpointSel').addEventListener('change', () => {
+  _mbUpdateCustomEpRow();
+  _mbProbe();
+});
+
+document.getElementById('mbProbeBtn').addEventListener('click', _mbProbe);
+
+document.getElementById('mbModelSel').addEventListener('change', function() {
+  if (this.value) document.getElementById('mbManualModel').value = this.value;
+});
+
+document.getElementById('mbUseBtn').addEventListener('click', () => {
+  const ep = _mbGetEndpoint();
+  const statusEl = document.getElementById('mbProbeStatus');
+  if (!ep) { statusEl.textContent = 'Enter an endpoint URL'; return; }
+  const modelId = document.getElementById('mbManualModel').value.trim()
+               || document.getElementById('mbModelSel').value;
+  if (!modelId) { statusEl.textContent = 'Select or enter a model ID'; return; }
+  const { selId, storageKey } = _mbContext;
+  // Check if a registered model_config already covers this endpoint+model
+  const match = _reviewModels.find(m => m.enabled && m.endpoint_url === ep && m.model_id === modelId);
+  const sel = document.getElementById(selId);
+  if (match) {
+    sel.value = String(match.id);
+    localStorage.setItem(storageKey, String(match.id));
+    // Clean up custom overrides if they were set for this selector
+    localStorage.removeItem(storageKey + '_ep');
+    localStorage.removeItem(storageKey + '_mi');
+  } else {
+    localStorage.setItem(storageKey + '_ep', ep);
+    localStorage.setItem(storageKey + '_mi', modelId);
+    localStorage.setItem(storageKey, '__custom__');
+    let opt = sel.querySelector('option[value="__custom__"]');
+    if (!opt) { opt = document.createElement('option'); opt.value = '__custom__'; sel.appendChild(opt); }
+    opt.textContent = `Custom: ${modelId}`;
+    sel.value = '__custom__';
+  }
+  document.getElementById('modelBrowserOverlay').style.display = 'none';
+  _mbContext = null;
+});
+
+document.getElementById('mbCancelBtn').addEventListener('click', () => {
+  document.getElementById('modelBrowserOverlay').style.display = 'none';
+  _mbContext = null;
+});
+
+document.getElementById('modelBrowserOverlay').addEventListener('click', function(e) {
+  if (e.target === this) { this.style.display = 'none'; _mbContext = null; }
+});
+
+// Re-populate EVERY model selector after the model list changes (add / edit / delete),
+// so a newly added endpoint shows up in all the default + override pickers below without
+// a page refresh. Function declarations are hoisted, so the later loaders resolve fine.
+async function _refreshModelSelectors() {
+  await loadReviewModels();                          // refresh _reviewModels
+  renderModelList();                                 // the Config model list
+  _updateArchModelInfo();                            // rpRev/rpEnh/rdRev/rdEnh/bi/wz/ucAssistPanel/nr override sels
+  try { await loadUCAssistConfig(); } catch (_) {}   // ucAssistModelSel
+  try { await loadEvalDefault();   } catch (_) {}    // evalDefaultModelSel
+  try { await loadArchDefault();   } catch (_) {}    // archDefaultModelSel + enhDefaultModelSel
+  _populateUCAssistModelSel();
+}
+
+document.getElementById('addModelBtn').addEventListener('click', () => {
+  _mfEditId = null;
+  document.getElementById('modelFormTitle').textContent = 'Add model endpoint';
+  document.getElementById('mfName').value = '';
+  document.getElementById('mfProvider').value = 'openai';
+  document.getElementById('mfEndpoint').value = '';
+  document.getElementById('mfModelId').value = '';
+  document.getElementById('mfApiKey').value = '';
+  document.getElementById('mfLocal').checked = false;
+  document.getElementById('mfEnabled').checked = true;
+  document.getElementById('modelFormMsg').textContent = '';
+  _mfResetProbe();
+  document.getElementById('modelFormCard').style.display = '';
+  document.getElementById('mfName').focus();
+});
+
+document.getElementById('cancelModelBtn').addEventListener('click', () => {
+  document.getElementById('modelFormCard').style.display = 'none';
+});
+
+// ── Probe an endpoint for its models (connection test + model list) ───────────
+// Hits POST /api/models/probe with the form's endpoint/provider/key (same URL+auth
+// convention the generation code uses), then offers the discovered models for
+// selection — picking one fills the Model ID field. Manual entry still works.
+function _mfResetProbe() {
+  const sel = document.getElementById('mfModelSel');
+  const st  = document.getElementById('mfProbeStatus');
+  if (sel) { sel.style.display = 'none'; sel.innerHTML = ''; }
+  if (st)  { st.textContent = ''; st.style.color = 'var(--text-faint)'; }
+}
+async function _mfProbeModels() {
+  const btn = document.getElementById('mfProbeBtn');
+  const st  = document.getElementById('mfProbeStatus');
+  const sel = document.getElementById('mfModelSel');
+  const endpoint = document.getElementById('mfEndpoint').value.trim();
+  const provider = document.getElementById('mfProvider').value;
+  const apiKey   = document.getElementById('mfApiKey').value;
+  if (!endpoint) { st.style.color = 'var(--red)'; st.textContent = 'Enter the endpoint URL first.'; return; }
+  btn.disabled = true; sel.style.display = 'none';
+  st.style.color = 'var(--text-faint)'; st.textContent = 'Probing…';
+  try {
+    const r = await api('/api/models/probe', { method:'POST',
+      body: JSON.stringify({ provider, endpoint_url: endpoint, api_key: apiKey }) });
+    const models = r.models || [];
+    const ms = r.latency_ms != null ? ` (${r.latency_ms} ms)` : '';
+    if (!r.reachable) {
+      st.style.color = 'var(--red)';
+      st.textContent = '✗ ' + (r.error || ('HTTP ' + (r.status_code || '?')));
+    } else if (!models.length) {
+      st.style.color = 'var(--amber,gold)';
+      st.textContent = `Connected${ms} but no models listed — enter the Model ID manually.`;
+    } else {
+      st.style.color = 'var(--green)';
+      st.textContent = `✓ Connected${ms} — ${models.length} model${models.length === 1 ? '' : 's'}`;
+      const cur = document.getElementById('mfModelId').value.trim();
+      sel.innerHTML = '<option value="">— select a model —</option>'
+        + models.map(m => `<option value="${esc(m)}"${m === cur ? ' selected' : ''}>${esc(m)}</option>`).join('');
+      sel.style.display = '';
+      if (!cur && models.length === 1) { sel.value = models[0]; document.getElementById('mfModelId').value = models[0]; }
+    }
+  } catch (e) {
+    st.style.color = 'var(--red)'; st.textContent = 'Probe failed: ' + e.message;
+  } finally { btn.disabled = false; }
+}
+document.getElementById('mfProbeBtn')?.addEventListener('click', _mfProbeModels);
+document.getElementById('mfModelSel')?.addEventListener('change', function () {
+  if (this.value) document.getElementById('mfModelId').value = this.value;
+});
+// Re-probing is needed if the endpoint/provider changes after a probe — drop stale model list.
+document.getElementById('mfEndpoint')?.addEventListener('input', _mfResetProbe);
+document.getElementById('mfProvider')?.addEventListener('change', _mfResetProbe);
+
+document.getElementById('saveModelBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('saveModelBtn');
+  const msg = document.getElementById('modelFormMsg');
+  const payload = {
+    name:         document.getElementById('mfName').value.trim(),
+    provider:     document.getElementById('mfProvider').value,
+    endpoint_url: document.getElementById('mfEndpoint').value.trim(),
+    model_id:     document.getElementById('mfModelId').value.trim(),
+    api_key:      document.getElementById('mfApiKey').value,
+    is_local:     document.getElementById('mfLocal').checked,
+    enabled:      document.getElementById('mfEnabled').checked,
+  };
+  if (!payload.name || !payload.endpoint_url || !payload.model_id) {
+    msg.style.color = 'var(--red)'; msg.textContent = 'Name, endpoint, and model ID are required.'; return;
+  }
+  btn.disabled = true; msg.style.color = 'var(--text-faint)'; msg.textContent = 'Saving…';
+  try {
+    if (_mfEditId) {
+      await api(`/api/models/${_mfEditId}`, { method:'PUT', body: JSON.stringify(payload) });
+    } else {
+      await api('/api/models', { method:'POST', body: JSON.stringify(payload) });
+    }
+    await _refreshModelSelectors();
+    document.getElementById('modelFormCard').style.display = 'none';
+    toast(_mfEditId ? 'Model updated' : 'Model added');
+  } catch(e) {
+    msg.style.color = 'var(--red)'; msg.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function editModel(id) {
+  const m = _reviewModels.find(r => r.id === id);
+  if (!m) return;
+  _mfEditId = id;
+  document.getElementById('modelFormTitle').textContent = 'Edit model endpoint';
+  document.getElementById('mfName').value = m.name;
+  document.getElementById('mfProvider').value = m.provider;
+  document.getElementById('mfEndpoint').value = m.endpoint_url;
+  document.getElementById('mfModelId').value = m.model_id;
+  document.getElementById('mfApiKey').value = '';
+  document.getElementById('mfLocal').checked = m.is_local;
+  document.getElementById('mfEnabled').checked = m.enabled;
+  document.getElementById('modelFormMsg').textContent = '';
+  _mfResetProbe();
+  document.getElementById('modelFormCard').style.display = '';
+  document.getElementById('mfName').focus();
+}
+
+async function deleteModel(id, btn) {
+  if (!btn) return;
+  _armDeleteBtn(btn, async () => {
+    try {
+      await api(`/api/models/${id}`, { method:'DELETE' });
+      await _refreshModelSelectors();
+      toast('Model deleted');
+    } catch(e) {
+      toast('Delete failed: ' + e.message);
+    }
+  });
+}
+
+// ── Review & Plan drawer ─────────────────────────────────────────────────────
+
+let _reviewCtx = {};          // {runId, ucUuid}
+const _rdRevRaw = { text: '' };
+const _rdEnhRaw = { text: '' };
+
+function rdSwitchTab(tab) {
+  const isRun = tab === 'run';
+  const runBody = document.getElementById('rdRunBody');
+  const revBody = document.getElementById('rdReviewBody');
+  if (runBody) runBody.style.display    = isRun ? '' : 'none';
+  if (revBody) revBody.style.display    = isRun ? 'none' : '';
+  const tabRun = document.getElementById('rdTabRun');
+  const tabRev = document.getElementById('rdTabReview');
+  if (tabRun) tabRun.classList.toggle('active', isRun);
+  if (tabRev) tabRev.classList.toggle('active', !isRun);
+  if (!isRun) _updateArchModelInfo();   // reflect the Config arch-review default
+}
+
+function openReviewPane(scope, ucUuid, startAt = 'review') {
+  // Navigate to top-level Review & Plan tab
+  const runId = activeRunResultId;
+  if (!runId) { toast('Select an analysis ingestion in the Results tab first'); return; }
+
+  // Pre-populate the Review & Plan tab
+  _reviewCtx = { runId, ucUuid: ucUuid || null };
+  switchView('review');
+
+  // Give the tab a moment to render, then set up
+  setTimeout(() => {
+    // Select run in the dropdown
+    const rpRunSel = document.getElementById('rpRunSel');
+    if (rpRunSel) {
+      rpRunSel.value = runId;
+      if (!rpRunSel.value) {
+        // Option not present yet — try populating
+        loadReviewTab().then(() => { rpRunSel.value = runId; _rpPopulateUCs(runId); });
+      } else {
+        _rpPopulateUCs(runId);
+      }
+    }
+    // Set scope and UC
+    if (ucUuid) {
+      const scopeUC = document.getElementById('rpScopeUC');
+      if (scopeUC) { scopeUC.checked = true; }
+      const rpUCSel = document.getElementById('rpUCSel');
+      if (rpUCSel) { rpUCSel.disabled = false; rpUCSel.value = ucUuid; }
+      // Show a note
+      const link = document.getElementById('rpUCLink');
+      const ucEntry = (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid);
+      if (link) { link.textContent = `UC: ${ucEntry?.uc_handle||ucUuid}`; link.style.display = ''; }
+    }
+    _updateArchModelInfo();
+  }, 50);
+}
+
+// Keep rdRevSubtitle etc. for the inline run-detail review panel
+function openRunDetailReview(scope, ucUuid, startAt = 'review') {
+  const runId = activeRunResultId;
+  if (!runId) { toast('Select an analysis ingestion in the Results tab first'); return; }
+  _reviewCtx = { runId, ucUuid: ucUuid || null };
+
+  const ucEntry = ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===ucUuid) : null;
+  const ucHandle = ucEntry?.uc_handle || ucUuid || '—';
+  const label = scope === 'uc' ? `Use case: ${ucHandle}` : `Run: ${runId||'—'}`;
+  const revSub = document.getElementById('rdRevSubtitle');
+  const enhSub = document.getElementById('rdEnhSubtitle');
+  if (revSub) revSub.textContent = label;
+  if (enhSub) enhSub.textContent = label;
+
+  const revSel = document.getElementById('rdRevScopeSel');
+  if (revSel) { revSel.value = scope; revSel.querySelector('option[value="uc"]').disabled = !ucUuid; }
+  const enhSel = document.getElementById('rdEnhScopeSel');
+  if (enhSel) { enhSel.value = scope; enhSel.querySelector('option[value="uc"]').disabled = !ucUuid; }
+
+  _updateArchModelInfo();
+
+  ['rdRevStream','rdEnhStream'].forEach(id => {
+    const el = document.getElementById(id); if (!el) return;
+    el.textContent = ''; el.style.display = 'none'; el.classList.remove('streaming');
+  });
+  ['rdRevStatus','rdEnhStatus','rdRevCopyBtn','rdEnhCopyBtn','rdRevReasoningBtn','rdEnhReasoningBtn','rdRevNextRow','rdEnhNextRow','rdRevHint','rdEnhHint'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.style.display = 'none';
+  });
+  _rdRevRaw.text = ''; _rdEnhRaw.text = '';
+
+  const enhSec = document.getElementById('rdEnhSection');
+  if (enhSec) enhSec.style.display = startAt === 'enhance' ? '' : 'none';
+  const prSec = document.getElementById('rdPrSection');
+  if (prSec) prSec.style.display = 'none';
+
+  if (_rdName) switchView('runs');
+  rdSwitchTab('review');
+
+  if (startAt === 'enhance') {
+    setTimeout(() => { const el = document.getElementById('rdEnhSection'); if (el) el.scrollIntoView({ behavior:'smooth', block:'start' }); }, 50);
+  }
+}
+
+// ══════════════ REVIEW & PLAN TAB ════════════════════════════
+
+const _rpRevRaw = { text: '' };
+const _rpEnhRaw = { text: '' };
+
+async function loadReviewTab() {
+  // Populate run dropdown from allResults; prefer the human-readable session name
+  // (falls back to the workspace run_id if no session is correlated).
+  const sel = document.getElementById('rpRunSel');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— select an ingestion —</option>';
+  allResults.forEach(r => {
+    const o = document.createElement('option');
+    o.value = r.run_id;
+    const label = r.session_name
+      ? `${r.session_name} (${r.run_id.slice(0, 16)}…)`
+      : r.run_id;
+    o.textContent = label;
+    o.title = r.run_id;
+    sel.appendChild(o);
+  });
+  if (prev) sel.value = prev;
+  // Arch-review model comes from the Config default — just show which one.
+  _updateArchModelInfo();
+  _loadStageContext();
+  _populateGlobalRunSel();
+  // Roadmap scope = the masthead Scoping Set; reflect its name + load any cached output.
+  _rpUpdateScopeName();
+  _rpLoadCached();
+  // If results not yet loaded, load them
+  if (!allResults.length) {
+    try {
+      const resp = await api('/api/results');
+      allResults = resp.results || [];
+      loadReviewTab(); // re-run
+    } catch(e) {}
+  }
+}
+
+// Per-stage LLM context (DCM), saved to the project and injected into the
+// arch-review + enhancement prompts. Stage key 'arch_review' (Track-1 design stage).
+async function _loadStageContext() {
+  const el = document.getElementById('rpStageCtx');
+  if (!el) return;
+  try { const r = await api('/api/stage-context/arch_review'); el.value = r.content || ''; }
+  catch(e) {}
+}
+document.getElementById('rpStageCtxSave')?.addEventListener('click', async () => {
+  const el = document.getElementById('rpStageCtx');
+  const msg = document.getElementById('rpStageCtxMsg');
+  if (!el) return;
+  try {
+    await api('/api/stage-context/arch_review', { method:'PUT', body: JSON.stringify({ content: el.value }) });
+    if (msg) { msg.textContent = 'saved to project'; msg.style.color = 'var(--green)'; setTimeout(()=>{ if(msg) msg.textContent=''; }, 2500); }
+  } catch(e) {
+    if (msg) { msg.textContent = 'error: ' + e.message; msg.style.color = 'var(--red)'; }
+  }
+});
+
+async function _rpPopulateUCs(runId) {
+  const sel = document.getElementById('rpUCSel');
+  if (!sel) return;
+  if (!runId) { sel.innerHTML = '<option value="">— select an ingestion first —</option>'; sel.disabled = true; return; }
+  const summary = activeRunSummary?.run_id === runId ? activeRunSummary : null;
+  if (summary) {
+    sel.innerHTML = '<option value="">— full ingestion —</option>';
+    (summary.ucs||[]).forEach(u => {
+      const o = document.createElement('option');
+      o.value = u.uc_uuid; o.textContent = u.uc_handle || u.uc_uuid;
+      sel.appendChild(o);
+    });
+    sel.disabled = false;
+    return;
+  }
+  try {
+    const s = await api(`/api/results/${encodeURIComponent(runId)}`);
+    activeRunSummary = s;
+    sel.innerHTML = '<option value="">— full ingestion —</option>';
+    (s.ucs||[]).forEach(u => {
+      const o = document.createElement('option');
+      o.value = u.uc_uuid; o.textContent = u.uc_handle || u.uc_uuid;
+      sel.appendChild(o);
+    });
+    sel.disabled = false;
+  } catch(e) { sel.innerHTML = `<option value="">(${esc(e.message)})</option>`; }
+}
+
+function _rpGetContext() {
+  // The Architecture roadmap is scoped by the masthead Scoping Set (the run/UC picker is
+  // retired). `setId` is the masthead scope ('' = all, '__unassigned__', or a set id);
+  // `runId` is a synthetic `set:<id>` token so the cache/generation API keys it like a run.
+  const setId  = _activeScope || '';
+  const scope  = 'set';
+  const runId  = 'set:' + (setId || '__all__');
+  // Model is NOT chosen here — arch-review uses the Config "Default Arch Review
+  // model" (model_defaults key='arch-review'); the API falls back to it when the
+  // request carries no model. Single source of truth, set in the Config view.
+  return { runId, scope, ucUuid: null, setId };
+}
+// Reflect the active masthead scope name in the Architecture controls panel.
+function _rpUpdateScopeName() {
+  const el = document.getElementById('rpScopeName');
+  if (!el) return;
+  const v = _activeScope || '';
+  let name = 'all use cases';
+  if (v === '__unassigned__') name = 'unassigned use cases';
+  else if (v) { const s = (allSets || []).find(x => String(x.id) === String(v)); name = s ? s.name : `Set ${v}`; }
+  el.textContent = name;
+}
+
+document.getElementById('rpRunSel')?.addEventListener('change', function() {
+  activeRunResultId = this.value;
+  _rpPopulateUCs(this.value);
+  _rpLoadCached();
+});
+
+document.getElementById('rpScopeRun')?.addEventListener('change', () => {
+  const sel = document.getElementById('rpUCSel');
+  if (sel) sel.disabled = true;
+  _rpLoadCached();
+});
+document.getElementById('rpScopeUC')?.addEventListener('change', () => {
+  const runId = activeRunResultId;   // single system-wide current run
+  const sel = document.getElementById('rpUCSel');
+  if (sel) { sel.disabled = false; _rpPopulateUCs(runId); }
+  _rpLoadCached();
+});
+document.getElementById('rpUCSel')?.addEventListener('change', _rpLoadCached);
+
+// ── Cached Review / Enhancement output (Phase B) ─────────────────────────────
+// On run/scope/UC change, show the stored generation (if any) instead of a
+// blank pane, with a chip noting when + which model produced it, and whether
+// it's stale (the run was re-ingested since). The Run buttons regenerate and
+// the API re-caches; a cache present prompts a replace-confirm.
+const _RP_CACHE = {
+  review:      { streamEl:'rpRevStream', raw:()=>_rpRevRaw, mode:'markdown',    copy:'rpRevCopyBtn', reason:'rpRevReasoningBtn', chip:'rpRevCacheChip', reasonKey:'rpRevShowReasoning' },
+  enhancement: { streamEl:'rpEnhStream', raw:()=>_rpEnhRaw, mode:'enhancement', copy:'rpEnhCopyBtn', reason:'rpEnhReasoningBtn', chip:'rpEnhCacheChip', reasonKey:'rpEnhShowReasoning' },
+};
+// Real "is there a cached result?" per kind — the Run replace-confirm keys on
+// THIS, not chip text (the empty-state chip text is non-empty but means no cache).
+const _rpCached = { review:false, enhancement:false };
+function _rpCacheChip(kind, data){
+  const chip = document.getElementById(_RP_CACHE[kind].chip);
+  if (!chip) return;
+  if (!data || !data.cached) { chip.textContent = ''; return; }
+  const when  = data.created_at ? new Date(data.created_at).toLocaleString() : '';
+  const model = data.model_label ? ` · ${esc(data.model_label)}` : '';
+  if (data.stale) {
+    chip.innerHTML = `⚠ cached ${esc(when)}${model} — run re-ingested; re-run to refresh`;
+    chip.style.color = 'var(--red)';
+  } else {
+    chip.innerHTML = `↻ cached ${esc(when)}${model}`;
+    chip.style.color = 'var(--text-faint)';
+  }
+}
+async function _rpLoadCached(){
+  const { runId, scope, ucUuid } = _rpGetContext();
+  for (const kind of ['review','enhancement']) {
+    const cfg = _RP_CACHE[kind];
+    const el  = document.getElementById(cfg.streamEl);
+    const chip = document.getElementById(cfg.chip);
+    if (!el) continue;
+    let data = null;
+    if (runId && !(scope === 'uc' && !ucUuid)) {
+      const qs = `run_id=${encodeURIComponent(runId)}&kind=${kind}&scope=${scope}`
+               + (scope === 'uc' && ucUuid ? `&uc_uuid=${encodeURIComponent(ucUuid)}` : '');
+      try { data = await api(`/api/analysis/output?${qs}`); } catch(e){ data = null; }
+    }
+    _rpCached[kind] = !!(data && data.cached);
+    if (data && data.cached) {
+      const holder = cfg.raw(); holder.text = data.content || '';
+      el.dataset.renderMode = cfg.mode;
+      el.style.display = '';                 // reveal BEFORE rendering — a render
+      const cp = document.getElementById(cfg.copy);   if (cp) cp.style.display = '';   // throw can never leave it hidden
+      const rb = document.getElementById(cfg.reason); if (rb) rb.style.display = '';
+      try {
+        const showReason = localStorage.getItem(cfg.reasonKey) === '1';
+        _applyStreamRender(el, showReason ? holder.text : _stripThink(holder.text), cfg.mode);
+      } catch(e){ el.textContent = holder.text; }
+      _rpCacheChip(kind, data);
+    } else {
+      const holder = cfg.raw(); holder.text = '';
+      el.style.display = 'none'; el.innerHTML = '';
+      const cp = document.getElementById(cfg.copy); if (cp) cp.style.display = 'none';
+      if (chip) {
+        const haveCtx = runId && !(scope === 'uc' && !ucUuid);
+        chip.textContent = haveCtx ? 'not generated for this ingestion yet' : '';
+        chip.style.color = 'var(--text-faint)';
+      }
+    }
+    // The "Create PR →" row was only revealed by a fresh generation, so revisiting a CACHED
+    // enhancement plan lost the ability to issue a PR. Reveal it whenever the plan is present.
+    if (kind === 'enhancement') {
+      const nr = document.getElementById('rpEnhNextRow');
+      if (nr) nr.style.display = (data && data.cached) ? '' : 'none';
+    }
+  }
+}
+// Update ONLY the cache chip for one kind — never touches the output pane, so it
+// is safe to call right after a generation (the pane already holds the fresh
+// output; this just stamps "cached <when>" once the write has committed).
+async function _rpRefreshChip(kind){
+  const { runId, scope, ucUuid } = _rpGetContext();
+  if (!runId || (scope === 'uc' && !ucUuid)) return;
+  const qs = `run_id=${encodeURIComponent(runId)}&kind=${kind}&scope=${scope}`
+           + (scope === 'uc' && ucUuid ? `&uc_uuid=${encodeURIComponent(ucUuid)}` : '');
+  try { const d = await api(`/api/analysis/output?${qs}`); _rpCached[kind] = !!(d && d.cached); _rpCacheChip(kind, d); } catch(e){}
+}
+
+// ══════════════ Enhancement / PR Workbench (#138) ══════════════
+// Loads the Enhancement Plan for the masthead scope, routes each parsed finding to its
+// target enhancement-target repo (server-side, read-only preview), and lets the user select
+// findings — per finding, per PR group, or in bulk — then opens one PR per repo via
+// /api/enhancements/apply (selected_ids). Retarget unmatched namespaces inline.
+let _ewData = null;
+
+function _ewScopeName(){
+  const v = _activeScope || '';
+  if (v === '__unassigned__') return 'unassigned use cases';
+  if (v){ const s=(allSets||[]).find(x=>String(x.id)===String(v)); return s?s.name:`Set ${v}`; }
+  return 'all use cases';
+}
+
+async function _ewLoadPlan(){
+  const { runId, scope } = _rpGetContext();
+  const status = document.getElementById('ewStatus');
+  const ta = document.getElementById('ewPlanText');
+  if (status) status.textContent = 'Loading plan…';
+  try {
+    const d = await api(`/api/analysis/output?run_id=${encodeURIComponent(runId)}&kind=enhancement&scope=${scope}`);
+    if (d && d.cached && d.content){
+      ta.value = d.content;
+      if (status) status.textContent = 'Plan loaded — click “Route into PRs →”.';
+      return true;
+    }
+    if (status) status.textContent = 'No enhancement plan cached for this scope — generate one in Arch Review.';
+    return false;
+  } catch(e){ if (status) status.textContent = 'Load failed: ' + e.message; return false; }
+}
+
+function loadEnhancementWorkbench(){
+  const chip = document.getElementById('ewScopeChip');
+  if (chip) chip.textContent = 'Scope: ' + _ewScopeName();
+  // Generation moved here from Arch Review: populate the enhancement model picker + surface the
+  // cached plan (rpEnhStream + cache chip + the "Route into PRs ↓" row) for the active scope.
+  try { _updateArchModelInfo(); } catch(_) {}
+  try { _rpLoadCached(); } catch(_) {}
+  const ta = document.getElementById('ewPlanText');
+  if (ta && !ta.value.trim()) _ewLoadPlan();   // auto-load the workbench source once; routing is explicit
+}
+
+async function _ewRoute(){
+  const status = document.getElementById('ewStatus');
+  const text = (document.getElementById('ewPlanText')?.value || '').trim();
+  if (!text){ if (status) status.textContent = 'No plan text — load or paste an Enhancement Plan first.'; return; }
+  if (status) status.textContent = 'Routing…';
+  // Make sure we have the enhancement-target repo list for the retarget pickers.
+  if (!_codeRepos.length){ try { const r = await api('/api/repos?role=enhancement-target'); _codeRepos = r.repos || []; } catch {} }
+  try {
+    const d = await api('/api/enhancements/preview', { method:'POST', body: JSON.stringify({ enhancement_text: text }) });
+    _ewData = d;
+    _ewRenderGroups(d);
+    if (status) status.textContent = `${d.total} finding(s) · ${d.groups.length} PR group(s)`
+      + (d.unmatched.length ? ` · ${d.unmatched.length} unmatched` : '')
+      + (d.no_target.length ? ` · ${d.no_target.length} targetless` : '')
+      + (d.parse_errors.length ? ` · ⚠ ${d.parse_errors.length} parse error(s)` : '');
+  } catch(e){ if (status) status.textContent = 'Route failed: ' + e.message; }
+}
+
+function _ewFindingRow(f, opts){
+  opts = opts || {};
+  const checkbox = opts.selectable !== false
+    ? `<input type="checkbox" class="ew-fchk" data-id="${esc(f.id)}" data-ns="${esc(f.target_namespace||'')}" style="margin-top:3px;">`
+    : `<span style="width:13px;display:inline-block;"></span>`;
+  const tags = [];
+  (f.gap_ids||[]).forEach(g => tags.push(`<span class="ew-tag">gap ${esc(g)}</span>`));
+  (f.uc_handles||[]).forEach(u => tags.push(`<span class="ew-tag">${esc(u)}</span>`));
+  if (f.action) tags.push(`<span class="ew-tag" style="background:var(--accent-dim,#2a3a4a);">${esc(f.action)}</span>`);
+  const err = (f.parse_errors||[]).length ? `<div style="color:var(--red);font-size:10px;margin-top:2px;">⚠ ${(f.parse_errors||[]).map(esc).join('; ')}</div>` : '';
+  const body = (f.content||'').trim();
+  const acc = (f.acceptance||'').trim();
+  return `<div style="display:flex;gap:8px;padding:7px 0;border-top:1px solid var(--border);">
+    ${checkbox}
+    <div style="flex:1;min-width:0;">
+      <div style="font-size:12px;color:var(--text);"><strong>${esc(f.section_title || f.target_path || f.id)}</strong>
+        <span style="color:var(--text-faint);font-size:10px;">${esc(f.target_path || f.target || '')}</span></div>
+      <div style="margin:3px 0;">${tags.join(' ')}</div>
+      ${f.rationale ? `<div style="font-size:11px;color:var(--text-dim);">${esc(f.rationale)}</div>` : ''}
+      ${err}
+      ${body || acc ? `<details style="margin-top:4px;"><summary style="cursor:pointer;font-size:10px;color:var(--text-faint);">View patch${acc?' + acceptance':''}</summary>
+        ${body ? `<pre class="ew-pre">${esc(body)}</pre>` : ''}
+        ${acc ? `<div style="font-size:10px;color:var(--text-faint);margin-top:3px;">Acceptance:</div><pre class="ew-pre">${esc(acc)}</pre>` : ''}
+      </details>` : ''}
+    </div>
+  </div>`;
+}
+
+function _ewRepoOptions(selectedNs){
+  const opts = _codeRepos.map(r => `<option value="${esc(r.uuid)}">${esc(r.display_name || r.namespace)}</option>`).join('');
+  return `<option value="">— retarget to a repo —</option>` + opts;
+}
+
+function _ewRenderGroups(d){
+  const wrap = document.getElementById('ewResults');
+  const empty = document.getElementById('ewEmpty');
+  const box = document.getElementById('ewGroups');
+  document.getElementById('ewPrResults').innerHTML = '';
+  if (!d || (!d.groups.length && !d.unmatched.length && !d.no_target.length)){
+    if (wrap) wrap.style.display = 'none';
+    if (empty){ empty.style.display = ''; empty.innerHTML = 'No findings parsed from this plan. Check the plan text (it must contain ENHANCEMENT blocks).'; }
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  if (wrap) wrap.style.display = '';
+  let html = '';
+  // Matched groups → one PR per repo
+  d.groups.forEach((g, gi) => {
+    html += `<div class="ew-group" data-ns="${esc(g.namespace)}" data-repo="${esc(g.repo.uuid)}">
+      <div style="display:flex;gap:8px;align-items:center;background:var(--bg-raised);padding:7px 10px;border-radius:2px;">
+        <input type="checkbox" class="ew-gchk" data-gi="${gi}" checked>
+        <strong style="font-size:12px;">PR → ${esc(g.repo.name)}</strong>
+        <span style="font-size:10px;color:var(--text-faint);">${esc(g.namespace)} · base ${esc(g.repo.branch||'main')} · ${g.findings.length} finding(s)</span>
+        ${g.repo.url ? `<a href="${esc(g.repo.url)}" target="_blank" style="font-size:10px;margin-left:auto;">repo ↗</a>` : ''}
+      </div>
+      <div class="ew-flist" style="padding:2px 10px 8px;">${g.findings.map(f => _ewFindingRow(f)).join('')}</div>
+    </div>`;
+  });
+  // Unmatched namespaces → need a retarget before they can be submitted
+  d.unmatched.forEach(u => {
+    html += `<div class="ew-group ew-unmatched" data-ns="${esc(u.namespace)}">
+      <div style="display:flex;gap:8px;align-items:center;background:var(--bg-raised);padding:7px 10px;border-radius:2px;border-left:2px solid var(--amber,#b8860b);">
+        <strong style="font-size:12px;">${esc(u.namespace)}</strong>
+        <span style="font-size:10px;color:var(--amber,#b8860b);">${esc(u.reason)}</span>
+        <select class="ew-retarget" data-ns="${esc(u.namespace)}" style="margin-left:auto;font-size:11px;">${_ewRepoOptions()}</select>
+      </div>
+      <div class="ew-flist" style="padding:2px 10px 8px;">${u.findings.map(f => _ewFindingRow(f)).join('')}</div>
+    </div>`;
+  });
+  // Targetless findings → informational, can't be submitted
+  if (d.no_target.length){
+    html += `<div class="ew-group">
+      <div style="background:var(--bg-raised);padding:7px 10px;border-radius:2px;border-left:2px solid var(--text-faint);">
+        <strong style="font-size:12px;">No target</strong>
+        <span style="font-size:10px;color:var(--text-faint);">these findings name no <code>target:</code> repo — fix the plan to route them</span>
+      </div>
+      <div class="ew-flist" style="padding:2px 10px 8px;">${d.no_target.map(f => _ewFindingRow(f, {selectable:false})).join('')}</div>
+    </div>`;
+  }
+  box.innerHTML = html;
+  _ewWireSelection();
+  _ewUpdateSel();
+}
+
+function _ewWireSelection(){
+  // Group checkbox toggles all its findings.
+  document.querySelectorAll('#ewGroups .ew-gchk').forEach(gc => {
+    gc.addEventListener('change', function(){
+      const grp = this.closest('.ew-group');
+      grp.querySelectorAll('.ew-fchk').forEach(fc => { fc.checked = gc.checked; });
+      _ewUpdateSel();
+    });
+  });
+  document.querySelectorAll('#ewGroups .ew-fchk').forEach(fc => fc.addEventListener('change', _ewUpdateSel));
+  // A retarget pick lets that previously-unmatched group be submitted.
+  document.querySelectorAll('#ewGroups .ew-retarget').forEach(rt => rt.addEventListener('change', _ewUpdateSel));
+}
+
+function _ewSelectedIds(){
+  return Array.from(document.querySelectorAll('#ewGroups .ew-fchk:checked')).map(c => c.dataset.id);
+}
+function _ewRepoOverrides(){
+  const ov = {};
+  document.querySelectorAll('#ewGroups .ew-retarget').forEach(rt => { if (rt.value) ov[rt.dataset.ns] = rt.value; });
+  return ov;
+}
+
+function _ewUpdateSel(){
+  const ids = _ewSelectedIds();
+  document.getElementById('ewSelCount').textContent = String(ids.length);
+  // Count PR groups that have ≥1 selected finding + a resolvable repo.
+  const ov = _ewRepoOverrides();
+  let repos = new Set();
+  let blocked = 0;
+  document.querySelectorAll('#ewGroups .ew-group').forEach(grp => {
+    const sel = grp.querySelectorAll('.ew-fchk:checked').length;
+    if (!sel) return;
+    const ns = grp.dataset.ns;
+    if (grp.classList.contains('ew-unmatched')){
+      if (ov[ns]) repos.add(ov[ns]); else blocked += sel;
+    } else if (grp.dataset.repo){ repos.add(grp.dataset.repo); }
+  });
+  const sum = document.getElementById('ewRouteSummary');
+  if (sum) sum.textContent = ids.length
+    ? `→ ${repos.size} PR(s)` + (blocked ? ` · ${blocked} need a repo (retarget above)` : '')
+    : '';
+  const btn = document.getElementById('ewSubmitBtn');
+  if (btn) btn.disabled = !ids.length;
+}
+
+async function _ewSubmit(){
+  const ids = _ewSelectedIds();
+  if (!ids.length) return;
+  const ov = _ewRepoOverrides();
+  const status = document.getElementById('ewStatus');
+  const out = document.getElementById('ewPrResults');
+  // Block submit if any selected unmatched group still lacks a repo.
+  let blocked = false;
+  document.querySelectorAll('#ewGroups .ew-group.ew-unmatched').forEach(grp => {
+    if (grp.querySelectorAll('.ew-fchk:checked').length && !ov[grp.dataset.ns]) blocked = true;
+  });
+  if (blocked){ if (status) status.textContent = 'Some selected findings have no target repo — retarget them or deselect.'; return; }
+  if (!confirm(`Open pull request(s) for ${ids.length} selected finding(s)? This pushes branches and opens PRs on the target repos.`)) return;
+  if (status) status.textContent = 'Creating PRs…';
+  const text = (document.getElementById('ewPlanText')?.value || '').trim();
+  try {
+    const r = await api('/api/enhancements/apply', { method:'POST', body: JSON.stringify({
+      enhancement_text: text, selected_ids: ids, repo_overrides: ov,
+      scope: 'set', pr_title: `DAV enhancements — ${_ewScopeName()}`,
+    }) });
+    _ewRenderPrResults(r);
+    if (status) status.textContent = 'Done.';
+  } catch(e){ if (status) status.textContent = 'Submit failed: ' + e.message; }
+}
+
+function _ewRenderPrResults(r){
+  const out = document.getElementById('ewPrResults');
+  if (!out) return;
+  let html = '<div class="rp-section-title" style="margin-top:6px;">Pull requests</div>';
+  (r.repo_results || r.results || []).forEach(pr => {
+    const ok = pr.pr_url || pr.url;
+    html += `<div style="font-size:12px;padding:5px 0;border-top:1px solid var(--border);">
+      ${ok ? '✅' : '⚠'} <strong>${esc(pr.repo || pr.namespace || '')}</strong>
+      ${ok ? `<a href="${esc(ok)}" target="_blank">${esc(ok)}</a>` : esc(pr.error || pr.message || 'no PR created')}
+      ${pr.files ? `<span style="color:var(--text-faint);"> · ${pr.files} file(s)</span>` : ''}
+    </div>`;
+  });
+  (r.unmatched_namespaces || []).forEach(u => {
+    html += `<div style="font-size:11px;color:var(--amber,#b8860b);padding:3px 0;">⚠ ${esc(u.namespace || u)} — no target repo</div>`;
+  });
+  (r.apply_warnings || []).forEach(w => {
+    html += `<div style="font-size:10px;color:var(--text-faint);">• ${esc(w)}</div>`;
+  });
+  out.innerHTML = html;
+}
+
+document.getElementById('ewLoadBtn')?.addEventListener('click', _ewLoadPlan);
+document.getElementById('ewRouteBtn')?.addEventListener('click', _ewRoute);
+document.getElementById('ewSubmitBtn')?.addEventListener('click', _ewSubmit);
+document.getElementById('ewSelectAllBtn')?.addEventListener('click', () => {
+  document.querySelectorAll('#ewGroups .ew-fchk').forEach(c => { c.checked = true; });
+  document.querySelectorAll('#ewGroups .ew-gchk').forEach(c => { c.checked = true; });
+  _ewUpdateSel();
+});
+document.getElementById('ewSelectNoneBtn')?.addEventListener('click', () => {
+  document.querySelectorAll('#ewGroups .ew-fchk, #ewGroups .ew-gchk').forEach(c => { c.checked = false; });
+  _ewUpdateSel();
+});
+
+document.getElementById('rpRevRunBtn')?.addEventListener('click', async () => {
+  const { runId, scope, ucUuid, setId } = _rpGetContext();
+  if (!runId) { toast('Pick a Scoping Set in the masthead first'); return; }
+  // Warn before discarding a cached generation (real cache only, not the hint).
+  if (_rpCached.review &&
+      !confirm('Re-generate the Architectural Review and replace the cached result?')) return;
+  const body = { scope, run_id: runId, set_id: setId, ..._overrideModelBody('rpRevModelSel') };
+  if (scope === 'uc') body.uc_uuid = ucUuid;
+  _reviewCtx = { runId, ucUuid };
+  const _ok = await _runStream({
+    endpoint: '/api/arch-review', body,
+    streamEl:     document.getElementById('rpRevStream'),
+    statusEl:     document.getElementById('rpRevStatus'),
+    copyBtn:      document.getElementById('rpRevCopyBtn'),
+    runBtn:       document.getElementById('rpRevRunBtn'),
+    reasoningBtn: document.getElementById('rpRevReasoningBtn'),
+    nextRow:      null,
+    rawHolder:    _rpRevRaw,
+    showReasoningKey: 'rpRevShowReasoning',
+    renderMode: 'markdown',
+  });
+  _rpRefreshChip('review');   // chip only — never hides the just-rendered pane
+  if (_ok) toast('✓ Architectural Review ready');   // notify even if you navigated away
+});
+
+document.getElementById('rpEnhRunBtn')?.addEventListener('click', async () => {
+  const { runId, scope, ucUuid, setId } = _rpGetContext();
+  if (!runId) { toast('Pick a Scoping Set in the masthead first'); return; }
+  if (_rpCached.enhancement &&
+      !confirm('Re-generate the Enhancement Plan and replace the cached result?')) return;
+  const body = { scope, run_id: runId, set_id: setId, ..._overrideModelBody('rpEnhModelSel') };
+  if (scope === 'uc') body.uc_uuid = ucUuid;
+  _reviewCtx = { runId, ucUuid };
+  const _ok = await _runStream({
+    endpoint: '/api/enhancements', body,
+    streamEl:     document.getElementById('rpEnhStream'),
+    statusEl:     document.getElementById('rpEnhStatus'),
+    copyBtn:      document.getElementById('rpEnhCopyBtn'),
+    runBtn:       document.getElementById('rpEnhRunBtn'),
+    reasoningBtn: document.getElementById('rpEnhReasoningBtn'),
+    nextRow:      document.getElementById('rpEnhNextRow'),
+    rawHolder:    _rpEnhRaw,
+    showReasoningKey: 'rpEnhShowReasoning',
+    renderMode: 'enhancement',
+  });
+  _rpRefreshChip('enhancement');   // chip only — never hides the just-rendered pane
+  if (_ok) toast('✓ Enhancement Plan ready');   // notify even if you navigated away
+});
+
+// ── Audit log (F3): who did what + auth events ───────────────────────────────
+function _auOutcomeColor(o) {
+  return o === 'denied' ? 'var(--amber,gold)'
+    : (o === 'error' || o === 'failure') ? 'var(--red)' : 'var(--green)';
+}
+async function loadAudit() {
+  const box = document.getElementById('auTable');
+  const status = document.getElementById('auStatus');
+  const qs = new URLSearchParams();
+  const v = id => (document.getElementById(id).value || '').trim();
+  if (v('auActor')) qs.set('actor', v('auActor'));
+  if (v('auAction')) qs.set('action', v('auAction'));
+  if (v('auOutcome')) qs.set('outcome', v('auOutcome'));
+  if (v('auHours')) qs.set('hours', v('auHours'));
+  qs.set('limit', '300');
+  box.innerHTML = '<div class="empty">loading…</div>'; status.textContent = '';
+  let data;
+  try { data = await api('/api/audit?' + qs.toString()); }
+  catch (e) { box.innerHTML = `<div style="color:var(--red);font-size:11px;padding:10px;">${esc(e.message)}</div>`; return; }
+  const ev = data.events || [];
+  if (!ev.length) { box.innerHTML = '<div class="empty">No audit events match.</div>'; return; }
+  const th = (t) => `<th style="padding:5px 8px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg-panel);text-align:left;font-weight:600;">${t}</th>`;
+  let h = '<table style="width:100%;border-collapse:collapse;font-size:11px;"><thead><tr>'
+    + th('When') + th('Actor') + th('Action') + th('Object') + th('Outcome') + th('Path') + th('Detail') + th('IP') + '</tr></thead><tbody>';
+  for (const e of ev) {
+    const when = e.ts ? new Date(e.ts).toLocaleString() : '';
+    // Object (what was acted on) + structured detail (e.g. a delete's propagation impact) — #103.
+    const obj = e.object_type ? esc(e.object_type) + (e.object_id ? ' ' + esc(String(e.object_id)) : '') : '';
+    const detailFull = (e.detail && typeof e.detail === 'object') ? JSON.stringify(e.detail, null, 2) : '';
+    const detailShort = (e.detail && typeof e.detail === 'object') ? JSON.stringify(e.detail) : '';
+    h += '<tr style="border-bottom:1px solid var(--border);">'
+      + `<td style="padding:4px 8px;white-space:nowrap;color:var(--text-dim);" title="${esc(e.ts || '')}">${esc(when)}</td>`
+      + `<td style="padding:4px 8px;white-space:nowrap;font-family:var(--mono,monospace);">${esc(e.actor || '—')}${e.actor_source ? ` <span style="color:var(--text-faint);">(${esc(e.actor_source)})</span>` : ''}</td>`
+      + `<td style="padding:4px 8px;white-space:nowrap;">${esc(e.action || '')}</td>`
+      + `<td style="padding:4px 8px;white-space:nowrap;font-family:var(--mono,monospace);color:var(--text-dim);">${obj}</td>`
+      + `<td style="padding:4px 8px;color:${_auOutcomeColor(e.outcome)};">${esc(e.outcome || '')}${e.status_code ? ` <span style="color:var(--text-faint);">${e.status_code}</span>` : ''}</td>`
+      + `<td style="padding:4px 8px;font-family:var(--mono,monospace);color:var(--text-dim);">${esc(e.path || e.summary || '')}</td>`
+      + `<td style="padding:4px 8px;font-family:var(--mono,monospace);color:var(--text-faint);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:${detailShort ? 'help' : 'default'};" title="${esc(detailFull)}">${esc(detailShort)}</td>`
+      + `<td style="padding:4px 8px;white-space:nowrap;color:var(--text-faint);">${esc(e.ip || '')}</td></tr>`;
+  }
+  h += '</tbody></table>';
+  box.innerHTML = h;
+  status.textContent = `${ev.length} event${ev.length === 1 ? '' : 's'}`;
+}
+
+// ── Assessments (F7): ingest assessment outputs → capability findings ────────
+let _asSel = null;
+function _asStateColor(s) {
+  return s === 'absent' ? 'var(--red)' : s === 'partial' ? 'var(--amber,gold)'
+    : s === 'n/a' ? 'var(--text-faint)' : 'var(--green)';
+}
+// Pure maturity 1–5 + N/A. Deliberately darkened palette (esp. the 2 "gold") with white
+// text + a subtle dark outline so every bubble reads on light OR dark panels; the target
+// (3) gets a green ring. 1 red → 2 dark-gold → 3 green (target) → 5 deep green; N/A neutral.
+const _MAT_COLORS = { 1:'#c0392b', 2:'#b8860b', 3:'#3fae4a', 4:'#2e8b3d', 5:'#1d6e2e' };
+function _matBubble(m, target) {
+  if (m === null || m === undefined)
+    return `<span title="N/A — not asked / not applicable" style="display:inline-block;min-width:28px;text-align:center;padding:1px 7px;border-radius:9px;border:1px dashed var(--text-faint);color:var(--text-faint);font-size:10px;">N/A</span>`;
+  const bg = _MAT_COLORS[m] || 'var(--text-faint)';
+  const isTarget = (target !== null && target !== undefined && m === target);
+  const ring = isTarget ? 'box-shadow:0 0 0 2px rgba(63,174,74,0.5);' : '';
+  return `<span title="maturity ${m}${isTarget ? ' (engagement target)' : ''}" style="display:inline-block;min-width:18px;text-align:center;padding:1px 7px;border-radius:9px;background:${bg};color:#fff;border:1px solid rgba(0,0,0,0.35);font-weight:700;font-size:10px;${ring}">${m}</span>`;
+}
+function _matLegend(scale, target) {
+  if (!scale || !scale.length) return '';
+  return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:9px;color:var(--text-faint);margin-top:6px;"><span>maturity:</span>`
+    + scale.map(s => `<span title="${esc(s.desc || '')}" style="display:inline-flex;align-items:center;gap:3px;">${_matBubble(s.value, target)} ${esc(s.label)}${s.target ? ' ◄target' : ''}</span>`).join('')
+    + `<span style="display:inline-flex;align-items:center;gap:3px;">${_matBubble(null)} no maturity (absent / N/A)</span></div>`;
+}
+// A capability "pill": name colored by maturity heat; falls back to state color when there's
+// no maturity (absent = muted red; n/a = neutral dashed; the target maturity gets a ring).
+function _capPill(f, target) {
+  const m = f.maturity;
+  let bg, txt = '#fff', border = '1px solid rgba(0,0,0,0.3)', extra = '';
+  if (m !== null && m !== undefined) {
+    bg = _MAT_COLORS[m] || 'var(--text-faint)';
+    if (target !== null && target !== undefined && m === target) extra = 'box-shadow:0 0 0 2px rgba(63,174,74,0.5);';
+  } else if (f.state === 'n/a') { bg = 'transparent'; txt = 'var(--text-faint)'; border = '1px dashed var(--text-faint)'; }
+  else if (f.state === 'absent') { bg = '#8a3a32'; }       // asked, no capability
+  else if (f.state === 'partial') { bg = '#b8860b'; }
+  else { bg = '#2e8b3d'; }
+  const badge = (m !== null && m !== undefined) ? ('m' + m) : (f.state === 'n/a' ? 'N/A' : esc(f.state));
+  const gapMark = (!f.normalized_to) ? ` <span title="taxonomy gap (back-fill candidate)" style="opacity:0.85;">°</span>` : '';
+  const tip = [f.state.toUpperCase(), f.evidence || f.notes || '',
+               f.normalized_to ? ('→ ' + f.normalized_to) : (f.normalization_status || '')].filter(Boolean).join(' · ');
+  return `<div title="${esc(tip)}" style="display:flex;align-items:center;gap:8px;padding:4px 10px;border-radius:12px;background:${bg};color:${txt};border:${border};${extra}margin:3px 0;font-size:11px;">`
+    + `<span style="font-weight:600;">${esc(f.capability_handle)}${gapMark}</span>`
+    + `<span style="margin-left:auto;font-size:9px;opacity:0.92;text-transform:uppercase;letter-spacing:0.04em;">${badge}</span></div>`;
+}
+// Masthead quick selector — jump to an assessment in the active project (mirrors the
+// project + run selectors). Hidden unless the user can view assessments and some exist.
+async function loadAssessmentSelector() {
+  const chip = document.getElementById('assessmentChip');
+  const sel = document.getElementById('globalAssessmentSel');
+  if (!chip || !sel) return;
+  if (!can('assessment.view')) { chip.style.display = 'none'; return; }
+  try {
+    const data = await api('/api/assessments');
+    const items = data.assessments || [];
+    sel.innerHTML = items.length
+      ? '<option value="">— select —</option>' +
+        items.map(a => `<option value="${esc(a.id)}">${esc(a.handle)}${a.gaps ? ` (${a.gaps} gaps)` : ''}</option>`).join('')
+      : '<option value="">— no assessments —</option>';
+    chip.style.display = '';   // always visible to assessment viewers (placeholder when empty)
+  } catch (e) { chip.style.display = 'none'; }
+}
+// Blueprint quick selector — populated once blueprints (task #95) exist; hidden until then.
+async function loadBlueprintSelector() {
+  const chip = document.getElementById('blueprintChip');
+  if (chip) chip.style.display = 'none';   // no blueprint projects yet
+}
+document.getElementById('globalAssessmentSel')?.addEventListener('change', function () {
+  const id = this.value;
+  if (!id) return;
+  switchView('assess');
+  renderAssessment(id);
+});
+
+// ══════════════ Maturity Wall (#147 slice 3) ══════════════
+// FlightPath-style wall: capabilities grouped into ordered categories/bands, each scored 0–5 in
+// the framework's appraisal scale (heat-mapped), with a state switcher (Current/Phase 1-3/Desired)
+// and an Inflection-Point divider. Reads /api/assessments/{id}/maturity-wall (or the seed skeleton).
+let _mwState = 'current';
+let _mwWall = null;
+
+async function loadMaturityWall(){
+  const sel = document.getElementById('mwAssessSel');
+  const status = document.getElementById('mwStatus');
+  if (!sel) return;
+  try {
+    const r = await api('/api/assessments');
+    const list = r.assessments || [];
+    const prev = sel.value;
+    sel.innerHTML = '<option value="">— framework skeleton (no scores) —</option>'
+      + list.map(a => `<option value="${esc(a.id)}">${esc(a.handle || a.id)}</option>`).join('');
+    if (prev) sel.value = prev;
+  } catch(e){ if (status) status.textContent = 'Failed to load assessments: ' + e.message; }
+  await _mwRender();
+}
+
+function _mwScaleColor(wall, v){
+  if (v === null || v === undefined) return 'var(--bg-raised)';
+  const lvl = (wall.scale || []).find(s => s.value === v);
+  return lvl ? lvl.color : 'var(--bg-raised)';
+}
+
+async function _mwRender(){
+  const sel = document.getElementById('mwAssessSel');
+  const status = document.getElementById('mwStatus');
+  const aid = sel && sel.value;
+  let wall = null;
+  try {
+    if (aid){
+      wall = await api(`/api/assessments/${encodeURIComponent(aid)}/maturity-wall?state=${encodeURIComponent(_mwState)}`);
+    } else {
+      const fl = await api('/api/assessment-frameworks');
+      const seed = (fl.frameworks || []).find(f => f.is_seed) || (fl.frameworks || [])[0];
+      if (seed){ wall = await api(`/api/assessment-frameworks/${encodeURIComponent(seed.id)}`); wall.state = _mwState; }
+    }
+  } catch(e){ if (status) status.textContent = 'Load failed: ' + e.message; return; }
+  if (!wall){ if (status) status.textContent = 'No framework available — seed missing.'; return; }
+  _mwWall = wall;
+  const fwEl = document.getElementById('mwFramework'); if (fwEl) fwEl.textContent = wall.name || wall.key || '—';
+  _mwRenderStates(wall); _mwRenderScale(wall); _mwRenderWall(wall);
+  const ov = document.getElementById('mwOverall');
+  if (ov) ov.innerHTML = (wall.overall != null)
+    ? `Overall ${_matBubble(Math.round(wall.overall), wall.maturity_target)} <span style="color:var(--text-faint);">· ${wall.assessed || 0} assessed</span>`
+    : (aid ? '<span style="color:var(--text-faint);">Not yet scored for this state</span>'
+           : '<span style="color:var(--text-faint);">Pick an assessment to populate from its findings</span>');
+  if (status) status.textContent = '';
+}
+
+function _mwRenderStates(wall){
+  const box = document.getElementById('mwStates'); if (!box) return;
+  const states = wall.states || [];
+  if (states.length && !states.some(s => s.key === _mwState)) _mwState = states[0].key;
+  box.innerHTML = states.map(s =>
+    `<button class="btn ${s.key === _mwState ? 'primary' : 'ghost'} btn-sm mw-state" data-state="${esc(s.key)}">${esc(s.label)}</button>`).join('');
+  box.querySelectorAll('.mw-state').forEach(b => b.addEventListener('click', () => { _mwState = b.dataset.state; _mwRender(); }));
+}
+
+function _mwRenderScale(wall){
+  const box = document.getElementById('mwScale'); if (!box) return;
+  // Reuse the Assessments detail legend so the wall reads identically (per Chris's style pref).
+  box.innerHTML = _matLegend(wall.scale, wall.maturity_target);
+}
+
+// A maturity-wall capability pill — same visual language as the Assessments detail (_capPill):
+// name colored by 1–5 maturity heat, target gets a green ring; unscored = neutral skeleton.
+function _mwPill(cap, target){
+  const m = (cap.maturity === undefined) ? null : cap.maturity;
+  let bg, txt = '#fff', border = '1px solid rgba(0,0,0,0.3)', extra = '';
+  if (m !== null){
+    bg = _MAT_COLORS[m] || 'var(--text-faint)';
+    if (target !== null && target !== undefined && m === target) extra = 'box-shadow:0 0 0 2px rgba(63,174,74,0.5);';
+  } else if (cap.state === 'n/a'){ bg = 'transparent'; txt = 'var(--text-faint)'; border = '1px dashed var(--text-faint)'; }
+  else if (cap.state === 'absent'){ bg = '#8a3a32'; }
+  else if (cap.state === 'partial'){ bg = '#b8860b'; }
+  else { bg = 'var(--bg-raised)'; txt = 'var(--text-dim)'; border = '1px solid var(--border)'; }  // unscored skeleton
+  const badge = (m !== null) ? ('m' + m) : (cap.state ? (cap.state === 'n/a' ? 'N/A' : esc(cap.state)) : '–');
+  const tip = [cap.label, cap.rationale || '', cap.source && cap.source !== 'finding' ? ('· ' + cap.source) : ''].filter(Boolean).join(' — ');
+  return `<div class="mw-pill" title="${esc(tip)}" data-fid="${esc(cap.finding_id || '')}" data-capid="${esc(cap.id || '')}" style="display:flex;align-items:center;gap:8px;padding:4px 10px;border-radius:12px;background:${bg};color:${txt};border:${border};${extra}margin:3px 0;font-size:11px;">`
+    + `<span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(cap.label)}</span>`
+    + `<span style="margin-left:auto;font-size:9px;opacity:0.92;text-transform:uppercase;letter-spacing:0.04em;flex-shrink:0;">${badge}</span></div>`;
+}
+
+function _mwRenderWall(wall){
+  const box = document.getElementById('mwWall'); if (!box) return;
+  const target = wall.maturity_target;
+  // Category-card grid in the Assessments-detail style. Flatten bands→categories (findings-driven
+  // = one unlabeled band; framework = labelled bands shown as a category prefix).
+  const cats = [];
+  (wall.bands || []).forEach(b => (b.categories || []).forEach(c => cats.push({ ...c, band: b.band })));
+  if (!cats.length){ box.innerHTML = '<div class="empty" style="padding:14px;">No categories to show.</div>'; return; }
+  let h = '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;align-items:start;">';
+  cats.forEach(cat => {
+    h += `<div style="background:var(--bg-deep,rgba(0,0,0,0.18));border:1px solid var(--border);border-radius:4px;padding:8px 10px;">
+      <div style="font-size:11px;font-weight:700;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:4px;display:flex;justify-content:space-between;gap:6px;align-items:center;">
+        <span>${cat.band ? `<span style="color:var(--text-faint);font-weight:400;">${esc(cat.band)} · </span>` : ''}${esc(cat.label)} <span style="color:var(--text-faint);font-weight:400;">(${(cat.capabilities || []).length})</span></span>
+        ${cat.rollup != null ? `<span title="category mean maturity ${cat.rollup}" style="flex-shrink:0;">${_matBubble(Math.round(cat.rollup), target)}</span>` : ''}
+      </div>
+      ${(cat.capabilities || []).map(c => _mwPill(c, target)).join('')}
+    </div>`;
+  });
+  h += '</div>';
+  box.innerHTML = h;
+}
+
+document.getElementById('mwAssessSel')?.addEventListener('change', _mwRender);
+document.getElementById('mwReloadBtn')?.addEventListener('click', loadMaturityWall);
+
+async function loadAssessments() {
+  const list = document.getElementById('asList');
+  list.innerHTML = '<div class="empty">loading…</div>';
+  let data;
+  try { data = await api('/api/assessments'); }
+  catch (e) { list.innerHTML = `<div style="color:var(--red);font-size:11px;padding:10px;">${esc(e.message)}</div>`; return; }
+  const items = data.assessments || [];
+  if (!items.length) { list.innerHTML = '<div class="empty">No assessments yet. Ingest the synthetic example to get started.</div>'; return; }
+  let h = '';
+  for (const a of items) {
+    const sel = a.id === _asSel ? 'background:var(--bg-hover,rgba(255,255,255,0.05));' : '';
+    const when = a.created_at ? new Date(a.created_at).toLocaleDateString() : '';
+    h += `<div onclick="renderAssessment('${esc(a.id)}')" style="cursor:pointer;padding:9px 14px;border-bottom:1px solid var(--border);${sel}">`
+      + `<div style="font-size:12px;font-weight:600;">${esc(a.handle)}</div>`
+      + `<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${esc(a.assessment_type)} · ${esc(a.pillar)} · ${when}</div>`
+      + `<div style="font-size:10px;margin-top:3px;"><span style="color:var(--text-faint);">${a.findings} finding${a.findings==1?'':'s'}</span>`
+      + (a.gaps > 0 ? ` · <span style="color:var(--amber,gold);">${a.gaps} gap${a.gaps==1?'':'s'}</span>` : '') + `</div></div>`;
+  }
+  list.innerHTML = h;
+}
+async function ingestAssessmentFixture() {
+  const btn = document.getElementById('asIngestFixtureBtn');
+  const status = document.getElementById('asStatus');
+  btn.disabled = true; status.textContent = 'ingesting synthetic example…';
+  try {
+    const r = await api('/api/assessments/ingest', { method:'POST', body: JSON.stringify({ use_fixture: true }) });
+    status.textContent = `✓ ingested ${r.findings} findings (${r.mapped} mapped, ${r.gaps} gaps)`;
+    toast('✓ Synthetic assessment ingested');
+    await loadAssessments();
+    loadAssessmentSelector();
+    if (r.assessment_id) renderAssessment(r.assessment_id);
+  } catch (e) { status.textContent = ''; toast('✗ ' + e.message); }
+  finally { btn.disabled = false; }
+}
+// Ingest a real assessment from a pasted/uploaded canonical-format JSON payload.
+function toggleAssessmentIngest() {
+  const f = document.getElementById('asIngestForm');
+  if (f) f.style.display = f.style.display === 'none' ? '' : 'none';
+}
+let _asIngestFile = null;   // #105: a staged binary (PDF) file for server-side extraction
+async function _asPopulateIngestModels() {
+  const sel = document.getElementById('asIngestModelSel');
+  if (!sel) return;
+  try {
+    const models = await api('/api/models');               // scope-aware (project ∪ platform)
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">— project default —</option>' +
+      (models || []).filter(m => m.enabled !== false).map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
+    sel.value = cur;
+  } catch (e) { /* keep the default option */ }
+}
+function _asIngestModeChanged() {
+  const mode = document.getElementById('asIngestMode')?.value || 'json';
+  const hint = document.getElementById('asIngestHint');
+  const ta = document.getElementById('asIngestJson');
+  const modelRow = document.getElementById('asIngestModelRow');
+  if (modelRow) modelRow.style.display = (mode === 'model') ? 'inline-flex' : 'none';
+  if (mode === 'model') {
+    _asPopulateIngestModels();
+    if (hint) hint.innerHTML = 'Paste the assessment <b>text/notes</b>, or upload a <b>PDF, image, or slide deck</b> (also txt/md/csv/json/yaml). The selected model extracts it into the UDLM Assessment contract. <b>Images & slide-deck PDFs</b> are read by a <b>vision model</b> (🖼 auto for images / image-only PDFs) — pick a vision-capable model (e.g. qwen2.5-vl).';
+    if (ta) ta.placeholder = 'Paste the assessment artifact text — or upload a PDF / file below…';
+  } else {
+    if (hint) hint.innerHTML = 'Paste a <b>canonical</b> assessment JSON (or upload a file). Shape: <code style="font-size:9px;">{handle, assessment_type, pillar, findings:[{capability, category, state:present|partial|absent|n/a, maturity:1-5, evidence, notes}]}</code>';
+    if (ta) ta.placeholder = '{"handle":"…","assessment_type":"automation","findings":[…]}';
+  }
+}
+function _asLoadIngestFile(input) {
+  const file = input.files && input.files[0];
+  _asIngestFile = null;
+  if (!file) return;
+  const name = (file.name || '').toLowerCase();
+  const isImage = /\.(png|jpg|jpeg|gif|webp|bmp)$/.test(name);
+  // PDF or image (binary) → stage for server-side extraction; force model mode (the extractor
+  // reads it). Images auto-enable vision (#113); image-only PDFs auto-fall-back to vision server-side.
+  if (name.endsWith('.pdf') || isImage) {
+    _asIngestFile = file;
+    const ta = document.getElementById('asIngestJson');
+    if (ta) ta.value = `[${isImage ? 'Image' : 'PDF'} staged: ${file.name} — extracted server-side on Ingest]`;
+    const modeSel = document.getElementById('asIngestMode');
+    if (modeSel && modeSel.value !== 'model') { modeSel.value = 'model'; _asIngestModeChanged(); }
+    const vis = document.getElementById('asIngestVision');
+    if (vis && isImage) vis.checked = true;   // images require vision
+    return;
+  }
+  // text / structured → read into the textarea
+  const reader = new FileReader();
+  reader.onload = () => { const ta = document.getElementById('asIngestJson'); if (ta) ta.value = reader.result; };
+  reader.readAsText(file);
+}
+// Multipart POST (FormData) — like api() but without a JSON content-type so the browser
+// sets the multipart boundary; carries the active-project header.
+async function _apiForm(url, formData) {
+  const headers = {};
+  if (typeof _activeProject !== 'undefined' && _activeProject) headers['X-DAV-Project'] = _activeProject;
+  const res = await fetch(url, { method: 'POST', headers, body: formData, credentials: 'same-origin' });
+  if (!res.ok) {
+    // Surface a REAL reason — JSON detail when present, else a cleaned text/HTML body (e.g. an
+    // nginx 413 page that never reached the API), always tagged with the HTTP status.
+    let msg = '';
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      try { const j = await res.json(); const d = j.detail; msg = (typeof d === 'string' ? d : (d ? JSON.stringify(d) : '')); } catch {}
+    } else {
+      try { msg = (await res.text()).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200); } catch {}
+    }
+    if (res.status === 413) msg = `File too large — it exceeds the server upload limit (was the deck > the limit?). ${msg}`.trim();
+    if (!msg) msg = res.statusText || 'request failed';
+    throw new Error(`HTTP ${res.status}: ${msg}`);
+  }
+  return res.json();
+}
+// Live "something is happening" feedback for the (potentially long) model/vision ingest:
+// a ticking spinner + elapsed seconds in the status line, and a disabled Ingest button.
+let _asBusyTimer = null;
+function _asBusy(on, label) {
+  const status = document.getElementById('asStatus');
+  const btn = document.getElementById('asIngestSubmit');
+  if (btn) btn.disabled = !!on;
+  if (_asBusyTimer) { clearInterval(_asBusyTimer); _asBusyTimer = null; }
+  if (!on) return;
+  const t0 = Date.now();
+  const spin = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+  let i = 0;
+  const tick = () => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    const slow = s >= 20 ? ' <span style="color:var(--text-faint);">(vision over many pages can take a minute+)</span>' : '';
+    if (status) status.innerHTML = `<span style="color:var(--accent);">${spin[i = (i + 1) % spin.length]}</span> ${esc(label)} <span style="color:var(--text-faint);">· ${s}s</span>${slow}`;
+  };
+  tick();
+  _asBusyTimer = setInterval(tick, 200);
+}
+function _asIngestDone(r, status) {
+  _asBusy(false);
+  const via = r.via === 'vision' ? `🖼 vision${r.pages ? ` · ${r.pages} page${r.pages === 1 ? '' : 's'}` : ''}`
+            : (r.via === 'text' ? 'text' : '');
+  if (status) status.textContent = `✓ ingested ${r.findings} findings (${r.mapped} mapped, ${r.gaps} gaps)${via ? ' · ' + via : ''}${r.model ? ' · ' + r.model : ''}`;
+  toast('✓ Assessment ingested');
+  toggleAssessmentIngest();
+  document.getElementById('asIngestJson').value = '';
+  _asIngestFile = null;
+  const fi = document.getElementById('asIngestFile'); if (fi) fi.value = '';
+  loadAssessments();
+  loadAssessmentSelector();
+  if (r.assessment_id) renderAssessment(r.assessment_id);
+}
+async function ingestAssessment() {
+  const mode = document.getElementById('asIngestMode')?.value || 'json';
+  const status = document.getElementById('asStatus');
+  const modelId = parseInt(document.getElementById('asIngestModelSel')?.value || '', 10);
+  // PDF / image (staged file) → multipart server-side extraction (model mode only).
+  if (mode === 'model' && _asIngestFile) {
+    const isVision = !!document.getElementById('asIngestVision')?.checked;
+    const fname = _asIngestFile.name || 'file';
+    _asBusy(true, isVision
+      ? `Reading "${fname}" with vision model — rendering pages + extracting…`
+      : `Extracting "${fname}" via model — text, or vision if it's a slide deck…`);
+    try {
+      const fd = new FormData();
+      fd.append('file', _asIngestFile);
+      if (modelId) fd.append('model_config_id', String(modelId));
+      if (isVision) fd.append('vision', 'true');
+      _asIngestDone(await _apiForm('/api/assessments/ingest-file', fd), status);
+    } catch (e) { _asBusy(false); status.innerHTML = '<span style="color:var(--red);">✗ ' + esc(e.message) + '</span>'; toast('✗ ' + e.message, true); }
+    return;
+  }
+  const raw = (document.getElementById('asIngestJson').value || '').trim();
+  if (!raw) { toast('Paste or upload assessment content', true); return; }
+  if (mode === 'model') _asBusy(true, 'Extracting via model…');
+  else status.textContent = 'ingesting…';
+  try {
+    let r;
+    if (mode === 'model') {
+      const body = { content: raw };
+      if (modelId) body.model_config_id = modelId;
+      r = await api('/api/assessments/ingest-model', { method:'POST', body: JSON.stringify(body) });
+    } else {
+      let payload;
+      try { payload = JSON.parse(raw); }
+      catch (e) { toast('Invalid JSON: ' + e.message, true); status.textContent = '✗ invalid JSON'; return; }
+      r = await api('/api/assessments/ingest', { method:'POST', body: JSON.stringify({ assessment: payload }) });
+    }
+    _asIngestDone(r, status);
+  } catch (e) { _asBusy(false); status.innerHTML = '<span style="color:var(--red);">✗ ' + esc(e.message) + '</span>'; toast('✗ ' + e.message, true); }
+}
+async function renderAssessment(id) {
+  _asSel = id;
+  const box = document.getElementById('asDetail');
+  box.innerHTML = '<div class="empty">loading…</div>';
+  let a;
+  try { a = await api('/api/assessments/' + encodeURIComponent(id)); }
+  catch (e) { box.innerHTML = `<div style="color:var(--red);font-size:11px;padding:10px;">${esc(e.message)}</div>`; return; }
+  loadAssessments();   // refresh list highlight
+  const gs = a.gap_summary || { by_state:{}, by_normalization:{}, gaps:[] };
+  const bs = gs.by_state || {}, bn = gs.by_normalization || {};
+  const pill = (label, n, color) => `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:${color};color:#000;font-size:10px;font-weight:600;margin-right:6px;">${esc(label)}: ${n||0}</span>`;
+  let h = `<div style="font-size:15px;font-weight:600;">${esc(a.handle)}</div>`
+    + `<div style="font-size:11px;color:var(--text-dim);margin:3px 0 10px;">${esc(a.assessment_type)} · ${esc(a.pillar)}`
+    + (a.source ? ` · source ${esc(a.source)}` : '') + (a.created_by ? ` · by ${esc(a.created_by)}` : '')
+    + ` · <span title="classification">${esc(a.classification||'')}</span></div>`;
+  if (a.summary) h += `<div style="font-size:12px;margin-bottom:12px;">${esc(a.summary)}</div>`;
+  h += `<div style="background:var(--bg-deep,rgba(0,0,0,0.2));border:1px solid var(--border);border-radius:2px;padding:10px 12px;margin-bottom:12px;">`
+    + `<div class="panel-title" style="margin-bottom:6px;">Gap summary — the roadmap signal</div>`
+    + `<div style="margin-bottom:6px;">${pill('present', bs.present, 'var(--green)')}${pill('partial', bs.partial, 'var(--amber,gold)')}${pill('absent', bs.absent, 'var(--red)')}${bs['n/a'] ? pill('n/a', bs['n/a'], 'var(--text-faint)') : ''}</div>`
+    + `<div style="font-size:11px;color:var(--text-dim);">Normalization: ${bn.normalized||0} on taxonomy · ${bn['proposed-taxonomy-gap']||0} taxonomy-gap (back-fill) · ${bn.unmapped||0} unmapped</div>`
+    + (gs.maturity ? `<div style="font-size:11px;color:var(--text-dim);margin-top:6px;">Maturity vs target ${gs.maturity.target}: `
+        + `<b style="color:var(--green);">${gs.maturity.at_or_above_target||0}</b> at/above · `
+        + `<b style="color:var(--amber,gold);">${gs.maturity.below_target||0}</b> below · `
+        + `${gs.maturity.na||0} N/A</div>` + _matLegend(a.maturity_scale, a.maturity_target) : '')
+    + `</div>`;
+  // Group capabilities by category; each category anchors a vertical list of colored pills.
+  const byCat = {};
+  for (const f of (a.findings || [])) { const k = f.category || 'Uncategorized'; (byCat[k] = byCat[k] || []).push(f); }
+  const cats = Object.keys(byCat).sort((x, y) => x === 'Uncategorized' ? 1 : y === 'Uncategorized' ? -1 : x.localeCompare(y));
+  h += `<div class="panel-title" style="margin-bottom:6px;">Capabilities by category (${(a.findings||[]).length}) <span style="color:var(--text-faint);font-weight:400;font-size:10px;">° = taxonomy gap · hover a pill for detail</span></div>`;
+  h += `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;align-items:start;">`;
+  for (const cat of cats) {
+    h += `<div style="background:var(--bg-deep,rgba(0,0,0,0.18));border:1px solid var(--border);border-radius:4px;padding:8px 10px;">`
+      + `<div style="font-size:11px;font-weight:700;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:4px;">${esc(cat)} <span style="color:var(--text-faint);font-weight:400;">(${byCat[cat].length})</span></div>`;
+    for (const f of byCat[cat]) h += _capPill(f, a.maturity_target);
+    h += `</div>`;
+  }
+  h += `</div>`;
+  box.innerHTML = h;
+}
+
+// ── Prompts & Improvement (F8): per-project, per-stage prompt management ──────
+let _pmMeta = null;          // registry meta for the selected stage
+function switchPiTab(which) {
+  document.querySelectorAll('.pi-tab').forEach(b => b.classList.toggle('active', b.dataset.pi === which));
+  document.getElementById('promptPane').style.display = which === 'prompts' ? '' : 'none';
+  document.getElementById('improvePane').style.display = which === 'improve' ? '' : 'none';
+  if (which === 'prompts' && !_pmMeta) pmInit();
+}
+async function pmInit() {
+  const sel = document.getElementById('pmStage');
+  let data;
+  try { data = await api('/api/prompts/stages'); }
+  catch (e) { document.getElementById('pmBody').innerHTML = `<div style="color:var(--red);font-size:11px;">${esc(e.message)}</div>`; return; }
+  const stages = data.stages || [];
+  sel.innerHTML = stages.map(s => `<option value="${esc(s.key)}">${esc(s.label)}</option>`).join('');
+  if (stages.length) pmLoadStage();
+}
+function _pmStatusBadge(status) {
+  const map = {
+    'append-live': ['live', 'var(--green)', 'Additional context is applied at runtime now.'],
+    'stored-held': ['stored — held', 'var(--amber,gold)', 'Stored & previewable, but NOT yet applied at runtime (A/B required before enabling — eval-sensitive).'],
+  };
+  const [t, c, tip] = map[status] || [status, 'var(--text-faint)', ''];
+  return `<span title="${esc(tip)}" style="display:inline-block;padding:2px 8px;border-radius:10px;background:${c};color:#000;font-size:10px;font-weight:600;">${esc(t)}</span>`;
+}
+// #93 promotion: flip the Evaluation (stage-2) prompt live / held.
+async function _pmSetApplied(on) {
+  if (on && !confirm('Apply this Evaluation prompt to ALL future runs?\n\nThis changes eval behavior for every subsequent run. Validate it with an A/B first (Improve → New A/B → evaluation prompt).')) {
+    pmLoadStage(); return;   // re-render to revert the checkbox
+  }
+  try {
+    await api('/api/prompts/stage2/applied', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ applied: on }) });
+    toast(on ? 'Evaluation prompt is now LIVE on runs' : 'Evaluation prompt reverted to held (preview only)');
+    pmLoadStage();
+  } catch (e) { toast(e.message, true); pmLoadStage(); }
+}
+async function pmLoadStage() {
+  const stage = document.getElementById('pmStage').value;
+  const body = document.getElementById('pmBody');
+  document.getElementById('pmSaveStatus').textContent = '';
+  body.innerHTML = '<div class="empty">loading…</div>';
+  let d;
+  try { d = await api('/api/prompts/project/' + encodeURIComponent(stage)); }
+  catch (e) { body.innerHTML = `<div style="color:var(--red);font-size:11px;">${esc(e.message)}</div>`; return; }
+  _pmMeta = d.meta || { sections: [], append: {} };
+  // #125: each prompt pairs 1:1 with a model role — show which model runs it (same verbiage).
+  const _roleModel = _pmMeta.role ? ` · runs on <span style="color:var(--text-dim);">${esc(_defaultModelName(_pmMeta.role))}</span>` : '';
+  // #93 promotion: the engine Evaluation prompt is stored-held by default; an "Apply to live runs"
+  // toggle promotes it (so NORMAL runs inject it). Only for the engine stage; promote after an A/B.
+  const _isEngine = (_pmMeta.surface === 'engine');
+  const _applyToggle = _isEngine
+    ? `<label title="Promote this Evaluation prompt to LIVE — normal runs will inject it. Validate with an A/B (Improve → New A/B → evaluation prompt) first." style="display:inline-flex;align-items:center;gap:4px;margin-left:10px;font-size:10px;cursor:pointer;${d.applied ? 'color:var(--green);' : 'color:var(--text-faint);'}"><input type="checkbox" id="pmApplyLive" ${d.applied ? 'checked' : ''} onchange="_pmSetApplied(this.checked)" style="width:auto;height:auto;accent-color:var(--green);"> ${d.applied ? '● LIVE on runs' : 'Apply to live runs'}</label>`
+    : '';
+  document.getElementById('pmStageStatus').innerHTML = _pmStatusBadge(d.applied && _isEngine ? 'append-live' : _pmMeta.status)
+    + `<span style="color:var(--text-faint);">${_roleModel}</span>` + _applyToggle;
+  const ov = d.section_overrides || {};
+  const appendLabel = (_pmMeta.append && _pmMeta.append.label) || 'Additional context';
+  const appendLive = !!(_pmMeta.append && _pmMeta.append.live);
+  let h = `<div style="font-size:11px;color:var(--text-dim);margin-bottom:14px;">${esc(_pmMeta.description || '')}</div>`;
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;">';
+  // Left column — editors
+  h += '<div>';
+  h += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;"><span style="font-weight:600;font-size:12px;">${esc(appendLabel)}`
+     + (appendLive ? '' : ` <span style="color:var(--amber,gold);font-weight:400;font-size:10px;">(stored; applied once this stage is enabled)</span>`) + `</span>`
+     + `<button class="btn ghost btn-sm" style="margin-left:auto;" onclick="pmAssist('append','pmAppend')" title="AI-assisted draft / refine from a described intent">✨ Assist</button></div>`;
+  h += `<textarea id="pmAppend" oninput="pmRefreshPreview()" style="width:100%;min-height:90px;font-size:12px;font-family:var(--mono,monospace);" placeholder="Project-specific grounding context, conventions, glossary, constraints…">${esc(d.content || '')}</textarea>`;
+  for (const sec of (_pmMeta.sections || [])) {
+    const secId = 'pmSec_' + String(sec.name).replace(/[^a-zA-Z0-9]/g, '_');
+    h += `<div style="margin-top:14px;display:flex;align-items:center;gap:8px;"><span style="font-weight:600;font-size:12px;">Override section: ${esc(sec.label)}</span>`
+       + `<button class="btn ghost btn-sm" style="margin-left:auto;" onclick="pmAssist('section:${esc(sec.name)}','${secId}')" title="AI-assisted draft / refine from a described intent">✨ Assist</button></div>`;
+    h += `<div style="font-size:10px;color:var(--text-faint);margin-bottom:4px;">${esc(sec.description || '')}</div>`;
+    h += `<details style="margin-bottom:4px;"><summary style="font-size:10px;color:var(--text-dim);cursor:pointer;">show base text</summary><pre style="white-space:pre-wrap;font-size:10px;color:var(--text-faint);background:var(--bg-deep,rgba(0,0,0,0.2));padding:8px;border-radius:2px;max-height:160px;overflow:auto;">${esc(sec.base || '')}</pre></details>`;
+    h += `<textarea id="${secId}" data-sec="${esc(sec.name)}" oninput="pmRefreshPreview()" style="width:100%;min-height:80px;font-size:12px;font-family:var(--mono,monospace);" placeholder="Leave blank to use the base section unchanged.">${esc(ov[sec.name] || '')}</textarea>`;
+  }
+  h += `<div style="margin-top:12px;"><button class="btn primary btn-sm" onclick="pmSave()">Save</button></div>`;
+  h += '</div>';
+  // Right column — live preview
+  h += '<div><div style="font-weight:600;font-size:12px;margin-bottom:4px;">Assembled prompt (preview)</div>'
+     + '<pre id="pmPreview" style="white-space:pre-wrap;font-size:11px;font-family:var(--mono,monospace);background:var(--bg-deep,rgba(0,0,0,0.2));border:1px solid var(--border);padding:10px;border-radius:2px;max-height:60vh;overflow:auto;"></pre></div>';
+  h += '</div>';
+  body.innerHTML = h;
+  pmRefreshPreview();
+}
+function _pmGather() {
+  const append = (document.getElementById('pmAppend')?.value || '');
+  const overrides = {};
+  document.querySelectorAll('#pmBody textarea[data-sec]').forEach(t => {
+    if ((t.value || '').trim() !== '') overrides[t.dataset.sec] = t.value;
+  });
+  return { append, overrides };
+}
+function pmRefreshPreview() {
+  if (!_pmMeta) return;
+  const { append, overrides } = _pmGather();
+  const parts = [];
+  for (const sec of (_pmMeta.sections || [])) {
+    const ov = overrides[sec.name];
+    const text = (ov && ov.trim() !== '') ? ov : (sec.base || '');
+    if (text) parts.push(text);
+  }
+  if (append.trim() !== '') parts.push('## Project context & instructions (set by the architect — honor these)\n' + append.trim());
+  const pre = document.getElementById('pmPreview');
+  if (pre) pre.textContent = parts.join('\n\n').trim() || '(empty)';
+}
+async function pmSave() {
+  const stage = document.getElementById('pmStage').value;
+  const { append, overrides } = _pmGather();
+  const st = document.getElementById('pmSaveStatus');
+  st.textContent = 'saving…';
+  try {
+    await api('/api/stage-context/' + encodeURIComponent(stage), {
+      method: 'PUT',
+      body: JSON.stringify({ content: append, section_overrides: overrides }),
+    });
+    st.textContent = '✓ saved';
+    toast('✓ Prompt customization saved');
+  } catch (e) { st.textContent = ''; toast('✗ ' + e.message); }
+}
+// Prompt assistant — describe the intent, AI drafts/refines the text into the target
+// textarea (human reviews + edits + saves; nothing is auto-applied). Server-side, reuses
+// the project's authoring model. arc: assistant drafts → editor refines → static A/B validates.
+async function pmAssist(target, taId) {
+  const ta = document.getElementById(taId);
+  if (!ta) return;
+  const intent = prompt('✨ Describe the intent — what should this prompt text do?');
+  if (!intent || !intent.trim()) return;
+  const stage = document.getElementById('pmStage').value;
+  const old = ta.value;
+  ta.disabled = true; ta.value = '✨ generating…';
+  try {
+    const r = await api('/api/prompts/assist', {
+      method: 'POST',
+      body: JSON.stringify({ stage, target, intent, current: old }),
+    });
+    ta.value = (r.suggestion && r.suggestion.trim()) ? r.suggestion : old;
+    pmRefreshPreview();
+    toast('✨ Draft generated — review & edit before saving');
+  } catch (e) { ta.value = old; toast('✗ ' + e.message); }
+  finally { ta.disabled = false; }
+}
+
+// ── Capability Map (F5): bidirectional UC ↔ capability matrix ────────────────
+let _cmSel = null;
+async function loadCapMap() {
+  // 3b: Cap Map is scoped by the shared masthead Scoping Set (run-agnostic, latest eval per UC).
+  // Both the old run picker and the in-panel Set picker are retired — scope lives in the masthead.
+  const runSel = document.getElementById('cmRunSel'); if (runSel) runSel.style.display = 'none';
+  const setWrap = document.getElementById('cmScopeWrap'); if (setWrap) setWrap.style.display = 'none';
+  try { if (!allSets || !allSets.length) await loadSets(); } catch (_) {}
+  populateScopeSel();
+  renderCapMap();   // auto-load for the current masthead scope (scope changes re-render via setScope)
+}
+
+async function renderCapMap() {
+  // 3b: scope by the shared masthead Scoping Set (no run_id → latest eval per UC, may span runs).
+  const setId = _activeScope;
+  const box = document.getElementById('cmMatrix');
+  const status = document.getElementById('cmStatus');
+  _cmSel = null;
+  box.innerHTML = '<div class="empty">loading…</div>'; status.textContent = '';
+  let data;
+  try {
+    data = await api('/api/analysis/uc-capability-map' + (setId ? `?set_id=${encodeURIComponent(setId)}` : ''));
+  } catch (e) {
+    box.innerHTML = `<div style="color:var(--red);font-size:11px;">${esc(e.message)}</div>`
+      + `<div style="font-size:10px;color:var(--text-faint);margin-top:4px;">If a UC predates capability tracking, re-ingest it from the Results tab.</div>`;
+    return;
+  }
+  const ucs = data.ucs || [], caps = data.capabilities || [], edges = data.edges || [];
+  if (!ucs.length || !caps.length) {
+    box.innerHTML = `<div class="empty">No UC ↔ capability edges in this scope${setId ? ' (Set)' : ''}.</div>`;
+    return;
+  }
+  const capIdx = new Map(caps.map((c, i) => [c.id, i]));
+  const ucIdx = new Map(ucs.map((u, i) => [u.uuid, i]));
+  const cell = new Map();
+  for (const e of edges) {
+    const ui = ucIdx.get(e.uc), ci = capIdx.get(e.cap);
+    if (ui === undefined || ci === undefined) continue;
+    cell.set(ui + ':' + ci, e.weight);
+  }
+  let h = '<table class="capmap"><thead><tr>';
+  h += `<th class="cm-corner" title="${ucs.length} UCs × ${caps.length} capabilities">UC ＼ Cap</th>`;
+  caps.forEach((c, ci) => {
+    const star = c.foundational ? `<span class="cm-found" title="foundational — ${c.transitive_dependents} depend on it">★</span> ` : '';
+    // #132 disposition lens: a thin colored underline on the column header — the R4 verdict
+    // at a glance without crowding the dense matrix. Subdomain rides the hover title.
+    const dm = DISPOSITIONS[c.disposition];
+    const dispBorder = dm ? `border-bottom:2px solid ${dm.color};` : '';
+    const dispTip = dm ? ` · ${dm.label} (≈ ${dm.time})` : '';
+    const subTip = c.subdomain && CLASSIFICATIONS[c.subdomain] ? ` · ${CLASSIFICATIONS[c.subdomain].label}` : '';
+    h += `<th class="cm-caphead" data-ci="${ci}" onclick="cmHighlight('cap',${ci})" style="${dispBorder}" `
+      + `title="${esc(c.name)} — demanded by ${c.demand} UC${c.demand === 1 ? '' : 's'}`
+      + `${c.foundational ? ` · foundational (${c.transitive_dependents} dependents)` : ''}${subTip}${dispTip}`
+      + `${c.usage ? `\n\n${esc(c.usage)}` : ''}">`
+      + `<div>${star}${esc(c.name)} (${c.demand})</div></th>`;
+  });
+  h += '</tr></thead><tbody>';
+  ucs.forEach((u, ui) => {
+    h += `<tr data-ui="${ui}"><td class="cm-uc" data-ui="${ui}" onclick="cmHighlight('uc',${ui})" title="${esc(u.label)}">${esc(u.label)}</td>`;
+    caps.forEach((c, ci) => {
+      const w = cell.get(ui + ':' + ci);
+      h += w
+        ? `<td class="cm-cell on" data-ui="${ui}" data-ci="${ci}" title="${esc(u.label)} → ${esc(c.name)} (${w})"></td>`
+        : `<td class="cm-cell" data-ui="${ui}" data-ci="${ci}"></td>`;
+    });
+    h += '</tr>';
+  });
+  h += '</tbody></table>';
+  box.innerHTML = h;
+  status.textContent = `${ucs.length} UCs · ${caps.length} capabilities · ${edges.length} edges`;
+}
+
+function cmHighlight(kind, idx) {
+  const key = kind + idx;
+  document.querySelectorAll('#cmMatrix .hl').forEach(el => el.classList.remove('hl'));
+  if (_cmSel === key) { _cmSel = null; return; }   // toggle off
+  _cmSel = key;
+  if (kind === 'cap') {
+    document.querySelectorAll(`#cmMatrix [data-ci="${idx}"]`).forEach(el => el.classList.add('hl'));
+    document.querySelectorAll(`#cmMatrix td.cm-cell.on[data-ci="${idx}"]`).forEach(td => {
+      const lab = document.querySelector(`#cmMatrix .cm-uc[data-ui="${td.getAttribute('data-ui')}"]`);
+      if (lab) lab.classList.add('hl');
+    });
+  } else {
+    document.querySelectorAll(`#cmMatrix tr[data-ui="${idx}"] > *`).forEach(el => el.classList.add('hl'));
+    document.querySelectorAll(`#cmMatrix td.cm-cell.on[data-ui="${idx}"]`).forEach(td => {
+      const head = document.querySelector(`#cmMatrix .cm-caphead[data-ci="${td.getAttribute('data-ci')}"]`);
+      if (head) head.classList.add('hl');
+    });
+  }
+}
+
+// ── Capability demand density (DCM feature #2) ──────────────────────────────
+// Run-scoped: aggregates which capabilities the most UCs in a run demand.
+// Reads /api/analysis/capability-density (populated at ingest); no model needed.
+async function loadCapabilityMap() {
+  // 3b: scope by the Scoping Set (no run_id → latest eval per UC, may span runs).
+  const el = document.getElementById('rpCapMap');
+  if (!el) return;
+  el.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Loading…</div>';
+  let data;
+  try {
+    data = await api('/api/analysis/capability-density' + scopeQuery());
+  } catch (e) {
+    el.innerHTML = `<div style="font-size:11px;color:var(--red);">${esc(e.message)}</div>`
+      + `<div style="font-size:10px;color:var(--text-faint);margin-top:4px;">If a UC predates capability tracking, re-ingest it from the Results tab, then retry.</div>`;
+    return;
+  }
+  renderCapabilityMap(data);
+}
+
+function renderCapabilityMap(data) {
+  const el = document.getElementById('rpCapMap');
+  if (!el) return;
+  const caps = data.capabilities || [];
+  const total = data.total_ucs || 0;
+  if (!caps.length) {
+    el.innerHTML = `<div style="font-size:11px;color:var(--text-faint);">No capabilities recorded for this run`
+      + (total ? ` (${total} UC${total===1?'':'s'} analyzed).` : `.`)
+      + ` Re-ingest the run if it predates capability tracking.</div>`;
+    return;
+  }
+  // uuid → handle labels from the current run summary, when it's the loaded run.
+  const handleByUuid = {};
+  if (activeRunSummary && activeRunSummary.run_id === data.run_id) {
+    (activeRunSummary.ucs || []).forEach(u => { handleByUuid[u.uc_uuid] = u.uc_handle || u.uc_uuid; });
+  }
+  const maxCount = caps[0].uc_count || 1;   // sorted desc → first is the max
+  let html = `<div style="font-size:11px;color:var(--text-faint);margin-bottom:10px;">`
+    + `${caps.length} capabilit${caps.length===1?'y':'ies'} demanded across ${total} analyzed UC${total===1?'':'s'} — ranked by how many UCs need each. Click a row to see which.</div>`;
+  caps.forEach((c, i) => {
+    const pct = total ? Math.round(c.demand_ratio * 100) : 0;
+    const barPct = Math.max(2, Math.round((c.uc_count / maxCount) * 100));
+    const ns = (c.namespaces || []).map(n => `<span class="tag">${esc(n)}</span>`).join(' ');
+    const conf = (c.avg_confidence != null) ? ` · avg conf ${esc(String(c.avg_confidence))}` : '';
+    const ucBtns = (c.uc_uuids || []).map(u =>
+      `<button class="btn ghost btn-sm capmap-uc" data-uuid="${esc(u)}" style="margin:2px 4px 2px 0;font-family:var(--mono,monospace);font-size:10px;" title="Open ${esc(u)}">${esc(handleByUuid[u] || u)}</button>`
+    ).join('');
+    html += `
+      <div class="capmap-row" data-cap="${i}" style="margin-bottom:9px;cursor:pointer;">
+        <div style="display:flex;align-items:baseline;gap:8px;justify-content:space-between;">
+          <span style="font-size:12px;color:var(--text);min-width:0;">${esc(c.name || c.capability_id)}${c.name?` <span style="font-family:var(--mono,monospace);font-size:9px;color:var(--text-faint);">${esc(c.capability_id)}</span>`:''}</span>
+          <span style="display:flex;gap:6px;align-items:center;white-space:nowrap;flex-shrink:0;">
+            ${_classBadge(c.subdomain)}${_dispBadge(c.disposition)}
+            ${c.distinct_customers ? `<span style="font-size:10px;color:var(--text-dim);" title="distinct customers demanding this capability — the capability-level funding signal">👥 ${c.distinct_customers}</span>` : ''}
+            <span style="font-size:11px;color:var(--text-faint);">${c.uc_count}/${total} UCs · ${pct}%${conf}</span>
+          </span>
+        </div>
+        ${c.usage?`<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${esc(c.usage)}</div>`:''}
+        <div style="height:6px;background:var(--bg-raised);border-radius:3px;margin-top:3px;overflow:hidden;">
+          <div style="height:100%;width:${barPct}%;background:var(--accent);"></div>
+        </div>
+        ${ns ? `<div style="margin-top:3px;">${ns}</div>` : ''}
+        <div class="capmap-ucs" data-cap-ucs="${i}" style="display:none;margin-top:6px;padding-left:8px;border-left:2px solid var(--border);">${ucBtns}</div>
+      </div>`;
+  });
+  el.innerHTML = html;
+  // Row click toggles the demanding-UC drill-in; UC buttons jump to that UC.
+  el.querySelectorAll('.capmap-row').forEach(row => {
+    row.addEventListener('click', e => {
+      if (e.target.closest('.capmap-uc')) return;
+      const sub = el.querySelector(`.capmap-ucs[data-cap-ucs="${row.dataset.cap}"]`);
+      if (sub) sub.style.display = sub.style.display === 'none' ? 'block' : 'none';
+    });
+  });
+  el.querySelectorAll('.capmap-uc').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      switchView('usecases');
+      selectUC(btn.dataset.uuid);
+    });
+  });
+}
+
+let _engCapMode = 'density';   // which Engineering cap-map view to (re)load on entry + scope change
+document.getElementById('rpCapMapBtn')?.addEventListener('click', () => { _engCapMode = 'density'; loadCapabilityMap(); });
+
+// ── Foundational capability detection (DCM feature #3) ──────────────────────
+// Ranks capabilities by how many others transitively depend on them. Shares the
+// rpCapMap container with the demand view; reads /api/analysis/foundational-capabilities.
+async function loadFoundational() {
+  // 3b: scope by the Scoping Set (no run_id → latest eval per UC, may span runs).
+  const el = document.getElementById('rpCapMap');
+  if (!el) return;
+  el.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Loading…</div>';
+  let data;
+  try {
+    data = await api('/api/analysis/foundational-capabilities' + scopeQuery());
+  } catch (e) {
+    el.innerHTML = `<div style="font-size:11px;color:var(--red);">${esc(e.message)}</div>`;
+    return;
+  }
+  renderFoundational(data);
+}
+
+function renderFoundational(data) {
+  const el = document.getElementById('rpCapMap');
+  if (!el) return;
+  const caps = (data.capabilities || []).filter(c => c.transitive_dependents > 0);
+  if (!data.edge_count) {
+    el.innerHTML = `<div style="font-size:11px;color:var(--text-faint);">No capability dependencies recorded for this run.`
+      + ` Foundational detection needs analyses that emit capability <code>depends_on</code> edges`
+      + ` — tune the engine prompt to elicit them, then re-ingest the run.</div>`;
+    return;
+  }
+  if (!caps.length) {
+    el.innerHTML = `<div style="font-size:11px;color:var(--text-faint);">${data.edge_count} dependency edge${data.edge_count===1?'':'s'} found, but no capability is depended on by another (no foundations to rank).</div>`;
+    return;
+  }
+  const maxTd = caps[0].transitive_dependents || 1;   // sorted desc → first is max
+  let html = `<div style="font-size:11px;color:var(--text-faint);margin-bottom:10px;">`
+    + `${caps.length} foundational capabilit${caps.length===1?'y':'ies'} across ${data.edge_count} dependency edge${data.edge_count===1?'':'s'} — ranked by how many capabilities transitively depend on each. `
+    + `<span title="transitive dependents ÷ direct UC demand — high means many capabilities rest on it but few UCs ask for it directly">Leverage</span> flags the boring-but-foundational ones.</div>`;
+  caps.forEach((c, i) => {
+    const barPct = Math.max(2, Math.round((c.transitive_dependents / maxTd) * 100));
+    const demand = (c.demand_uc_count != null) ? `${c.demand_uc_count} UC${c.demand_uc_count===1?'':'s'} demand` : 'demand n/a';
+    const lev = (c.leverage != null && c.leverage >= 1) ? `<span title="Leverage: ${esc(String(c.leverage))} (transitive dependents ÷ demand)" style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;color:var(--accent);border:1px solid var(--accent);padding:0 4px;border-radius:2px;flex-shrink:0;">lev ${esc(String(c.leverage))}</span>` : '';
+    const deps = (c.depends_on || []).map(d => `<span class="tag">${esc(d)}</span>`).join(' ');
+    html += `
+      <div style="margin-bottom:9px;">
+        <div style="display:flex;align-items:baseline;gap:8px;justify-content:space-between;">
+          <span style="font-size:12px;color:var(--text);display:flex;align-items:center;gap:6px;">${esc(c.name || c.capability_id)} ${lev}</span>
+          <span style="font-size:11px;color:var(--text-faint);white-space:nowrap;">${c.transitive_dependents} depend (${c.direct_dependents} direct) · ${esc(demand)}</span>
+        </div>
+        ${c.usage?`<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${esc(c.usage)}</div>`:''}
+        <div style="height:6px;background:var(--bg-raised);border-radius:3px;margin-top:3px;overflow:hidden;">
+          <div style="height:100%;width:${barPct}%;background:var(--accent);"></div>
+        </div>
+        ${deps ? `<div style="margin-top:3px;font-size:10px;color:var(--text-faint);">requires: ${deps}</div>` : ''}
+      </div>`;
+  });
+  el.innerHTML = html;
+}
+
+document.getElementById('rpFoundBtn')?.addEventListener('click', () => { _engCapMode = 'foundational'; loadFoundational(); });
+// Auto-load the Engineering cap map for the current scope (density by default; honors the last mode).
+function _loadEngCapMap() { if (_engCapMode === 'foundational') loadFoundational(); else loadCapabilityMap(); }
+
+// Engineering Roadmap tab (Track 2) — capability views scoped by the shared masthead
+// Scoping Set (run-agnostic, latest eval per UC). The local run/Set picker is retired.
+function loadEngineeringTab() {
+  const sel = document.getElementById('engScopeRow');
+  if (sel) sel.style.display = 'none';   // scope lives in the masthead now
+  if (!(allSets || []).length) { try { loadSets(); } catch {} }
+  populateScopeSel();
+  try { _loadRoadmapProjection(); } catch (_) {}   // #141 synthesized roadmap (primary)
+  try { _loadEngCapMap(); } catch (_) {}   // auto-load for the current scope on entry
+}
+
+// ── Roadmap projection (#141) — synthesized engineering roadmap from the gap analysis ──
+let _roadmapData = null;
+const _RM_SEVCOLOR = { critical: '#c02828', major: '#c8861a', moderate: '#5b8a5b', advisory: '#5a7184', minor: '#556' };
+async function _loadRoadmapProjection() {
+  const box = document.getElementById('rpRoadmap');
+  if (!box) return;
+  const gb = document.getElementById('rpRoadmapGroupBy');
+  box.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Synthesizing roadmap from the gap analysis…</div>';
+  try {
+    const q = (gb && gb.value) ? ('?group_by=' + encodeURIComponent(gb.value)) : '';
+    const d = await api('/api/analysis/roadmap' + q);
+    _roadmapData = d;
+    const sc = d.severity_counts || {};
+    const meta = document.getElementById('rpRoadmapMeta');
+    if (meta) meta.textContent = `${d.total_gaps} gaps · ${d.cluster_count} clusters · ${sc.critical || 0} critical`;
+    if (!d.total_gaps) { box.innerHTML = '<div class="empty" style="font-size:11px;">No gaps in scope yet — run an ingestion to populate the roadmap.</div>'; return; }
+    const chip = (s, n) => n ? `<span style="font-size:9px;padding:0 5px;border-radius:8px;margin-left:3px;background:${_RM_SEVCOLOR[s] || '#666'};color:#fff;">${n} ${s}</span>` : '';
+    let h = '';
+    if ((d.critical_gaps || []).length) {
+      h += `<div style="border:1px solid var(--red);border-radius:6px;padding:8px 10px;margin-bottom:10px;background:rgba(200,40,40,.07);">
+        <div style="font-size:11px;font-weight:600;color:var(--red);margin-bottom:4px;">⚠ ${d.critical_gaps.length} critical gap${d.critical_gaps.length === 1 ? '' : 's'} — decide first</div>
+        ${d.critical_gaps.map(g => `<div style="font-size:11px;margin:2px 0;">${esc(g.title)} <span style="color:var(--text-faint);">— ${esc(g.uc_handle || '')}</span></div>`).join('')}
+      </div>`;
+    }
+    for (const t of (d.tiers || [])) {
+      h += `<div style="margin:12px 0 5px;font-size:11px;font-weight:600;color:var(--text-dim);">Tier ${t.tier} — ${esc(t.label)}</div>`;
+      for (const c of (t.clusters || [])) {
+        const cs = c.severity_counts || {};
+        h += `<div style="border:1px solid var(--border);border-radius:6px;padding:7px 10px;margin-bottom:5px;">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <strong style="font-size:12px;">${esc(c.name)}</strong>
+            ${c.foundational ? `<span title="foundational — ${c.transitive_dependents} capabilities depend on it" style="font-size:9px;color:var(--blue);">⚑ foundational</span>` : ''}
+            ${c.disposition ? `<span style="font-size:9px;color:var(--text-faint);">${esc(c.disposition)}</span>` : ''}
+            <span style="flex:1;"></span>
+            <span style="font-size:10px;color:var(--text-faint);">${c.gap_count} gap${c.gap_count === 1 ? '' : 's'} · demand ${c.demand}</span>
+            ${chip('critical', cs.critical)}${chip('major', cs.major)}${chip('moderate', cs.moderate)}
+          </div>
+          <div style="font-size:10px;color:var(--text-dim);margin-top:3px;">${(c.gaps || []).slice(0, 5).map(g => esc(g.title) + ` <span style="color:var(--text-faint);">[${g.severity}]</span>`).join(' · ')}${(c.gaps || []).length > 5 ? ` <span style="color:var(--text-faint);">+${c.gaps.length - 5} more</span>` : ''}</div>
+        </div>`;
+      }
+    }
+    if (d.unmapped_gap_count) h += `<div style="font-size:10px;color:var(--text-faint);margin-top:6px;">${d.unmapped_gap_count} gap(s) not mapped to a capability in this grouping.</div>`;
+    box.innerHTML = h;
+  } catch (e) {
+    box.innerHTML = `<div class="empty" style="color:var(--red);font-size:11px;">${esc(e.message)}</div>`;
+  }
+}
+function _roadmapMarkdown(d) {
+  if (!d) return '';
+  const sc = d.severity_counts || {};
+  const L = ['# Engineering Roadmap (DAV gap synthesis)', '',
+    `_${d.total_gaps} gaps · grouped by ${d.group_by} · ${d.cluster_count} clusters._`, '',
+    'Severity: ' + ['critical', 'major', 'moderate', 'minor', 'advisory'].map(s => `**${sc[s] || 0} ${s}**`).join(' · '), ''];
+  if ((d.critical_gaps || []).length) {
+    L.push(`## Critical gaps (${d.critical_gaps.length}) — decide first`);
+    d.critical_gaps.forEach(g => L.push(`1. **${g.title}** — _${g.uc_handle || ''}_`));
+    L.push('');
+  }
+  (d.tiers || []).forEach(t => {
+    L.push(`## Tier ${t.tier} — ${t.label}`);
+    (t.clusters || []).forEach(c => {
+      const cs = c.severity_counts || {};
+      const sev = ['critical', 'major', 'moderate', 'minor', 'advisory'].filter(s => cs[s]).map(s => `${cs[s]} ${s}`).join(', ');
+      L.push(`### ${c.name}  (${c.gap_count} gaps · demand ${c.demand}${c.foundational ? ' · foundational' : ''})`);
+      if (sev) L.push(`_${sev}_`);
+      (c.gaps || []).slice(0, 8).forEach(g => L.push(`- ${g.title} _[${g.severity}]_ — ${g.uc_handle || ''}`));
+      if ((c.gaps || []).length > 8) L.push(`- …+${c.gaps.length - 8} more`);
+      L.push('');
+    });
+  });
+  return L.join('\n');
+}
+function _downloadRoadmapMd() {
+  const md = _roadmapMarkdown(_roadmapData);
+  if (!md) { try { toast('Nothing to export yet', true); } catch {} return; }
+  const blob = new Blob([md], { type: 'text/markdown' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'engineering-roadmap.md'; a.click();
+  URL.revokeObjectURL(a.href);
+}
+document.getElementById('rpRoadmapExport')?.addEventListener('click', _downloadRoadmapMd);
+document.getElementById('rpRoadmapRefresh')?.addEventListener('click', _loadRoadmapProjection);
+document.getElementById('rpRoadmapGroupBy')?.addEventListener('change', _loadRoadmapProjection);
+
+// ── Customers / Projects domain (customer-demand epic, Phase-2a) ─────────────
+let _customersCache = [];
+let _custSelId = null;
+async function loadCustomers() {
+  const box = document.getElementById('custList');
+  if (!box) return;
+  try {
+    const r = await api('/api/customers');
+    _customersCache = r.customers || [];
+  } catch (e) { box.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`; return; }
+  if (!_customersCache.length) { box.innerHTML = '<div class="empty">No customers yet. Click <strong>+ New</strong>.</div>'; }
+  else box.innerHTML = _customersCache.map(c => `
+    <div class="list-item${_custSelId === c.id ? ' active' : ''}" data-cid="${c.id}" style="cursor:pointer;padding:8px 10px;">
+      <div class="li-main">
+        <div class="li-title">${esc(c.name)}${c.is_universal ? ' <span class="tag" title="reserved internal/non-customer sentinel">universal</span>' : ''}${c.is_exclusive ? ' <span style="font-size:8px;background:var(--red);color:#fff;border-radius:2px;padding:0 4px;" title="sealed — explicit grant required">🔒 exclusive</span>' : ''}</div>
+        <div class="li-sub" style="font-size:10px;color:var(--text-faint);">${c.project_count} project${c.project_count === 1 ? '' : 's'} · 👥 ${c.uc_count} UC${c.uc_count === 1 ? '' : 's'} · ${c.request_count} request${c.request_count === 1 ? '' : 's'}</div>
+      </div>
+    </div>`).join('');
+  box.querySelectorAll('[data-cid]').forEach(el => el.addEventListener('click', () => selectCustomer(+el.dataset.cid)));
+  if (_custSelId && _customersCache.some(c => c.id === _custSelId)) selectCustomer(_custSelId);
+}
+
+// ── (customer × project) association matrix (#130 2b-ii) — reuses the Cap-Map grid ──
+let _custView = 'list';
+function _setCustView(mode) {
+  _custView = mode;
+  document.getElementById('custViewListBtn')?.classList.toggle('active', mode === 'list');
+  document.getElementById('custViewMatrixBtn')?.classList.toggle('active', mode === 'matrix');
+  document.getElementById('custViewAccessBtn')?.classList.toggle('active', mode === 'access');
+  const lv = document.getElementById('custListView'), mv = document.getElementById('custMatrixView'), av = document.getElementById('custAccessView');
+  if (lv) lv.style.display = mode === 'list' ? 'flex' : 'none';
+  if (mv) mv.style.display = mode === 'matrix' ? '' : 'none';
+  if (av) av.style.display = mode === 'access' ? '' : 'none';
+  const hint = document.getElementById('custViewHint');
+  if (hint) hint.textContent = mode === 'access' ? 'who can access which customer / project → role' : 'customer × project associations';
+  if (mode === 'matrix') renderCustProjMatrix();
+  // #134: the access-administration matrix (subject × scope → role) — same grant matrix as
+  // Config → Users & roles, surfaced here where you manage customers/projects.
+  else if (mode === 'access') _renderBindingsMatrix('custAccessView');
+}
+async function renderCustProjMatrix() {
+  const box = document.getElementById('custMatrixView');
+  if (!box) return;
+  box.innerHTML = '<div class="empty">loading…</div>';
+  let customers = [], projects = [], pairs = [];
+  try {
+    customers = (await api('/api/customers')).customers || [];
+    projects = (await api('/api/projects')).projects || [];
+    pairs = (await api('/api/customer-projects')).pairs || [];
+  } catch (e) { box.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`; return; }
+  if (!customers.length || !projects.length) { box.innerHTML = '<div class="empty">Need at least one customer and one project to map.</div>'; return; }
+  const assoc = new Set(pairs.map(p => p.customer_id + ':' + p.project_id));
+  let h = `<div style="font-size:11px;color:var(--text-faint);margin-bottom:8px;">Click a cell to associate / dissociate · rows = customers, cols = projects · 🔒 = exclusive (sealed).</div>`;
+  h += '<table class="capmap"><thead><tr><th class="cm-corner" title="customers × projects">Customer ＼ Project</th>';
+  projects.forEach(p => { h += `<th class="cm-caphead" title="${esc(p.name)}"><div>${esc(p.name)}${p.is_exclusive ? ' 🔒' : ''}</div></th>`; });
+  h += '</tr></thead><tbody>';
+  customers.forEach(c => {
+    h += `<tr><td class="cm-uc" title="${esc(c.name)}">${esc(c.name)}${c.is_exclusive ? ' 🔒' : ''}${c.is_universal ? ' <span style="font-size:8px;color:var(--text-faint);">internal</span>' : ''}</td>`;
+    projects.forEach(p => {
+      const on = assoc.has(c.id + ':' + p.id);
+      h += `<td class="cm-cell custcell${on ? ' on' : ''}" data-cid="${c.id}" data-pid="${p.id}" data-on="${on ? 1 : 0}" title="${esc(c.name)} × ${esc(p.name)} — ${on ? 'associated (click to remove)' : 'click to associate'}" style="cursor:pointer;"></td>`;
+    });
+    h += '</tr>';
+  });
+  h += '</tbody></table>';
+  box.innerHTML = h;
+  box.querySelectorAll('.custcell').forEach(td => td.addEventListener('click', async () => {
+    const cid = +td.dataset.cid, pid = +td.dataset.pid, on = td.dataset.on === '1';
+    try {
+      if (on) await api(`/api/customers/${cid}/projects/${pid}`, { method: 'DELETE' });
+      else await api(`/api/customers/${cid}/projects`, { method: 'POST', body: JSON.stringify({ project_id: pid }) });
+      renderCustProjMatrix();
+    } catch (e) { toast(e.message, true); }
+  }));
+}
+
+async function selectCustomer(cid) {
+  _custSelId = cid;
+  document.querySelectorAll('#custList [data-cid]').forEach(el =>
+    el.classList.toggle('active', +el.dataset.cid === cid));
+  const c = _customersCache.find(x => x.id === cid);
+  const el = document.getElementById('custDetail');
+  if (!c || !el) return;
+  let assoc = { projects: [] };
+  try { assoc = await api(`/api/customers/${cid}/projects`); } catch (_) {}
+  el.innerHTML = `
+    <div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:12px;">
+      <div style="flex:1;">
+        <div style="font-size:18px;font-weight:600;">${esc(c.name)}${c.is_universal ? ' <span class="tag">universal</span>' : ''}</div>
+        <div style="font-family:var(--mono,monospace);font-size:11px;color:var(--text-faint);">${esc(c.slug)}</div>
+        ${c.description ? `<div style="font-size:12px;color:var(--text-dim);margin-top:4px;">${esc(c.description)}</div>` : ''}
+      </div>
+      ${c.is_universal ? '' : `<button class="btn danger btn-sm" id="custDelBtn" type="button">Delete</button>`}
+    </div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:14px;font-size:12px;">
+      <span><strong style="font-size:18px;color:var(--blue);">${c.uc_count}</strong> UC${c.uc_count === 1 ? '' : 's'} requested</span>
+      <span><strong style="font-size:18px;">${c.request_count}</strong> total request${c.request_count === 1 ? '' : 's'}</span>
+      <span><strong style="font-size:18px;">${c.project_count}</strong> project${c.project_count === 1 ? '' : 's'}</span>
+    </div>
+    <label style="display:flex;align-items:center;gap:6px;font-size:12px;margin-bottom:14px;cursor:pointer;">
+      <input type="checkbox" id="custExclToggle" ${c.is_exclusive ? 'checked' : ''} ${c.is_universal ? 'disabled' : ''} style="width:auto;height:auto;" />
+      🔒 Exclusive — sealed (explicit grant required for everyone, incl. platform-admin)
+    </label>
+    <div class="detail-section">
+      <div class="detail-section-title">Projects (associations)</div>
+      <div id="custProjChips" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;">
+        ${(assoc.projects || []).map(p => `<span class="set-chip" style="display:inline-flex;gap:4px;align-items:center;">⊞ ${esc(p.name)}${p.is_exclusive ? ' 🔒' : ''}<span style="cursor:pointer;color:var(--red);font-weight:600;" data-rmproj="${p.id}" title="Remove association">×</span></span>`).join('') || '<span style="font-size:11px;color:var(--text-faint);">No projects associated yet.</span>'}
+      </div>
+      <div style="position:relative;">
+        <span class="set-chip" id="custAddProjBtn" style="cursor:pointer;background:var(--bg-input);border:1px dashed var(--border-bright);color:var(--text-faint);" title="Associate a project (toggle membership)">+ Add project</span>
+        <div id="custProjPopover" style="display:none;position:absolute;top:100%;left:0;margin-top:6px;z-index:60;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:3px;box-shadow:0 4px 12px rgba(0,0,0,0.35);min-width:240px;max-height:280px;overflow-y:auto;"></div>
+      </div>
+    </div>
+    <div class="detail-section">
+      <div class="detail-section-title">Members — who can view / edit this customer</div>
+      <div id="custMembersBody"><div style="font-size:11px;color:var(--text-faint);">loading…</div></div>
+    </div>`;
+  document.getElementById('custExclToggle')?.addEventListener('change', async function () {
+    try { await api(`/api/customers/${cid}`, { method: 'PATCH', body: JSON.stringify({ is_exclusive: this.checked }) }); loadCustomers(); }
+    catch (e) { toast(e.message, true); this.checked = !this.checked; }
+  });
+  document.getElementById('custDelBtn')?.addEventListener('click', async () => {
+    if (!confirm(`Delete customer "${c.name}"?`)) return;
+    try { await api(`/api/customers/${cid}`, { method: 'DELETE' }); _custSelId = null; document.getElementById('custDetail').innerHTML = '<div class="empty">Select a customer.</div>'; loadCustomers(); }
+    catch (e) { toast(e.message, true); }
+  });
+  document.getElementById('custAddProjBtn')?.addEventListener('click', function (e) {
+    e.stopPropagation(); _openCustProjPicker(cid, this);
+  });
+  el.querySelectorAll('[data-rmproj]').forEach(x => x.addEventListener('click', async () => {
+    try { await api(`/api/customers/${cid}/projects/${x.dataset.rmproj}`, { method: 'DELETE' }); selectCustomer(cid); loadCustomers(); }
+    catch (e) { toast(e.message, true); }
+  }));
+  _renderCustomerMembers(cid);
+}
+
+// ── Per-customer members (#131) — grant/revoke customer-viewer/customer-edit ─────────
+async function _renderCustomerMembers(cid) {
+  const box = document.getElementById('custMembersBody');
+  if (!box) return;
+  let members = [], approved = [], custRoles = [];
+  try {
+    members = (await api(`/api/customers/${cid}/members`)).members || [];
+    approved = await _projApprovedUsers();
+    custRoles = ((await api('/api/rbac/roles')).roles || []).filter(r => r.scope === 'customer');
+  } catch (e) { box.innerHTML = `<div style="color:var(--red);font-size:11px;">${esc(e.message)}</div>`; return; }
+  const roleOpts = custRoles.map(r => `<option value="${r.id}">${esc(r.name)}</option>`).join('');
+  box.innerHTML = (members.length ? members.map(m => `
+      <div style="display:flex;gap:8px;align-items:center;padding:3px 0;">
+        <span style="flex:1;">${esc(m.display_name || m.reviewer)} <span style="color:var(--text-faint);font-size:11px;">${esc(m.email || m.reviewer)}</span></span>
+        <span style="font-size:10px;background:var(--bg-input);border:1px solid var(--border);border-radius:10px;padding:1px 8px;">${esc(m.role_name || m.role_key)}</span>
+        <button class="btn ghost btn-sm cm-remove" data-rev="${esc(m.reviewer)}" data-role="${m.role_id}" style="color:var(--red);" title="Revoke this role">✕</button>
+      </div>`).join('') : '<div style="font-size:11px;color:var(--text-faint);">No members yet (platform admins can always manage).</div>')
+    + `<div style="display:flex;gap:6px;align-items:center;margin-top:6px;">
+        ${userPickerHtml('cm-add-user', 'cm-add-user-dd', '+ add user…')}
+        <select id="cm-add-role" style="font-size:11px;">${roleOpts}</select>
+        <button class="btn ghost btn-sm" id="cm-add-btn">Add</button>
+      </div>`;
+  const _cmExclude = new Set(members.map(m => (m.reviewer || '').toLowerCase()));
+  wireUserPicker('cm-add-user', 'cm-add-user-dd', approved, _cmExclude, null);
+  box.querySelectorAll('.cm-remove').forEach(b => b.addEventListener('click', async function () {
+    try { await api(`/api/customers/${cid}/members/${encodeURIComponent(this.dataset.rev)}?role_id=${this.dataset.role}`, { method: 'DELETE' }); _renderCustomerMembers(cid); }
+    catch (e) { toast(e.message, true); }
+  }));
+  document.getElementById('cm-add-btn')?.addEventListener('click', async () => {
+    const rev = document.getElementById('cm-add-user').dataset.reviewer || '';
+    const role_id = parseInt(document.getElementById('cm-add-role').value, 10);
+    if (!rev) { toast('Pick a user from the list', true); return; }
+    try { await api(`/api/customers/${cid}/members`, { method: 'POST', body: JSON.stringify({ reviewer: rev, role_id }) }); _renderCustomerMembers(cid); }
+    catch (e) { toast(e.message, true); }
+  });
+}
+
+// Customer↔project association picker — the Scoping-Sets membership pattern (popover of
+// all projects with a ✓ toggle), so management UIs share one membership control.
+async function _openCustProjPicker(cid, anchorEl) {
+  const pop = document.getElementById('custProjPopover');
+  if (!pop) return;
+  if (pop.style.display === 'block') { pop.style.display = 'none'; return; }
+  pop.innerHTML = '<div style="padding:8px 12px;font-size:11px;color:var(--text-faint);">loading…</div>';
+  pop.style.display = 'block';
+  let projects = [], assocIds = new Set();
+  try {
+    projects = (await api('/api/projects')).projects || [];
+    assocIds = new Set(((await api(`/api/customers/${cid}/projects`)).projects || []).map(p => p.id));
+  } catch (e) { pop.innerHTML = `<div style="padding:8px 12px;color:var(--red);font-size:11px;">${esc(e.message)}</div>`; return; }
+  if (!projects.length) { pop.innerHTML = '<div style="padding:8px 12px;font-size:11px;color:var(--text-faint);">No projects.</div>'; return; }
+  pop.innerHTML = '<div style="padding:4px 0;">' + projects.map(p => {
+    const a = assocIds.has(p.id);
+    return `<div class="cust-proj-row" data-pid="${p.id}" data-assoc="${a ? 1 : 0}" data-name="${esc(p.name)}"
+        style="padding:6px 12px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:12px;${a ? 'background:var(--accent-bg);' : ''}"
+        onmouseover="this.style.background='var(--bg-raised)'" onmouseout="this.style.background='${a ? 'var(--accent-bg)' : ''}'">
+        <span style="font-family:var(--mono,monospace);color:${a ? 'var(--green)' : 'var(--text-faint)'};min-width:14px;">${a ? '✓' : ''}</span>
+        <span style="flex:1;">${esc(p.name)}${p.is_exclusive ? ' 🔒' : ''}</span>
+      </div>`;
+  }).join('') + '</div>';
+  pop.querySelectorAll('.cust-proj-row').forEach(row => row.addEventListener('click', () =>
+    _toggleCustProj(cid, +row.dataset.pid, row.dataset.assoc === '1', row.dataset.name)));
+  setTimeout(() => {
+    const close = e => { if (!pop.contains(e.target) && e.target !== anchorEl) { pop.style.display = 'none'; document.removeEventListener('click', close); } };
+    document.addEventListener('click', close);
+  }, 0);
+}
+async function _toggleCustProj(cid, pid, isAssoc, name) {
+  try {
+    if (isAssoc) { await api(`/api/customers/${cid}/projects/${pid}`, { method: 'DELETE' }); toast(`Removed ${name}`); }
+    else { await api(`/api/customers/${cid}/projects`, { method: 'POST', body: JSON.stringify({ project_id: pid }) }); toast(`Associated ${name}`); }
+    selectCustomer(cid); loadCustomers();
+  } catch (e) { toast(e.message, true); }
+}
+
+document.getElementById('custNewBtn')?.addEventListener('click', () => {
+  const f = document.getElementById('custNewForm');
+  f.style.display = f.style.display === 'none' ? '' : 'none';
+  if (f.style.display === '') document.getElementById('custName').focus();
+});
+document.getElementById('custCancelBtn')?.addEventListener('click', () => {
+  document.getElementById('custNewForm').style.display = 'none';
+});
+document.getElementById('custCreateBtn')?.addEventListener('click', async () => {
+  const name = (document.getElementById('custName').value || '').trim();
+  const msg = document.getElementById('custMsg');
+  if (!name) { msg.style.color = 'var(--red)'; msg.textContent = 'name required'; return; }
+  try {
+    await api('/api/customers', { method: 'POST', body: JSON.stringify({
+      name, description: document.getElementById('custDesc').value || '',
+      is_exclusive: document.getElementById('custExcl').checked }) });
+    document.getElementById('custName').value = ''; document.getElementById('custDesc').value = '';
+    document.getElementById('custExcl').checked = false;
+    document.getElementById('custNewForm').style.display = 'none';
+    loadCustomers();
+  } catch (e) { msg.style.color = 'var(--red)'; msg.textContent = e.message; }
+});
+
+// ── Projects tab (lists projects + exclusivity toggle; members stay in Config) ─
+// The Projects tab IS the relocated projects-admin panel (same ids), so it reuses the
+// full management surface (create / members / UC-store / archive / move-data / delete).
+async function loadProjectsTab() { return loadProjectsAdmin(); }
+
+// ── Capability Catalog tab (manual-curated, LLM-suggested) ───────────────────
+let _catalogCache = [];
+let _catEditId = '';
+// R4 disposition ↔ Gartner TIME (dual-labelled per the capability method, #132). The eye
+// goes to the verdict first: color-coded, action word leading, the familiar TIME term in tow.
+const DISPOSITIONS = {
+  reuse:     {label:'Reuse',     time:'Tolerate',  color:'var(--green)'},
+  refurbish: {label:'Refurbish', time:'Invest',    color:'var(--blue)'},
+  replace:   {label:'Replace',   time:'Migrate',   color:'var(--amber,#d97706)'},
+  retire:    {label:'Retire',    time:'Eliminate', color:'var(--red)'},
+};
+const CLASSIFICATIONS = {
+  core:       {label:'Core',       color:'var(--accent)'},
+  supporting: {label:'Supporting', color:'var(--blue)'},
+  generic:    {label:'Generic',    color:'var(--text-faint)'},
+};
+// fit (high/low) × tech (aligned/constrained) → suggested R4 disposition (2×2 from the method).
+function _suggestDisposition(fit, tech){
+  if (!fit || !tech) return '';
+  if (fit==='high'  && tech==='aligned')     return 'reuse';
+  if (fit==='high'  && tech==='constrained') return 'refurbish';
+  if (fit==='low'   && tech==='aligned')     return 'reuse';      // tolerate — keep, don't invest
+  if (fit==='low'   && tech==='constrained') return 'retire';
+  return '';
+}
+function _dispBadge(d){
+  const m = DISPOSITIONS[d]; if (!m) return '';
+  return `<span title="R4 disposition ≈ Gartner TIME: ${m.time}" style="font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;padding:1px 6px;border-radius:8px;border:1px solid ${m.color};color:${m.color};">${m.label} <span style="opacity:0.6;font-weight:400;">·${m.time}</span></span>`;
+}
+function _classBadge(c){
+  const m = CLASSIFICATIONS[c]; if (!m) return '';
+  return `<span title="DDD subdomain — aims investment" style="font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;padding:1px 6px;border-radius:8px;background:${m.color};color:var(--on-accent,#fff);opacity:0.92;">${m.label}</span>`;
+}
+async function loadCatalogTab(){ if (_catView==='board') _renderCatalogBoard(); else _renderCatalog(); _renderCatalogSuggestions(); }
+let _catView = 'list';
+function _setCatView(mode){
+  _catView = mode;
+  document.getElementById('catViewListBtn')?.classList.toggle('active', mode==='list');
+  document.getElementById('catViewBoardBtn')?.classList.toggle('active', mode==='board');
+  const lv = document.getElementById('catList'), bv = document.getElementById('catBoard');
+  if (lv) lv.style.display = mode==='list' ? '' : 'none';
+  if (bv) bv.style.display = mode==='board' ? '' : 'none';
+  if (mode==='board') _renderCatalogBoard(); else _renderCatalog();
+}
+// The R4 disposition decision surface: capabilities grouped into the four verdict columns
+// (Undecided first — it's the work queue). Lead with the action, per the signal-over-noise
+// north-star. Click a chip to load it in the editor (same affordance as the list).
+async function _renderCatalogBoard(){
+  const el = document.getElementById('catBoard');
+  if (!el) return;
+  try {
+    _catalogCache = (await api('/api/catalog')).capabilities || [];
+  } catch(e){ el.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`; return; }
+  if (!_catalogCache.length){ el.innerHTML = '<div class="empty">No capabilities yet. Add one to start dispositioning →</div>'; return; }
+  const cols = [
+    {key:'',          label:'Undecided', time:'',          color:'var(--text-faint)'},
+    {key:'reuse',     label:'Reuse',     time:'Tolerate',  color:'var(--green)'},
+    {key:'refurbish', label:'Refurbish', time:'Invest',    color:'var(--blue)'},
+    {key:'replace',   label:'Replace',   time:'Migrate',   color:'var(--amber,#d97706)'},
+    {key:'retire',    label:'Retire',    time:'Eliminate', color:'var(--red)'},
+  ];
+  const byDisp = {}; cols.forEach(c => byDisp[c.key] = []);
+  _catalogCache.forEach(c => { const d = DISPOSITIONS[c.disposition] ? c.disposition : ''; byDisp[d].push(c); });
+  el.innerHTML = `<div style="display:flex;gap:10px;align-items:flex-start;min-width:max-content;">` + cols.map(col => {
+    const items = byDisp[col.key];
+    return `<div class="catb-col" data-col="${col.key}" style="flex:0 0 200px;min-width:200px;border-radius:4px;padding:2px;transition:background .1s;">
+      <div style="position:sticky;top:0;background:var(--bg-panel);padding:2px 0 6px;border-bottom:2px solid ${col.color};margin-bottom:6px;">
+        <span style="font-size:11px;font-weight:600;color:${col.color};text-transform:uppercase;letter-spacing:0.06em;">${col.label}</span>
+        ${col.time?`<span style="font-size:9px;color:var(--text-faint);"> ·${col.time}</span>`:''}
+        <span style="font-size:10px;color:var(--text-faint);float:right;">${items.length}</span>
+      </div>
+      ${items.length ? items.map(c => `
+        <div class="catb-chip" data-id="${c.id}" draggable="true" title="Drag to a column to set disposition · click to edit" style="border:1px solid var(--border);border-left:3px solid ${col.color};border-radius:3px;padding:5px 7px;margin-bottom:5px;cursor:grab;background:var(--bg-raised);">
+          <div style="font-size:11px;font-weight:600;">${esc(c.name||c.cap_key)}</div>
+          <div style="font-size:9px;color:var(--text-faint);font-family:var(--mono,monospace);">${esc(c.cap_key)}</div>
+          <div style="margin-top:3px;display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
+            ${_classBadge(c.subdomain)}
+            ${(c.strategic_fit||c.tech_fitness)?`<span style="font-size:9px;color:var(--text-faint);">${c.strategic_fit?`fit:${esc(c.strategic_fit)}`:''}${(c.strategic_fit&&c.tech_fitness)?' · ':''}${c.tech_fitness?`tech:${esc(c.tech_fitness)}`:''}</span>`:''}
+          </div>
+        </div>`).join('') : '<div style="font-size:10px;color:var(--text-faint);padding:4px 0;">—</div>'}
+    </div>`;
+  }).join('') + `</div>`;
+  el.querySelectorAll('.catb-chip').forEach(chip => chip.addEventListener('click', () => {
+    const c = _catalogCache.find(x => String(x.id) === chip.dataset.id);
+    if (!c) return;
+    _setCatView('list');
+    // Mirror the list row-click loader so editing is identical from either view.
+    document.getElementById('catKey').value = c.cap_key;
+    document.getElementById('catName').value = c.name||'';
+    document.getElementById('catDomain').value = c.domain||'';
+    document.getElementById('catDef').value = c.definition||'';
+    document.getElementById('catDeps').value = (c.depends_on||[]).join(', ');
+    document.getElementById('catClass').value = c.subdomain||'';
+    document.getElementById('catFit').value = c.strategic_fit||'';
+    document.getElementById('catTech').value = c.tech_fitness||'';
+    document.getElementById('catDisp').value = c.disposition||'';
+    _catEditId = c.id;
+    document.getElementById('catClearBtn').style.display='';
+    document.getElementById('catSaveBtn').textContent='Save changes';
+    document.getElementById('catKey').scrollIntoView({block:'nearest'});
+  }));
+  // Drag a capability chip onto a column to set its R4 disposition (Reuse/Refurbish/Replace/Retire,
+  // or back to Undecided). The api() backstop blocks this in View mode; the server enforces project.catalog.
+  el.querySelectorAll('.catb-chip').forEach(chip => {
+    chip.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', chip.dataset.id);
+      e.dataTransfer.effectAllowed = 'move';
+      chip.style.opacity = '0.45';
+    });
+    chip.addEventListener('dragend', () => { chip.style.opacity = ''; });
+  });
+  el.querySelectorAll('.catb-col').forEach(colEl => {
+    colEl.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; colEl.style.background = 'var(--accent-bg, rgba(127,127,127,0.10))'; });
+    colEl.addEventListener('dragleave', () => { colEl.style.background = ''; });
+    colEl.addEventListener('drop', async e => {
+      e.preventDefault(); colEl.style.background = '';
+      const id = e.dataTransfer.getData('text/plain');
+      if (id) await _catSetDisposition(id, colEl.dataset.col);
+    });
+  });
+}
+// Persist a drag-drop disposition change. PUT carries the FULL current catalog row (the API's
+// update replaces all columns), with only `disposition` changed.
+async function _catSetDisposition(id, disp) {
+  const c = _catalogCache.find(x => String(x.id) === String(id));
+  if (!c) return;
+  if ((c.disposition || '') === (disp || '')) return;   // dropped on its own column — no-op
+  const body = {
+    cap_key: c.cap_key, name: c.name || '', domain: c.domain || '', definition: c.definition || '',
+    depends_on: c.depends_on || [],
+    subdomain: c.subdomain || null, strategic_fit: c.strategic_fit || null, tech_fitness: c.tech_fitness || null,
+    disposition: disp || null,
+    bounded_context: c.bounded_context || null, strategic_provider: c.strategic_provider || null,
+    status: c.status || 'confirmed',
+  };
+  try {
+    await api(`/api/catalog/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+    c.disposition = disp || null;   // optimistic local update
+    _renderCatalogBoard();
+    toast(`${c.name || c.cap_key} → ${disp ? (DISPOSITIONS[disp]?.label || disp) : 'Undecided'}`);
+  } catch (e) { toast(e.message, true); _renderCatalogBoard(); }
+}
+async function _renderCatalog(){
+  const el = document.getElementById('catList');
+  if (!el) return;
+  try {
+    const r = await api('/api/catalog');
+    _catalogCache = r.capabilities || [];
+    if (!_catalogCache.length){ el.innerHTML = '<div class="empty">No capabilities yet. Add one, or confirm a suggestion →</div>'; return; }
+    el.innerHTML = _catalogCache.map(c => `
+      <div class="cat-row" data-id="${c.id}" title="Click anywhere to edit" style="border:1px solid var(--border);border-radius:3px;padding:8px 10px;margin-bottom:8px;cursor:pointer;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
+          <span style="font-weight:600;">${esc(c.name||c.cap_key)}</span>
+          <span style="display:flex;gap:6px;align-items:center;flex-shrink:0;">
+            ${_classBadge(c.subdomain)}${_dispBadge(c.disposition)}
+            <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:${c.status==='confirmed'?'var(--green)':'var(--text-faint)'};">${esc(c.status)}</span>
+            <button class="btn danger btn-sm cat-del" data-id="${c.id}" title="Delete">✕</button>
+          </span>
+        </div>
+        <div style="font-family:var(--mono,monospace);font-size:10px;color:var(--text-faint);">${esc(c.cap_key)}${c.domain?` · <span style="color:var(--blue);">${esc(c.domain)}</span>`:''}</div>
+        ${c.definition?`<div style="font-size:11px;color:var(--text-dim);margin-top:3px;">${esc(c.definition)}</div>`:''}
+        ${(c.strategic_provider||c.bounded_context)?`<div style="font-size:10px;color:var(--text-faint);margin-top:3px;">${c.strategic_provider?`🏷 <span style="color:var(--text-dim);" title="single strategic provider">${esc(c.strategic_provider)}</span>`:''}${(c.strategic_provider&&c.bounded_context)?' · ':''}${c.bounded_context?`<span title="bounded context">⬡ ${esc(c.bounded_context)}</span>`:''}</div>`:''}
+        ${(c.depends_on&&c.depends_on.length)?`<div style="font-size:10px;color:var(--text-faint);margin-top:3px;">requires: ${esc(c.depends_on.join(', '))}</div>`:''}
+      </div>`).join('');
+    el.querySelectorAll('.cat-del').forEach(b => b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try { await api(`/api/catalog/${b.dataset.id}`, {method:'DELETE'}); loadCatalogTab(); } catch(err){ toast(err.message,true); }
+    }));
+    el.querySelectorAll('.cat-row').forEach(row => row.addEventListener('click', () => {
+      const c = _catalogCache.find(x => String(x.id) === row.dataset.id);
+      if (!c) return;
+      document.getElementById('catKey').value = c.cap_key;
+      document.getElementById('catName').value = c.name||'';
+      document.getElementById('catDomain').value = c.domain||'';
+      document.getElementById('catDef').value = c.definition||'';
+      document.getElementById('catDeps').value = (c.depends_on||[]).join(', ');
+      document.getElementById('catClass').value = c.subdomain||'';
+      document.getElementById('catFit').value = c.strategic_fit||'';
+      document.getElementById('catTech').value = c.tech_fitness||'';
+      document.getElementById('catDisp').value = c.disposition||'';
+      document.getElementById('catBC').value = c.bounded_context||'';
+      document.getElementById('catProv').value = c.strategic_provider||'';
+      _catEditId = c.id;
+      document.getElementById('catClearBtn').style.display='';
+      document.getElementById('catSaveBtn').textContent='Save changes';
+      document.getElementById('catKey').scrollIntoView({block:'nearest'});
+    }));
+  } catch(e){ el.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`; }
+}
+async function _renderCatalogSuggestions(){
+  const el = document.getElementById('catSuggList');
+  if (!el) return;
+  try {
+    const r = await api('/api/catalog/suggestions');
+    const sugg = r.suggestions || [];
+    if (!sugg.length){ el.innerHTML = '<div class="empty">No new suggestions. Re-ingest to populate analysis capabilities.</div>'; return; }
+    el.innerHTML = sugg.map(s => `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;border-bottom:1px solid var(--border);padding:5px 0;">
+        <span style="min-width:0;flex:1;">
+          <span style="font-family:var(--mono,monospace);font-size:11px;">${esc(s.capability_id)}</span>
+          ${s.usage?`<div style="font-size:10px;color:var(--text-dim);">${esc(s.usage)}</div>`:''}
+        </span>
+        <span style="display:flex;gap:6px;align-items:center;">
+          <span style="font-size:10px;color:var(--text-faint);">${s.uc_count} UC${s.uc_count===1?'':'s'}</span>
+          <button class="btn ghost btn-sm cat-draft" data-key="${esc(s.capability_id)}" title="LLM: draft a readable name + description, then review and Add">✨ draft</button>
+          <button class="btn ghost btn-sm cat-confirm" data-key="${esc(s.capability_id)}">+ Add</button>
+        </span>
+      </div>`).join('');
+    el.querySelectorAll('.cat-confirm').forEach(b => b.addEventListener('click', async () => {
+      try { await api('/api/catalog', {method:'POST', body: JSON.stringify({cap_key: b.dataset.key, name: b.dataset.key, status:'confirmed'})}); loadCatalogTab(); }
+      catch(e){ toast(e.message, true); }
+    }));
+    el.querySelectorAll('.cat-draft').forEach(b => b.addEventListener('click', async () => {
+      const key = b.dataset.key;
+      // Populate the editor IMMEDIATELY (no waiting on the LLM) so the capability shows
+      // up right away; the readable name/description/domain then stream in async.
+      _catClearForm();
+      document.getElementById('catKey').value = key;
+      document.getElementById('catName').value = key;
+      document.getElementById('catKey').scrollIntoView({block:'nearest'});
+      const msg = document.getElementById('catMsg');
+      if (msg) { msg.style.color = 'var(--text-faint)'; msg.textContent = '✨ drafting a readable name + description…'; }
+      const old = b.textContent; b.textContent = '…'; b.disabled = true;
+      try {
+        const r = await api('/api/catalog/suggest-meta', {method:'POST', body: JSON.stringify({capability_id: key})});
+        // Only apply if the user hasn't moved on to a different draft/edit meanwhile.
+        if (document.getElementById('catKey').value === key) {
+          if (r.name) document.getElementById('catName').value = r.name;
+          if (r.domain) document.getElementById('catDomain').value = r.domain;
+          if (r.description) document.getElementById('catDef').value = r.description;
+          if (msg) { msg.style.color = 'var(--green)'; msg.textContent = '✓ drafted — review and Add';
+            setTimeout(() => { if (msg && msg.textContent.startsWith('✓ drafted')) msg.textContent = ''; }, 2500); }
+        }
+      } catch(e){ if (msg) { msg.style.color = 'var(--red)'; msg.textContent = 'draft failed: ' + e.message; } }
+      finally { b.textContent = old; b.disabled = false; }
+    }));
+  } catch(e){
+    // A 5xx here is almost always transient (API rolling-restart) — show a friendly retry rather
+    // than a raw "500: Internal Server Error", but still surface the detail on hover.
+    el.innerHTML = `<div class="empty" title="${esc(e.message)}">Couldn’t load suggestions right now
+      <button class="btn ghost btn-sm" style="margin-left:8px;" onclick="_renderCatalogSuggestions()">↻ Retry</button></div>`;
+  }
+}
+function _catClearForm(){
+  ['catKey','catName','catDomain','catDef','catDeps','catClass','catFit','catTech','catDisp','catBC','catProv'].forEach(id=>{ const el=document.getElementById(id); if(el) el.value=''; });
+  _catEditId = '';
+  const cb=document.getElementById('catClearBtn'); if(cb) cb.style.display='none';
+  const sb=document.getElementById('catSaveBtn'); if(sb) sb.textContent='Add capability';
+  const msg=document.getElementById('catMsg'); if(msg) msg.textContent='';
+}
+document.getElementById('catClearBtn')?.addEventListener('click', _catClearForm);
+// Drivers suggest the disposition (method's 2×2). Only auto-fill an empty verdict so the
+// architect's explicit choice (e.g. Replace over the suggested Refurbish) is never overwritten.
+['catFit','catTech'].forEach(id => document.getElementById(id)?.addEventListener('change', () => {
+  const disp = document.getElementById('catDisp');
+  if (!disp || disp.value) return;
+  const s = _suggestDisposition(document.getElementById('catFit').value, document.getElementById('catTech').value);
+  if (s){ disp.value = s; const msg=document.getElementById('catMsg'); if(msg){ msg.style.color='var(--text-faint)'; msg.textContent=`suggested: ${DISPOSITIONS[s].label} (≈ ${DISPOSITIONS[s].time}) — change if needed`; } }
+}));
+document.getElementById('catSaveBtn')?.addEventListener('click', async () => {
+  const key = (document.getElementById('catKey').value||'').trim();
+  const msg = document.getElementById('catMsg');
+  if (!key){ if(msg){ msg.textContent='key required'; msg.style.color='var(--red)'; } return; }
+  const body = {
+    cap_key: key,
+    name: (document.getElementById('catName').value||'').trim(),
+    domain: (document.getElementById('catDomain').value||'').trim(),
+    definition: (document.getElementById('catDef').value||'').trim(),
+    depends_on: (document.getElementById('catDeps').value||'').split(',').map(s=>s.trim()).filter(Boolean),
+    subdomain: document.getElementById('catClass').value || null,
+    strategic_fit: document.getElementById('catFit').value || null,
+    tech_fitness: document.getElementById('catTech').value || null,
+    disposition: document.getElementById('catDisp').value || null,
+    bounded_context: (document.getElementById('catBC').value||'').trim() || null,
+    strategic_provider: (document.getElementById('catProv').value||'').trim() || null,
+    status: 'confirmed',
+  };
+  try {
+    if (_catEditId) await api(`/api/catalog/${_catEditId}`, {method:'PUT', body: JSON.stringify(body)});
+    else await api('/api/catalog', {method:'POST', body: JSON.stringify(body)});
+    _catClearForm(); loadCatalogTab();
+  } catch(e){ if(msg){ msg.textContent=e.message; msg.style.color='var(--red)'; } }
+});
+
+document.getElementById('rpRevCopyBtn')?.addEventListener('click', () => {
+  const text = localStorage.getItem('rpRevShowReasoning') === '1' ? _rpRevRaw.text : _stripThink(_rpRevRaw.text);
+  navigator.clipboard.writeText(text).then(() => toast('Review copied'));
+});
+document.getElementById('rpEnhCopyBtn')?.addEventListener('click', () => {
+  const text = localStorage.getItem('rpEnhShowReasoning') === '1' ? _rpEnhRaw.text : _stripThink(_rpEnhRaw.text);
+  navigator.clipboard.writeText(text).then(() => toast('Enhancement plan copied'));
+});
+
+document.getElementById('rpRevReasoningBtn')?.addEventListener('click', function() {
+  const on = localStorage.getItem('rpRevShowReasoning') === '1';
+  localStorage.setItem('rpRevShowReasoning', on ? '0' : '1');
+  this.textContent = on ? '○ Reasoning' : '● Reasoning';
+  const el = document.getElementById('rpRevStream');
+  if (el) _applyStreamRender(el, (!on) ? _rpRevRaw.text : _stripThink(_rpRevRaw.text), el.dataset.renderMode);
+});
+document.getElementById('rpEnhReasoningBtn')?.addEventListener('click', function() {
+  const on = localStorage.getItem('rpEnhShowReasoning') === '1';
+  localStorage.setItem('rpEnhShowReasoning', on ? '0' : '1');
+  this.textContent = on ? '○ Reasoning' : '● Reasoning';
+  const el = document.getElementById('rpEnhStream');
+  if (el) _applyStreamRender(el, (!on) ? _rpEnhRaw.text : _stripThink(_rpEnhRaw.text), el.dataset.renderMode);
+});
+
+document.getElementById('rpRevUseClaudeBtn')?.addEventListener('click', () => {
+  const { runId, scope, ucUuid } = _rpGetContext();
+  _useInClaude('/api/arch-review/prompt', scope, runId, ucUuid,
+    document.getElementById('rpRevHint'), document.getElementById('rpRevUseClaudeBtn'));
+});
+document.getElementById('rpEnhUseClaudeBtn')?.addEventListener('click', () => {
+  const { runId, scope, ucUuid } = _rpGetContext();
+  _useInClaude('/api/enhancements/prompt', scope, runId, ucUuid,
+    document.getElementById('rpEnhHint'), document.getElementById('rpEnhUseClaudeBtn'));
+});
+
+// "Route into PRs ↓" — hand the freshly generated plan straight to the workbench (Step 2)
+// and route it. Replaces the old single-repo Create-PR form (now superseded by the workbench).
+document.getElementById('rpEnhToPrBtn')?.addEventListener('click', () => {
+  const ta = document.getElementById('ewPlanText');
+  if (ta) ta.value = _stripThink(_rpEnhRaw.text || '');
+  const details = document.getElementById('ewPlanDetails'); if (details) details.open = false;
+  document.getElementById('ewRouteBtn')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  _ewRoute();
+});
+
+// ── Run detail tab buttons ────────────────────────────────────
+document.getElementById('rdTabRun')?.addEventListener('click', () => rdSwitchTab('run'));
+document.getElementById('rdTabReview')?.addEventListener('click', () => {
+  if (!_reviewCtx.runId && !activeRunResultId) { toast('Select an analysis ingestion in the Results tab first'); return; }
+  if (!_reviewCtx.runId) openRunDetailReview('run', null);
+  else rdSwitchTab('review');
+});
+
+document.getElementById('rdRevScopeSel').addEventListener('change', function() {
+  const ucEntry = _reviewCtx.ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===_reviewCtx.ucUuid) : null;
+  document.getElementById('rdRevSubtitle').textContent = this.value === 'run'
+    ? `Run: ${_reviewCtx.runId||'—'}`
+    : `Use case: ${ucEntry?.uc_handle||_reviewCtx.ucUuid||'—'}`;
+});
+
+document.getElementById('rdEnhScopeSel').addEventListener('change', function() {
+  const ucEntry = _reviewCtx.ucUuid ? (activeRunSummary?.ucs||[]).find(u=>u.uc_uuid===_reviewCtx.ucUuid) : null;
+  document.getElementById('rdEnhSubtitle').textContent = this.value === 'run'
+    ? `Run: ${_reviewCtx.runId||'—'}`
+    : `Use case: ${ucEntry?.uc_handle||_reviewCtx.ucUuid||'—'}`;
+});
+
+// ── Shared think-block rendering ─────────────────────────────────────────────
+function _stripThink(raw) {
+  let s = raw.replace(/<think>[\s\S]*?<\/think>\n?/g, '');
+  const open = s.lastIndexOf('<think>');
+  if (open !== -1) s = s.substring(0, open);
+  return s.trim();
+}
+
+// ── Generic SSE stream runner ─────────────────────────────────────────────────
+// ── Output rendering: markdown for prose, structured cards for enhancement
+// blocks. Fully defensive — any parse error falls back to plain/escaped text
+// (i.e. the previous behavior), so a bad render can never break the page.
+const _MD_PRE = 'background:var(--bg-raised);padding:8px;border-radius:3px;overflow-x:auto;white-space:pre-wrap;font-size:11px;margin:4px 0;';
+function mdToHtml(raw){
+  try {
+    let s = esc(raw || '');
+    const code = [];
+    s = s.replace(/```[\w-]*\n?([\s\S]*?)```/g, (m,c)=>{ code.push(c); return ` C${code.length-1} `; });
+    s = s.replace(/^######\s+(.*)$/gm,'<h6>$1</h6>').replace(/^#####\s+(.*)$/gm,'<h5>$1</h5>')
+         .replace(/^####\s+(.*)$/gm,'<h4>$1</h4>').replace(/^###\s+(.*)$/gm,'<h4>$1</h4>')
+         .replace(/^##\s+(.*)$/gm,'<h3>$1</h3>').replace(/^#\s+(.*)$/gm,'<h3>$1</h3>');
+    s = s.replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>').replace(/`([^`\n]+)`/g,'<code>$1</code>');
+    s = s.replace(/(?:^[ \t]*[-*]\s+.*(?:\n|$))+/gm, b => '<ul style="margin:4px 0 4px 18px;">'+b.trim().split('\n').map(l=>`<li>${l.replace(/^[ \t]*[-*]\s+/,'')}</li>`).join('')+'</ul>');
+    s = s.replace(/(?:^[ \t]*\d+\.\s+.*(?:\n|$))+/gm, b => '<ol style="margin:4px 0 4px 18px;">'+b.trim().split('\n').map(l=>`<li>${l.replace(/^[ \t]*\d+\.\s+/,'')}</li>`).join('')+'</ol>');
+    s = s.replace(/\n{2,}/g,'<br><br>');
+    s = s.replace(/ C(\d+) /g,(m,i)=>`<pre style="${_MD_PRE}">${code[i]}</pre>`);
+    return s;
+  } catch(e){ return esc(raw||''); }
+}
+function renderEnhancementCards(raw){
+  try {
+    const clean = _stripThink(raw || '');
+    // Tolerate leading indentation and markdown decoration (#, *, >) before the
+    // ENHANCEMENT keyword — models routinely mirror the indented prompt example
+    // or wrap headings/bold around it. Without this the parser found no blocks
+    // and fell back to mdToHtml(), which collapsed the line-per-field layout
+    // into a garbled paragraph.
+    const HEAD = '[ \\t#>*]*ENHANCEMENT\\s+\\S';
+    const isHead = p => new RegExp('^' + HEAD).test(p);
+    const parts = clean.split(new RegExp('\\n(?=' + HEAD + ')'));
+    const preamble = (parts[0] && !isHead(parts[0])) ? parts[0].trim() : '';
+    const blocks = parts.filter(isHead);
+    if (!blocks.length) return mdToHtml(raw);
+    // Field reader tolerant of indent + optional markdown bold around the label.
+    const field = (b,n)=>{ const m=b.match(new RegExp('^[ \\t>*]*\\**'+n+'\\**:\\s*(.*)$','m')); return m?m[1].replace(/\*+$/,'').trim():''; };
+    // Render the SAME way the Arch Review does — convert the structured blocks
+    // into clean markdown, then mdToHtml. (The structured format stays intact in
+    // the raw text for enhancement_apply's PR parser; this only affects display.)
+    let md = preamble ? preamble + '\n\n' : '';
+    let renderedAny = false;
+    for (const b of blocks){
+      const idm = b.match(new RegExp('^[ \\t#>*]*ENHANCEMENT\\s+(\\S+)\\s*(?:\\(([^)]*)\\))?'));
+      const id = idm?idm[1]:'?', meta = idm&&idm[2]?idm[2]:'';
+      const action = field(b,'action'), target = field(b,'target'), pos = field(b,'position');
+      const sect = field(b,'section_title'), rat = field(b,'rationale'), acc = field(b,'acceptance');
+      const cm = b.match(/```[\w-]*\n?([\s\S]*?)```/); const patch = cm?cm[1].trim():'';
+      if (action||target||sect||rat||patch) renderedAny = true;
+      md += `### ${id}${meta?` — ${meta}`:''}\n\n`;
+      if (action) md += `**Action:** ${action}  \n`;
+      if (target) md += `**Target:** \`${target}\`${pos?` · ${pos}`:''}  \n`;
+      if (sect)   md += `**Section:** ${sect}  \n`;
+      if (rat)    md += `**Rationale:** ${rat}\n`;
+      if (patch)  md += `\n${patch}\n`;
+      if (acc)    md += `\n**Acceptance:** ${acc}\n`;
+      md += `\n`;
+    }
+    // If the format was too far off to extract anything, render plain markdown.
+    if (!renderedAny) return mdToHtml(raw);
+    const om = clean.match(/^[ \t]*ORDER:\s*(.*)$/m);
+    if (om) md += `**Apply order:** ${om[1]}\n`;
+    return mdToHtml(md);
+  } catch(e){ return mdToHtml(raw); }
+}
+function _applyStreamRender(el, text, mode){
+  try {
+    if (mode === 'markdown') el.innerHTML = mdToHtml(text);
+    else if (mode === 'enhancement') el.innerHTML = renderEnhancementCards(text);
+    else el.textContent = text;
+  } catch(e){ el.textContent = text; }
+}
+
+async function _runStream({ endpoint, body, streamEl, statusEl, copyBtn, runBtn,
+                            reasoningBtn, nextRow, rawHolder, showReasoningKey, fontBar, renderMode }) {
+  streamEl.textContent = '';
+  rawHolder.text = '';
+  streamEl.style.display = '';
+  streamEl.dataset.renderMode = renderMode || 'plain';
+  if (fontBar) fontBar.style.display = '';
+  streamEl.classList.add('streaming');
+  statusEl.style.display = '';
+  statusEl.textContent = 'Generating…';
+  statusEl.classList.remove('thinking-status');
+  statusEl.style.color = '';
+  if (copyBtn) copyBtn.style.display = 'none';
+  if (nextRow) nextRow.style.display = 'none';
+  if (reasoningBtn) reasoningBtn.style.display = 'none';
+  runBtn.disabled = true;
+
+  try {
+    const resp = await fetch(`${API}${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+      throw new Error(err.detail || resp.statusText);
+    }
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '', done = false;
+    const showReasoning = () => localStorage.getItem(showReasoningKey) === '1';
+
+    while (!done) {
+      const { value, done: sd } = await reader.read();
+      done = sd;
+      if (value) buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (raw === '[DONE]') { done = true; break; }
+        try {
+          const obj = JSON.parse(raw);
+          if (obj.error) throw new Error(obj.error);
+          if (obj.text) {
+            rawHolder.text += obj.text;
+            const hasThink = rawHolder.text.includes('<think>');
+            if (reasoningBtn && hasThink) reasoningBtn.style.display = '';
+            // Think-state pulsing indicator
+            const lastOpen = rawHolder.text.lastIndexOf('<think>');
+            const lastClose = rawHolder.text.lastIndexOf('</think>');
+            const inThink = lastOpen > lastClose;
+            if (inThink) {
+              if (!statusEl.classList.contains('thinking-status')) {
+                statusEl.classList.add('thinking-status');
+                statusEl.textContent = 'Thinking…';
+              }
+            } else if (statusEl.classList.contains('thinking-status')) {
+              statusEl.classList.remove('thinking-status');
+              statusEl.textContent = 'Generating…';
+            }
+            const _disp = hasThink && !showReasoning() ? _stripThink(rawHolder.text) : rawHolder.text;
+            // Render markdown live; defer enhancement cards to completion (no jitter on partial blocks).
+            _applyStreamRender(streamEl, _disp, renderMode === 'markdown' ? 'markdown' : 'plain');
+            streamEl.scrollTop = streamEl.scrollHeight;
+          }
+        } catch(pe) { if (pe.message !== 'undefined') throw pe; }
+      }
+    }
+
+    statusEl.classList.remove('thinking-status');
+    statusEl.textContent = 'Complete.';
+    streamEl.classList.remove('streaming');
+    { const _fin = (rawHolder.text.includes('<think>') && localStorage.getItem(showReasoningKey) !== '1') ? _stripThink(rawHolder.text) : rawHolder.text;
+      _applyStreamRender(streamEl, _fin, renderMode || 'plain'); }
+    if (copyBtn) copyBtn.style.display = '';
+    if (nextRow) nextRow.style.display = '';
+    return true;
+  } catch(e) {
+    statusEl.classList.remove('thinking-status');
+    statusEl.style.color = 'var(--red)';
+    statusEl.textContent = 'Error: ' + e.message;
+    streamEl.classList.remove('streaming');
+    return false;
+  } finally {
+    runBtn.disabled = false;
+  }
+}
+
+// ── Arch Review stream ────────────────────────────────────────────────────────
+
+document.getElementById('rdRevReasoningBtn').addEventListener('click', function() {
+  const on = localStorage.getItem('rdRevShowReasoning') === '1';
+  localStorage.setItem('rdRevShowReasoning', on ? '0' : '1');
+  this.textContent = on ? '○ Reasoning' : '● Reasoning';
+  const el = document.getElementById('rdRevStream');
+  _applyStreamRender(el, (!on) ? _rdRevRaw.text : _stripThink(_rdRevRaw.text), el.dataset.renderMode);
+  el.scrollTop = el.scrollHeight;
+});
+
+document.getElementById('rdRevRunBtn').addEventListener('click', async () => {
+  // Model defaults to the Config Arch Review default; the override picker sends
+  // an explicit model only when the operator changes it.
+  const scope  = document.getElementById('rdRevScopeSel').value;
+  const { runId, ucUuid } = _reviewCtx;
+  if (!runId) { toast('No ingestion selected'); return; }
+  if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
+  const body = { scope, run_id: runId, ..._overrideModelBody('rdRevModelSel') };
+  if (scope === 'uc') body.uc_uuid = ucUuid;
+  await _runStream({
+    endpoint: '/api/arch-review', body,
+    streamEl:     document.getElementById('rdRevStream'),
+    statusEl:     document.getElementById('rdRevStatus'),
+    copyBtn:      document.getElementById('rdRevCopyBtn'),
+    runBtn:       document.getElementById('rdRevRunBtn'),
+    reasoningBtn: document.getElementById('rdRevReasoningBtn'),
+    nextRow:      document.getElementById('rdRevNextRow'),
+    rawHolder:    _rdRevRaw,
+    showReasoningKey: 'rdRevShowReasoning',
+    renderMode: 'markdown',
+    fontBar:      document.getElementById('rdRevFontBar'),
+  });
+});
+
+document.getElementById('rdRevCopyBtn').addEventListener('click', () => {
+  const text = localStorage.getItem('rdRevShowReasoning') === '1' ? _rdRevRaw.text : _stripThink(_rdRevRaw.text);
+  navigator.clipboard.writeText(text).then(() => toast('Review copied'));
+});
+
+async function _useInClaude(promptEndpoint, scope, runId, ucUuid, hintEl, btn) {
+  if (!runId) { toast('No ingestion selected'); return; }
+  const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Fetching…';
+  hintEl.style.display = 'none';
+  try {
+    let url = `${promptEndpoint}?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
+    if (scope === 'uc' && ucUuid) url += `&uc_uuid=${encodeURIComponent(ucUuid)}`;
+    const data = await api(url);
+    await navigator.clipboard.writeText(`${data.system_prompt}\n\n---\n\n${data.user_prompt}`);
+    hintEl.style.display = '';
+    setTimeout(() => { hintEl.style.display = 'none'; }, 4000);
+  } catch(e) { toast('Copy failed: ' + e.message, true); }
+  finally { btn.disabled = false; btn.textContent = prev; }
+}
+
+document.getElementById('rdRevUseClaudeBtn').addEventListener('click', () =>
+  _useInClaude('/api/arch-review/prompt',
+    document.getElementById('rdRevScopeSel').value,
+    _reviewCtx.runId, _reviewCtx.ucUuid,
+    document.getElementById('rdRevHint'),
+    document.getElementById('rdRevUseClaudeBtn')));
+
+document.getElementById('rdRevToEnhBtn').addEventListener('click', () => {
+  const enhSec = document.getElementById('rdEnhSection');
+  enhSec.style.display = '';
+  // Sync scope from arch review (model is the shared Config arch-review default).
+  document.getElementById('rdEnhScopeSel').value = document.getElementById('rdRevScopeSel').value;
+  setTimeout(() => enhSec.scrollIntoView({ behavior:'smooth', block:'start' }), 30);
+});
+
+// ── Enhancement stream ────────────────────────────────────────────────────────
+
+document.getElementById('rdEnhReasoningBtn').addEventListener('click', function() {
+  const on = localStorage.getItem('rdEnhShowReasoning') === '1';
+  localStorage.setItem('rdEnhShowReasoning', on ? '0' : '1');
+  this.textContent = on ? '○ Reasoning' : '● Reasoning';
+  const el = document.getElementById('rdEnhStream');
+  _applyStreamRender(el, (!on) ? _rdEnhRaw.text : _stripThink(_rdEnhRaw.text), el.dataset.renderMode);
+  el.scrollTop = el.scrollHeight;
+});
+
+document.getElementById('rdEnhRunBtn').addEventListener('click', async () => {
+  // Model defaults to the Config Enhancement default (→ Arch Review when unset);
+  // the override picker sends an explicit model only when changed.
+  const scope  = document.getElementById('rdEnhScopeSel').value;
+  const { runId, ucUuid } = _reviewCtx;
+  if (!runId) { toast('No ingestion selected'); return; }
+  if (scope === 'uc' && !ucUuid) { toast('No use case selected'); return; }
+  const body = { scope, run_id: runId, ..._overrideModelBody('rdEnhModelSel') };
+  if (scope === 'uc') body.uc_uuid = ucUuid;
+  await _runStream({
+    endpoint: '/api/enhancements', body,
+    streamEl:     document.getElementById('rdEnhStream'),
+    statusEl:     document.getElementById('rdEnhStatus'),
+    copyBtn:      document.getElementById('rdEnhCopyBtn'),
+    runBtn:       document.getElementById('rdEnhRunBtn'),
+    reasoningBtn: document.getElementById('rdEnhReasoningBtn'),
+    nextRow:      document.getElementById('rdEnhNextRow'),
+    rawHolder:    _rdEnhRaw,
+    showReasoningKey: 'rdEnhShowReasoning',
+    renderMode: 'enhancement',
+    fontBar:      document.getElementById('rdEnhFontBar'),
+  });
+});
+
+document.getElementById('rdEnhCopyBtn').addEventListener('click', () => {
+  const text = localStorage.getItem('rdEnhShowReasoning') === '1' ? _rdEnhRaw.text : _stripThink(_rdEnhRaw.text);
+  navigator.clipboard.writeText(text).then(() => toast('Enhancement spec copied'));
+});
+
+document.getElementById('rdEnhUseClaudeBtn').addEventListener('click', () =>
+  _useInClaude('/api/enhancements/prompt',
+    document.getElementById('rdEnhScopeSel').value,
+    _reviewCtx.runId, _reviewCtx.ucUuid,
+    document.getElementById('rdEnhHint'),
+    document.getElementById('rdEnhUseClaudeBtn')));
+
+// ── PR creation ────────────────────────────────────────────────────────────────
+
+function _rdPrRepoChanged() {
+  const opt = document.getElementById('rdPrRepoSel').selectedOptions[0];
+  if (opt && opt.dataset.branch) document.getElementById('rdPrBaseBranch').value = opt.dataset.branch;
+}
+
+document.getElementById('rdEnhToPrBtn').addEventListener('click', async () => {
+  const panel  = document.getElementById('rdPrSection');
+  const msgEl  = document.getElementById('rdPrMsg');
+  msgEl.textContent = '';
+
+  // ADR-006: enhancement targets are managed_repos rows with role=enhancement-target
+  if (!_codeRepos.length) {
+    try {
+      const r = await api('/api/repos?role=enhancement-target');
+      _codeRepos = r.repos || [];
+    } catch {}
+  }
+  const sel = document.getElementById('rdPrRepoSel');
+  sel.innerHTML = _codeRepos.length
+    ? _codeRepos.map(r => {
+        const provider = (r.metadata && r.metadata.provider) || (r.repo_url && r.repo_url.toLowerCase().includes('gitlab') ? 'gitlab' : 'github');
+        return `<option value="${esc(r.uuid)}" data-branch="${esc(r.repo_branch)}">${esc(r.display_name || r.namespace)} (${esc(provider)})</option>`;
+      }).join('')
+    : '<option value="">No enhancement-target repos — add the role in Config → Managed repos</option>';
+  if (_codeRepos.length) _rdPrRepoChanged();
+
+  const scope  = document.getElementById('rdEnhScopeSel').value;
+  const { runId, ucUuid } = _reviewCtx;
+  try {
+    let url = `/api/pr/preview?scope=${scope}&run_id=${encodeURIComponent(runId)}`;
+    if (scope === 'uc' && ucUuid) url += `&uc_uuid=${encodeURIComponent(ucUuid)}`;
+    const preview = await api(url);
+    document.getElementById('rdPrBranch').value   = preview.branch;
+    document.getElementById('rdPrTitle').value    = preview.title;
+    document.getElementById('rdPrFilePath').value = preview.file_path;
+    panel._gapContext = preview.gap_context;
+  } catch(e) {
+    msgEl.textContent = 'Preview load failed: ' + e.message;
+    msgEl.style.color = 'var(--error)';
+    panel._gapContext = '';
+  }
+
+  panel.style.display = '';
+  setTimeout(() => panel.scrollIntoView({ behavior:'smooth', block:'start' }), 30);
+});
+
+document.getElementById('rdPrRepoSel').addEventListener('change', _rdPrRepoChanged);
+
+document.getElementById('rdPrCopyBtn').addEventListener('click', () => {
+  const panel   = document.getElementById('rdPrSection');
+  const gapCtx  = panel._gapContext || '';
+  const enhText = _stripThink(_rdEnhRaw.text);
+  const branch  = document.getElementById('rdPrBranch').value;
+  const file    = document.getElementById('rdPrFilePath').value;
+  let body = `**Branch:** \`${branch}\`  \n**File:** \`${file}\`\n\n---\n\n` + gapCtx;
+  if (enhText) body += '\n\n## Enhancement specification\n\n' + enhText;
+  body += '\n\n---\n*Generated by DAV Console*';
+  navigator.clipboard.writeText(body)
+    .then(() => toast('PR description copied'))
+    .catch(() => toast('Copy failed', true));
+});
+
+document.getElementById('rdPrCreateBtn').addEventListener('click', async () => {
+  const repoUuid = document.getElementById('rdPrRepoSel').value;
+  if (!repoUuid) { toast('Select a repository first'); return; }
+  const msgEl = document.getElementById('rdPrMsg');
+  const btn   = document.getElementById('rdPrCreateBtn');
+  const payload = {
+    repo_uuid: repoUuid,
+    run_id:  _reviewCtx.runId,
+    uc_uuid: _reviewCtx.ucUuid || null,
+    scope:       document.getElementById('rdEnhScopeSel').value,
+    branch:      document.getElementById('rdPrBranch').value.trim(),
+    title:       document.getElementById('rdPrTitle').value.trim(),
+    base_branch: document.getElementById('rdPrBaseBranch').value.trim() || null,
+    file_path:   document.getElementById('rdPrFilePath').value.trim(),
+    enhancement_text: _stripThink(_rdEnhRaw.text),
+  };
+  if (!payload.branch || !payload.title) { toast('Branch and title required'); return; }
+  btn.disabled = true;
+  msgEl.textContent = 'Creating…'; msgEl.style.color = 'var(--text-faint)';
+  try {
+    const result = await createPrWithApprovalGate(payload);
+    if (!result) { msgEl.textContent = 'Cancelled.'; msgEl.style.color = 'var(--text-faint)'; }
+    else { msgEl.textContent = '✓ PR created'; msgEl.style.color = 'var(--ok)';
+           if (result.pr_url) window.open(result.pr_url, '_blank'); }
+  } catch(e) {
+    msgEl.textContent = 'Failed: ' + e.message; msgEl.style.color = 'var(--error)';
+  } finally { btn.disabled = false; }
+});
+
+// ── MCP Servers ──────────────────────────────────────────────────────────────
+
+let _mcpServers = [];
+let _mcpEditId = null;
+
+async function loadMCPServers() {
+  try { _mcpServers = await api('/api/mcp-servers'); } catch { _mcpServers = []; }
+  renderMCPList();
+  pollMCPHealth();
+}
+
+function renderMCPList() {
+  const el = document.getElementById('mcpServerList');
+  if (!_mcpServers.length) {
+    el.innerHTML = '<div style="padding:12px 16px;font-size:11px;color:var(--text-faint);">No servers registered. Add one to get started.</div>';
+    document.getElementById('mcpHealthSummary').textContent = '';
+    return;
+  }
+  el.innerHTML = _mcpServers.map(m => `
+    <div class="mcp-row" data-id="${m.id}">
+      <span class="status-dot" id="mcpDot-${m.id}" style="flex-shrink:0;background:var(--text-faint);"></span>
+      <span class="mcp-name">${esc(m.name)}</span>
+      <span class="mcp-url" title="${esc(m.sse_url)}">${esc(m.sse_url)}</span>
+      ${m.description ? `<span style="font-size:10px;color:var(--text-faint);flex-shrink:0;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(m.description)}">${esc(m.description)}</span>` : ''}
+      ${m.use_uc_assist ? '<span style="font-size:9px;color:var(--accent);border:1px solid var(--accent-soft);padding:1px 5px;border-radius:2px;flex-shrink:0;">UC assist</span>' : ''}
+      ${m.from_bundle ? '<span style="font-size:9px;color:var(--text-faint);border:1px solid var(--border);padding:1px 5px;border-radius:2px;flex-shrink:0;" title="Provided by an attached bundle — manage it in Config → Platform → Bundles">bundle</span>' : ''}
+      ${!m.enabled ? '<span style="font-size:9px;color:var(--text-faint);border:1px solid var(--border);padding:1px 5px;border-radius:2px;">disabled</span>' : ''}
+      <span class="mcp-actions">
+        ${m.from_bundle
+          ? '<span style="font-size:11px;color:var(--text-faint);">read-only</span>'
+          : `<button class="btn ghost btn-sm" onclick="openMCPForm(${m.id})">Edit</button>
+        <button class="btn ghost btn-icon" style="color:var(--red);" title="Delete" onclick="deleteMCP(${m.id},this)">✕</button>`}
+      </span>
+    </div>`).join('');
+}
+
+async function pollMCPHealth() {
+  if (!_mcpServers.length) return;
+  const summaryEl = document.getElementById('mcpHealthSummary');
+  summaryEl.textContent = 'checking…';
+  try {
+    const results = await api('/api/mcp-servers/health');
+    let ok = 0;
+    results.forEach(r => {
+      const dot = document.getElementById(`mcpDot-${r.id}`);
+      if (!dot) return;
+      if (!r.enabled) { dot.style.background = 'var(--text-faint)'; return; }
+      if (r.healthy) { dot.style.background = 'var(--ok)'; ok++; }
+      else { dot.style.background = 'var(--error)'; }
+      dot.title = r.healthy ? `healthy (${r.latency_ms}ms)` : (r.error || 'unreachable');
+    });
+    const enabled = results.filter(r => r.enabled).length;
+    summaryEl.textContent = enabled ? `${ok}/${enabled} healthy` : '';
+    summaryEl.style.color = ok === enabled && enabled > 0 ? 'var(--ok)' : 'var(--error)';
+  } catch {
+    summaryEl.textContent = 'health check failed';
+  }
+}
+
+function _mcpSnippet(format) {
+  const enabled = _mcpServers.filter(m => m.enabled);
+  if (!enabled.length) return '// No enabled MCP servers configured.';
+  const servers = {};
+  enabled.forEach(m => { servers[m.name] = { type: 'sse', url: m.sse_url }; });
+  if (format === 'claude') {
+    return JSON.stringify({ mcpServers: servers }, null, 2);
+  }
+  // Cursor / Windsurf uses the same mcpServers key
+  return JSON.stringify({ mcpServers: servers }, null, 2);
+}
+
+function openMCPForm(id) {
+  _mcpEditId = id || null;
+  const m = id ? _mcpServers.find(s => s.id === id) : null;
+  document.getElementById('mcpFormTitle').textContent = m ? 'Edit MCP server' : 'Add MCP server';
+  document.getElementById('mcpfName').value = m ? m.name : '';
+  document.getElementById('mcpfUrl').value = m ? m.sse_url : '';
+  document.getElementById('mcpfDesc').value = m ? (m.description || '') : '';
+  document.getElementById('mcpfEnabled').checked = m ? m.enabled : true;
+  document.getElementById('mcpfUseUCAssist').checked = m ? !!m.use_uc_assist : false;
+  const tok = document.getElementById('mcpfAuthToken');
+  tok.value = '';
+  tok.placeholder = (m && m.has_auth_token) ? '•••• (set — leave blank to keep)' : '';
+  document.getElementById('mcpFormMsg').textContent = '';
+  document.getElementById('mcpFormCard').style.display = '';
+  document.getElementById('mcpfName').focus();
+}
+
+async function deleteMCP(id, btn) {
+  if (!btn) return;
+  const m = _mcpServers.find(s => s.id === id);
+  if (!m) return;
+  _armDeleteBtn(btn, async () => {
+    try {
+      await api(`/api/mcp-servers/${id}`, { method: 'DELETE' });
+      _mcpServers = _mcpServers.filter(s => s.id !== id);
+      renderMCPList();
+    } catch (e) { toast('Delete failed: ' + e.message, true); }
+  });
+}
+
+// ── Shared Credentials Registry (M9 of #28, ADR-005) ──────────────────────
+// Named, Fernet-encrypted secrets that multiple managed_repos rows can
+// reference via FK. Rotating a credential propagates to every dependent
+// repo. Values are never returned by the API — list/get expose only
+// metadata + used_by counts/lists.
+let _credentialsState = { list: [], types: [], editingUuid: null };
+
+async function loadCredentials() {
+  try {
+    const [credResp, typesResp] = await Promise.all([
+      api('/api/credentials'),
+      api('/api/credentials/types/vocabulary'),
+    ]);
+    _credentialsState.list = credResp.credentials || [];
+    _credentialsState.types = typesResp.credential_types || [];
+    renderCredentialList();
+    renderCredentialTypeSelect();
+  } catch (e) {
+    const el = document.getElementById('credentialList');
+    if (el) el.innerHTML = `<div class="empty" style="color:var(--red);padding:10px;">${esc(e.message)}</div>`;
+  }
+}
+
+function renderCredentialList() {
+  const el = document.getElementById('credentialList');
+  if (!_credentialsState.list.length) {
+    el.innerHTML = '<div class="empty" style="padding:14px;">No shared credentials yet. Click + Add credential to define one that can be referenced by multiple repos.</div>';
+    return;
+  }
+  el.innerHTML = _credentialsState.list.map(c => {
+    const uuidJson = attrJson(c.uuid);
+    const usage = c.used_by_count > 0
+      ? `<span style="font-size:10px;padding:2px 6px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;color:var(--green);">used by ${c.used_by_count} repo(s)</span>`
+      : '<span style="font-size:10px;padding:2px 6px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;color:var(--text-faint);font-style:italic;">unused</span>';
+    return `
+    <div class="cred-row" style="display:grid;grid-template-columns:200px 90px 1fr auto auto;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);">
+      <div>
+        <div style="font-weight:600;font-size:12px;font-family:var(--mono,monospace);">${esc(c.name)}</div>
+        <div style="font-size:9px;color:var(--text-faint);">tenant: ${esc(c.tenant_id || 'default')}</div>
+      </div>
+      <div style="font-size:10px;padding:2px 6px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;font-family:var(--mono,monospace);text-align:center;">${esc(c.credential_type)}</div>
+      <div style="font-size:11px;color:var(--text-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.description || '')}</div>
+      <div>${usage}</div>
+      <div style="display:flex;gap:4px;">
+        <button class="btn ghost btn-sm" onclick="editCredential(${uuidJson})">Edit</button>
+        <button class="btn ghost btn-sm" onclick="deleteCredentialConfirm(${uuidJson}, ${attrJson(c.name)})" style="color:var(--red);">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderCredentialTypeSelect() {
+  const sel = document.getElementById('cpfType');
+  if (!sel) return;
+  if (!_credentialsState.types.length) {
+    sel.innerHTML = '<option value="">(no types in vocabulary)</option>';
+    return;
+  }
+  sel.innerHTML = _credentialsState.types.map(t =>
+    `<option value="${esc(t)}">${esc(t)}</option>`).join('');
+}
+
+function _clearCredentialForm() {
+  for (const id of ['cpfName','cpfDescription','cpfValue']) {
+    const el = document.getElementById(id);
+    if (el) { el.value = ''; el.disabled = false; el.placeholder = ''; }
+  }
+  const typeSel = document.getElementById('cpfType');
+  if (typeSel) typeSel.disabled = false;
+  const valueStatus = document.getElementById('cpfValueStatus');
+  if (valueStatus) valueStatus.textContent = '';
+  const msg = document.getElementById('credentialFormMsg');
+  if (msg) { msg.textContent = ''; msg.style.color = ''; }
+  _credentialsState.editingUuid = null;
+}
+
+function showCredentialForm(cred) {
+  _clearCredentialForm();
+  const titleEl = document.getElementById('credentialFormTitle');
+  if (cred) {
+    titleEl.textContent = `Edit credential · ${cred.name}`;
+    document.getElementById('cpfName').value = cred.name;
+    document.getElementById('cpfType').value = cred.credential_type;
+    document.getElementById('cpfType').disabled = true;  // immutable through update
+    document.getElementById('cpfDescription').value = cred.description || '';
+    document.getElementById('cpfValue').placeholder = '(set — type a new value to rotate; leave blank to keep)';
+    document.getElementById('cpfValueStatus').textContent = '· (encrypted; never displayed)';
+    document.getElementById('cpfValueStatus').style.color = 'var(--green)';
+    _credentialsState.editingUuid = cred.uuid;
+  } else {
+    titleEl.textContent = 'Add credential';
+    document.getElementById('cpfValue').placeholder = '(plaintext — encrypted at write)';
+  }
+  document.getElementById('credentialFormCard').style.display = '';
+  setTimeout(() => document.getElementById('cpfName').focus(), 50);
+}
+
+function hideCredentialForm() {
+  document.getElementById('credentialFormCard').style.display = 'none';
+  _clearCredentialForm();
+}
+
+function editCredential(uuid) {
+  const c = _credentialsState.list.find(x => x.uuid === uuid);
+  if (c) showCredentialForm(c);
+}
+
+async function deleteCredentialConfirm(uuid, name) {
+  if (!confirm(
+    `Delete shared credential "${name}"?\n\n` +
+    `If any repos reference it, the delete will fail with a list of dependents — ` +
+    `unlink them via the Repos UI first.`
+  )) return;
+  try {
+    await api(`/api/credentials/${encodeURIComponent(uuid)}`, { method: 'DELETE' });
+    toast(`Deleted ${name}`);
+    await loadCredentials();
+  } catch (e) {
+    let msg = e.message || String(e);
+    // 409 conflict — show dependents if the API returned the structured detail
+    try {
+      const detail = JSON.parse(msg.replace(/^.*?\{/, '{'));
+      if (detail.dependent_repos && detail.dependent_repos.length) {
+        msg = `${detail.message}\n\nDependents: ` + detail.dependent_repos.map(d => `${d.namespace} (${d.used_as})`).join(', ');
+      }
+    } catch { /* not JSON; show raw */ }
+    alert(`Delete failed:\n\n${msg}`);
+  }
+}
+
+async function saveCredential() {
+  const msgEl = document.getElementById('credentialFormMsg');
+  msgEl.textContent = 'Saving…';
+  msgEl.style.color = '';
+  const payload = {
+    name: document.getElementById('cpfName').value.trim(),
+    credential_type: document.getElementById('cpfType').value,
+    description: document.getElementById('cpfDescription').value.trim() || null,
+  };
+  const valueVal = document.getElementById('cpfValue').value;
+  if (valueVal) payload.value = valueVal;
+  try {
+    if (_credentialsState.editingUuid) {
+      // PUT — name and value are optional (don't touch if blank/unset)
+      const putBody = { description: payload.description };
+      if (payload.name) putBody.name = payload.name;
+      if (payload.value !== undefined) putBody.value = payload.value;
+      await api(`/api/credentials/${encodeURIComponent(_credentialsState.editingUuid)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(putBody),
+      });
+    } else {
+      // POST — name + type + value all required
+      if (!payload.value) {
+        msgEl.innerHTML = '<span style="color:var(--red);">value is required for new credentials</span>';
+        return;
+      }
+      await api('/api/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    }
+    msgEl.innerHTML = `<span style="color:var(--green);">Saved</span>`;
+    await loadCredentials();
+    // Refresh the Repos form dropdowns too (in case it's open with stale data)
+    if (typeof _hydrateRepoCredentialDropdowns === 'function') _hydrateRepoCredentialDropdowns();
+    setTimeout(() => hideCredentialForm(), 800);
+  } catch (e) {
+    msgEl.innerHTML = `<span style="color:var(--red);">${esc(e.message)}</span>`;
+  }
+}
+
+document.getElementById('addCredentialBtn')?.addEventListener('click', () => showCredentialForm(null));
+document.getElementById('saveCredentialBtn')?.addEventListener('click', saveCredential);
+document.getElementById('cancelCredentialBtn')?.addEventListener('click', hideCredentialForm);
+
+
+// Hydrate the Repos form's PAT + webhook-secret dropdowns from the
+// shared credentials list. Called after loadCredentials and when the
+// Repos form opens for edit.
+function _hydrateRepoCredentialDropdowns() {
+  const types = {
+    'github_pat': 'rpfPatCredSel',
+    'github_webhook_secret': 'rpfWebhookSecretCredSel',
+  };
+  for (const [type, selId] of Object.entries(types)) {
+    const sel = document.getElementById(selId);
+    if (!sel) continue;
+    const current = sel.value;
+    const credsOfType = _credentialsState.list.filter(c => c.credential_type === type);
+    const opts = ['<option value="">(no shared credential)</option>'];
+    credsOfType.forEach(c => {
+      opts.push(`<option value="${esc(c.uuid)}">${esc(c.name)}${c.description ? ' — ' + esc(c.description.slice(0, 50)) : ''}</option>`);
+    });
+    sel.innerHTML = opts.join('');
+    if (current) sel.value = current;
+  }
+}
+
+
+// ── Managed Repos Registry (M3 of #28) ──────────────────────────────────────
+// CRUD over the managed_repos table. Spec/issue-source role changes
+// auto-project to dav-source-spec via the API; the UI surfaces the
+// projection result so the operator sees "saved + MCP rolling" feedback.
+let _reposState = { list: [], roles: [], editingUuid: null };
+
+async function loadRepos() {
+  try {
+    const [reposResp, rolesResp] = await Promise.all([
+      api('/api/repos'),
+      api('/api/repos/roles/vocabulary'),
+    ]);
+    _reposState.list = reposResp.repos || [];
+    _reposState.roles = rolesResp.roles || [];
+    renderReposList();
+    renderRepoRoleCheckboxes();
+  } catch (e) {
+    document.getElementById('repoList').innerHTML =
+      `<div class="empty" style="color:var(--red);padding:10px;">${esc(e.message)}</div>`;
+  }
+}
+
+function renderReposList() {
+  const el = document.getElementById('repoList');
+  if (!_reposState.list.length) {
+    el.innerHTML = '<div class="empty" style="padding:14px;">No repos registered yet. Click + Add repo to register one.</div>';
+    return;
+  }
+  el.innerHTML = _reposState.list.map(r => {
+    const uuidJson = attrJson(r.uuid);
+    const nsJson = attrJson(r.namespace);
+    return `
+    <div class="repo-row" style="display:grid;grid-template-columns:160px 1fr auto auto;gap:12px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);">
+      <div>
+        <div style="font-weight:600;font-size:12px;">${esc(r.namespace)}</div>
+        ${r.display_name && r.display_name !== r.namespace ? `<div style="font-size:10px;color:var(--text-faint);">${esc(r.display_name)}</div>` : ''}
+        <div style="font-size:9px;color:var(--text-faint);font-family:var(--mono,monospace);">tenant: ${esc(r.tenant_id || 'default')}</div>
+      </div>
+      <div style="min-width:0;">
+        <div style="font-size:11px;font-family:var(--mono,monospace);color:var(--text-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(r.repo_url)}</div>
+        <div style="font-size:10px;color:var(--text-faint);">branch: <span style="color:var(--accent);">${esc(r.repo_branch)}</span> · root_path: ${r.root_path ? esc(r.root_path) : '<span style="color:var(--text-faint);">(repo root)</span>'}</div>
+      </div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;align-items:center;">
+        ${(r.roles || []).map(role => `<span style="font-size:10px;padding:2px 6px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">${esc(role)}</span>`).join('') || '<span style="font-size:10px;color:var(--text-faint);font-style:italic;">(no roles)</span>'}
+        ${r.has_github_pat ? `<span style="font-size:10px;padding:2px 6px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;color:var(--green);" title="GitHub PAT configured (${esc(r.github_pat_source || '?')}${r.github_pat_credential ? ' · ' + esc(r.github_pat_credential.name) : ''})">🔑 PAT${r.github_pat_source === 'shared' ? '·s' : ''}</span>` : ''}
+        ${r.has_github_webhook_secret ? `<span style="font-size:10px;padding:2px 6px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;color:var(--green);" title="GitHub webhook secret configured (${esc(r.github_webhook_secret_source || '?')}${r.github_webhook_secret_credential ? ' · ' + esc(r.github_webhook_secret_credential.name) : ''})">📬 WHK${r.github_webhook_secret_source === 'shared' ? '·s' : ''}</span>` : ''}
+      </div>
+      <div style="display:flex;gap:4px;">
+        <button class="btn ghost btn-sm" onclick="editRepo(${uuidJson})">Edit</button>
+        <button class="btn ghost btn-sm" onclick="deleteRepoConfirm(${uuidJson}, ${nsJson})" style="color:var(--red);">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// Roles that care about a content sub-path within the repo. The other
+// roles (issue-source) operate at the repo/API level and don't need a
+// path input. Update here when a new path-aware role lands.
+const _PATH_AWARE_ROLES = new Set(['spec', 'corpus', 'enhancement-target']);
+
+function renderRepoRoleCheckboxes() {
+  const el = document.getElementById('rpfRolesContainer');
+  if (!el) return;
+  if (!_reposState.roles.length) {
+    el.innerHTML = '<span style="font-size:11px;color:var(--text-faint);">(no roles in vocabulary)</span>';
+    return;
+  }
+  // Per-ADR-007: each path-aware role gets an inline override input
+  // beside the checkbox; non-path-aware roles render label-only. The
+  // override input is empty by default and falls back to the row's
+  // root_path on save (resolve_root_path semantics).
+  el.style.display = 'grid';
+  el.style.gridTemplateColumns = '1fr 2fr';
+  el.style.gap = '6px 12px';
+  el.style.alignItems = 'center';
+  const rows = [];
+  for (const role of _reposState.roles) {
+    rows.push(`
+      <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;">
+        <input type="checkbox" class="rpf-role" value="${esc(role)}" /> ${esc(role)}
+      </label>`);
+    if (_PATH_AWARE_ROLES.has(role)) {
+      rows.push(`
+        <input type="text" class="rpf-rolepath" data-role="${esc(role)}"
+               placeholder="(uses default root_path above)"
+               style="font-family:var(--mono,monospace);font-size:11px;padding:3px 6px;" />`);
+    } else {
+      rows.push(`
+        <span style="font-size:10px;color:var(--text-faint);font-style:italic;">no path</span>`);
+    }
+  }
+  el.innerHTML = rows.join('');
+}
+
+function _clearRepoForm() {
+  for (const id of ['rpfNamespace','rpfDisplayName','rpfRepoUrl','rpfRootPath','rpfGithubPat','rpfGithubWebhookSecret']) {
+    const el = document.getElementById(id);
+    if (el) { el.value = ''; el.disabled = false; el.placeholder = ''; }
+  }
+  const branchEl = document.getElementById('rpfRepoBranch');
+  if (branchEl) branchEl.value = 'main';
+  const msg = document.getElementById('repoFormMsg');
+  if (msg) { msg.textContent = ''; msg.style.color = ''; }
+  document.querySelectorAll('.rpf-role').forEach(cb => cb.checked = false);
+  document.querySelectorAll('.rpf-rolepath').forEach(inp => { inp.value = ''; });
+  // Reset credential status indicators + dropdowns + convert buttons
+  for (const id of ['rpfPatStatus','rpfWebhookSecretStatus']) {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = ''; el.style.color = 'var(--text-faint)'; }
+  }
+  for (const id of ['rpfClearPatBtn','rpfClearWebhookSecretBtn','rpfConvertPatBtn','rpfConvertWebhookSecretBtn']) {
+    const el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  }
+  for (const id of ['rpfPatCredSel','rpfWebhookSecretCredSel']) {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  }
+  _reposState.editingUuid = null;
+}
+
+// Render status indicators for one of the per-repo credential fields.
+// `source` is 'shared' | 'inline' | null, mirroring the API's
+// github_pat_source / github_webhook_secret_source. `has` summarizes
+// "any source set". Scoping Sets placeholder, status text, button visibility,
+// and auto-expands the inline-details disclosure when source is inline
+// (so operators see + can rotate/clear the inline value without hunting).
+function _setRepoCredFieldState(inputId, statusId, clearBtnId, has, source, convertBtnId, inlineDetailsId) {
+  const input = document.getElementById(inputId);
+  const status = document.getElementById(statusId);
+  const clearBtn = document.getElementById(clearBtnId);
+  const convertBtn = convertBtnId ? document.getElementById(convertBtnId) : null;
+  const details = inlineDetailsId ? document.getElementById(inlineDetailsId) : null;
+  if (!input || !status || !clearBtn) return;
+  // Default: collapse inline details
+  if (details) details.open = false;
+  if (!has) {
+    input.placeholder = '(none set inline; leave blank to keep current)';
+    status.textContent = '· (not set)';
+    status.style.color = 'var(--text-faint)';
+    clearBtn.style.display = 'none';
+    if (convertBtn) convertBtn.style.display = 'none';
+    return;
+  }
+  if (source === 'shared') {
+    input.placeholder = '(shared credential active above — inline would only be used if shared cleared)';
+    status.textContent = '· (shared)';
+    status.style.color = 'var(--green)';
+    clearBtn.style.display = '';
+    if (convertBtn) convertBtn.style.display = 'none';
+  } else {
+    // inline — auto-expand the details so the value field + hint are visible
+    input.placeholder = '(inline set — type a new value to rotate inline; leave blank to keep)';
+    status.textContent = '· (inline)';
+    status.style.color = 'var(--accent)';
+    clearBtn.style.display = '';
+    if (convertBtn) convertBtn.style.display = '';  // offer the migration
+    if (details) details.open = true;
+  }
+}
+
+function showRepoForm(repo) {
+  _clearRepoForm();
+  // Hydrate the credential dropdowns from the latest shared credentials list
+  if (typeof _hydrateRepoCredentialDropdowns === 'function') _hydrateRepoCredentialDropdowns();
+  const titleEl = document.getElementById('repoFormTitle');
+  if (repo) {
+    titleEl.textContent = `Edit repo · ${repo.namespace}`;
+    document.getElementById('rpfNamespace').value = repo.namespace;
+    document.getElementById('rpfNamespace').disabled = true;  // immutable post-create
+    document.getElementById('rpfDisplayName').value = repo.display_name === repo.namespace ? '' : (repo.display_name || '');
+    document.getElementById('rpfRepoUrl').value = repo.repo_url;
+    document.getElementById('rpfRepoBranch').value = repo.repo_branch;
+    document.getElementById('rpfRootPath').value = repo.root_path || '';
+    document.querySelectorAll('.rpf-role').forEach(cb => cb.checked = (repo.roles || []).includes(cb.value));
+
+    // Per-role path overrides (ADR-007): hydrate from metadata.role_paths
+    const rolePaths = ((repo.metadata || {}).role_paths) || {};
+    document.querySelectorAll('.rpf-rolepath').forEach(inp => {
+      const role = inp.dataset.role;
+      inp.value = (role in rolePaths) ? (rolePaths[role] || '') : '';
+    });
+
+    // Pre-select the linked-credential dropdown. The API returns
+    // github_pat_credential = {uuid, name} when set, so the dropdown
+    // (whose options are credential UUIDs) selects naturally.
+    if (repo.github_pat_credential && repo.github_pat_credential.uuid) {
+      const sel = document.getElementById('rpfPatCredSel');
+      if (sel) sel.value = repo.github_pat_credential.uuid;
+    }
+    if (repo.github_webhook_secret_credential && repo.github_webhook_secret_credential.uuid) {
+      const sel = document.getElementById('rpfWebhookSecretCredSel');
+      if (sel) sel.value = repo.github_webhook_secret_credential.uuid;
+    }
+    _setRepoCredFieldState('rpfGithubPat', 'rpfPatStatus', 'rpfClearPatBtn',
+                           !!repo.has_github_pat, repo.github_pat_source,
+                           'rpfConvertPatBtn', 'rpfPatInlineDetails');
+    _setRepoCredFieldState('rpfGithubWebhookSecret', 'rpfWebhookSecretStatus', 'rpfClearWebhookSecretBtn',
+                           !!repo.has_github_webhook_secret, repo.github_webhook_secret_source,
+                           'rpfConvertWebhookSecretBtn', 'rpfWebhookSecretInlineDetails');
+    _reposState.editingUuid = repo.uuid;
+  } else {
+    titleEl.textContent = 'Add repo';
+    _setRepoCredFieldState('rpfGithubPat', 'rpfPatStatus', 'rpfClearPatBtn', false, null,
+                           'rpfConvertPatBtn', 'rpfPatInlineDetails');
+    _setRepoCredFieldState('rpfGithubWebhookSecret', 'rpfWebhookSecretStatus', 'rpfClearWebhookSecretBtn',
+                           false, null, 'rpfConvertWebhookSecretBtn', 'rpfWebhookSecretInlineDetails');
+  }
+  document.getElementById('repoFormCard').style.display = '';
+  setTimeout(() => document.getElementById('rpfNamespace').focus(), 50);
+}
+
+function hideRepoForm() {
+  document.getElementById('repoFormCard').style.display = 'none';
+  _clearRepoForm();
+}
+
+function editRepo(uuid) {
+  const r = _reposState.list.find(x => x.uuid === uuid);
+  if (r) showRepoForm(r);
+}
+
+async function deleteRepoConfirm(uuid, ns) {
+  if (!confirm(
+    `Delete repo "${ns}"?\n\n` +
+    `If this repo had role=spec, the projector will regenerate the\n` +
+    `dav-source-spec ConfigMap and roll dav-docs-mcp.\n\n` +
+    `If it was the last role=spec repo, the projector will refuse\n` +
+    `(would crash the MCP). Create a replacement first.`
+  )) return;
+  const msgEl = document.getElementById('repoFormMsg');
+  try {
+    const resp = await api(`/api/repos/${encodeURIComponent(uuid)}`, { method: 'DELETE' });
+    await loadRepos();
+    toast(`Deleted ${ns}${resp._projection ? ' · ' + _describeRepoProjection(resp._projection, true) : ''}`);
+  } catch (e) {
+    toast('Delete failed: ' + e.message, true);
+  }
+}
+
+async function saveRepo() {
+  const msgEl = document.getElementById('repoFormMsg');
+  msgEl.textContent = 'Saving…';
+  msgEl.style.color = '';
+  const roles = Array.from(document.querySelectorAll('.rpf-role:checked')).map(cb => cb.value);
+
+  // Per-role path overrides (ADR-007): collect any rpf-rolepath inputs
+  // with a non-empty value into metadata.role_paths.{role}. Empty
+  // overrides aren't sent — operators clear an override by emptying
+  // the input + save (the merge below removes the key).
+  const rolePathInputs = Array.from(document.querySelectorAll('.rpf-rolepath'));
+  const rolePathsObj = {};
+  for (const inp of rolePathInputs) {
+    const v = (inp.value || '').trim().replace(/^\/+|\/+$/g, '');
+    if (v) rolePathsObj[inp.dataset.role] = v;
+  }
+  // Merge with existing metadata so we don't clobber non-role_paths keys
+  const existing = _reposState.editingUuid
+    ? (_reposState.list.find(x => x.uuid === _reposState.editingUuid) || {})
+    : {};
+  const mergedMeta = Object.assign({}, existing.metadata || {});
+  if (Object.keys(rolePathsObj).length) {
+    mergedMeta.role_paths = rolePathsObj;
+  } else if ('role_paths' in mergedMeta) {
+    // All overrides cleared — drop the key entirely
+    delete mergedMeta.role_paths;
+  }
+
+  const payload = {
+    namespace: document.getElementById('rpfNamespace').value.trim(),
+    display_name: document.getElementById('rpfDisplayName').value.trim() || null,
+    repo_url: document.getElementById('rpfRepoUrl').value.trim(),
+    repo_branch: document.getElementById('rpfRepoBranch').value.trim() || 'main',
+    root_path: document.getElementById('rpfRootPath').value.trim(),
+    roles: roles,
+    metadata: mergedMeta,
+  };
+  // Per-repo credentials: ONLY include inline values when the operator
+  // typed a new one. Empty input means "don't touch" (preserve current
+  // state). Explicit clear uses the Clear button, which calls a
+  // different endpoint that clears both inline and shared FK.
+  const patVal = document.getElementById('rpfGithubPat').value;
+  if (patVal) payload.github_pat = patVal;
+  const wsVal = document.getElementById('rpfGithubWebhookSecret').value;
+  if (wsVal) payload.github_webhook_secret = wsVal;
+  // Shared-credential dropdowns. The dropdown holds either "" (none)
+  // or a credential UUID. On EDIT, send the current selection so the
+  // server applies the link/unlink. On CREATE, only send when not empty.
+  const patCredSel = document.getElementById('rpfPatCredSel');
+  const wsCredSel = document.getElementById('rpfWebhookSecretCredSel');
+  if (_reposState.editingUuid) {
+    // Edit: always send (empty string = unlink, sentinel in API layer)
+    payload.github_pat_credential_ref = patCredSel ? patCredSel.value : '';
+    payload.github_webhook_secret_credential_ref = wsCredSel ? wsCredSel.value : '';
+  } else {
+    // Create: only send when set (no need to unlink something brand new)
+    if (patCredSel && patCredSel.value) payload.github_pat_credential_ref = patCredSel.value;
+    if (wsCredSel && wsCredSel.value) payload.github_webhook_secret_credential_ref = wsCredSel.value;
+  }
+  try {
+    let resp;
+    if (_reposState.editingUuid) {
+      // namespace + tenant_id are immutable through PUT (per ADR-003 §3)
+      const { namespace, ...putBody } = payload;
+      resp = await api(`/api/repos/${encodeURIComponent(_reposState.editingUuid)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(putBody),
+      });
+    } else {
+      resp = await api('/api/repos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    }
+    msgEl.innerHTML = `<span style="color:var(--green);">Saved · ${esc(resp.namespace)}${resp._projection ? ' · ' + _describeRepoProjection(resp._projection, false) : ''}</span>${resp._warning ? `<div style="color:var(--accent);margin-top:5px;">⚠ ${esc(resp._warning)}</div>` : ''}`;
+    await loadRepos();
+    // Keep the form open if the repo/branch couldn't be reached, so the warning is seen.
+    if (!resp._warning) setTimeout(() => hideRepoForm(), 1200);
+  } catch (e) {
+    msgEl.innerHTML = `<span style="color:var(--red);">${esc(e.message)}</span>`;
+  }
+}
+
+function _describeRepoProjection(p, plain) {
+  if (!p) return '';
+  if (p.status === 'unchanged')
+    return plain ? 'ConfigMap already current; MCP not rolled' : 'ConfigMap already current; MCP not rolled';
+  if (p.status === 'refused')
+    return plain ? `projection refused: ${p.reason || ''}` : `<span style="color:var(--accent);">projection refused: ${esc(p.reason || '')}</span>`;
+  if (p.status === 'skipped')
+    return plain ? `projection skipped: ${p.reason || ''}` : `<span style="color:var(--accent);">projection skipped: ${esc(p.reason || '')}</span>`;
+  if (p.status === 'projected') {
+    const base = `projected ${p.source_count} source(s)`;
+    return plain
+      ? `${base}; MCP ${p.rolled_out ? 'rolling' : 'not rolled'}`
+      : `${base}; MCP ${p.rolled_out ? '<span style="color:var(--accent);">rolling</span>' : 'not rolled'}`;
+  }
+  return p.status || '';
+}
+
+async function projectReposManually() {
+  const btn = document.getElementById('reposProjectBtn');
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    // ADR-007: ?role=all runs both spec + corpus projectors
+    const r = await api('/api/repos/project?role=all', { method: 'POST' });
+    const specSt = (r.spec || {}).status || '?';
+    const corpSt = (r.corpus || {}).status || '?';
+    btn.title = `spec=${specSt} (${(r.spec || {}).source_count || 0}) · corpus=${corpSt} (${(r.corpus || {}).source_count || 0})`;
+    btn.textContent = `✓ spec:${specSt[0]} corpus:${corpSt[0]}`;
+    toast(`Projection: spec ${_describeRepoProjection(r.spec, true)} · corpus ${_describeRepoProjection(r.corpus, true)}`);
+  } catch (e) {
+    btn.title = e.message;
+    btn.textContent = '⚠ Failed';
+    toast('Projection failed: ' + e.message, true);
+  } finally {
+    setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 3500);
+  }
+}
+
+async function clearRepoSecret(field) {
+  if (!_reposState.editingUuid) return;
+  const fieldLabel = field === 'github_pat' ? 'GitHub PAT' : 'GitHub webhook secret';
+  if (!confirm(`Clear the stored ${fieldLabel} for this repo?\n\nThis deletes the encrypted value. The poller/webhook will stop working for this repo until you set it again.`)) return;
+  const msgEl = document.getElementById('repoFormMsg');
+  try {
+    await api(`/api/repos/${encodeURIComponent(_reposState.editingUuid)}/secrets/${field}`, { method: 'DELETE' });
+    toast(`Cleared ${fieldLabel}`);
+    // Reflect the change in the form UI immediately
+    if (field === 'github_pat') {
+      _setRepoCredFieldState('rpfGithubPat', 'rpfPatStatus', 'rpfClearPatBtn', false);
+    } else {
+      _setRepoCredFieldState('rpfGithubWebhookSecret', 'rpfWebhookSecretStatus', 'rpfClearWebhookSecretBtn', false);
+    }
+    // Refresh the list in the background so has_* flags update
+    loadRepos();
+  } catch (e) {
+    msgEl.innerHTML = `<span style="color:var(--red);">Clear failed: ${esc(e.message)}</span>`;
+  }
+}
+
+async function convertInlineToShared(field) {
+  if (!_reposState.editingUuid) return;
+  const fieldLabel = field === 'github_pat' ? 'GitHub PAT' : 'GitHub webhook secret';
+  const name = prompt(`Convert this inline ${fieldLabel} to a shared credential.\n\nName for the new credential (lowercase + hyphens, e.g. "my-github-pat"):`);
+  if (!name) return;
+  try {
+    const r = await api(`/api/repos/${encodeURIComponent(_reposState.editingUuid)}/convert-credential`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field, credential_name: name.trim() }),
+    });
+    toast(`Converted to shared credential "${r.credential.name}"`);
+    // Refresh credentials + repos so the new shared credential is in
+    // the dropdown + the row chip shows shared
+    await loadCredentials();
+    await loadRepos();
+    // Reopen the form on the same repo to show the updated state
+    const updated = _reposState.list.find(x => x.uuid === _reposState.editingUuid);
+    if (updated) showRepoForm(updated);
+  } catch (e) {
+    toast(`Convert failed: ${e.message}`, true);
+  }
+}
+
+document.getElementById('addRepoBtn')?.addEventListener('click', () => showRepoForm(null));
+document.getElementById('saveRepoBtn')?.addEventListener('click', saveRepo);
+document.getElementById('cancelRepoBtn')?.addEventListener('click', hideRepoForm);
+document.getElementById('reposProjectBtn')?.addEventListener('click', projectReposManually);
+document.getElementById('rpfClearPatBtn')?.addEventListener('click', () => clearRepoSecret('github_pat'));
+document.getElementById('rpfClearWebhookSecretBtn')?.addEventListener('click', () => clearRepoSecret('github_webhook_secret'));
+document.getElementById('rpfConvertPatBtn')?.addEventListener('click', () => convertInlineToShared('github_pat'));
+document.getElementById('rpfConvertWebhookSecretBtn')?.addEventListener('click', () => convertInlineToShared('github_webhook_secret'));
+
+
+// ── Inbox: PR-comment curation (M8 of #28) ──────────────────────────────────
+// Reads ingested pr_comments via /api/inbox; lets the operator dismiss
+// comments or draft a UC from one (LLM-assisted via /api/inbox/{uuid}/draft-uc,
+// which reuses the UC Assist plumbing under the hood).
+let _inboxState = {
+  list: [],
+  selectedUuid: null,
+  statusFilter: 'new',
+  repoFilter: '',
+  threadByPR: false,
+};
+document.getElementById('inboxThreadToggle')?.addEventListener('change', function() {
+  _inboxState.threadByPR = this.checked;
+  renderInboxList();
+});
+
+// ════════════════ IMPROVE — self-improvement: diagnose & propose ════════════════
+// Review queue for the typed change proposals the diagnoser (diagnose.py) files
+// against failed runs. Review-only: accept/reject does NOT apply a change.
+const _improveState = { mode: 'proposals', list: [], selectedId: null, statusFilter: 'proposed',
+                        experiments: [], selectedExpId: null, bound: false };
+
+function _improveBind() {
+  if (_improveState.bound) return;
+  _improveState.bound = true;
+  document.getElementById('improveRefreshBtn')?.addEventListener('click', loadImproveQueue);
+  document.getElementById('improveDiagnoseBtn')?.addEventListener('click', diagnoseSelectedRun);
+  document.querySelectorAll('.improve-status-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.improve-status-chip').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _improveState.statusFilter = btn.dataset.status;
+      loadImproveQueue();
+    });
+  });
+  document.querySelectorAll('.improve-mode-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.improve-mode-tab').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _improveState.mode = btn.dataset.mode;
+      // The status chips + diagnose control only apply to the proposals view.
+      const propCtl = document.getElementById('improveRunSelect')?.closest('div');
+      loadImproveQueue();
+    });
+  });
+}
+
+async function loadImproveQueue() {
+  _improveBind();
+  if (_improveState.mode === 'experiments') return loadExperiments();
+  // Populate the "diagnose a run" dropdown (failed runs first — those have signatures).
+  try {
+    const resp = await api('/api/runs').catch(() => ({ runs: [] }));
+    const runs = (resp.runs || []).slice();
+    runs.sort((a, b) => (a.phase === 'Failed' ? -1 : 0) - (b.phase === 'Failed' ? -1 : 0));
+    const sel = document.getElementById('improveRunSelect');
+    if (sel) {
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">Diagnose an ingestion…</option>' +
+        runs.slice(0, 40).map(r =>
+          `<option value="${esc(r.name)}">${r.phase === 'Failed' ? '⚠ ' : ''}${esc(r.name)} · ${esc(r.phase || '')}</option>`
+        ).join('');
+      sel.value = cur;
+    }
+  } catch (e) { /* dropdown best-effort */ }
+
+  // Load the proposal queue.
+  const qs = _improveState.statusFilter ? `?status=${encodeURIComponent(_improveState.statusFilter)}` : '';
+  try {
+    const data = await api(`/api/improvement-proposals${qs}`);
+    _improveState.list = data.proposals || [];
+    renderImproveList();
+    // Badge: count of proposed (unreviewed) across all.
+    const pending = await api('/api/improvement-proposals?status=proposed').catch(() => ({ count: 0 }));
+    const badge = document.getElementById('badgeImprove');
+    if (badge) badge.textContent = pending.count ? pending.count : '';
+  } catch (e) {
+    document.getElementById('improveList').innerHTML =
+      `<div class="empty" style="padding:22px;text-align:center;color:var(--red);">${esc(e.message)}</div>`;
+  }
+}
+
+function _confColor(c) { return c === 'high' ? 'var(--green)' : (c === 'medium' ? 'var(--accent)' : 'var(--text-faint)'); }
+// Compact relative time (e.g. "3d ago", "just now") from an ISO string.
+function _ago(iso) {
+  if (!iso) return '';
+  const t = new Date(iso).getTime(); if (!t) return '';
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return 'just now';
+  const m = s / 60; if (m < 60) return `${Math.floor(m)}m ago`;
+  const h = m / 60; if (h < 24) return `${Math.floor(h)}h ago`;
+  const d = h / 24; if (d < 30) return `${Math.floor(d)}d ago`;
+  const mo = d / 30; if (mo < 12) return `${Math.floor(mo)}mo ago`;
+  return `${Math.floor(d / 365)}y ago`;
+}
+// Proposal lifecycle action → display label + dot colour (Activity timeline).
+function _propActionLabel(a) {
+  return ({ proposed: 'Proposed', 'proposal.accepted': 'Accepted', 'proposal.rejected': 'Rejected',
+            'proposal.applied': 'Applied' })[a] || a;
+}
+function _propActionColor(a) {
+  return a === 'proposal.accepted' ? 'var(--green)'
+    : a === 'proposal.rejected' ? 'var(--red)'
+    : a === 'proposal.applied' ? 'var(--blue,#4a90c9)' : 'var(--text-faint)';
+}
+function _statusBadge(s) {
+  const col = s === 'accepted' ? 'var(--green)' : (s === 'rejected' ? 'var(--red)' : (s === 'applied' ? 'var(--blue,#4a90c9)' : 'var(--text-faint)'));
+  const bg = s === 'accepted' ? 'rgba(123,168,79,0.12)' : (s === 'rejected' ? 'rgba(217,101,58,0.12)' : 'transparent');
+  return `<span style="color:${col};background:${bg};padding:1px 5px;border-radius:2px;font-size:9px;text-transform:uppercase;letter-spacing:.05em;">${esc(s)}</span>`;
+}
+
+function renderImproveList() {
+  const el = document.getElementById('improveList');
+  if (!_improveState.list.length) {
+    el.innerHTML = `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);font-size:12px;">No proposals${_improveState.statusFilter ? ` (${esc(_improveState.statusFilter)})` : ''}. Diagnose an ingestion to generate some.</div>`;
+    return;
+  }
+  el.innerHTML = _improveState.list.map(p => {
+    const active = p.id === _improveState.selectedId;
+    return `
+      <div class="improve-row" data-id="${p.id}"
+           style="padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;
+                  ${active ? 'background:var(--bg-raised);border-left:2px solid var(--accent);' : 'border-left:2px solid transparent;'}"
+           onclick="selectProposal(${p.id})">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
+          <div style="font-size:11px;font-weight:600;display:flex;align-items:center;gap:6px;min-width:0;">
+            <span style="width:7px;height:7px;border-radius:50%;background:${_confColor(p.confidence)};flex-shrink:0;" title="${esc(p.confidence)} confidence"></span>
+            <span style="background:var(--bg-raised);border:1px solid var(--border);padding:0 5px;border-radius:2px;font-size:9px;text-transform:uppercase;flex-shrink:0;">${esc(p.kind)}</span>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(p.target || '')}</span>
+          </div>
+          ${_statusBadge(p.status)}
+        </div>
+        <div style="font-size:10px;color:var(--text-faint);margin-top:3px;">
+          ${esc(p.signature_class || '')} · ${esc(p.source)} · ${esc((p.session_name || p.run_name || p.run_id || '').slice(0, 28))}
+        </div>
+        <div style="font-size:9px;color:var(--text-faint);margin-top:2px;" title="${esc(p.created_at ? new Date(p.created_at).toLocaleString() : '')}">
+          proposed ${esc(_ago(p.created_at))}${p.reviewed_at && p.status !== 'proposed' ? ` · ${esc(p.status)} ${esc(_ago(p.reviewed_at))}` : ''}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+async function selectProposal(id) {
+  _improveState.selectedId = id;
+  renderImproveList();
+  const p = _improveState.list.find(x => x.id === id);
+  if (!p) return;
+  const body = document.getElementById('improveDetailBody');
+  document.getElementById('improveDetailEmpty').style.display = 'none';
+  body.style.display = '';
+  const reviewable = p.status === 'proposed';
+  body.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;border-bottom:1px solid var(--border);padding-bottom:10px;">
+      <div style="min-width:0;">
+        <div style="font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="width:8px;height:8px;border-radius:50%;background:${_confColor(p.confidence)};"></span>
+          <span style="background:var(--bg-raised);border:1px solid var(--border);padding:1px 6px;border-radius:2px;font-size:10px;text-transform:uppercase;">${esc(p.kind)}</span>
+          <span>${esc(p.target || '')}</span>
+        </div>
+        <div style="font-size:10px;color:var(--text-faint);margin-top:4px;">
+          ${esc(p.confidence)} confidence · source: ${esc(p.source)} · signature: ${esc(p.signature_class || '—')}
+        </div>
+      </div>
+      ${_statusBadge(p.status)}
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:12px;">
+      ${_detailBlock('Proposed change', p.proposed_change)}
+      ${_detailBlock('Rationale', p.rationale)}
+      ${_detailBlock('Predicted effect', p.predicted_effect)}
+      <div style="font-size:10px;color:var(--text-faint);">
+        From run <span style="color:var(--text-dim);">${esc(p.session_name || p.run_name || p.run_id || '')}</span>
+      </div>
+      <div>
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;">Activity</div>
+        <div id="improveActivity"><div style="font-size:10px;color:var(--text-faint);">loading…</div></div>
+      </div>
+    </div>
+    ${reviewable ? `
+      <div style="display:flex;gap:8px;align-items:center;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
+        <input id="improveReviewNote" placeholder="optional note…" style="flex:1;font-size:11px;padding:5px 8px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);">
+        <button class="btn" style="background:var(--green);color:#fff;" onclick="reviewProposal(${p.id}, 'accepted')">✓ Accept</button>
+        <button class="btn ghost" id="improveRejectBtn-${p.id}" onclick="_armDeleteBtn(this, () => reviewProposal(${p.id}, 'rejected'))">✕ Reject</button>
+      </div>
+      <div style="font-size:9px;color:var(--text-faint);margin-top:6px;">Review only — accepting does not apply the change (that is Phase 2). It flags the proposal for an operator or the future auto-apply gate.</div>
+    ` : ''}
+    ${p.change_spec && p.change_spec.type === 'max_tokens' ? `
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;margin-bottom:6px;">🔬 A/B experiment (Phase 2)</div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <label style="font-size:11px;display:flex;align-items:center;gap:4px;">candidate max_tokens
+            <input id="abCandidate" type="number" value="${p.change_spec.direction === 'lower' ? Math.round((p.change_spec.current||10240)*0.625) : Math.round((p.change_spec.current||10240)*1.25)}" style="width:84px;font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);">
+          </label>
+          <select id="abSet" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);"><option value="">eval set…</option></select>
+          <button class="btn primary btn-sm" onclick="launchExperiment(${p.id}, parseInt(document.getElementById('abCandidate').value), parseInt(document.getElementById('abSet').value)||null)">🔬 A/B</button>
+        </div>
+        <div style="font-size:9px;color:var(--text-faint);margin-top:4px;">Evaluates baseline (current config) + candidate (this max_tokens) on the eval set; the gate auto-reverts a regression OR a new failure mode. Candidate is a per-ingestion override — production + spamllm untouched.</div>
+      </div>` : ''}`;
+  if (p.change_spec && p.change_spec.type === 'max_tokens') _populateAbSets();
+  _loadProposalActivity(p.id);
+}
+
+// Load + render the proposal's lifecycle timeline (proposed → accept/reject → applied).
+async function _loadProposalActivity(pid) {
+  const box = document.getElementById('improveActivity');
+  if (!box) return;
+  try {
+    const data = await api(`/api/improvement-proposals/${pid}/activity`);
+    const items = data.activity || [];
+    box.innerHTML = items.map(ev => {
+      const when = ev.at ? new Date(ev.at).toLocaleString() : '';
+      const d = ev.detail || {};
+      const note = d.note ? ` — “${esc(d.note)}”` : '';
+      const via = d.via ? ` (via ${esc(d.via)}${d.experiment_id ? ` #${esc(String(d.experiment_id))}` : ''})` : '';
+      return `<div style="display:flex;gap:8px;align-items:baseline;font-size:11px;padding:3px 0;">
+        <span style="width:8px;height:8px;border-radius:50%;background:${_propActionColor(ev.action)};flex-shrink:0;position:relative;top:2px;"></span>
+        <div style="min-width:0;line-height:1.4;">
+          <span style="color:var(--text);font-weight:600;">${esc(_propActionLabel(ev.action))}</span>${ev.actor ? `<span style="color:var(--text-faint);"> by ${esc(ev.actor)}</span>` : ''}<span style="color:var(--text-faint);">${via}</span>
+          <span style="color:var(--text-faint);" title="${esc(ev.at || '')}"> · ${esc(_ago(ev.at))}</span>
+          <span style="color:var(--text-faint);font-size:9px;"> (${esc(when)})</span>${note ? `<span style="font-style:italic;color:var(--text-dim);">${note}</span>` : ''}
+        </div>
+      </div>`;
+    }).join('') || '<div style="font-size:10px;color:var(--text-faint);">No activity recorded.</div>';
+  } catch (e) {
+    box.innerHTML = '<div style="font-size:10px;color:var(--text-faint);">activity unavailable</div>';
+  }
+}
+
+async function _populateAbSets() {
+  try {
+    const data = await api('/api/sets');
+    const sel = document.getElementById('abSet');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">eval set…</option>' +
+      (data.sets || []).map(s => `<option value="${s.id}">${esc(s.name)} (${s.member_count})</option>`).join('');
+  } catch (e) { /* sets best-effort */ }
+}
+
+function _detailBlock(label, text) {
+  return `<div>
+    <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px;">${esc(label)}</div>
+    <div style="font-size:12px;line-height:1.5;color:var(--text);white-space:pre-wrap;">${esc(text || '—')}</div>
+  </div>`;
+}
+
+async function reviewProposal(id, status) {
+  const note = document.getElementById('improveReviewNote')?.value || null;
+  try {
+    await api(`/api/improvement-proposals/${id}/review`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, note }),
+    });
+    toast(`Proposal ${status}`, false);
+    await loadImproveQueue();
+    // Re-select to show the updated status, if still in the filtered list.
+    if (_improveState.list.find(x => x.id === id)) selectProposal(id);
+    else { _improveState.selectedId = null;
+           document.getElementById('improveDetailBody').style.display = 'none';
+           document.getElementById('improveDetailEmpty').style.display = ''; }
+  } catch (e) { toast(`Review failed: ${e.message}`, true); }
+}
+
+async function diagnoseSelectedRun() {
+  const sel = document.getElementById('improveRunSelect');
+  const run = sel?.value;
+  if (!run) { toast('Pick an ingestion to diagnose', true); return; }
+  const useLlm = document.getElementById('improveLLMChk')?.checked ? 'true' : 'false';
+  const btn = document.getElementById('improveDiagnoseBtn');
+  const orig = btn.textContent; btn.textContent = '…'; btn.disabled = true;
+  try {
+    const r = await api(`/api/diagnose/${encodeURIComponent(run)}?use_llm=${useLlm}`, { method: 'POST' });
+    const n = (r.proposals || []).length;
+    toast(`Diagnosed: ${n} proposal${n === 1 ? '' : 's'}${r.used_llm ? ' (incl. LLM)' : ''}`, false);
+    // Show proposed regardless of current filter so the new ones are visible.
+    document.querySelectorAll('.improve-status-chip').forEach(b => b.classList.toggle('active', b.dataset.status === 'proposed'));
+    _improveState.statusFilter = 'proposed';
+    await loadImproveQueue();
+    if ((r.proposals || [])[0]) selectProposal(r.proposals[0].id);
+  } catch (e) {
+    toast(`Diagnose failed: ${e.message}`, true);
+  } finally { btn.textContent = orig; btn.disabled = false; }
+}
+
+// ── Phase 2: A/B experiments ──
+async function loadExperiments() {
+  try {
+    const data = await api('/api/experiments');
+    _improveState.experiments = data.experiments || [];
+    renderExperimentsList();
+  } catch (e) {
+    document.getElementById('improveList').innerHTML =
+      `<div class="empty" style="padding:22px;text-align:center;color:var(--red);">${esc(e.message)}</div>`;
+  }
+}
+
+function _expVerdictColor(v) {
+  if (v === 'promote' || v === 'equivalent') return 'var(--green)';
+  if (v === 'revert') return 'var(--red)';
+  if (v === 'changed') return 'var(--amber,gold)';
+  if (v === 'inconclusive') return 'var(--accent)';
+  return 'var(--text-faint)';
+}
+function _sevColor(s) {
+  return s === 'critical' ? 'var(--red)' : s === 'major' ? 'var(--amber,gold)'
+    : s === 'minor' ? 'var(--accent)' : 'var(--text-faint)';
+}
+// Backported static-comparator diff. `diff` = {summary, pairs?}. pairs present for a
+// static compare; dynamic experiments carry summary only.
+function _renderSemanticDiff(diff) {
+  if (!diff || !diff.summary) return '';
+  const s = diff.summary;
+  const chip = (label, n, color) => `<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:${color};color:#000;font-size:10px;font-weight:600;margin-right:6px;">${esc(label)}: ${n||0}</span>`;
+  let h = `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">`
+    + `<div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--text-dim);margin-bottom:6px;">Semantic diff (analysis A ↔ B)</div>`
+    + `<div style="margin-bottom:8px;">${chip('changed', s.changed, 'var(--amber,gold)')}${chip('equivalent', s.equivalent, 'var(--green)')}`
+    + (s.missing ? chip('missing', s.missing, 'var(--text-faint)') : '')
+    + (s.max_severity ? `<span style="font-size:10px;color:${_sevColor(s.max_severity)};font-weight:600;">max severity: ${esc(s.max_severity)}</span>` : '') + `</div>`;
+  if (Array.isArray(diff.pairs) && diff.pairs.length) {
+    const changed = diff.pairs.filter(p => p.verdict === 'changed');
+    h += `<div style="font-size:10px;color:var(--text-faint);margin-bottom:4px;">${changed.length} of ${diff.pairs.length} UCs changed — details:</div>`;
+    for (const p of changed) {
+      h += `<details style="margin-bottom:4px;"><summary style="cursor:pointer;font-size:11px;"><span style="color:${_sevColor(p.max_severity)};font-weight:600;">[${esc(p.max_severity||'?')}]</span> ${esc(p.uc_uuid)}</summary>`
+        + `<div style="padding:4px 0 4px 14px;">` + (p.findings||[]).map(f =>
+            `<div style="font-size:10px;color:var(--text-dim);"><span style="color:${_sevColor(f.severity)};">${esc(f.severity)}</span> · <b>${esc(f.field)}</b>: ${esc(f.description)}</div>`).join('') + `</div></details>`;
+    }
+  }
+  return h + `</div>`;
+}
+
+function _adhocForm() {
+  return `
+    <details style="border-bottom:1px solid var(--border);padding:8px 14px;">
+      <summary style="cursor:pointer;font-size:11px;color:var(--accent);user-select:none;">+ New A/B experiment</summary>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <select id="adhocType" onchange="document.getElementById('adhocParam').style.display=this.value==='sampling'?'':'none';document.getElementById('adhocCandidate').style.display=(this.value==='sampling'||this.value==='max_tokens')?'':'none'" style="font-size:11px;padding:3px 5px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);" title="sampling/max_tokens take a candidate value; grounding nudge + evaluation prompt are flag-style (candidate arm on, baseline = production)">
+            <option value="sampling">sampling</option><option value="max_tokens">max_tokens</option><option value="grounding_nudge">grounding nudge</option><option value="stage2_context">evaluation prompt</option>
+          </select>
+          <select id="adhocParam" style="font-size:11px;padding:3px 5px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);">
+            <option value="temperature">temperature</option><option value="top_k">top_k</option><option value="top_p">top_p</option><option value="min_p">min_p</option>
+          </select>
+          <input id="adhocCandidate" type="number" step="any" placeholder="candidate" style="width:78px;font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);">
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <select id="adhocSet" style="font-size:11px;padding:3px 5px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);"><option value="">eval set…</option></select>
+          <label style="font-size:10px;color:var(--text-faint);display:flex;align-items:center;gap:3px;" title="Sampling only: auto-write the winning profile (reversible)"><input type="checkbox" id="adhocAuto" style="width:auto;height:auto;accent-color:var(--accent);"> auto-promote</label>
+          <button class="btn primary btn-sm" onclick="launchAdhocExperiment()">🔬 Launch</button>
+        </div>
+        <div style="font-size:9px;color:var(--text-faint);">Evaluates baseline + candidate on the eval set; the gate auto-reverts a regression or new failure mode. Candidate is per-ingestion — production + spamllm untouched.</div>
+      </div>
+    </details>`;
+}
+
+function _staticCompareForm() {
+  return `
+    <details style="border-bottom:1px solid var(--border);padding:8px 14px;">
+      <summary style="cursor:pointer;font-size:11px;color:var(--accent);user-select:none;">+ Static A/B (compare two existing ingestions)</summary>
+      <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+        <input id="scRunA" placeholder="ingestion A (id)" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);font-family:var(--mono,monospace);">
+        <input id="scRunB" placeholder="ingestion B (id)" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);font-family:var(--mono,monospace);">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <select id="scSet" style="font-size:11px;padding:3px 5px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);"><option value="">eval set…</option></select>
+          <button class="btn primary btn-sm" onclick="launchStaticCompare()">⚖ Compare</button>
+        </div>
+        <div style="font-size:9px;color:var(--text-faint);">Semantically diffs the two ingestions' analyses (equivalent/changed + severity). No new ingestions; server-side — raw analyses stay on the cluster.</div>
+      </div>
+    </details>`;
+}
+
+async function launchStaticCompare() {
+  const a = (document.getElementById('scRunA').value || '').trim();
+  const b = (document.getElementById('scRunB').value || '').trim();
+  const setId = parseInt(document.getElementById('scSet').value) || null;
+  if (!a || !b) { toast('Enter both ingestion ids', true); return; }
+  if (!setId) { toast('Pick an eval set', true); return; }
+  try {
+    const r = await api('/api/experiments/static-compare', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run_a: a, run_b: b, set_id: setId }) });
+    toast(`Static compare #${r.id} done`, false);
+    await loadExperiments();
+    selectExperiment(r.id);
+  } catch (e) { toast(`Compare failed: ${e.message}`, true); }
+}
+
+async function _populateAdhocSets() {
+  try {
+    const data = await api('/api/sets');
+    const opts = '<option value="">eval set…</option>' +
+      (data.sets || []).map(s => `<option value="${s.id}">${esc(s.name)} (${s.member_count})</option>`).join('');
+    const a = document.getElementById('adhocSet'); if (a) a.innerHTML = opts;
+    const c = document.getElementById('scSet'); if (c) c.innerHTML = opts;
+  } catch (e) {}
+}
+
+async function launchAdhocExperiment() {
+  const type = document.getElementById('adhocType').value;
+  const cand = parseFloat(document.getElementById('adhocCandidate').value);
+  const setId = parseInt(document.getElementById('adhocSet').value) || null;
+  if (!setId) { toast('Pick an eval set', true); return; }
+  // sampling/max_tokens need a candidate value; the flag-style types (grounding nudge,
+  // evaluation prompt) don't — the candidate arm flips on, baseline = production.
+  const needsCand = (type === 'sampling' || type === 'max_tokens');
+  if (needsCand && isNaN(cand)) { toast('Enter a candidate value', true); return; }
+  const spec = type === 'sampling'
+    ? { type: 'sampling', param: document.getElementById('adhocParam').value, candidate: cand }
+    : type === 'max_tokens'
+    ? { type: 'max_tokens', candidate: Math.round(cand) }
+    : { type };   // grounding_nudge | stage2_context
+  const auto = document.getElementById('adhocAuto').checked;
+  try {
+    const r = await api('/api/experiments', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ change_spec: spec, set_id: setId, sample_count: 1, auto_promote: auto }) });
+    toast(`A/B experiment #${r.id} launched`, false);
+    await loadExperiments();
+    selectExperiment(r.id);
+  } catch (e) { toast(`Launch failed: ${e.message}`, true); }
+}
+
+function renderExperimentsList() {
+  const el = document.getElementById('improveList');
+  if (!_improveState.experiments.length) {
+    el.innerHTML = _adhocForm() + _staticCompareForm() + `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);font-size:12px;">No experiments yet.</div>`;
+    _populateAdhocSets();
+    return;
+  }
+  el.innerHTML = _adhocForm() + _staticCompareForm() + _improveState.experiments.map(x => {
+    const active = x.id === _improveState.selectedExpId;
+    const v = x.verdict || (x.status === 'running' ? 'running' : '—');
+    return `
+      <div class="improve-row" data-id="${x.id}"
+           style="padding:10px 14px;border-bottom:1px solid var(--border);cursor:pointer;
+                  ${active ? 'background:var(--bg-raised);border-left:2px solid var(--accent);' : 'border-left:2px solid transparent;'}"
+           onclick="selectExperiment(${x.id})">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
+          <div style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(x.title || ('experiment #' + x.id))}</div>
+          <span style="font-size:9px;text-transform:uppercase;color:${_expVerdictColor(x.verdict)};">${esc(v)}</span>
+        </div>
+        <div style="font-size:10px;color:var(--text-faint);margin-top:3px;">${esc(x.status)} · ${esc(x.eval_set_name || (x.eval_set_id ? 'set ' + x.eval_set_id : 'ad-hoc'))}</div>
+      </div>`;
+  }).join('');
+  _populateAdhocSets();
+}
+
+async function selectExperiment(id) {
+  _improveState.selectedExpId = id;
+  renderExperimentsList();
+  document.getElementById('improveDetailEmpty').style.display = 'none';
+  const body = document.getElementById('improveDetailBody');
+  body.style.display = '';
+  body.innerHTML = `<div style="color:var(--text-faint);font-size:12px;">Loading experiment…</div>`;
+  let x;
+  try { x = await api(`/api/experiments/${id}`); }
+  catch (e) { body.innerHTML = `<div style="color:var(--red);">${esc(e.message)}</div>`; return; }
+  const bs = x.baseline_score, cs = x.candidate_score;
+  const isStatic = x.change_spec?.type === 'static_compare';
+  // Static compare stores the full diff in candidate_score; dynamic stores summary under .semantic_diff.
+  const semDiff = isStatic ? cs : (cs && cs.semantic_diff ? { summary: cs.semantic_diff } : null);
+  const scoreCell = (s) => s ? `${(s.success_rate*100).toFixed(0)}% (${s.succeeded}/${s.total})${s.high_sev_classes?.length ? ` · ⚠ ${esc(s.high_sev_classes.join(','))}` : ''}` : '—';
+  const phaseLine = (arm) => `<span style="color:var(--text-faint);">${esc(x.arm_phases?.[arm] || '?')}</span>`;
+  const candLabel = x.change_spec?.type === 'max_tokens' ? ` (max_tokens ${esc(String(x.change_spec?.candidate ?? ''))})`
+    : x.change_spec?.type === 'sampling' ? ` (${esc(x.change_spec?.param||'')} ${esc(String(x.change_spec?.candidate ?? ''))})` : '';
+  body.innerHTML = `
+    <div style="border-bottom:1px solid var(--border);padding-bottom:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+      <div><div style="font-size:14px;font-weight:600;">${esc(x.title || ('Experiment #' + x.id))}</div>
+        <div style="font-size:10px;color:var(--text-faint);margin-top:3px;">${esc(x.status)} · eval ${esc(x.eval_set_name || x.eval_set_id || 'ad-hoc')} · ${x.sample_count} sample(s)</div></div>
+      ${x.verdict ? `<span style="font-size:11px;text-transform:uppercase;font-weight:600;color:${_expVerdictColor(x.verdict)};">${esc(x.verdict)}</span>` : ''}
+    </div>
+    ${isStatic ? `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
+      <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Ingestion A</div>
+        <div style="font-size:11px;font-family:var(--mono,monospace);margin-top:4px;word-break:break-all;">${esc(x.baseline_run || '')}</div>
+      </div>
+      <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Ingestion B</div>
+        <div style="font-size:11px;font-family:var(--mono,monospace);margin-top:4px;word-break:break-all;">${esc(x.candidate_run || '')}</div>
+      </div>
+    </div>` : `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
+      <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Baseline ${phaseLine('baseline_run')}</div>
+        <div style="font-size:16px;font-weight:600;margin-top:4px;">${scoreCell(bs)}</div>
+        <div style="font-size:9px;color:var(--text-faint);margin-top:4px;">${esc(x.baseline_run || '')}</div>
+      </div>
+      <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Candidate${candLabel} ${phaseLine('candidate_run')}</div>
+        <div style="font-size:16px;font-weight:600;margin-top:4px;">${scoreCell(cs)}</div>
+        <div style="font-size:9px;color:var(--text-faint);margin-top:4px;">${esc(x.candidate_run || '')}</div>
+      </div>
+    </div>`}
+    ${x.verdict_reason ? `<div style="margin-top:12px;font-size:12px;line-height:1.5;padding:10px;background:var(--bg-raised);border-left:2px solid ${_expVerdictColor(x.verdict)};border-radius:2px;">${esc(x.verdict_reason)}</div>` : ''}
+    ${_renderSemanticDiff(semDiff)}
+    ${x.status === 'running' ? `<div style="margin-top:12px;font-size:11px;color:var(--text-faint);">⏳ Ingestions in flight — refresh to update. (Candidate is a per-ingestion override; production + spamllm untouched.)</div>` : ''}
+    ${x.auto_promote ? `<div style="margin-top:8px;font-size:10px;color:var(--accent);">⚡ auto-promote on (a winning sampling verdict applies automatically, reversibly)</div>` : ''}
+    ${x.verdict === 'promote' && x.status !== 'promoted' ? `
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
+        <button class="btn" style="background:var(--green);color:#fff;" onclick="promoteExperiment(${x.id})">✓ Promote</button>
+        <div style="font-size:9px;color:var(--text-faint);margin-top:6px;">${x.change_spec?.type === 'sampling'
+          ? 'Sampling — Promote writes the production profile (runtime, reversible).'
+          : 'max_tokens — Promote returns the exact deploy-var change (human-gated). The A/B proof is automated.'}</div>
+      </div>` : ''}
+    ${x.status === 'promoted' ? `
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+        <div style="font-size:11px;color:var(--green);">✓ Promoted${x.change_spec?.applied ? `: ${esc(x.change_spec.applied.param)} → ${esc(String(x.change_spec.applied.to))}` : ''}</div>
+        ${x.change_spec?.type === 'sampling'
+          ? `<button class="btn ghost btn-sm" style="margin-top:8px;" onclick="_armDeleteBtn(this, () => revertExperiment(${x.id}))">↩ Revert</button>`
+          : `<div style="font-size:9px;color:var(--text-faint);margin-top:4px;">Apply the deploy-var change to ship it.</div>`}
+      </div>` : ''}
+    ${x.status === 'reverted' ? `<div style="margin-top:12px;font-size:11px;color:var(--text-faint);">↩ Reverted — production profile restored to its prior state.</div>` : ''}`;
+}
+
+async function revertExperiment(id) {
+  try {
+    await api(`/api/experiments/${id}/revert`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    toast('Reverted — production profile restored', false);
+    selectExperiment(id);
+  } catch (e) { toast(`Revert failed: ${e.message}`, true); }
+}
+
+async function promoteExperiment(id) {
+  try {
+    const r = await api(`/api/experiments/${id}/promote`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    toast('Promotion staged — see apply instructions', false);
+    alert('Apply this change to ship the promotion:\n\n' + r.instructions);
+    selectExperiment(id);
+  } catch (e) { toast(`Promote failed: ${e.message}`, true); }
+}
+
+async function launchExperiment(proposalId, candidateValue, setId) {
+  try {
+    const r = await api('/api/experiments', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proposal_id: proposalId,
+        change_spec: { type: 'max_tokens', candidate: candidateValue },
+        set_id: setId, sample_count: 1 }),
+    });
+    toast(`A/B experiment #${r.id} launched (baseline + candidate ingestions)`, false);
+    document.querySelectorAll('.improve-mode-tab').forEach(b => b.classList.toggle('active', b.dataset.mode === 'experiments'));
+    _improveState.mode = 'experiments';
+    await loadImproveQueue();
+    selectExperiment(r.id);
+  } catch (e) { toast(`Launch failed: ${e.message}`, true); }
+}
+
+async function loadInbox() {
+  // Hydrate repo filter dropdown from the registry (uses the same
+  // _reposState cache populated by loadRepos when Config is opened;
+  // hit /api/repos directly if state is empty).
+  try {
+    let repos = (_reposState && _reposState.list) || [];
+    if (!repos.length) {
+      const r = await api('/api/repos');
+      repos = r.repos || [];
+    }
+    const sel = document.getElementById('inboxRepoFilter');
+    if (sel) {
+      const issueSourceRepos = repos.filter(x => (x.roles || []).includes('issue-source'));
+      const opts = ['<option value="">all</option>'].concat(
+        issueSourceRepos.map(x => `<option value="${esc(x.uuid)}">${esc(x.namespace)}</option>`)
+      );
+      sel.innerHTML = opts.join('');
+      sel.value = _inboxState.repoFilter || '';
+    }
+  } catch { /* non-fatal */ }
+
+  // Fetch comments per current filters
+  const params = new URLSearchParams();
+  params.set('status', _inboxState.statusFilter || 'new');
+  if (_inboxState.repoFilter) params.set('repo_uuid', _inboxState.repoFilter);
+  params.set('limit', '200');
+  try {
+    const r = await api('/api/inbox?' + params.toString());
+    _inboxState.list = r.comments || [];
+    document.getElementById('badgeInbox').textContent =
+      _inboxState.list.length ? _inboxState.list.length : '';
+    renderInboxList();
+    // Preserve selection if still in list; otherwise clear detail
+    if (_inboxState.selectedUuid && _inboxState.list.find(c => c.uuid === _inboxState.selectedUuid)) {
+      renderInboxDetail(_inboxState.list.find(c => c.uuid === _inboxState.selectedUuid));
+    } else {
+      _inboxState.selectedUuid = null;
+      _showInboxEmpty();
+    }
+  } catch (e) {
+    document.getElementById('inboxList').innerHTML =
+      `<div class="empty" style="color:var(--red);padding:14px;">${esc(e.message)}</div>`;
+  }
+}
+
+function renderInboxList() {
+  const el = document.getElementById('inboxList');
+  if (!_inboxState.list.length) {
+    el.innerHTML = `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);">
+      No comments match the current filter.
+      <div style="font-size:10px;margin-top:8px;">
+        Comments appear here when a repo with role=issue-source has open-PR comments
+        (poller M5 / webhook M6).
+      </div>
+    </div>`;
+    return;
+  }
+  const rowHtml = (c, threaded) => {
+    const isActive = c.uuid === _inboxState.selectedUuid;
+    const statusColor = c.status === 'new' ? 'var(--accent)'
+      : (c.status === 'drafted_to_uc' ? 'var(--green)' : 'var(--text-faint)');
+    const preview = (c.body || '').replace(/\s+/g, ' ').slice(0, 140);
+    const uuidJson = attrJson(c.uuid);
+    return `
+      <div class="inbox-row" data-uuid="${esc(c.uuid)}"
+           style="padding:10px 14px${threaded ? ' 10px 26px' : ''};border-bottom:1px solid var(--border);cursor:pointer;
+                  ${isActive ? 'background:var(--bg-raised);border-left:2px solid var(--accent);' : ''}"
+           onclick="selectInboxComment(${uuidJson})">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
+          <div style="font-size:11px;font-weight:600;">
+            <span style="color:var(--text-faint);">@</span>${esc(c.author_login)}
+            ${threaded ? '' : `<span style="color:var(--text-faint);font-weight:400;font-size:10px;"> · PR #${c.pr_number}${c.repo_branch ? ` · ⎇ ${esc(c.repo_branch)}` : ''}</span>`}
+          </div>
+          <div style="display:flex;gap:5px;align-items:center;">
+            ${(!threaded && c.repo_namespace) ? `<span title="Source repo namespace — drafted UCs auto-scope to spec_namespaces: [${esc(c.repo_namespace)}]" style="font-size:9px;font-family:var(--mono,monospace);color:var(--accent);background:var(--accent-bg);padding:1px 5px;border-radius:2px;">${esc(c.repo_namespace)}</span>` : ''}
+            <span style="font-size:9px;color:${statusColor};text-transform:uppercase;letter-spacing:.06em;">${esc(c.status)}</span>
+          </div>
+        </div>
+        ${threaded ? '' : `<div style="font-size:10px;color:var(--text-faint);margin:2px 0 4px;">${esc(c.pr_title || '(no title)')}</div>`}
+        <div style="font-size:11px;color:var(--text-dim);line-height:1.4;">${esc(preview)}${preview.length >= 140 ? '…' : ''}</div>
+        <div style="font-size:9px;color:var(--text-faint);margin-top:4px;font-family:var(--mono,monospace);">
+          ${esc(c.github_comment_type)} · ${esc(fmtTs(c.github_updated_at))} · src: ${esc(c.ingestion_source)}
+        </div>
+      </div>`;
+  };
+  if (_inboxState.threadByPR) {
+    // Group the conversation by PR (repo namespace + pr_number), newest PR first.
+    const groups = new Map();
+    _inboxState.list.forEach(c => {
+      const key = `${c.repo_namespace || ''}#${c.pr_number}`;
+      if (!groups.has(key)) groups.set(key, { pr: c.pr_number, title: c.pr_title, ns: c.repo_namespace, url: c.pr_url, items: [] });
+      groups.get(key).items.push(c);
+    });
+    el.innerHTML = [...groups.values()].map(g => `
+      <div style="padding:7px 14px;background:var(--bg-raised);border-bottom:1px solid var(--border);">
+        <div style="font-size:11px;font-weight:600;">
+          ${g.ns ? `<span style="font-family:var(--mono,monospace);color:var(--accent);font-size:9px;">${esc(g.ns)}</span> ` : ''}PR #${g.pr}
+          <span style="color:var(--text-faint);font-weight:400;"> ${esc(g.title || '')}</span>
+          <span style="color:var(--text-faint);font-size:9px;font-weight:400;"> · ${g.items.length} comment${g.items.length===1?'':'s'}</span>
+          ${g.url ? ` <a href="${esc(g.url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--text-faint);font-size:9px;">↗</a>` : ''}
+        </div>
+      </div>
+      ${g.items.map(c => rowHtml(c, true)).join('')}`).join('');
+  } else {
+    el.innerHTML = _inboxState.list.map(c => rowHtml(c, false)).join('');
+  }
+}
+
+function _showInboxEmpty() {
+  document.getElementById('inboxDetailEmpty').style.display = '';
+  document.getElementById('inboxDetailBody').style.display = 'none';
+}
+
+function _showInboxBody() {
+  document.getElementById('inboxDetailEmpty').style.display = 'none';
+  document.getElementById('inboxDetailBody').style.display = 'flex';
+}
+
+async function selectInboxComment(uuid) {
+  _inboxState.selectedUuid = uuid;
+  renderInboxList(); // re-render to show active state
+  try {
+    const c = await api(`/api/inbox/${encodeURIComponent(uuid)}`);
+    renderInboxDetail(c);
+  } catch (e) {
+    document.getElementById('inboxDetailBody').innerHTML =
+      `<div style="color:var(--red);padding:14px;">${esc(e.message)}</div>`;
+    _showInboxBody();
+  }
+}
+
+function renderInboxDetail(c) {
+  const el = document.getElementById('inboxDetailBody');
+  el.style.flexDirection = 'column';
+  el.style.gap = '10px';
+  const ucLinks = (c.uc_links || []).map(l => `
+    <div style="font-size:11px;font-family:var(--mono,monospace);color:var(--text-dim);">
+      ↳ <a href="javascript:void(0)" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(l.uc_uuid)}'),200)" style="color:var(--accent);">${esc(l.uc_uuid)}</a>
+      <span style="color:var(--text-faint);font-family:inherit;font-size:10px;"> · ${esc(l.linked_by || '')} · ${esc(fmtTs(l.linked_at))}</span>
+    </div>
+  `).join('');
+  el.innerHTML = `
+    <div style="padding-bottom:8px;border-bottom:1px solid var(--border);">
+      <div style="font-size:13px;font-weight:600;">PR #${c.pr_number}: ${esc(c.pr_title || '(no title)')}</div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:2px;font-family:var(--mono,monospace);">
+        ${c.repo_url ? `<a href="${esc(c.repo_url)}" target="_blank" rel="noopener" style="color:var(--accent);">${esc(c.repo_display_name || c.repo_namespace || c.repo_url)}</a>` : esc(c.repo_namespace || '—')}${c.repo_branch ? ` · <span title="Monitored branch">⎇ ${esc(c.repo_branch)}</span>` : ''}
+      </div>
+      <div style="font-size:11px;color:var(--text-faint);margin-top:2px;">
+        @${esc(c.author_login)} ${c.author_url ? `· <a href="${esc(c.author_url)}" target="_blank" rel="noopener" style="color:var(--text-faint);">profile</a>` : ''}
+        · ${esc(c.github_comment_type)}
+        ${c.comment_url ? `· <a href="${esc(c.comment_url)}" target="_blank" rel="noopener" style="color:var(--text-faint);">comment on GitHub ↗</a>` : ''}
+        ${c.pr_url ? `· <a href="${esc(c.pr_url)}" target="_blank" rel="noopener" style="color:var(--text-faint);">PR ↗</a>` : ''}
+      </div>
+      <div style="font-size:10px;color:var(--text-faint);margin-top:2px;font-family:var(--mono,monospace);">
+        updated ${esc(fmtTs(c.github_updated_at))} · fetched ${esc(fmtTs(c.fetched_at))} · src: ${esc(c.ingestion_source)} · status: <span style="color:${c.status === 'new' ? 'var(--accent)' : (c.status === 'drafted_to_uc' ? 'var(--green)' : 'var(--text-faint)')};text-transform:uppercase;">${esc(c.status)}</span>
+      </div>
+    </div>
+    <div style="padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:40vh;overflow-y:auto;font-family:var(--mono,monospace);">${esc(c.body)}</div>
+    ${ucLinks ? `<div style="padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">
+      <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:6px;">Drafted into UCs</div>
+      ${ucLinks}
+    </div>` : ''}
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button class="btn primary" id="inboxDraftBtn" onclick="draftUCFromComment('${esc(c.uuid)}')">✦ Draft UC (LLM)</button>
+      <button class="btn ghost" id="inboxDismissBtn" onclick="setInboxStatus('${esc(c.uuid)}', 'dismissed')" ${c.status === 'dismissed' ? 'disabled' : ''}>Dismiss</button>
+      ${c.status !== 'new' ? `<button class="btn ghost" onclick="setInboxStatus('${esc(c.uuid)}', 'new')">Reopen</button>` : ''}
+      <span id="inboxDetailMsg" style="font-size:11px;color:var(--text-faint);"></span>
+    </div>
+    <div id="inboxDraftOutput" style="display:none;"></div>`;
+  _showInboxBody();
+}
+
+async function setInboxStatus(uuid, status, ucUuid) {
+  const msgEl = document.getElementById('inboxDetailMsg');
+  if (msgEl) { msgEl.textContent = '…'; msgEl.style.color = ''; }
+  const body = { status };
+  if (ucUuid) body.uc_uuid = ucUuid;
+  try {
+    await api(`/api/inbox/${encodeURIComponent(uuid)}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (msgEl) { msgEl.innerHTML = `<span style="color:var(--green);">${esc(status)}</span>`; }
+    // Refresh list (the comment may have moved out of the current filter)
+    await loadInbox();
+  } catch (e) {
+    if (msgEl) msgEl.innerHTML = `<span style="color:var(--red);">${esc(e.message)}</span>`;
+  }
+}
+
+async function draftUCFromComment(uuid) {
+  const btn = document.getElementById('inboxDraftBtn');
+  const msgEl = document.getElementById('inboxDetailMsg');
+  const outEl = document.getElementById('inboxDraftOutput');
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '… drafting (this can take 30-60s)';
+  if (msgEl) { msgEl.textContent = ''; msgEl.style.color = ''; }
+  // Pass the operator's preferred UC Assist model if they have one
+  // selected in localStorage (same key used by Config → UC Assist panel)
+  const body = {};
+  const ucAssistModelId = (() => { try { return localStorage.getItem('ucAssistModelId'); } catch { return null; } })();
+  if (ucAssistModelId) {
+    const n = parseInt(ucAssistModelId, 10);
+    if (Number.isFinite(n)) body.model_config_id = n;
+  }
+  try {
+    const r = await api(`/api/inbox/${encodeURIComponent(uuid)}/draft-uc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    outEl.style.display = '';
+    const autoScope = Array.isArray(r.auto_scoped_namespaces) ? r.auto_scoped_namespaces : [];
+    const autoScopeBanner = autoScope.length
+      ? `<div style="font-size:11px;background:var(--accent-bg);border-left:3px solid var(--accent);padding:6px 10px;margin-bottom:8px;color:var(--text);">
+           🎯 Auto-scoped to <code style="color:var(--accent);font-family:var(--mono,monospace);">spec_namespaces: [${autoScope.map(esc).join(', ')}]</code> — drafted from a comment in the <strong>${autoScope.map(esc).join('/')}</strong> repo. Stage-2 grounding will hard-restrict to this namespace. Edit the YAML before saving if cross-namespace coverage is intended.
+         </div>`
+      : '';
+    outEl.innerHTML = `
+      <div style="padding:8px 10px;background:var(--bg-raised);border:1px solid var(--green);border-radius:2px;">
+        <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--green);margin-bottom:6px;">LLM draft — review before saving</div>
+        ${autoScopeBanner}
+        ${r.explanation ? `<div style="font-size:12px;line-height:1.5;margin-bottom:8px;">${esc(r.explanation)}</div>` : ''}
+        ${r.yaml_suggestion ? `<details open style="margin-bottom:8px;">
+          <summary style="font-size:11px;color:var(--text-faint);cursor:pointer;">YAML (click to collapse)</summary>
+          <pre style="font-family:var(--mono,monospace);font-size:11px;background:var(--bg-panel);padding:8px;border:1px solid var(--border);border-radius:2px;overflow-x:auto;max-height:50vh;">${esc(r.yaml_suggestion)}</pre>
+        </details>` : '<div style="color:var(--accent);">(no YAML extracted from response — see raw output below)</div>'}
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <button class="btn primary" onclick="saveInboxDraft('${esc(uuid)}', ${attrJson(r.yaml_suggestion || '')})" ${r.yaml_suggestion ? '' : 'disabled'} title="Save this draft as a Draft use case + record the link to this comment">💾 Save as Draft</button>
+          <button class="btn ghost" onclick="copyInboxDraftYaml(${attrJson(r.yaml_suggestion || '')})" ${r.yaml_suggestion ? '' : 'disabled'} title="Copy the YAML to clipboard">⎘ Copy YAML</button>
+          <button class="btn ghost" onclick="openUCEditorWithDraft('${esc(uuid)}', ${attrJson(r.yaml_suggestion || '')})" ${r.yaml_suggestion ? '' : 'disabled'} title="Stash draft + switch to Use Cases tab (paste manually)">↑ Edit in Use Cases</button>
+          <button class="btn ghost" onclick="document.getElementById('inboxDraftOutput').style.display='none';">Hide</button>
+        </div>
+        ${r.raw && !r.yaml_suggestion ? `<details style="margin-top:8px;"><summary style="font-size:10px;color:var(--text-faint);cursor:pointer;">Raw response</summary>
+          <pre style="font-family:var(--mono,monospace);font-size:10px;background:var(--bg-panel);padding:8px;border:1px solid var(--border);max-height:30vh;overflow-y:auto;">${esc(r.raw)}</pre>
+        </details>` : ''}
+      </div>`;
+  } catch (e) {
+    if (msgEl) msgEl.innerHTML = `<span style="color:var(--red);">Draft failed: ${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+async function copyInboxDraftYaml(yamlText) {
+  try {
+    await navigator.clipboard.writeText(yamlText || '');
+    toast('YAML copied to clipboard');
+  } catch (e) {
+    toast('Copy failed: ' + e.message, true);
+  }
+}
+
+// Re-draft choice when a comment already produced a UC: replace / new / cancel.
+function _redraftChoice(links) {
+  const u = links[0].uc_uuid;
+  if (confirm(`This comment already drafted UC ${u}.\n\nOK = REPLACE that UC with this new draft.\nCancel = choose another option…`)) return 'replace';
+  if (confirm('Create a NEW separate UC instead?\n\nOK = create new.\nCancel = abort.')) return 'new';
+  return 'cancel';
+}
+
+// Save the LLM draft as a real Draft use case + record the comment↔UC link. If
+// the comment already drafted a UC, prompt to replace / create-new / cancel.
+async function saveInboxDraft(commentUuid, yaml) {
+  if (!yaml || !yaml.trim()) { toast('No YAML to save', true); return; }
+  const msgEl = document.getElementById('inboxDetailMsg');
+  let links = [];
+  try { const c = await api(`/api/inbox/${encodeURIComponent(commentUuid)}`); links = c.uc_links || []; } catch(e){}
+  let mode = 'new', targetUuid = null;
+  if (links.length) {
+    const choice = _redraftChoice(links);
+    if (choice === 'cancel') return;
+    if (choice === 'replace') { mode = 'replace'; targetUuid = links[0].uc_uuid; }
+  }
+  if (msgEl) { msgEl.textContent = 'saving…'; msgEl.style.color = 'var(--text-faint)'; }
+  try {
+    let ucUuid;
+    if (mode === 'replace') {
+      // PUT requires the YAML uuid to match the URL — rewrite it to the existing UC.
+      const y2 = yaml.replace(/^[ \t]*uuid:\s*\S+/m, `uuid: ${targetUuid}`);
+      await api(`/api/use-cases/${encodeURIComponent(targetUuid)}`, { method:'PUT', body: JSON.stringify({ yaml_content: y2 }) });
+      ucUuid = targetUuid;
+    } else {
+      const r = await api('/api/use-cases', { method:'POST', body: JSON.stringify({ yaml_content: yaml }) });
+      ucUuid = r.uuid;
+    }
+    await api(`/api/inbox/${encodeURIComponent(commentUuid)}/status`, { method:'POST', body: JSON.stringify({ status:'drafted_to_uc', uc_uuid: ucUuid }) });
+    toast(mode === 'replace' ? `Replaced UC ${ucUuid}` : `Saved Draft UC ${ucUuid}`);
+    selectInboxComment(commentUuid);   // refresh detail → shows the link
+    loadInbox();
+  } catch(e) {
+    if (msgEl) { msgEl.innerHTML = `<span style="color:var(--red);">Save failed: ${esc(e.message)}</span>`; }
+    else toast('Save failed: ' + e.message, true);
+  }
+}
+
+function openUCEditorWithDraft(commentUuid, yamlDraft) {
+  // Stash the draft + source comment uuid in sessionStorage so the UC
+  // editor on the Use Cases tab can pre-populate. The save handler over
+  // there should call setInboxStatus(commentUuid, 'drafted_to_uc', newUcUuid)
+  // after a successful save to record the provenance link.
+  try {
+    sessionStorage.setItem('inboxDraftPayload', JSON.stringify({
+      comment_uuid: commentUuid,
+      yaml: yamlDraft,
+      from: 'inbox',
+      timestamp: new Date().toISOString(),
+    }));
+  } catch (e) {
+    toast('Could not stash draft in sessionStorage: ' + e.message, true);
+    return;
+  }
+  toast('Draft staged — switching to Use Cases editor');
+  switchView('usecases');
+  // The Use Cases tab's editor opens via newUC() / editUC(); a v1
+  // operator workflow is: copy the draft YAML into the new-UC editor
+  // manually. A polished pre-fill (auto-newUC + auto-paste) lands as
+  // a follow-up — for v1 keeping the boundary clean between modules.
+  setTimeout(() => {
+    if (typeof openNewUC === 'function') openNewUC();
+    else if (typeof newUC === 'function') newUC();
+  }, 300);
+}
+
+// Status filter chips
+document.querySelectorAll('.inbox-status-chip').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.inbox-status-chip').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    _inboxState.statusFilter = btn.dataset.status;
+    loadInbox();
+  });
+});
+document.getElementById('inboxRepoFilter')?.addEventListener('change', (e) => {
+  _inboxState.repoFilter = e.target.value || '';
+  loadInbox();
+});
+document.getElementById('inboxRefreshBtn')?.addEventListener('click', () => loadInbox());
+
+document.getElementById('addMCPBtn').addEventListener('click', () => openMCPForm(null));
+document.getElementById('cancelMCPBtn').addEventListener('click', () => {
+  document.getElementById('mcpFormCard').style.display = 'none';
+  _mcpEditId = null;
+});
+
+document.getElementById('saveMCPBtn').addEventListener('click', async () => {
+  const msgEl = document.getElementById('mcpFormMsg');
+  const payload = {
+    name: document.getElementById('mcpfName').value.trim(),
+    sse_url: document.getElementById('mcpfUrl').value.trim(),
+    description: document.getElementById('mcpfDesc').value.trim(),
+    enabled: document.getElementById('mcpfEnabled').checked,
+    use_uc_assist: document.getElementById('mcpfUseUCAssist').checked,
+    auth_token: document.getElementById('mcpfAuthToken').value,
+  };
+  if (!payload.name || !payload.sse_url) {
+    msgEl.textContent = 'Name and SSE URL are required.';
+    msgEl.style.color = 'var(--error)';
+    return;
+  }
+  msgEl.textContent = 'Saving…';
+  msgEl.style.color = 'var(--text-faint)';
+  try {
+    if (_mcpEditId) {
+      const updated = await api(`/api/mcp-servers/${_mcpEditId}`, { method: 'PUT', body: JSON.stringify(payload) });
+      _mcpServers = _mcpServers.map(s => s.id === _mcpEditId ? updated : s);
+    } else {
+      const created = await api('/api/mcp-servers', { method: 'POST', body: JSON.stringify(payload) });
+      _mcpServers.push(created);
+    }
+    renderMCPList();
+    document.getElementById('mcpFormCard').style.display = 'none';
+    _mcpEditId = null;
+    pollMCPHealth();
+  } catch (e) {
+    msgEl.textContent = `Save failed: ${e.message}`;
+    msgEl.style.color = 'var(--error)';
+  }
+});
+
+document.getElementById('copyClaudeCodeBtn').addEventListener('click', () => {
+  navigator.clipboard.writeText(_mcpSnippet('claude'))
+    .then(() => toast('Claude Code config copied'))
+    .catch(() => toast('Copy failed — check browser permissions', true));
+});
+document.getElementById('copyCursorBtn').addEventListener('click', () => {
+  navigator.clipboard.writeText(_mcpSnippet('cursor'))
+    .then(() => toast('Cursor / Windsurf config copied'))
+    .catch(() => toast('Copy failed — check browser permissions', true));
+});
+
+// ── UC Assist config ─────────────────────────────────────────────────────────
+
+const _ucAssistModelKey = 'ucAssistModelId';   // legacy key — no longer written
+
+function _ucAssistStatus() {
+  const sel = document.getElementById('ucAssistModelSel');
+  const statusEl = document.getElementById('ucAssistCfgStatus');
+  if (!statusEl) return;
+  const hasModels = _reviewModels.some(m => m.enabled);
+  statusEl.textContent = hasModels ? (sel && sel.value ? '✓ default set' : 'no default set') : 'no models configured';
+  statusEl.style.color = (sel && sel.value) ? 'var(--ok)' : 'var(--text-faint)';
+}
+
+function _populateUCAssistModelSel() {
+  // Config "UC Authoring" default selector — server-backed (uc-authoring).
+  _populateDefaultSel('ucAssistModelSel', _modelDefaults['uc-authoring'] || null);
+  _populateEvalDefaultSel(_evalDefaultModelId);
+  // Panel picker is a default-aware override now.
+  _populateOverrideSel('ucAssistPanelModelSel', 'uc-authoring');
+  _ucAssistAvailable = null;
+  _ucAssistStatus();
+}
+
+async function loadUCAssistConfig() {
+  // model_defaults loaded by loadArchDefault(); just (re)populate the selectors.
+  _populateUCAssistModelSel();
+}
+
+// The UC-Authoring default is saved server-side (model_defaults['uc-authoring'])
+// and shared by the assist panel, wizard, and bulk import.
+document.getElementById('saveUCAssistBtn').addEventListener('click', async () => {
+  await _saveModelDefault('uc-authoring', 'ucAssistModelSel', 'uacMsg', 'saveUCAssistBtn');
+  _ucAssistAvailable = null;
+  _ucAssistStatus();
+});
+
+// ── Enhancement Targets (ADR-006) ────────────────────────────────────────────
+// Post-ADR-006, code_repo_configs is consolidated into managed_repos with
+// role=enhancement-target. The Config UI for code repositories was removed;
+// operators manage these through the Managed repos panel (add the role,
+// set a PAT). The `_codeRepos` cache below is populated lazily from
+// /api/repos?role=enhancement-target by the two PR-creation dropdowns
+// (rpPrRepoSel and rdPrRepoSel) and invalidated on config reload.
+let _codeRepos = [];
+
+async function loadCodeRepos() {
+  // Lazy: populated when the PR creation form opens. Kept as a no-op
+  // function so loadConfig()'s existing call site stays valid.
+  try {
+    const r = await api('/api/repos?role=enhancement-target');
+    _codeRepos = r.repos || [];
+  } catch {
+    _codeRepos = [];
+  }
+}
+
+
+// ── Config nav: scroll-spy + click-to-scroll ─────────────────────────────────
+// Config is now a tabbed view (docs/ui-style-guide.md): the left scroll-spy nav was
+// replaced by the canonical .tabs strip. setupConfigNav() just syncs + wires the tabs
+// (idempotent; honors the per-panel role-gating from _applyAccessVisibility).
+function setupConfigNav() {
+  try { _syncConfigTabs(); } catch (e) { console.warn('config tab sync failed', e); }
+}
+
+// Config tab data is loaded via loadConfig() called from switchView('config').
+
+// ── Arch review font bar ──────────────────────────────────────────────────────
+
+(function() {
+  const MIN = 11, MAX = 22;
+  const LS_SIZE = 'archFontSize', LS_FAM = 'archFontFamily';
+  const famMap = { serif: 'var(--serif)', sans: 'var(--sans)', mono: 'var(--mono)' };
+  let curSize = Math.max(MIN, Math.min(MAX, parseInt(localStorage.getItem(LS_SIZE) || '15', 10)));
+  let curFam  = localStorage.getItem(LS_FAM) || 'serif';
+
+  function applySize(px) {
+    curSize = Math.max(MIN, Math.min(MAX, px));
+    document.documentElement.style.setProperty('--arch-font-size', curSize + 'px');
+    document.querySelectorAll('.font-size-lbl').forEach(el => { el.textContent = curSize + 'px'; });
+    localStorage.setItem(LS_SIZE, String(curSize));
+  }
+
+  function applyFamily(fam) {
+    curFam = fam;
+    document.documentElement.style.setProperty('--arch-font-family', famMap[fam] || famMap.serif);
+    document.querySelectorAll('#rdRevFontFam,#rdEnhFontFam').forEach(sel => { sel.value = fam; });
+    localStorage.setItem(LS_FAM, fam);
+  }
+
+  applySize(curSize);
+  applyFamily(curFam);
+
+  ['Rev', 'Enh'].forEach(w => {
+    document.getElementById('rd' + w + 'FontDown').addEventListener('click', () => applySize(curSize - 1));
+    document.getElementById('rd' + w + 'FontUp').addEventListener('click',   () => applySize(curSize + 1));
+    document.getElementById('rd' + w + 'FontFam').addEventListener('change', function() { applyFamily(this.value); });
+  });
+})();
+
+init();
