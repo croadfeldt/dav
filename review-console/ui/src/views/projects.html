@@ -1,0 +1,19 @@
+    <section class="pf-view" id="view-projects">
+      <div style="display:flex;height:calc(100vh - 60px);">
+        <div style="width:340px;border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;">
+          <div style="padding:10px 12px;border-bottom:1px solid var(--border);">
+            <div style="display:flex;align-items:center;gap:6px;">
+              <strong style="font-size:13px;flex:1;">Projects</strong>
+              <button class="btn ghost btn-sm" id="newProjToggle" type="button">+ New</button>
+            </div>
+            <div id="newProjForm" style="display:none;margin-top:8px;">
+              <input id="newProjSlug" placeholder="slug (e.g. cost-mgmt)" style="font-size:12px;width:100%;margin-bottom:5px;" />
+              <input id="newProjName" placeholder="Name (e.g. Cost Management)" style="font-size:12px;width:100%;margin-bottom:5px;" />
+              <div style="display:flex;gap:6px;align-items:center;"><button class="btn primary btn-sm" id="newProjBtn">Create</button><span id="newProjMsg" style="font-size:10px;color:var(--text-faint);"></span></div>
+            </div>
+          </div>
+          <div id="projectsList" style="flex:1;overflow-y:auto;padding:6px;">Loading…</div>
+        </div>
+        <div id="projDetail" style="flex:1;overflow-y:auto;padding:18px 22px;"><div class="empty" style="padding:20px;color:var(--text-faint);">Select a project to manage its members, UC store, and settings.</div></div>
+      </div>
+    </section>

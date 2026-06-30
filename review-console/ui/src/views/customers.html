@@ -1,0 +1,29 @@
+    <section class="pf-view" id="view-customers">
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-bottom:1px solid var(--border);">
+        <div class="tabs" style="margin:0;border:none;">
+          <button class="tab active" id="custViewListBtn" type="button" onclick="_setCustView('list')">List</button>
+          <button class="tab" id="custViewMatrixBtn" type="button" onclick="_setCustView('matrix')" title="Which customers are associated to which projects">⊞ Associations</button>
+          <button class="tab" id="custViewAccessBtn" type="button" onclick="_setCustView('access')" title="Who can access which customer / project, and with what role" data-needs-priv="platform.admin">🔑 Access</button>
+        </div>
+        <span style="flex:1;"></span>
+        <span id="custViewHint" style="font-size:10px;color:var(--text-faint);">customer × project associations</span>
+      </div>
+      <div id="custListView" style="display:flex;height:calc(100vh - 96px);">
+        <div style="width:360px;border-right:1px solid var(--border);display:flex;flex-direction:column;">
+          <div style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:center;">
+            <strong style="font-size:13px;flex:1;">Customers</strong>
+            <button class="btn ghost btn-sm" id="custNewBtn" type="button">+ New</button>
+          </div>
+          <div id="custNewForm" style="display:none;padding:10px 12px;border-bottom:1px solid var(--border);">
+            <input id="custName" placeholder="Customer name" style="width:100%;font-size:12px;margin-bottom:6px;" />
+            <textarea id="custDesc" rows="2" placeholder="description (optional)" style="width:100%;font-size:11px;margin-bottom:6px;"></textarea>
+            <label style="display:flex;align-items:center;gap:6px;font-size:11px;margin-bottom:6px;cursor:pointer;"><input type="checkbox" id="custExcl" style="width:auto;height:auto;" /> Exclusive — sealed (explicit grant required for everyone)</label>
+            <div style="display:flex;gap:6px;align-items:center;"><button class="btn primary btn-sm" id="custCreateBtn" type="button">Create</button><button class="btn ghost btn-sm" id="custCancelBtn" type="button">Cancel</button><span id="custMsg" style="font-size:10px;color:var(--text-faint);"></span></div>
+          </div>
+          <div id="custList" style="flex:1;overflow-y:auto;padding:6px;"></div>
+        </div>
+        <div id="custDetail" style="flex:1;overflow-y:auto;padding:16px;"><div class="empty">Select a customer to manage its projects, demand and exclusivity.</div></div>
+      </div>
+      <div id="custMatrixView" style="display:none;padding:14px;height:calc(100vh - 96px);overflow:auto;"></div>
+      <div id="custAccessView" style="display:none;padding:14px;height:calc(100vh - 96px);overflow:auto;"></div>
+    </section>

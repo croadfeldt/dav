@@ -1,0 +1,52 @@
+    <section class="pf-view" id="view-assess">
+      <div style="display:grid;grid-template-columns:340px 1fr;gap:14px;padding:14px;height:calc(100vh - 60px);">
+        <!-- Left: assessment list + ingest -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);">
+            <div class="panel-title">Assessments</div>
+            <div style="font-size:11px;color:var(--text-dim);margin:2px 0 8px;">Capability findings ingested from assessment outputs (automation, hybrid-cloud, AI, DCM). Each finding lands on the catalog as an <b>observed</b> capability, normalized onto the taxonomy. <b>Gaps</b> (absent / partial) drive the roadmap.</div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <button class="btn primary btn-sm" id="asIngestBtn" onclick="toggleAssessmentIngest()" title="Ingest a real assessment (paste or upload a canonical/automation JSON)">Ingest assessment…</button>
+              <button class="btn ghost btn-sm" id="asIngestFixtureBtn" onclick="ingestAssessmentFixture()" title="Ingest a synthetic example (no confidential data) into the active project">Synthetic example</button>
+              <button class="btn ghost btn-icon" onclick="loadAssessments()" title="Refresh">↻</button>
+            </div>
+            <!-- Ingest a real assessment: paste/upload a canonical or automation-format JSON. -->
+            <div id="asIngestForm" style="display:none;margin-top:8px;border:1px solid var(--border);border-radius:3px;padding:8px;background:var(--bg-deep,rgba(0,0,0,0.18));">
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">
+                <label style="font-size:10px;color:var(--text-dim);">Mode</label>
+                <select id="asIngestMode" onchange="_asIngestModeChanged()" style="font-size:10px;max-width:100%;">
+                  <option value="json">Structured JSON</option>
+                  <option value="model">Extract with model (text/PDF → UDLM)</option>
+                </select>
+                <span id="asIngestModelRow" style="display:none;width:100%;margin-top:4px;gap:6px;align-items:center;flex-wrap:wrap;box-sizing:border-box;">
+                  <label style="font-size:10px;color:var(--text-dim);">model</label>
+                  <select id="asIngestModelSel" style="font-size:10px;min-width:150px;max-width:100%;flex:1;" title="Extractor model for this ingest (overrides the project assessment-ingest default)">
+                    <option value="">— project default —</option>
+                  </select>
+                  <label style="font-size:10px;color:var(--text-dim);display:inline-flex;align-items:center;gap:3px;white-space:nowrap;" title="Read images / slide decks with a vision model (auto for image uploads + image-only PDFs). Pick a vision-capable model.">
+                    <input type="checkbox" id="asIngestVision"> 🖼 vision
+                  </label>
+                </span>
+              </div>
+              <div id="asIngestHint" style="font-size:10px;color:var(--text-dim);margin-bottom:4px;">Paste a <b>canonical</b> assessment JSON (or upload a file). Shape:
+                <code style="font-size:9px;">{handle, assessment_type, pillar, findings:[{capability, category, state:present|partial|absent|n/a, maturity:1-5, evidence, notes}]}</code></div>
+              <textarea id="asIngestJson" spellcheck="false" placeholder='{"handle":"…","assessment_type":"automation","findings":[…]}' style="width:100%;min-height:120px;font-size:11px;font-family:var(--mono,monospace);"></textarea>
+              <div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap;">
+                <input type="file" id="asIngestFile" accept=".json,.txt,.md,.csv,.tsv,.yaml,.yml,.log,.pdf,.png,.jpg,.jpeg,.gif,.webp,.bmp,application/json,application/pdf,text/plain,image/*" style="font-size:10px;" onchange="_asLoadIngestFile(this)">
+                <button class="btn primary btn-sm" id="asIngestSubmit" onclick="ingestAssessment()">Ingest</button>
+                <button class="btn ghost btn-sm" onclick="toggleAssessmentIngest()">Cancel</button>
+                <span style="font-size:9px;color:var(--text-faint);">scoped to the active project</span>
+              </div>
+            </div>
+            <div id="asStatus" style="font-size:11px;color:var(--text-faint);margin-top:6px;"></div>
+          </div>
+          <div class="scrollable" id="asList" style="flex:1;overflow:auto;">
+            <div class="empty">loading…</div>
+          </div>
+        </div>
+        <!-- Right: selected assessment detail -->
+        <div class="scrollable" id="asDetail" style="overflow:auto;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;padding:14px;">
+          <div class="empty">Select an assessment, or ingest the synthetic example to get started.</div>
+        </div>
+      </div>
+    </section>

@@ -1,0 +1,18 @@
+    <section class="pf-view" id="view-maturity">
+      <div style="flex:1;overflow-y:auto;padding:14px 18px;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <strong style="font-size:13px;">Maturity Wall</strong>
+          <select id="mwAssessSel" style="font-size:11px;min-width:200px;"></select>
+          <span style="font-size:11px;color:var(--text-faint);">Framework:</span>
+          <span id="mwFramework" style="font-size:11px;color:var(--text-dim);">—</span>
+          <button class="btn ghost btn-sm" id="mwReloadBtn" title="Reload">↻</button>
+          <span id="mwOverall" style="margin-left:auto;font-size:11px;color:var(--text-dim);"></span>
+        </div>
+        <!-- state switcher (Current / Phase 1-3 / Desired) -->
+        <div id="mwStates" style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;"></div>
+        <!-- appraisal scale legend -->
+        <div id="mwScale" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;font-size:10px;color:var(--text-faint);"></div>
+        <div id="mwStatus" style="font-size:11px;color:var(--text-faint);margin-bottom:8px;"></div>
+        <div id="mwWall" style="overflow-x:auto;"></div>
+      </div>
+    </section>

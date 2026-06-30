@@ -1,0 +1,684 @@
+    <section class="pf-view" id="view-config">
+  <div class="config-layout">
+
+    <!-- ── Section tabs (canonical .tabs — see docs/ui-style-guide.md) ── -->
+    <div class="tabs config-tabs" id="configTabs" role="tablist">
+      <button class="tab" data-tab="registry">Multi-repo Registry</button>
+      <button class="tab" data-tab="pipeline">Pipeline Sources</button>
+      <button class="tab" data-tab="aimodels">AI Models</button>
+      <button class="tab" data-tab="integrations">Integrations</button>
+      <button class="tab" data-tab="access" id="configTabAccess" style="display:none;">Access &amp; Membership</button>
+    </div>
+
+    <!-- ── Tab content ── -->
+    <div class="config-content" id="configContent">
+
+      <div class="tabpanel active" data-tabpanel="registry">
+      <div class="cfg-sec-hdr" id="cfgSec-registry">
+        <span class="cfg-sec-title">Multi-repo Registry</span>
+        <span class="cfg-sec-sub">First-class registry of repos DAV operates on — source-of-truth (ADR-003). Spec changes auto-project to dav-source-spec ConfigMap + roll MCP.</span>
+      </div>
+
+      <div class="panel-card" id="configCredentialsPanel">
+        <div class="panel-card-header" style="justify-content:space-between;">
+          <div>
+            <div class="pc-title">Shared credentials</div>
+            <div class="pc-sub">Named, encrypted credentials referenced by multiple repos. Rotate once, all dependents pick up the new value (<a href="https://github.com/croadfeldt/dav/blob/main/adr/005-shared-credentials-abstraction.md" target="_blank" rel="noopener">ADR-005</a>).</div>
+          </div>
+          <button class="btn ghost btn-sm" id="addCredentialBtn">+ Add credential</button>
+        </div>
+        <div id="credentialList" style="min-height:32px;"></div>
+      </div>
+
+      <div id="credentialFormCard" class="cfg-card panel-card" style="display:none;">
+        <div class="panel-card-header">
+          <div class="pc-title" id="credentialFormTitle">Add credential</div>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
+            <div class="form-field"><label>Name <span style="color:var(--text-faint);font-weight:400;">(URL-safe, unique per type+tenant; immutable convention — rename via edit)</span></label>
+              <input id="cpfName" placeholder="e.g. my-github-pat" /></div>
+            <div class="form-field"><label>Type</label>
+              <select id="cpfType" style="background:var(--bg-input,var(--bg-raised));border:1px solid var(--border);padding:6px 8px;font-size:12px;">
+                <option value="">(loading…)</option>
+              </select></div>
+            <div class="form-field" style="grid-column:1/-1;"><label>Description <span style="color:var(--text-faint);font-weight:400;">(optional)</span></label>
+              <input id="cpfDescription" placeholder="e.g. Personal GitHub PAT — repo + workflow scope" /></div>
+            <div class="form-field" style="grid-column:1/-1;"><label>Value <span id="cpfValueStatus" style="color:var(--text-faint);font-weight:400;font-size:10px;"></span></label>
+              <input id="cpfValue" type="password" placeholder="(plaintext — encrypted at write)" style="font-family:var(--mono,monospace);" autocomplete="new-password" /></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+            <button class="btn primary" id="saveCredentialBtn">Save</button>
+            <button class="btn ghost" id="cancelCredentialBtn">Cancel</button>
+            <span id="credentialFormMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-card" id="configReposPanel">
+        <div class="panel-card-header" style="justify-content:space-between;">
+          <div>
+            <div class="pc-title">Managed repos</div>
+            <div class="pc-sub">Namespace, URL, branch, roles, per-role paths. Role changes auto-project to dav-source-spec / dav-source-corpus ConfigMaps and roll the MCP.</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <button class="btn ghost btn-sm" id="reposProjectBtn" title="Manual reconcile: regenerate both dav-source-spec and dav-source-corpus ConfigMaps from the registry">↻ Project all</button>
+            <button class="btn ghost btn-sm" id="addRepoBtn">+ Add repo</button>
+          </div>
+        </div>
+        <div id="repoList" style="min-height:32px;"></div>
+      </div>
+
+      <div id="repoFormCard" class="cfg-card panel-card" style="display:none;">
+        <div class="panel-card-header">
+          <div class="pc-title" id="repoFormTitle">Add repo</div>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
+            <div class="form-field"><label>Namespace <span style="color:var(--text-faint);font-weight:400;">(URL-safe; MCP handle prefix; immutable after create)</span></label>
+              <input id="rpfNamespace" placeholder="e.g. udlm" /></div>
+            <div class="form-field"><label>Display name <span style="color:var(--text-faint);font-weight:400;">(optional)</span></label>
+              <input id="rpfDisplayName" placeholder="e.g. UDLM — Universal Data Lifecycle Model" /></div>
+            <div class="form-field" style="grid-column:1/-1;"><label>Repo URL</label>
+              <input id="rpfRepoUrl" placeholder="https://github.com/owner/repo.git" /></div>
+            <div class="form-field"><label>Branch</label>
+              <input id="rpfRepoBranch" value="main" /></div>
+            <div class="form-field"><label>Root path <span style="color:var(--text-faint);font-weight:400;">(optional subdir, no leading slash)</span></label>
+              <input id="rpfRootPath" placeholder="e.g. architecture" /></div>
+          </div>
+          <div style="margin-top:10px;padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:6px;">Roles</div>
+            <div style="display:flex;gap:18px;flex-wrap:wrap;" id="rpfRolesContainer">
+              <span style="font-size:11px;color:var(--text-faint);">(loading vocabulary…)</span>
+            </div>
+          </div>
+
+          <div style="margin-top:10px;padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:8px;">
+              Per-repo credentials <span style="color:var(--text-faint);font-weight:400;text-transform:none;letter-spacing:0;">(encrypted at rest · <a href="https://github.com/croadfeldt/dav/blob/main/adr/005-shared-credentials-abstraction.md" target="_blank" rel="noopener" style="color:var(--text-faint);">ADR-004 / 005</a>)</span>
+            </div>
+
+            <div class="form-field">
+              <label>GitHub PAT <span id="rpfPatStatus" style="color:var(--text-faint);font-weight:400;font-size:10px;"></span></label>
+              <div style="display:flex; gap:6px; align-items:center;">
+                <select id="rpfPatCredSel" style="flex:1;background:var(--bg-input,var(--bg-raised));border:1px solid var(--border);padding:6px 8px;font-size:12px;">
+                  <option value="">(no shared credential)</option>
+                </select>
+                <button class="btn ghost btn-sm" id="rpfConvertPatBtn" type="button" style="display:none;" title="Promote the inline value to a new shared credential other repos can reference">⇪ Convert to shared</button>
+                <button class="btn ghost btn-sm" id="rpfClearPatBtn" type="button" style="display:none;color:var(--red);" title="Remove credential (clears both inline and shared FK)">Clear</button>
+              </div>
+              <details id="rpfPatInlineDetails" style="margin-top:6px;">
+                <summary style="font-size:10px;color:var(--text-faint);cursor:pointer;">Or set an inline value (per-repo only — not shared)</summary>
+                <input id="rpfGithubPat" type="password" placeholder="(none set inline; leave blank to keep current)" style="margin-top:6px;font-family:var(--mono,monospace);" autocomplete="new-password" />
+                <div class="form-hint" style="margin-top:4px;">Inline value is used only if no shared credential is selected above.</div>
+              </details>
+              <div class="form-hint">Used by the PR-comment poller. Scope: <code>repo</code> (private) or <code>public_repo</code> (public-only).</div>
+            </div>
+
+            <div class="form-field" style="margin-top:8px;">
+              <label>GitHub Webhook Secret <span id="rpfWebhookSecretStatus" style="color:var(--text-faint);font-weight:400;font-size:10px;"></span></label>
+              <div style="display:flex; gap:6px; align-items:center;">
+                <select id="rpfWebhookSecretCredSel" style="flex:1;background:var(--bg-input,var(--bg-raised));border:1px solid var(--border);padding:6px 8px;font-size:12px;">
+                  <option value="">(no shared credential)</option>
+                </select>
+                <button class="btn ghost btn-sm" id="rpfConvertWebhookSecretBtn" type="button" style="display:none;" title="Promote the inline value to a new shared credential other repos can reference">⇪ Convert to shared</button>
+                <button class="btn ghost btn-sm" id="rpfClearWebhookSecretBtn" type="button" style="display:none;color:var(--red);" title="Remove credential (clears both inline and shared FK)">Clear</button>
+              </div>
+              <details id="rpfWebhookSecretInlineDetails" style="margin-top:6px;">
+                <summary style="font-size:10px;color:var(--text-faint);cursor:pointer;">Or set an inline value (per-repo only — not shared)</summary>
+                <input id="rpfGithubWebhookSecret" type="password" placeholder="(none set inline; leave blank to keep current)" style="margin-top:6px;font-family:var(--mono,monospace);" autocomplete="new-password" />
+                <div class="form-hint" style="margin-top:4px;">Inline value is used only if no shared credential is selected above.</div>
+              </details>
+              <div class="form-hint">HMAC-SHA256 shared secret matching the value in this repo's GitHub webhook configuration.</div>
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+            <button class="btn primary" id="saveRepoBtn">Save</button>
+            <button class="btn ghost" id="cancelRepoBtn">Cancel</button>
+            <span id="repoFormMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+        </div>
+      </div>
+
+      </div><!-- /tabpanel registry -->
+      <div class="tabpanel" data-tabpanel="pipeline">
+      <div class="cfg-sec-hdr" id="cfgSec-pipeline">
+        <span class="cfg-sec-title">Pipeline Sources</span>
+        <span class="cfg-sec-sub">Architecture spec &amp; evaluation corpus repos trigger a ~60s pod rollout</span>
+      </div>
+
+      <div class="panel-card" id="configSpecPanel">
+        <div class="panel-card-header" style="justify-content:space-between;">
+          <div>
+            <div class="pc-title">Architecture spec</div>
+            <div class="pc-sub">Read-only view — projected from Managed repos with role=spec. Edits go through the Repos panel above.</div>
+          </div>
+          <button class="btn ghost btn-sm" id="srcSpecJumpToRepos" title="Scroll to Managed repos panel">↑ Manage in Repos</button>
+        </div>
+        <div class="panel-card-body">
+          <div class="kv-grid">
+            <div class="kv-label">sources</div><div class="kv-val" id="srcSpecSourceList">—</div>
+            <div class="kv-label">configmap</div><div class="kv-val" style="font-family:var(--mono,monospace);font-size:11px;">dav-source-spec</div>
+            <div class="kv-label">last projected</div><div class="kv-val" id="srcSpecWhen">—</div>
+            <div class="kv-label">last applied by</div><div class="kv-val" id="srcSpecWho">—</div>
+            <div class="kv-label">rollout</div><div class="kv-val" id="srcSpecStatus">—</div>
+          </div>
+          <div style="font-size:10px;color:var(--text-faint);margin-top:10px;padding:6px 8px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;line-height:1.5;">
+            ℹ ConfigMap content is regenerated from the Managed repos registry whenever a role=spec row changes.
+            Direct <code>oc edit configmap dav-source-spec</code> is reverted on the next projection
+            (see <a href="https://github.com/croadfeldt/dav/blob/main/adr/003-multi-repo-registry-and-mcp-source-of-truth.md" target="_blank" rel="noopener">ADR-003</a>).
+            Use the <strong>↻ Project</strong> button on the Managed repos panel to force a reconcile.
+          </div>
+          <span id="srcSpecMsg" style="font-size:11px;color:var(--text-faint);display:none;"></span>
+        </div>
+      </div>
+      <div class="cfg-card panel-card" id="configCorpusPanel">
+        <div class="panel-card-header" style="justify-content:space-between;">
+          <div>
+            <div class="pc-title">Evaluation corpus</div>
+            <div class="pc-sub">Read-only view — projected from Managed repos with role=corpus. Edits go through the Repos panel above (per-role path: corpus).</div>
+          </div>
+          <button class="btn ghost btn-sm" id="srcCorpusJumpToRepos" title="Scroll to Managed repos panel">↑ Manage in Repos</button>
+        </div>
+        <div class="panel-card-body">
+          <div class="kv-grid">
+            <div class="kv-label">sources</div><div class="kv-val" id="srcCorpusSourceList">—</div>
+            <div class="kv-label">configmap</div><div class="kv-val" style="font-family:var(--mono,monospace);font-size:11px;">dav-source-corpus</div>
+            <div class="kv-label">UC subpath</div><div class="kv-val" id="srcCorpusSubpath" style="color:var(--accent)">—</div>
+            <div class="kv-label">last projected</div><div class="kv-val" id="srcCorpusWhen">—</div>
+            <div class="kv-label">last applied by</div><div class="kv-val" id="srcCorpusWho">—</div>
+            <div class="kv-label">rollout</div><div class="kv-val" id="srcCorpusStatus">—</div>
+          </div>
+          <div style="font-size:10px;color:var(--text-faint);margin-top:10px;padding:6px 8px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;line-height:1.5;">
+            ℹ ConfigMap content is regenerated from the Managed repos registry whenever a role=corpus row changes.
+            Direct <code>oc edit configmap dav-source-corpus</code> is reverted on the next projection
+            (see <a href="https://github.com/croadfeldt/dav/blob/main/adr/007-per-role-paths-and-corpus-parity.md" target="_blank" rel="noopener">ADR-007</a>).
+            Unlike spec, corpus changes don't roll a Deployment — each Tekton run reads the ConfigMap fresh at start.
+            Use the <strong>↻ Project all</strong> button on the Managed repos panel to force a reconcile.
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);flex-wrap:wrap;">
+            <button class="btn ghost btn-sm" id="corpusResyncBtn" title="Reconcile the corpus-files cache (All-set membership, catalog, /api/corpus) from the corpus repos now. Runs automatically on boot, hourly, on corpus push, and before an ingestion; this is a manual trigger.">↻ Resync corpus cache</button>
+            <span id="corpusCacheStatus" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <span id="srcCorpusMsg" style="font-size:11px;color:var(--text-faint);display:none;"></span>
+        </div>
+      </div>
+
+      <div class="panel-card" id="configMCPRefreshPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">MCP refresh</div>
+            <div class="pc-sub">Re-clone spec + corpus repos into the dav-docs-mcp pod so the MCP serves current content. A scheduled CronJob refreshes on its own cadence; this button forces an immediate refresh.</div>
+          </div>
+          <span id="mcpRefreshStatus" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div class="kv-grid">
+            <div class="kv-label">last refreshed</div><div class="kv-val" id="mcpRefreshWhen">—</div>
+            <div class="kv-label">last refresh source</div><div class="kv-val" id="mcpRefreshSource">—</div>
+            <div class="kv-label">last triggered by</div><div class="kv-val" id="mcpRefreshWho">—</div>
+            <div class="kv-label">rollout</div><div class="kv-val" id="mcpRefreshRollout">—</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;">
+            <button class="btn primary btn-sm" id="mcpRefreshNowBtn">↻ Refresh now</button>
+            <button class="btn ghost btn-sm" id="mcpRefreshReloadBtn" title="Reload status without triggering a refresh">⟳ Reload status</button>
+            <span id="mcpRefreshMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div style="font-size:10px;color:var(--text-faint);margin-top:10px;padding:6px 8px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;line-height:1.5;">
+            ℹ Scheduled refresh cadence is owned by the dav-docs-mcp-refresh CronJob (operator-controlled via Ansible vars: <code>dav_docs_mcp_refresh_schedule</code>). The schedule isn't editable from the UI yet — that's a tracked follow-up.
+          </div>
+        </div>
+      </div>
+
+
+      </div><!-- /tabpanel pipeline -->
+      <div class="tabpanel" data-tabpanel="aimodels">
+      <div class="cfg-sec-hdr" id="cfgSec-aimodels">
+        <span class="cfg-sec-title">AI Models</span>
+        <span class="cfg-sec-sub">Architectural review models and the UC authoring assistant</span>
+      </div>
+
+      <div class="panel-card" id="configModelsPanel">
+        <div class="panel-card-header" style="justify-content:space-between;">
+          <div>
+            <div class="pc-title">Model endpoints</div>
+            <div class="pc-sub">Registered LLM endpoints — use flags control which DAV features each model is available in</div>
+          </div>
+          <button class="btn ghost btn-sm" id="addModelBtn" data-edit-gate="project.models">+ Add model</button>
+        </div>
+        <div id="modelList" style="min-height:40px;"></div>
+      </div>
+
+      <div id="modelFormCard" class="cfg-card panel-card" style="display:none;">
+        <div class="panel-card-header">
+          <div class="pc-title" id="modelFormTitle">Add model endpoint</div>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
+            <div class="form-field"><label>Name</label>
+              <input id="mfName" placeholder="e.g. Qwen3-32B (local)" /></div>
+            <div class="form-field"><label>Provider</label>
+              <select id="mfProvider">
+                <option value="openai">OpenAI-compatible</option>
+                <option value="anthropic">Anthropic</option>
+              </select></div>
+            <div class="form-field"><label>Endpoint URL</label>
+              <input id="mfEndpoint" placeholder="https://api.anthropic.com or http://host:8080" /></div>
+            <div class="form-field"><label>Model ID</label>
+              <div style="display:flex;gap:6px;">
+                <input id="mfModelId" placeholder="claude-opus-4-7 or qwen3-32b" style="flex:1;min-width:0;" />
+                <button class="btn ghost btn-sm" id="mfProbeBtn" type="button" title="Test the connection and list the endpoint's models" style="white-space:nowrap;">⚡ Probe</button>
+              </div>
+              <select id="mfModelSel" style="display:none;width:100%;margin-top:6px;font-size:12px;"></select>
+              <div id="mfProbeStatus" style="font-size:10px;color:var(--text-faint);margin-top:3px;min-height:12px;"></div></div>
+            <div class="form-field"><label>API Key <span style="color:var(--text-faint);font-weight:400;">(blank = keep existing)</span></label>
+              <input id="mfApiKey" type="password" placeholder="sk-… or blank for local" /></div>
+            <div class="form-field" style="display:flex;flex-direction:column;gap:8px;justify-content:flex-end;">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+                <input type="checkbox" id="mfLocal" /> Local / no auth
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;">
+                <input type="checkbox" id="mfEnabled" checked /> Enabled
+              </label>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+            <button class="btn primary" id="saveModelBtn">Save</button>
+            <button class="btn ghost" id="cancelModelBtn">Cancel</button>
+            <span id="modelFormMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="cfg-card panel-card" id="configEvalDefaultPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Evaluation model</div>
+            <div class="pc-sub">Project default for new analysis ingestions — applies to all users. Can be overridden per ingestion in the New Ingestion modal.</div>
+          </div>
+          <span id="evalDefaultStatus" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <select id="evalDefaultModelSel" style="min-width:260px;">
+              <option value="">— no default set —</option>
+            </select>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('evalDefaultModelSel','evalDefaultModel')">Browse…</button>
+            <button class="btn primary btn-sm" id="saveEvalDefaultBtn">Save</button>
+            <span id="evalDefaultMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div class="form-hint" style="margin-top:8px;">Stored server-side. Only registered model endpoints can be set as the project default.</div>
+        </div>
+      </div>
+
+      <div class="cfg-card panel-card" id="configUCAssistPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">UC Authoring model</div>
+            <div class="pc-sub">Project default for LLM-assisted use case authoring — the Assist panel, the UC Wizard, and Bulk import all use it. Can be overridden per use.</div>
+          </div>
+          <span id="ucAssistCfgStatus" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <select id="ucAssistModelSel" style="min-width:260px;">
+              <option value="">— no default set —</option>
+            </select>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('ucAssistModelSel','ucAuthoringDefault')">Browse…</button>
+            <button class="btn primary btn-sm" id="saveUCAssistBtn">Save</button>
+            <span id="uacMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div class="form-hint" style="margin-top:8px;">Stored server-side. Only registered model endpoints can be set as the project default.</div>
+        </div>
+      </div>
+
+      <div class="cfg-card panel-card" id="configArchDefaultPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Architecture Review model</div>
+            <div class="pc-sub">Project default for architectural review (Review &amp; Plan tab) — applies to all users. Can be overridden per call from the ingestion drawer's Review &amp; Plan tab.</div>
+          </div>
+          <span id="archDefaultStatus" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <select id="archDefaultModelSel" style="min-width:260px;">
+              <option value="">— no default set —</option>
+            </select>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('archDefaultModelSel','archDefaultModel')">Browse…</button>
+            <button class="btn primary btn-sm" id="saveArchDefaultBtn">Save</button>
+            <span id="archDefaultMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div class="form-hint" style="margin-top:8px;">Stored server-side. Only registered model endpoints with <em>use_arch_review = true</em> are eligible.</div>
+        </div>
+      </div>
+
+      <div class="cfg-card panel-card" id="configEnhDefaultPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Enhancement model</div>
+            <div class="pc-sub">Project default for enhancement-plan generation (Review &amp; Plan tab). Falls back to the Arch Review model when unset. Can be overridden per call.</div>
+          </div>
+          <span id="enhDefaultStatus" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <select id="enhDefaultModelSel" style="min-width:260px;">
+              <option value="">— no default set —</option>
+            </select>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('enhDefaultModelSel','enhDefaultModel')">Browse…</button>
+            <button class="btn primary btn-sm" id="saveEnhDefaultBtn">Save</button>
+            <span id="enhDefaultMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div class="form-hint" style="margin-top:8px;">Stored server-side. Leave unset to share the Arch Review default.</div>
+        </div>
+      </div>
+
+      <div class="cfg-card panel-card" id="configAssessIngestDefaultPanel">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Assessment Ingestion model</div>
+            <div class="pc-sub">Model used to parse assessment input into UDLM findings (Assessments → ingest via model). Falls back to UC Authoring → Arch Review → Evaluation when unset. Can be overridden per ingest.</div>
+          </div>
+          <span id="assessIngestDefaultStatus" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <select id="assessIngestDefaultModelSel" style="min-width:260px;">
+              <option value="">— no default set —</option>
+            </select>
+            <button class="btn ghost btn-sm" type="button" onclick="_openModelBrowser('assessIngestDefaultModelSel','assessIngestDefaultModel')">Browse…</button>
+            <button class="btn primary btn-sm" id="saveAssessIngestDefaultBtn">Save</button>
+            <span id="assessIngestDefaultMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div class="form-hint" style="margin-top:8px;">Stored server-side. Leave unset to share the UC Authoring / Arch Review default.</div>
+        </div>
+      </div>
+
+      </div><!-- /tabpanel aimodels -->
+      <div class="tabpanel" data-tabpanel="integrations">
+      <div class="cfg-sec-hdr" id="cfgSec-integrations">
+        <span class="cfg-sec-title">Integrations</span>
+        <span class="cfg-sec-sub">MCP servers — SSE tool connections for Claude Code and other agents</span>
+      </div>
+
+      <div class="panel-card" id="configMCPPanel">
+        <div class="panel-card-header" style="justify-content:space-between;">
+          <div>
+            <div class="pc-title">MCP servers</div>
+            <div class="pc-sub">SSE endpoints exposed to Claude Code, Cursor, and other MCP-compatible tools</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span id="mcpHealthSummary" style="font-size:10px;color:var(--text-faint);"></span>
+            <button class="btn ghost btn-sm" id="addMCPBtn">+ Add server</button>
+          </div>
+        </div>
+        <div id="mcpServerList" style="min-height:32px;"></div>
+        <div style="padding:12px 16px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:10px;">
+          <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);">Connect tools</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn ghost btn-sm" id="copyClaudeCodeBtn" title="Copy mcpServers block for ~/.claude.json">Copy Claude Code config</button>
+            <button class="btn ghost btn-sm" id="copyCursorBtn" title="Copy mcpServers block for Cursor / Windsurf settings">Copy Cursor / Windsurf config</button>
+          </div>
+          <div class="form-hint">Paste into <code>~/.claude.json</code> (Claude Code) or <code>.cursor/mcp.json</code> / <code>.windsurf/mcp_config.json</code> (Cursor / Windsurf). Only enabled servers are included.</div>
+        </div>
+      </div>
+
+      <div id="mcpFormCard" class="cfg-card panel-card" style="display:none;">
+        <div class="panel-card-header">
+          <div class="pc-title" id="mcpFormTitle">Add MCP server</div>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
+            <div class="form-field"><label>Name</label>
+              <input id="mcpfName" placeholder="e.g. openshift-mcp" /></div>
+            <div class="form-field"><label>SSE URL</label>
+              <input id="mcpfUrl" placeholder="https://…/sse" /></div>
+            <div class="form-field" style="grid-column:1/-1;"><label>Description <span style="color:var(--text-faint);font-weight:400;">(optional)</span></label>
+              <input id="mcpfDesc" placeholder="e.g. OpenShift cluster tools — list pods, logs, events" /></div>
+            <div class="form-field" style="grid-column:1/-1;"><label>Bearer token <span style="color:var(--text-faint);font-weight:400;">(optional — sent as Authorization: Bearer …)</span></label>
+              <input id="mcpfAuthToken" type="password" placeholder="" autocomplete="new-password" /></div>
+          </div>
+          <div style="margin-top:8px;padding:8px 10px;background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;">
+            <div style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:6px;">Available for</div>
+            <div style="display:flex;gap:18px;flex-wrap:wrap;">
+              <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;">
+                <input type="checkbox" id="mcpfUseUCAssist" /> UC assist tools
+              </label>
+            </div>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;cursor:pointer;">
+            <input type="checkbox" id="mcpfEnabled" checked /> Enabled
+          </label>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+            <button class="btn primary" id="saveMCPBtn">Save</button>
+            <button class="btn ghost" id="cancelMCPBtn">Cancel</button>
+            <span id="mcpFormMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Per ADR-006: the "Code repositories" panel was consolidated
+           into Managed repos. Add the 'enhancement-target' role to any
+           repo in the Repos panel above to enable enhancement PR
+           creation against it. -->
+
+      <!-- ── Users & Access (admin only) ── -->
+      </div><!-- /tabpanel integrations -->
+      <div class="tabpanel" data-tabpanel="access">
+      <div class="cfg-sec-hdr" id="cfgSec-access">
+        <span class="cfg-sec-title">Access &amp; Membership</span>
+        <span class="cfg-sec-sub">People, roles &amp; access — accounts &amp; roles, role bindings, groups, agents/tokens, tenants, plus LDAP approval &amp; email/SMTP</span>
+      </div>
+      <!-- Projects management relocated to the Customers & Projects → Projects tab. -->
+      <div class="cfg-card panel-card" id="configLdapPanel" style="display:none;">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">LDAP / approval</div>
+            <div class="pc-sub">Approved users are synced from the LDAP group. Verify the sync here before turning on enforcement.</div>
+          </div>
+          <span id="ldapStatusChip" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div id="ldapStatusBody" style="font-size:12px;color:var(--text-dim);line-height:1.7;">Loading…</div>
+          <div style="display:flex;gap:8px;margin-top:10px;align-items:center;">
+            <button class="btn primary btn-sm" id="ldapSyncBtn">↻ Sync now</button>
+            <span id="ldapSyncMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <details style="margin-top:12px;"><summary style="cursor:pointer;font-size:12px;font-weight:600;">LDAP settings</summary>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;font-size:11px;">
+            <label style="grid-column:1/3;">Server URL<input id="ls-url" placeholder="ldaps://ldap.example.com:636" style="width:100%;"></label>
+            <label>Bind DN<input id="ls-bind_dn" placeholder="cn=svc,dc=…" style="width:100%;"></label>
+            <label>Bind password<input id="ls-bind_password" type="password" placeholder="(unchanged)" style="width:100%;"></label>
+            <label>User base<input id="ls-user_base" placeholder="ou=people,dc=…" style="width:100%;"></label>
+            <label>Approval group DN<input id="ls-group_dn" placeholder="cn=dav-users,…" style="width:100%;"></label>
+            <label>User attr<input id="ls-user_attr" placeholder="uid" style="width:100%;"></label>
+            <label>Mail attr<input id="ls-mail_attr" placeholder="mail" style="width:100%;"></label>
+            <label>Name attr<input id="ls-name_attr" placeholder="cn" style="width:100%;"></label>
+            <label>Member attr<input id="ls-member_attr" placeholder="member" style="width:100%;"></label>
+            <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="ls-start_tls" style="width:auto;"> StartTLS</label>
+            <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="ls-enforce" style="width:auto;"> Enforce (reject non-approved)</label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px;align-items:center;"><button class="btn primary btn-sm" id="ls-save">Save LDAP settings</button><button class="btn ghost btn-sm" id="ls-test">Test connection</button><span id="ls-msg" style="font-size:11px;color:var(--text-faint);"></span></div>
+          </details>
+        </div>
+      </div>
+      <div class="cfg-card panel-card" id="configSmtpPanel" style="display:none;">
+        <div class="panel-card-header"><div>
+          <div class="pc-title">Email (SMTP)</div>
+          <div class="pc-sub">Used to send project invitations. Optional — without it, invite links are shown to copy.</div>
+        </div></div>
+        <div class="panel-card-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px;">
+            <label>SMTP host<input id="sm-host" placeholder="smtp.example.com" style="width:100%;"></label>
+            <label>Port<input id="sm-port" type="number" placeholder="587" style="width:100%;"></label>
+            <label>Username<input id="sm-user" placeholder="(optional)" style="width:100%;"></label>
+            <label>Password<input id="sm-password" type="password" placeholder="(unchanged)" style="width:100%;"></label>
+            <label>From address<input id="sm-from_addr" placeholder="dav@example.com" style="width:100%;"></label>
+            <label>Base URL (for invite links)<input id="sm-base_url" placeholder="https://dav-review.apps…" style="width:100%;"></label>
+            <label style="display:flex;align-items:center;gap:6px;"><input type="checkbox" id="sm-tls" style="width:auto;"> Use STARTTLS</label>
+            <label style="display:flex;align-items:center;gap:6px;" title="Verify the relay's TLS certificate. Uncheck only for internal relays with a self-signed / untrusted cert."><input type="checkbox" id="sm-verify_cert" style="width:auto;"> Validate certificate</label>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px;align-items:center;"><button class="btn primary btn-sm" id="sm-save">Save SMTP settings</button><button class="btn ghost btn-sm" id="sm-test">Send test email…</button><span id="sm-msg" style="font-size:11px;color:var(--text-faint);"></span></div>
+        </div>
+      </div>
+      <div class="cfg-card panel-card" id="configUsersPanel" style="display:none;">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Users &amp; roles</div>
+            <div class="pc-sub">Accounts are matrixed to roles; roles grant privileges. Add accounts, enable/disable, and assign platform or per-project roles.</div>
+          </div>
+          <span id="usersCountChip" style="font-size:10px;color:var(--text-faint);"></span>
+        </div>
+        <div class="panel-card-body">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <input id="acctNewEmail" placeholder="email" style="font-size:12px;flex:1;min-width:150px;">
+            <input id="acctNewName" placeholder="display name (optional)" style="font-size:12px;width:150px;">
+            <input id="acctNewPw" type="password" placeholder="initial password (optional)" style="font-size:12px;width:165px;">
+            <button class="btn primary btn-sm" id="acctAddBtn">Add account</button>
+            <span id="acctAddMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div id="accountsList" style="font-size:12px;">Loading…</div>
+          <hr style="margin:14px 0;border:none;border-top:1px solid var(--border);">
+          <div class="pc-title" style="font-size:13px;">Roles &amp; privileges</div>
+          <div class="pc-sub" style="margin-bottom:8px;">What each role grants. Toggle cells to change a role's privileges; built-in roles can be retuned but not deleted.</div>
+          <div id="rolesMatrix" style="font-size:12px;overflow-x:auto;">Loading…</div>
+          <hr style="margin:14px 0;border:none;border-top:1px solid var(--border);">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+            <div>
+              <div class="pc-title" style="font-size:13px;">Role bindings</div>
+              <div class="pc-sub" style="margin-bottom:8px;">Who is bound to what, and where — across the project <em>and</em> customer axes. Account bindings come from the account list above; group → role mappings are managed below.</div>
+            </div>
+            <div style="flex-shrink:0;display:flex;gap:4px;" title="List = bindings table · Matrix = subject × scope grant grid">
+              <button class="tab active" id="bindViewListBtn" type="button" onclick="_setBindView('list')">List</button>
+              <button class="tab" id="bindViewMatrixBtn" type="button" onclick="_setBindView('matrix')">⊞ Matrix</button>
+            </div>
+          </div>
+          <div id="roleBindings" style="font-size:12px;">Loading…</div>
+          <div id="roleBindingsMatrix" style="font-size:12px;display:none;"></div>
+        </div>
+      </div>
+
+      <div class="cfg-card panel-card" id="configBundlesPanel" style="display:none;">
+        <div class="panel-card-header">
+          <div>
+            <div class="pc-title">Bundles</div>
+            <div class="pc-sub">Reusable, versioned packages of config/capability items (#107). Assemble once, <b>publish</b> a version (snapshots the items, secrets excluded), then <b>attach</b> to a project or use-category — it resolves there via the scope system. Editing a bundle creates a new version; attachments pin the published one.</div>
+          </div>
+          <button class="btn primary btn-sm" id="bundleNewBtn" onclick="_bundleNew()">New bundle</button>
+        </div>
+        <div class="panel-card-body">
+          <div id="bundleNewForm" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <input id="bundleNewName" placeholder="bundle name" style="font-size:12px;flex:1;min-width:160px;">
+            <select id="bundleNewKind" style="font-size:12px;"><option value="mixed">mixed</option><option value="config">config</option><option value="capability">capability</option><option value="output">output</option></select>
+            <input id="bundleNewDesc" placeholder="description (optional)" style="font-size:12px;flex:1;min-width:160px;">
+            <button class="btn primary btn-sm" onclick="createBundle()">Create</button>
+            <button class="btn ghost btn-sm" onclick="_bundleNew()">Cancel</button>
+          </div>
+          <div id="bundlesList" style="font-size:12px;">Loading…</div>
+          <div id="bundleDetail" style="display:none;margin-top:12px;border-top:1px solid var(--border);padding-top:10px;"></div>
+        </div>
+      </div>
+
+      <div class="cfg-card panel-card" id="configAgentsPanel" style="display:none;">
+        <div class="panel-card-header"><div><div class="pc-title">Agents &amp; access tokens</div><div class="pc-sub">Agent identities are login-less accounts (no password / SSO) that authenticate only via a Personal Access Token and carry their <em>own</em> roles — bound in Users &amp; roles, exactly like a person. Create one here, grant it scoped roles, then mint a token for it. The secret is shown <strong>once</strong>.</div></div></div>
+        <div class="panel-card-body">
+          <div style="display:flex;flex-direction:column;gap:8px;max-width:660px;margin-bottom:6px;">
+            <div class="pc-title" style="font-size:13px;">Create agent identity</div>
+            <div class="pc-sub">A dedicated, login-less account — separate from people. Grant it scoped roles in the Users &amp; roles panel above, then mint a token for it below.</div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+              <input id="newAgentEmail" placeholder="pipeline-agent@roadfeldt.com" autocomplete="off" style="font-size:12px;flex:1;min-width:210px;" />
+              <input id="newAgentName" placeholder="display name (optional)" autocomplete="off" style="font-size:12px;width:170px;" />
+              <button class="btn primary btn-sm" id="agentCreateBtn" type="button">Create agent</button>
+              <span id="agentCreateMsg" style="font-size:11px;color:var(--text-faint);"></span>
+            </div>
+          </div>
+          <hr style="margin:6px 0 12px;border:none;border-top:1px solid var(--border);">
+          <div class="pc-title" style="font-size:13px;margin-bottom:8px;">Mint a token</div>
+          <div style="display:flex;flex-direction:column;gap:10px;max-width:660px;">
+            <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:600;color:var(--text-dim);">
+              <span>Acts as (account email)</span>
+              <input id="agentEmail" placeholder="agent-name@roadfeldt.com" autocomplete="off" style="font-size:12px;font-weight:400;" />
+              <small style="font-weight:400;color:var(--text-faint);">The token inherits this account's roles &amp; privileges. Prefer a <em>dedicated</em> agent identity (then grant it scoped roles in the Users &amp; roles panel above) over a person's account. An identity with no role bindings can authenticate but do nothing.</small>
+            </label>
+            <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:600;color:var(--text-dim);">
+              <span>Label</span>
+              <input id="agentLabel" placeholder="e.g. work-claude-session" autocomplete="off" style="font-size:12px;font-weight:400;" />
+              <small style="font-weight:400;color:var(--text-faint);">What this token is for — shown in the list below.</small>
+            </label>
+            <label style="display:flex;flex-direction:column;gap:3px;font-size:11px;font-weight:600;color:var(--text-dim);max-width:200px;">
+              <span>Expires</span>
+              <select id="agentExpiry" style="font-size:12px;font-weight:400;">
+                <option value="30">30 days</option>
+                <option value="90">90 days</option>
+                <option value="365" selected>1 year</option>
+                <option value="0">No expiration</option>
+              </select>
+            </label>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <button class="btn primary" id="agentMintBtn" type="button">Generate token</button>
+              <span id="agentMintMsg" style="font-size:11px;color:var(--text-faint);"></span>
+            </div>
+          </div>
+
+          <div id="agentRevealCard" style="display:none;margin-top:14px;padding:12px 14px;border:1px solid var(--green);border-radius:8px;">
+            <div class="pc-title" style="color:var(--green);">✓ Token created — copy it now</div>
+            <div class="pc-sub" style="margin-bottom:8px;">This is the only time the secret is shown. If you lose it, revoke and generate a new one.</div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <code id="agentRevealToken" style="flex:1;padding:8px 10px;background:var(--bg-elev,#1a1a1a);border:1px solid var(--border);border-radius:6px;font-size:12px;word-break:break-all;"></code>
+              <button class="btn" id="agentCopyBtn" type="button">Copy</button>
+              <button class="btn ghost" id="agentRevealDismiss" type="button" title="Hide">✕</button>
+            </div>
+            <div id="agentRevealUsage" style="margin-top:10px;font-size:11px;color:var(--text-dim);line-height:1.6;"></div>
+          </div>
+
+          <hr style="margin:14px 0;border:none;border-top:1px solid var(--border);">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px;">
+            <div><div class="pc-title" style="font-size:13px;">Active tokens</div><div class="pc-sub">All issued tokens (the secret is never shown). Revoke to disable a token immediately.</div></div>
+            <button class="btn ghost btn-sm" id="agentRefreshBtn" type="button">↻ Refresh</button>
+          </div>
+          <div id="agentTokenList" style="padding:4px 0;"><div class="empty" style="padding:14px;">Loading…</div></div>
+        </div>
+      </div>
+
+      <div class="cfg-card panel-card" id="configTenantsPanel" style="display:none;">
+        <div class="panel-card-header"><div><div class="pc-title">Tenants</div><div class="pc-sub">The hard isolation owner — 1 tenant → N projects; nothing crosses a tenant (project + customer are tenant-scoped). Phase 1 = the logical tenant + RBAC tier.</div></div></div>
+        <div class="panel-card-body">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <input id="tenantNewSlug" placeholder="slug (e.g. acme)" style="font-size:12px;width:150px;">
+            <input id="tenantNewName" placeholder="display name" style="font-size:12px;flex:1;min-width:140px;">
+            <select id="tenantNewRegime" style="font-size:12px;" title="Declared sovereign-cloud certification regime">
+              <option value="none">regime: none</option>
+              <option value="secnumcloud">SecNumCloud</option>
+              <option value="bsi_c5">BSI C5</option>
+              <option value="eu_data_boundary">EU Data Boundary</option>
+            </select>
+            <button class="btn primary btn-sm" id="tenantCreateBtn" type="button">Create tenant</button>
+            <span id="tenantCreateMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div id="tenantList" style="font-size:12px;">Loading…</div>
+        </div>
+      </div>
+
+      <div class="cfg-card panel-card" id="configGroupsPanel" style="display:none;">
+        <div class="panel-card-header"><div><div class="pc-title">Groups</div><div class="pc-sub">Users → groups → roles. A group is scoped (platform / tenant / project / customer); add members and bind it to the admin/edit/view role for its scope. Members inherit the group's roles.</div></div></div>
+        <div class="panel-card-body">
+          <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+            <input id="groupNewName" placeholder="group name" style="font-size:12px;flex:1;min-width:150px;">
+            <select id="groupNewScope" style="font-size:12px;" onchange="_onGroupScopeChange()">
+              <option value="platform">platform</option>
+              <option value="tenant">tenant</option>
+            </select>
+            <select id="groupNewTenant" style="font-size:12px;display:none;" title="Tenant for a tenant group"></select>
+            <button class="btn primary btn-sm" id="groupCreateBtn" type="button">Create group</button>
+            <span id="groupCreateMsg" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+          <div id="groupList" style="font-size:12px;">Loading…</div>
+        </div>
+      </div>
+
+      </div><!-- /tabpanel access -->
+    </div><!-- /config-content -->
+  </div><!-- /config-layout -->
+    </section>

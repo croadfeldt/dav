@@ -1,0 +1,80 @@
+    <section class="pf-view" id="view-results">
+      <div class="split">
+    <div class="split-left" id="resultsRunsPanel" style="width:320px; min-width:200px; display:none;"><!-- run picked globally in the masthead -->
+      <div class="panel-header">
+        <div class="panel-title">Results</div>
+        <div style="display:flex;gap:4px;flex-shrink:0;">
+          <button class="btn ghost btn-icon" id="ingestResultBtn" title="Re-load analysis results into Postgres (done automatically on analysis selection)" style="font-size:10px;padding:3px 8px;display:none;">↓ Reload</button>
+          <button class="btn ghost btn-icon" id="refreshResultsBtn" title="Refresh">↻</button>
+        </div>
+      </div>
+      <div class="panel-toolbar">
+        <input id="resultFilter" placeholder="filter analyses…" />
+      </div>
+      <div class="scrollable" id="resultList"><div class="empty">loading…</div></div>
+    </div>
+    <div class="split-resizer" data-rs-left="resultsRunsPanel" data-rs-storage="rsRunsW" style="display:none;"></div>
+    <div class="split-right">
+      <div class="split" id="resultDetail">
+        <div class="split-left" id="ucListPanel" style="width:340px; min-width:200px;">
+          <div class="panel-header">
+            <span class="panel-title" id="ucPanelTitle">Use Cases</span>
+            <div class="toolbar-actions">
+              <button class="btn ghost btn-sm" id="cmpToggleBtn" title="Compare with another analysis">⇄ Compare</button>
+            </div>
+          </div>
+          <!-- Compare run picker (hidden until compare mode active) -->
+          <div id="cmpPickerRow" style="display:none; padding:6px 10px; border-bottom:1px solid var(--border-bright); gap:6px; flex-direction:column;">
+            <div style="font-size:10px; color:var(--text-dim);">Compare <em style="color:var(--accent);" id="cmpRunALabel">…</em> vs:</div>
+            <div style="display:flex; gap:6px; align-items:center;">
+              <select id="cmpRunBSelect" style="flex:1; font-size:10px; padding:3px 5px;">
+                <option value="">— pick an analysis —</option>
+              </select>
+              <button class="btn ghost btn-icon" id="cmpRunBtn" style="font-size:10px;">Go</button>
+              <button class="btn ghost btn-icon" id="cmpCancelBtn" style="font-size:10px; color:var(--text-faint);">✕</button>
+            </div>
+          </div>
+          <!-- UC/Set SCOPE picker (uc-scoped-evaluation-design.md 3b): the selectable subject.
+               Results = the latest evaluation per UC across the scope (may span runs). -->
+          <div class="panel-toolbar" id="resultsScopeBar" style="gap:6px;padding:6px 10px;border-bottom:1px solid var(--border);">
+            <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.06em;">Scope</span>
+            <select id="resultsScopeSel" style="flex:1;font-size:11px;" title="Scoping Set — results show the latest evaluation per UC across the scope"></select>
+          </div>
+          <!-- Normal UC list controls -->
+          <div id="ucNormalControls" class="panel-toolbar" style="gap:6px;">
+            <select id="ucVerdictFilter" style="flex:1">
+              <option value="">all verdicts</option>
+              <option value="supported">supported</option>
+              <option value="partially_supported">partial</option>
+              <option value="not_supported">not supported</option>
+              <option value="failed">failed</option>
+            </select>
+            <select id="ucGroupBy" style="flex:none;font-size:10px;padding:3px 5px;" title="Grouping mode">
+              <option value="">flat</option>
+              <option value="verdict" selected>verdict group</option>
+              <option value="category">category group</option>
+            </select>
+          </div>
+          <!-- Compare filter bar (shown in compare mode) -->
+          <div id="cmpFilterRow" class="cmp-filter-row" style="display:none;">
+            <button class="cmp-filter-btn active" data-cf="all">all</button>
+            <button class="cmp-filter-btn" data-cf="changed">changed</button>
+            <button class="cmp-filter-btn" data-cf="only_a">only A</button>
+            <button class="cmp-filter-btn" data-cf="only_b">only B</button>
+          </div>
+          <div class="scrollable" id="ucResultList"><div class="empty">select an analysis</div></div>
+        </div>
+        <div class="split-resizer" data-rs-left="ucListPanel" data-rs-storage="rsUcsW"></div>
+        <div class="split-right" id="analysisPanel" style="display:flex;flex-direction:column;min-height:0;">
+          <!-- Persistent run-summary header: stays visible whenever a run is selected,
+               so the run-level context stays present while drilling into per-UC output. -->
+          <div id="runResultsHeader" style="display:none;flex-shrink:0;border-bottom:1px solid var(--border);background:var(--bg-panel);padding:10px 16px;"></div>
+          <div id="analysisActionBar" style="display:none;flex-shrink:0;border-bottom:1px solid var(--border);background:var(--bg-panel)"></div>
+          <div id="analysisDetail" style="flex:1;overflow-y:auto;min-height:0;">
+            <div class="detail-pane"><div class="detail-empty">Select an analysis, then a use case to view its results.</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+      </div>
+    </section>

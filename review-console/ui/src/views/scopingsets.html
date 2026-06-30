@@ -1,0 +1,69 @@
+    <section class="pf-view" id="view-scopingsets">
+      <style>
+        .ss-split { display:flex; gap:12px; height:calc(100vh - 60px); padding:14px; }
+        .ss-pal-pane { display:flex; flex-direction:column; width:320px; min-width:260px; max-width:380px;
+                       background:var(--bg-panel); border:1px solid var(--border); border-radius:5px; min-height:0; }
+        .ss-sets-pane { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; }
+        .ss-pal-filters { display:flex; flex-wrap:wrap; gap:5px; padding:7px 9px; border-bottom:1px solid var(--border); }
+        .ss-pal-filters input, .ss-pal-filters select { font-size:11px; }
+        .ss-pal-list { flex:1; overflow-y:auto; padding:6px; display:flex; flex-direction:column; gap:4px; }
+        .ss-uc { display:flex; align-items:flex-start; gap:7px; padding:6px 8px; background:var(--bg-raised); border:1px solid var(--border);
+                 border-radius:3px; font-size:11px; cursor:grab; }
+        .ss-uc:hover { border-color:var(--border-bright); }
+        .ss-uc.ss-dragging { opacity:.45; }
+        .ss-uc-grip { color:var(--text-faint); font-size:9px; letter-spacing:-2px; margin-top:2px; }
+        .ss-uc-main { flex:1; min-width:0; }
+        .ss-uc-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .ss-uc-sub { font-family:var(--mono,monospace); font-size:9px; opacity:.7; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .ss-uc-sets { display:flex; flex-wrap:wrap; gap:3px; margin-top:3px; }
+        .ss-uc-setchip { font-size:8px; color:var(--accent); border:1px solid var(--accent-soft); border-radius:2px; padding:0 4px; }
+        .ss-uc-unassigned { font-size:8px; color:var(--text-faint); }
+        /* the vertical set accordion is a drop target for UC drags */
+        [data-set-row].ss-drop { box-shadow:inset 0 0 0 2px var(--accent); background:var(--accent-bg); }
+      </style>
+      <div class="ss-split">
+        <!-- Left: static, filterable full Use Case list (drag source) -->
+        <div class="ss-pal-pane">
+          <div class="panel-header">
+            <div class="panel-title">Use Cases</div>
+            <span id="ssUcCount" style="font-size:10px;color:var(--text-faint);"></span>
+          </div>
+          <div class="ss-pal-filters">
+            <input id="ssUcSearch" placeholder="search title / uuid / tag…" style="flex:1 1 100%;" />
+            <select id="ssUcAssign" title="Assignment" style="flex:1;">
+              <option value="">all</option>
+              <option value="unassigned">unassigned</option>
+              <option value="assigned">assigned</option>
+            </select>
+            <select id="ssUcSource" title="Source" style="flex:1;">
+              <option value="">any source</option>
+              <option value="managed">managed</option>
+              <option value="corpus">corpus</option>
+            </select>
+            <select id="ssUcState" title="Lifecycle state" style="flex:1;">
+              <option value="">any state</option>
+              <option value="draft">draft</option>
+              <option value="in_review">in review</option>
+              <option value="approved">approved</option>
+              <option value="deprecated">deprecated</option>
+            </select>
+          </div>
+          <div class="ss-pal-list" id="ssUcPalette"><div class="empty">loading…</div></div>
+        </div>
+        <!-- Right: vertical Scoping Set accordion (drop targets + management) -->
+        <div class="ss-sets-pane">
+          <div class="panel-header">
+            <div class="panel-title">Scoping Sets</div>
+            <div class="toolbar-actions">
+              <button class="btn ghost btn-icon" id="ssRefreshBtn" title="Refresh" onclick="loadScopingSets()">↻</button>
+              <button class="btn primary btn-sm" id="ssNewBtn" onclick="openSetModal()">+ New Scoping Set</button>
+            </div>
+          </div>
+          <div style="font-size:11px;color:var(--text-dim);padding:6px 2px;">
+            Drag a use case from the left onto a Scoping Set to <strong>add</strong> it (a UC can be in several sets).
+            Expand a set (▶) to see / remove members. Mark one <strong>default</strong> to pre-fill New Analysis.
+          </div>
+          <div id="scopingSetsList" style="font-size:12px;flex:1;min-height:0;overflow-y:auto;border:1px solid var(--border);border-radius:3px;"></div>
+        </div>
+      </div>
+    </section>

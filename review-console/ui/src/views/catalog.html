@@ -1,0 +1,50 @@
+    <section class="pf-view" id="view-catalog">
+      <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:14px;padding:14px;height:calc(100vh - 60px);">
+        <!-- Left: the catalog + add/edit form -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+            <div style="min-width:0;">
+              <div class="panel-title">Capability Catalog</div>
+              <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Canonical capabilities for this project. Curate manually; confirm suggestions from analysis. The engineering roadmap reads this — not raw model strings.</div>
+            </div>
+            <div style="flex-shrink:0;display:flex;gap:4px;" title="List = curate · Board = the R4 disposition decision surface (what we do about each capability)">
+              <button class="tab active" id="catViewListBtn" type="button" onclick="_setCatView('list')">List</button>
+              <button class="tab" id="catViewBoardBtn" type="button" onclick="_setCatView('board')">⊞ Board</button>
+            </div>
+          </div>
+          <div style="padding:10px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:6px;">
+            <input id="catKey" placeholder="capability key (e.g. tenant_provisioning)" style="font-size:11px;" />
+            <input id="catName" placeholder="name (e.g. Tenant Provisioning)" style="font-size:11px;" />
+            <input id="catDomain" placeholder="domain (e.g. provisioning)" style="font-size:11px;" />
+            <textarea id="catDef" rows="2" placeholder="description" style="font-size:11px;"></textarea>
+            <input id="catDeps" placeholder="depends_on (comma-separated capability keys)" style="font-size:11px;" />
+            <div style="display:flex;gap:6px;" title="Ownership — 'one capability, one source': the owning DDD bounded context + the single team/platform that delivers it reusably.">
+              <input id="catBC" placeholder="bounded context" style="font-size:11px;flex:1;" />
+              <input id="catProv" placeholder="strategic provider (owning team/platform)" style="font-size:11px;flex:1;" />
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:10px;color:var(--text-faint);" title="DDD classification + R4 disposition (≈ Gartner TIME) — the actionable verdict. Fit × tech suggest the disposition.">
+              <select id="catClass" style="font-size:11px;" title="DDD subdomain — aims investment"><option value="">class…</option><option value="core">Core</option><option value="supporting">Supporting</option><option value="generic">Generic</option></select>
+              <select id="catFit" style="font-size:11px;" title="Business / strategic fit (driver)"><option value="">fit…</option><option value="high">fit: high</option><option value="low">fit: low</option></select>
+              <select id="catTech" style="font-size:11px;" title="Technology fitness (driver)"><option value="">tech…</option><option value="aligned">tech: aligned</option><option value="constrained">tech: constrained</option></select>
+              <span>→</span>
+              <select id="catDisp" style="font-size:11px;" title="R4 disposition ≈ Gartner TIME"><option value="">disposition…</option><option value="reuse">Reuse</option><option value="refurbish">Refurbish</option><option value="replace">Replace</option><option value="retire">Retire</option></select>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;">
+              <button class="btn primary btn-sm" id="catSaveBtn" data-edit-gate="project.catalog">Add capability</button>
+              <button class="btn ghost btn-sm" id="catClearBtn" style="display:none;">Cancel edit</button>
+              <span id="catMsg" style="font-size:10px;color:var(--text-faint);"></span>
+            </div>
+          </div>
+          <div class="scrollable" id="catList" style="flex:1;overflow-y:auto;padding:8px 14px;"><div class="empty">loading…</div></div>
+          <div class="scrollable" id="catBoard" style="flex:1;overflow:auto;padding:8px 14px;display:none;"></div>
+        </div>
+        <!-- Right: suggestions from analysis -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);">
+            <div style="font-size:13px;color:var(--text);"><strong>Suggestions from analysis</strong></div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Capabilities the model named across analyses, ranked by how many UCs invoked them. The framework proposes; you confirm into the catalog.</div>
+          </div>
+          <div class="scrollable" id="catSuggList" style="flex:1;overflow-y:auto;padding:8px 14px;"><div class="empty">loading…</div></div>
+        </div>
+      </div>
+    </section>

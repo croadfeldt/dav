@@ -1,0 +1,71 @@
+    <section class="pf-view" id="view-review">
+      <div class="rp-split">
+        <!-- Controls panel -->
+        <div class="rp-controls" id="rpControls">
+          <div style="display:none;"><!-- run is selected globally in the masthead -->
+            <label>Ingest</label>
+            <select id="rpRunSel" style="width:100%;font-size:11px;">
+              <option value="">— select an ingestion —</option>
+            </select>
+          </div>
+          <div>
+            <label>Scope</label>
+            <div id="rpScopeNote" style="font-size:11px;color:var(--text-dim);line-height:1.4;">
+              Reviewing <strong id="rpScopeName">all use cases</strong>
+              <div style="font-size:10px;color:var(--text-faint);margin-top:2px;">Set the Scoping Set in the masthead Scope selector ▸</div>
+            </div>
+            <!-- Retired run/UC scope picker — the Architecture roadmap now follows the
+                 masthead Scoping Set (latest eval per UC). Hidden inputs kept so legacy
+                 references resolve without error. -->
+            <input type="radio" name="rpScope" value="run" id="rpScopeRun" checked style="display:none;" />
+            <input type="radio" name="rpScope" value="uc" id="rpScopeUC" style="display:none;" />
+            <select id="rpUCSel" style="display:none;" disabled></select>
+          </div>
+          <div>
+            <label>Review model</label>
+            <select id="rpRevModelSel" style="width:100%;font-size:11px;"></select>
+          </div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
+          <button class="btn ghost" id="rpRevRunBtn" style="width:100%;">▶ Generate Review</button>
+          <div style="font-size:10px;color:var(--text-faint);margin-top:6px;">Generate the Enhancement Plan + open PRs in the <strong>Enhancement / PR</strong> tab ▸</div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
+          <details id="rpCtxDetails" style="font-size:11px;">
+            <summary style="cursor:pointer;color:var(--text-dim);">⚙ Stage context — informs the LLM</summary>
+            <textarea id="rpStageCtx" rows="4" placeholder="Project-level context / instructions for the architecture review + enhancement (saved to the project, injected into the prompt)…" style="width:100%;font-size:11px;margin-top:5px;"></textarea>
+            <div style="display:flex;gap:6px;align-items:center;margin-top:4px;">
+              <button class="btn ghost btn-sm" id="rpStageCtxSave">Save to project</button>
+              <span id="rpStageCtxMsg" style="font-size:10px;color:var(--text-faint);"></span>
+            </div>
+          </details>
+          <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
+          <div id="rpUCLink" style="display:none;font-size:11px;color:var(--text-faint);">
+            Pre-selected from Results tab
+          </div>
+        </div>
+        <!-- Output area -->
+        <div class="rp-output" id="rpOutput">
+          <!-- ── Track 1 · Architecture & Capability (gap-anchored) ── -->
+          <div style="background:var(--bg-raised);border-left:2px solid var(--accent);padding:8px 12px;border-radius:2px;">
+            <div style="font-size:12px;color:var(--text);"><strong>Track 1 · Architecture &amp; Capability</strong> <span style="color:var(--text-faint);">— gap-anchored</span></div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">Find where the spec is deficient. <em>Output:</em> a prose assessment of the gaps. Turn those gaps into ready-to-apply spec patches (→ PRs) in the <strong>Enhancement / PR</strong> tab.</div>
+          </div>
+          <div>
+            <div class="rp-section-title">Architectural Review</div>
+            <div style="font-size:11px;color:var(--text-dim);margin:-2px 0 8px;">
+              <strong>What:</strong> a prose assessment of how the architecture handles the use case(s) and where it falls short.
+              <strong>Use:</strong> understand the problem before fixing it.
+              <strong>From:</strong> reads the ingested analysis verdict + gaps directly.
+            </div>
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+              <button class="btn ghost btn-sm" id="rpRevCopyBtn" style="display:none;">⧉ Copy</button>
+              <button class="btn ghost btn-sm" id="rpRevUseClaudeBtn">⧉ Use in Claude</button>
+              <button class="btn ghost btn-sm" id="rpRevReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
+              <span id="rpRevStatus" style="font-size:11px;color:var(--text-faint);display:none;"></span>
+              <span id="rpRevCacheChip" style="font-size:10px;color:var(--text-faint);margin-left:auto;"></span>
+            </div>
+            <div id="rpRevStream" class="arch-review-stream" style="display:none;"></div>
+            <div id="rpRevHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
+          </div>
+        </div>
+      </div>
+    </section>

@@ -1,0 +1,25 @@
+    <section class="pf-view" id="view-audit">
+      <div style="display:flex;flex-direction:column;height:calc(100vh - 60px);padding:14px;gap:10px;">
+        <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;padding:12px 14px;">
+          <div class="panel-title">Audit log</div>
+          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 8px;">Who did what — every mutating action — plus login, logout and session-timeout events. Platform-admin only; reads are not recorded.</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <input id="auActor" placeholder="actor (email)" style="font-size:11px;width:170px;" />
+            <input id="auAction" placeholder="action (e.g. auth, ingest, delete)" style="font-size:11px;width:200px;" />
+            <select id="auOutcome" style="font-size:11px;">
+              <option value="">any outcome</option><option value="success">success</option>
+              <option value="denied">denied</option><option value="failure">failure</option><option value="error">error</option>
+            </select>
+            <select id="auHours" style="font-size:11px;">
+              <option value="">all time</option><option value="24">last 24h</option>
+              <option value="168">last 7d</option><option value="720">last 30d</option>
+            </select>
+            <button class="btn primary btn-sm" id="auLoadBtn" onclick="loadAudit()">Apply</button>
+            <span id="auStatus" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+        </div>
+        <div class="scrollable" id="auTable" style="flex:1;overflow:auto;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div class="empty">loading…</div>
+        </div>
+      </div>
+    </section>

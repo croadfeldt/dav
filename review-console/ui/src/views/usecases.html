@@ -1,0 +1,103 @@
+    <section class="pf-view" id="view-usecases">
+      <div class="split">
+    <!-- Set filter rail — RETIRED from the Use Cases tab (Scoping Set management moved to its
+         own Authoring → Scoping Sets tab). Hidden (not removed) so its buttons/listeners survive. -->
+    <div class="split-left" style="display:none; width:200px; min-width:160px; max-width:280px;">
+      <div class="panel-header">
+        <div class="panel-title">Scoping Sets</div>
+        <div class="toolbar-actions">
+          <button class="btn ghost btn-icon" id="manageSetsBtn" title="Manage Scoping Sets (rename, delete, promote, export, …)">⚙</button>
+          <button class="btn primary btn-sm" id="newSetBtn" data-edit-gate="project.usecases">+ New</button>
+        </div>
+      </div>
+      <div class="scrollable" id="setFilterRail"><div class="empty">loading…</div></div>
+    </div>
+    <!-- UC list -->
+    <div class="split-left" style="width:340px; min-width:260px;">
+      <div class="panel-header">
+        <div class="panel-title">Use Cases</div>
+        <span id="ucCount" style="font-size:10px;color:var(--text-faint);margin-left:2px;"></span>
+        <span id="ucHealthPill" style="display:none;margin-left:6px;"></span>
+      </div>
+      <!-- Action pills (Import / Export / Bulk / New) — their own row below the header. -->
+      <div class="uc-action-pills" style="display:flex;flex-wrap:wrap;gap:6px;padding:7px 9px;border-bottom:1px solid var(--border);">
+        <button class="btn ghost btn-sm" id="importUCBtn" title="Import archive (.tar.gz / .zip)" style="border-radius:999px;">Import</button>
+        <div style="position:relative;display:flex;">
+          <button class="btn ghost btn-sm" id="exportUCBtn" title="Export all managed UCs" style="border-radius:999px;">Export ▾</button>
+          <div id="exportUCMenu" style="display:none;position:absolute;left:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:130px;">
+            <button class="dropdown-item" onclick="exportUCs('tar.gz')">tar.gz (gzip)</button>
+            <button class="dropdown-item" onclick="exportUCs('zip')">zip</button>
+            <button class="dropdown-item" onclick="exportUCs('tar')">tar (uncompressed)</button>
+          </div>
+        </div>
+        <button class="btn ghost btn-sm" id="bulkImportUCBtn" title="Bulk import — paste a transcript / notes and extract multiple UCs at once" style="border-radius:999px;">Bulk</button>
+        <button class="btn primary btn-sm" id="newUCBtn" data-edit-gate="project.usecases" style="border-radius:999px;">+ New</button>
+      </div>
+      <!-- Active-set banner (visible only when a Scoping Set filter is applied) -->
+      <div id="ucListSetBanner" style="display:none;padding:6px 10px;background:var(--accent-bg);border-bottom:1px solid var(--accent-soft);align-items:center;gap:6px;font-size:11px;">
+        <span id="ucListSetBannerLabel" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent)"></span>
+        <button class="btn ghost btn-sm" id="ucListSetBannerRunBtn" title="Run this Scoping Set">▶ Ingest</button>
+        <button class="btn ghost btn-sm" id="ucListSetBannerManageBtn" title="Manage this Scoping Set">⚙</button>
+        <button class="btn ghost btn-sm" id="ucListSetBannerClearBtn" title="Clear Set filter">×</button>
+      </div>
+      <!-- Selection toolbar — visible when ≥1 UC in the list is checked -->
+      <div id="ucSelectionToolbar" style="display:none;position:relative;padding:6px 10px;background:var(--accent-bg);border-bottom:1px solid var(--accent-soft);align-items:center;gap:6px;font-size:11px;">
+        <span id="ucSelectionCount" style="flex:1;color:var(--accent);font-weight:500;"></span>
+        <button class="btn primary btn-sm" id="ucSelTestBtn" title="Evaluate engine-filtered test against the selected UCs">▶ Test selected</button>
+        <button class="btn ghost btn-sm" id="ucSelAddSetBtn" title="Add the selected UCs to a Scoping Set">★ Add to Set…</button>
+        <button class="btn ghost btn-sm" id="ucSelClearBtn" title="Clear selection">×</button>
+        <div id="ucSelAddSetPopover" style="display:none;position:absolute;top:100%;right:6px;margin-top:4px;z-index:60;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:3px;box-shadow:0 4px 12px rgba(0,0,0,0.35);min-width:240px;max-height:280px;overflow-y:auto;"></div>
+      </div>
+      <!-- Unified header/filter style — matches the Scoping Sets tab's Use Case palette (.ss-pal-filters). -->
+      <div class="ss-pal-filters">
+        <input id="ucFilter" placeholder="search title / uuid / tag…" style="flex:1 1 100%;" />
+        <select id="ucAssignFilter" title="Assignment" style="flex:1;">
+          <option value="">all</option>
+          <option value="unassigned">unassigned</option>
+          <option value="assigned">assigned</option>
+        </select>
+        <select id="ucSourceFilter" title="Source" style="flex:1;">
+          <option value="">any source</option>
+          <option value="managed">managed</option>
+          <option value="corpus">corpus</option>
+        </select>
+        <select id="ucRepoFilter" onchange="loadUCs()" title="Corpus repo / branch (#243): show only the UCs from one corpus repo+branch. Picking a repo shows that repo/branch's UCs distinctly (same-uuid versions are not collapsed against main/managed)." style="flex:1;">
+          <option value="">all repos</option>
+        </select>
+        <select id="ucScopeFilter" onchange="loadUCs()" title="Project scope (#43): UCs in this project (home or referenced) vs the pool of managed UCs from other projects in this tenant, available to reference in" style="flex:1;">
+          <option value="">in this project</option>
+          <option value="pool">available to apply</option>
+        </select>
+        <select id="ucStateFilter" title="Lifecycle state — 'active' hides deprecated UCs" style="flex:1;">
+          <option value="">active (no deprecated)</option>
+          <option value="__all__">all (incl. deprecated)</option>
+          <option value="draft">draft</option>
+          <option value="ready">ready</option>
+          <option value="in_review">in review</option>
+          <option value="approved">approved</option>
+          <option value="deprecated">deprecated</option>
+        </select>
+        <select id="ucHealthFilter" title="Validation health (#122)" style="flex:1;">
+          <option value="">any health</option>
+          <option value="invalid">invalid only</option>
+          <option value="valid">valid only</option>
+        </select>
+        <select id="ucPriorityFilter" title="Roadmap priority" style="flex:1;">
+          <option value="">any priority</option>
+          <option value="critical">critical</option>
+          <option value="high">high</option>
+          <option value="medium">medium</option>
+          <option value="low">low</option>
+        </select>
+        <button class="btn ghost btn-sm" id="ucSortPriority" title="Sort by roadmap weight (highest priority first)" style="flex:0 0 auto;">↑ prio</button>
+        <button class="btn ghost btn-sm" id="ucSelectAllBtn" title="Select / deselect all UCs visible in the list" style="flex:0 0 auto;" onclick="_toggleSelectAllUCs()">☑ All</button>
+      </div>
+      <div class="scrollable" id="ucList"><div class="empty">loading…</div></div>
+    </div>
+    <div class="split-right">
+      <div id="ucDetail" style="flex:1; display:flex; flex-direction:column; overflow:hidden;">
+        <div class="detail-pane"><div class="detail-empty">Select a use case or create a new one.</div></div>
+      </div>
+    </div>
+      </div>
+    </section>
