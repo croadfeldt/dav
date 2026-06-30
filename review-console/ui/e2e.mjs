@@ -102,11 +102,14 @@ async function runRole(role) {
   const ck = (name, cond, detail = '') => checks.push([cond ? 'PASS' : 'FAIL', `[${role}] ${name}`, detail]);
 
   ck('no uncaught errors at boot', errors.length === 0, errors.slice(0, 4).join('  |  '));
-  // Persona paradigm (ux-paradigm-design.md): the persona switcher selects which domains
-  // the rail foregrounds. Default is role-derived — platform-admin → Architect; assessment-
-  // only users → Assessor. The rail renders only the active persona's domains.
-  ck('persona switcher present', !!document.getElementById('personaSel'));
-  ck('view-mode toggle present', !!document.getElementById('viewModeToggle'));
+  // UI lean slice 1: personas removed as a navigation mechanism. There is ONE stable rail
+  // for everyone — every domain the user is PERMITTED to see (RBAC), in canonical order, no
+  // per-role reshuffling. The persona switcher is gone; visibility is gated by privilege.
+  ck('persona switcher removed', !document.getElementById('personaSel'));
+  ck('view-mode toggle present (in account menu)', !!document.getElementById('viewModeToggle'));
+  // Dead masthead chips removed (selection lives in-view, Blueprint unbuilt).
+  ck('assessment masthead chip removed', !document.getElementById('globalAssessmentSel'));
+  ck('blueprint masthead chip removed', !document.getElementById('globalBlueprintSel'));
   // Masthead run selector retired → read-only run-status label (run is working context, not chrome).
   ck('run selector retired (read-only status)',
      !document.getElementById('globalRunSel') && !!document.getElementById('rccName'),
@@ -120,18 +123,16 @@ async function runRole(role) {
   // #147: Assessments gained the Maturity Wall sub-view (FlightPath-style).
   ck('Maturity Wall view present',
      !!document.getElementById('view-maturity') && !!document.getElementById('mwWall') && !!document.getElementById('mwStates'));
+  // Stable rail (no personas): Authoring + Catalog have no privilege gate, so they show for
+  // every role. Assessments shows where assessment.view is held (all three fixtures have it /
+  // are admin). The rail is identical in shape per RBAC — it does not reshuffle by role.
+  ck('stable rail: Authoring domain shown', shown(domDisp('author')), 'display=' + domDisp('author'));
+  ck('stable rail: Catalog domain shown', shown(domDisp('catalog')), 'display=' + domDisp('catalog'));
+  ck('stable rail: Assessments domain shown', shown(domDisp('assess')), 'display=' + domDisp('assess'));
   if (role === 'platform-admin') {
-    // Architect persona: Authoring · Execution · Roadmaps · Catalog · Improve (no Assessments).
-    ck('Architect persona: Authoring domain shown', shown(domDisp('author')), 'display=' + domDisp('author'));
-    ck('Architect persona: Assessments domain not in rail', !shown(domDisp('assess')), 'display=' + domDisp('assess'));
-    // Authoring is multi-sub-view → the top strip renders ≥2 tabs (Use Cases · Inbox).
+    // Authoring is multi-sub-view → the top strip renders ≥2 tabs (Use Cases · Scoping Sets · Discussion).
     ck('Authoring strip has ≥2 sub-tabs', document.querySelectorAll('#domainTabs .tab').length >= 2,
        'tabs=' + document.querySelectorAll('#domainTabs .tab').length);
-  } else {
-    // project-admin + project-viewer (mock: assessment.view, no UC/run pipeline) → Assessor persona.
-    ck('Assessor persona: Assessments domain shown', shown(domDisp('assess')), 'display=' + domDisp('assess'));
-    ck('Assessor persona: Authoring domain not in rail', !shown(domDisp('author')), 'display=' + domDisp('author'));
-    ck('Catalog domain shown (in Assessor persona)', shown(domDisp('catalog')), 'display=' + domDisp('catalog'));
   }
   // #137: a view-only role must not see edit affordances (data-edit-gate hidden when !canEdit).
   // project-viewer has no project.catalog → the catalog "Add capability" button is hidden; a privileged
