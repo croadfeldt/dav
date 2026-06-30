@@ -70,7 +70,7 @@ Required structure:
       resource_complexity:  single_no_deps | hard_dependencies | composite_service
                           | conditional_soft_deps | process_resource
                           | cross_dependency_payload
-      policy_complexity:    system_defaults_only | single_gatekeeper
+      policy_complexity:    system_defaults_only | single_gating
                           | multi_policy_chain | conflicting_policies
                           | orchestration_flow_static | dynamic_conditional_flow
                           | cross_domain_constraint | human_escalation_required

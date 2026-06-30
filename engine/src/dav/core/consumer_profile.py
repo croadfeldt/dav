@@ -158,7 +158,7 @@ _GENERIC_REFERENCE_PROFILE = ConsumerProfile(
         "conditional_soft_deps", "process_resource", "cross_dependency_payload",
     ],
     policy_complexities=[
-        "system_defaults_only", "single_gatekeeper", "multi_policy_chain",
+        "system_defaults_only", "single_gating", "multi_policy_chain",
         "conflicting_policies", "orchestration_flow_static",
         "dynamic_conditional_flow", "cross_domain_constraint",
         "human_escalation_required", "governance_matrix_enforcement",

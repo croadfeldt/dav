@@ -5016,41 +5016,80 @@ def _parse_uc_yaml(yaml_content: str) -> dict:
 
 
 # Engine-side validation rules for managed UCs, mirrored here so authors see
-# errors at save time instead of at run time. Hardcoded to the DCM consumer
-# profile for now (single-consumer install). When multi-consumer ships, this
-# should fetch from a per-consumer profile API.
-_DCM_LIFECYCLE_PHASES = {
-    "new_request", "modification", "decommission",
-    "drift_detection", "brownfield_ingestion",
-    "rehydration_faithful", "rehydration_provider_portable",
-    "rehydration_historical_exact", "rehydration_historical_portable",
-    "expiry_enforcement",
+# errors at save time instead of at run time. These enums are the engine's
+# generic reference profile (consumer_profile.get_generic_reference_profile()).
+#
+# Single source of truth (operating-model DR §6): the values live in the engine
+# and are exported to `dcm_vocab.json` by `python -m dav.scripts.export_dcm_vocab`.
+# We load that artifact here so the API never hand-copies (and drifts from) the
+# engine vocabulary again. The hardcoded fallback below is a last resort if the
+# JSON is missing at runtime; CI runs the exporter with --check to guarantee the
+# committed JSON matches the engine.
+_DCM_VOCAB_FALLBACK = {
+    "lifecycle_phases": [
+        "new_request", "modification", "decommission",
+        "drift_detection", "brownfield_ingestion",
+        "rehydration_faithful", "rehydration_provider_portable",
+        "rehydration_historical_exact", "rehydration_historical_portable",
+        "expiry_enforcement",
+    ],
+    "resource_complexities": [
+        "single_no_deps", "hard_dependencies", "composite_service",
+        "conditional_soft_deps", "process_resource", "cross_dependency_payload",
+    ],
+    "policy_complexities": [
+        "system_defaults_only", "single_gating", "multi_policy_chain",
+        "conflicting_policies", "orchestration_flow_static",
+        "dynamic_conditional_flow", "cross_domain_constraint",
+        "human_escalation_required", "governance_matrix_enforcement",
+        "recovery_policy",
+    ],
+    "provider_landscapes": [
+        "single_eligible", "multiple_eligible", "none_eligible",
+        "peer_dcm_required", "process_provider", "mixed",
+    ],
+    "governance_contexts": [
+        "no_governance", "standard_governance", "audit_heavy",
+        "compliance_gated", "sovereignty_enforced",
+    ],
+    "failure_modes": [
+        "happy_path", "provider_failure", "policy_violation",
+        "peer_dcm_disconnect", "data_inconsistency", "rollback_required",
+        "partial_fulfillment", "timeout", "resource_exhaustion",
+    ],
+    "profiles": ["minimal", "dev", "standard", "prod", "fsi", "sovereign"],
 }
-_DCM_RESOURCE_COMPLEXITIES = {
-    "single_no_deps", "hard_dependencies", "composite_service",
-    "conditional_soft_deps", "process_resource", "cross_dependency_payload",
-}
-_DCM_POLICY_COMPLEXITIES = {
-    "system_defaults_only", "single_gatekeeper", "multi_policy_chain",
-    "conflicting_policies", "orchestration_flow_static",
-    "dynamic_conditional_flow", "cross_domain_constraint",
-    "human_escalation_required", "governance_matrix_enforcement",
-    "recovery_policy",
-}
-_DCM_PROVIDER_LANDSCAPES = {
-    "single_eligible", "multiple_eligible", "none_eligible",
-    "peer_dcm_required", "process_provider", "mixed",
-}
-_DCM_GOVERNANCE_CONTEXTS = {
-    "no_governance", "standard_governance", "audit_heavy",
-    "compliance_gated", "sovereignty_enforced",
-}
-_DCM_FAILURE_MODES = {
-    "happy_path", "provider_failure", "policy_violation",
-    "peer_dcm_disconnect", "data_inconsistency", "rollback_required",
-    "partial_fulfillment", "timeout", "resource_exhaustion",
-}
-_DCM_PROFILES = {"minimal", "dev", "standard", "prod", "fsi", "sovereign"}
+
+
+def _load_dcm_vocab() -> dict:
+    """Load the engine-exported vocabulary from dcm_vocab.json (sibling of this
+    module), falling back to the inline copy if absent. Returns a dict of
+    field -> set[str]."""
+    path = os.path.join(os.path.dirname(__file__), "dcm_vocab.json")
+    raw = dict(_DCM_VOCAB_FALLBACK)
+    try:
+        with open(path) as f:
+            loaded = json.load(f)
+        for key in _DCM_VOCAB_FALLBACK:
+            if isinstance(loaded.get(key), list):
+                raw[key] = loaded[key]
+    except FileNotFoundError:
+        log.warning("dcm_vocab.json not found at %s; using inline fallback "
+                    "vocabulary (run dav.scripts.export_dcm_vocab)", path)
+    except Exception as e:
+        log.warning("could not load dcm_vocab.json (%s); using inline "
+                    "fallback vocabulary", e)
+    return {key: set(vals) for key, vals in raw.items()}
+
+
+_DCM_VOCAB = _load_dcm_vocab()
+_DCM_LIFECYCLE_PHASES = _DCM_VOCAB["lifecycle_phases"]
+_DCM_RESOURCE_COMPLEXITIES = _DCM_VOCAB["resource_complexities"]
+_DCM_POLICY_COMPLEXITIES = _DCM_VOCAB["policy_complexities"]
+_DCM_PROVIDER_LANDSCAPES = _DCM_VOCAB["provider_landscapes"]
+_DCM_GOVERNANCE_CONTEXTS = _DCM_VOCAB["governance_contexts"]
+_DCM_FAILURE_MODES = _DCM_VOCAB["failure_modes"]
+_DCM_PROFILES = _DCM_VOCAB["profiles"]
 _VALID_GEN_MODES = {"regression", "pr-targeted", "authoring"}
 _VALID_GEN_SOURCES = {"corpus", "llm-unguided", "llm-guided", "human-authored"}
 
@@ -14690,3 +14729,40 @@ async def pr_create(payload: PrCreateIn, request: Request):
         raise HTTPException(502, f"Remote API error: {e}")
 
     return {"pr_url": pr_url}
+
+
+# ── analyze vocabulary aliases (operating-model DR §4) ────────────────────────
+# The DR renames the run-of-an-analysis verb from "ingestion"/"run" to "analyze":
+# a run IS an analysis. The HTTP surface historically uses /api/runs… ; rather
+# than rename 17 handlers (and break every existing client at once), we register
+# a hidden twin of each /api/runs… route at /api/analyses… that dispatches to the
+# SAME endpoint (same guards, same response). New clients/UI can move to the
+# analyze vocabulary; /api/runs stays the compatibility alias until retired.
+# include_in_schema=False keeps the OpenAPI surface single-spelled (/api/runs).
+def _register_analyze_aliases(application: FastAPI) -> None:
+    from fastapi.routing import APIRoute
+    _OLD_PREFIX = "/api/runs"
+    _NEW_PREFIX = "/api/analyses"
+    # Snapshot first: we mutate application.routes while iterating.
+    existing = [r for r in application.routes
+                if isinstance(r, APIRoute) and r.path.startswith(_OLD_PREFIX)]
+    aliased = 0
+    for route in existing:
+        new_path = _NEW_PREFIX + route.path[len(_OLD_PREFIX):]
+        methods = sorted((route.methods or set())
+                         & {"GET", "POST", "PUT", "PATCH", "DELETE"})
+        if not methods:
+            continue
+        application.add_api_route(
+            new_path,
+            route.endpoint,
+            methods=methods,
+            name=f"{route.name}__analyses_alias",
+            dependencies=list(route.dependencies or []),
+            include_in_schema=False,
+        )
+        aliased += 1
+    log.info("registered %d /api/analyses alias route(s) for /api/runs", aliased)
+
+
+_register_analyze_aliases(app)

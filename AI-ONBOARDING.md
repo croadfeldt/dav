@@ -2,6 +2,15 @@
 
 This document brings an LLM up to speed on **using** the DAV framework: running analyses, writing use cases, configuring a consumer, interpreting outputs. For design rationale and reconstruction guidance, see `DAV-AI-PROMPT.md`.
 
+> **Operating model (read first, canonical):** [`docs/operating-model-decision-record.md`](docs/operating-model-decision-record.md)
+> (ratified 2026-06-30). Build to it. Key points: **A-now/B-later** north star (DAV is the instrument to
+> prove + mature DCM/UDLM; project-scoped, not schema-per-tenant); **one shape, two missions** (architecture
+> validation + assessments) producing **gap analysis · current status · roadmap**; vocabulary **ingest**
+> (pull UCs in + validate) / **analyze** (the run) / harvest (internal); **single-source validation** via the
+> engine loader with **quarantine** of invalid UCs; corpus = curated UC subpath, spec = architecture, UCs
+> carry a **`purpose`**; capability = one shared spine; roadmap is a projection (capability **and**
+> UC-enablement, the bridge to engineering).
+
 ## What DAV does
 
 DAV (DCM Architecture Validation) is a framework for **validating that an architectural specification supports a defined set of use cases**. It runs an LLM agent over a consumer's spec content (architecture docs, capability inventories) and produces a structured Analysis YAML for each use case: which components are required, which data model entities are touched, which capabilities are invoked, what gaps exist, and an overall verdict (`supported` / `partially_supported` / `not_supported`).
