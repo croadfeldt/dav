@@ -437,6 +437,7 @@ class UseCaseMetadata:
     initial_baseline_path: str | None = None
     author: str | None = None
     note: str | None = None          # free-form human annotation
+    edited: Any = None               # authoring provenance (bool/timestamp); free-form
 
 @dataclass
 class UseCase:
