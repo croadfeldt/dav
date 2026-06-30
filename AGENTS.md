@@ -18,6 +18,35 @@ describe an architecture before code exists. The first consumer is **DCM** (the 
 sovereign-cloud framework); other consumers plug in by shipping a `consumer-profile.yaml` and pointing
 DAV at their spec + corpus repos. **Apache-2.0.**
 
+## Operating model — read this first (canonical)
+
+The ground-up operating model is **[`docs/operating-model-decision-record.md`](docs/operating-model-decision-record.md)**
+(ratified 2026-06-30). **Build to it.** Every change must respect:
+
+- **Purpose / North Star (§0):** DAV is the **instrument to prove + mature DCM/UDLM** with evidence.
+  **A-now** (instrument; project-scoped; simple) / **B-later** (general product; isolation-by-deployment).
+  *Decision test:* does it help prove/mature DCM/UDLM **now**? If it only serves B, defer it.
+- **One shape, two subjects (§2):** *gap analysis + current status + roadmap*. **Primary** = architecture
+  validation (UCs × DCM/UDLM spec). **Secondary** = assessments (material × maturity framework → Maturity
+  Wall + roadmap). **One pipeline — do not fork.**
+- **Vocabulary (§3a):** **Ingest** = pull UCs in (+validate). **Analyze** = the gap-analysis run (formerly
+  "run" / `/api/runs`). **Harvest** = internal results-load. (Rename in flight; keep `/api/runs` alias.)
+- **Validation (§6):** one validator = the **engine's real loader** (no parallel "mirror"); **quarantine**
+  invalid UCs at ingest with a reason; **tolerant loader** (unknown keys warn, never crash); background
+  sweep → UC-health. **Single source of truth for schema + enums** — never redeclare enums in API/UI;
+  derive from `engine/src/dav/core/consumer_profile.py`.
+- **Isolation (§5):** **project scoping is the seam** (single schema + `project_id`). **No
+  schema-per-tenant** (being collapsed). Real isolation later = a separate deployment.
+- **Corpus vs spec (§6a):** corpus = the UCs (**mandatory curated subpath**); spec = the architecture.
+  Architectures own an **approved validation corpus** (continuous validation + gating). UCs carry a
+  **`purpose`** (architecture-validation / feedback / candidate / exploratory).
+- **Capability = one shared spine (§6d, proposed):** one capability catalog for both missions; a maturity
+  framework = capability-set + rubric overlay. **Don't add parallel capability stores.**
+- **Scope = labels + selectors (§6c, proposed):** tag entities; compose scope with positive/negative
+  (K8s-style) selectors; **tags select, project + RBAC authorize.**
+- **Roadmap is a projection (§6b):** capability roadmap **and** **UC-enablement** roadmap (the UC is the
+  **bridge to engineering**); applies to both missions.
+
 ## Build / run / test
 
 - **Python ≥ 3.11** (`engine/pyproject.toml`). The package is `dav` (src layout under `engine/`).
