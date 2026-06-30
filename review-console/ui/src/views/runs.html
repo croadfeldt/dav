@@ -49,102 +49,11 @@
           <!-- Tab strip inside run detail -->
           <div id="rdTabStrip" class="rd-tab-strip" style="display:none;">
             <button class="rd-tab active" id="rdTabRun">Analysis</button>
-            <button class="rd-tab" id="rdTabReview">Review &amp; Plan</button>
           </div>
           <!-- Run body -->
           <div class="runs-detail-body" id="rdRunBody">
             <div class="rd-empty">Select an analysis from the list</div>
           </div>
-          <!-- Review body (hidden until tab clicked) -->
-          <div class="runs-detail-body" id="rdReviewBody" style="display:none;">
-            <!-- ── Architectural Review ── -->
-            <div class="rd-review-section">
-              <div class="rd-review-section-title">Architectural Review</div>
-              <div class="rd-review-section-sub" id="rdRevSubtitle">—</div>
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                <select id="rdRevModelSel" style="flex:1;min-width:160px;font-size:11px;"></select>
-                <select id="rdRevScopeSel" style="width:140px;">
-                  <option value="uc">This use case</option>
-                  <option value="run">Whole analysis</option>
-                </select>
-                <button class="btn primary btn-sm" id="rdRevRunBtn">Generate</button>
-                <button class="btn ghost btn-sm" id="rdRevCopyBtn" style="display:none;">⧉ Copy review</button>
-                <button class="btn ghost btn-sm" id="rdRevUseClaudeBtn">⧉ Use in Claude</button>
-                <button class="btn ghost btn-sm" id="rdRevReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
-              </div>
-              <div id="rdRevHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
-              <div id="rdRevStatus" style="font-size:11px;color:var(--text-faint);margin-top:4px;display:none;"></div>
-              <div class="arch-font-bar" id="rdRevFontBar" style="display:none;">
-                <button id="rdRevFontDown">A−</button>
-                <span class="font-size-lbl" id="rdRevFontLbl">15px</span>
-                <button id="rdRevFontUp">A+</button>
-                <select id="rdRevFontFam">
-                  <option value="serif">Serif</option>
-                  <option value="sans">Sans</option>
-                  <option value="mono">Mono</option>
-                </select>
-              </div>
-              <div id="rdRevStream" class="arch-review-stream" style="display:none;margin-top:6px;"></div>
-              <div id="rdRevNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
-                <span style="font-size:11px;color:var(--text-faint);">Review complete —</span>
-                <button class="btn ghost btn-sm" id="rdRevToEnhBtn">Plan enhancements →</button>
-              </div>
-            </div>
-            <!-- ── Enhancement Plan ── -->
-            <div class="rd-review-section" id="rdEnhSection" style="display:none;">
-              <div class="rd-review-section-title">Enhancement Plan</div>
-              <div class="rd-review-section-sub" id="rdEnhSubtitle">—</div>
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                <select id="rdEnhModelSel" style="flex:1;min-width:160px;font-size:11px;"></select>
-                <select id="rdEnhScopeSel" style="width:140px;">
-                  <option value="uc">This use case</option>
-                  <option value="run">Whole analysis</option>
-                </select>
-                <button class="btn primary btn-sm" id="rdEnhRunBtn">Generate</button>
-                <button class="btn ghost btn-sm" id="rdEnhCopyBtn" style="display:none;">⧉ Copy spec</button>
-                <button class="btn ghost btn-sm" id="rdEnhUseClaudeBtn">⧉ Use in Claude</button>
-                <button class="btn ghost btn-sm" id="rdEnhReasoningBtn" style="display:none;font-size:10px;">○ Reasoning</button>
-              </div>
-              <div id="rdEnhHint" style="display:none;font-size:10px;color:var(--green);margin-top:4px;">Prompt copied — paste into Claude Code or claude.ai</div>
-              <div id="rdEnhStatus" style="font-size:11px;color:var(--text-faint);margin-top:4px;display:none;"></div>
-              <div class="arch-font-bar" id="rdEnhFontBar" style="display:none;">
-                <button id="rdEnhFontDown">A−</button>
-                <span class="font-size-lbl" id="rdEnhFontLbl">15px</span>
-                <button id="rdEnhFontUp">A+</button>
-                <select id="rdEnhFontFam">
-                  <option value="serif">Serif</option>
-                  <option value="sans">Sans</option>
-                  <option value="mono">Mono</option>
-                </select>
-              </div>
-              <div id="rdEnhStream" class="arch-review-stream" style="display:none;margin-top:8px;"></div>
-              <div id="rdEnhNextRow" style="display:none;align-items:center;gap:8px;margin-top:8px;">
-                <span style="font-size:11px;color:var(--text-faint);">Spec complete —</span>
-                <button class="btn ghost btn-sm" id="rdEnhToPrBtn">Create PR →</button>
-              </div>
-            </div>
-            <!-- ── Create PR / MR ── -->
-            <div class="rd-review-section" id="rdPrSection" style="display:none;">
-              <div class="rd-review-section-title">Create pull request / merge request</div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-top:10px;">
-                <div class="form-field"><label style="font-size:10px;">Repository</label>
-                  <select id="rdPrRepoSel"></select></div>
-                <div class="form-field"><label style="font-size:10px;">Base branch</label>
-                  <input id="rdPrBaseBranch" placeholder="main" /></div>
-                <div class="form-field"><label style="font-size:10px;">New branch</label>
-                  <input id="rdPrBranch" /></div>
-                <div class="form-field"><label style="font-size:10px;">File path</label>
-                  <input id="rdPrFilePath" /></div>
-                <div class="form-field" style="grid-column:1/-1;"><label style="font-size:10px;">PR title</label>
-                  <input id="rdPrTitle" /></div>
-              </div>
-              <div style="display:flex;gap:8px;margin-top:10px;align-items:center;flex-wrap:wrap;">
-                <button class="btn ghost btn-sm" id="rdPrCopyBtn">⧉ Copy PR description</button>
-                <button class="btn primary btn-sm" id="rdPrCreateBtn">Push branch + open PR</button>
-                <span id="rdPrMsg" style="font-size:11px;color:var(--text-faint);"></span>
-              </div>
-            </div>
-          </div><!-- /rdReviewBody -->
         </div><!-- /runs-detail-panel -->
       </div><!-- /runs-split -->
     </section>

@@ -665,13 +665,12 @@ function selectRun(name) {
   renderRunsList(); // re-render to show active state
   // Show detail panel header + tabs
   document.getElementById('rdPanelHeader').style.display = '';
-  // IA slice 3: the run-detail "Review & Plan" tab is retired — review/enhancement/PR
-  // generation has ONE home (Roadmaps), reached via the "Review this analysis →" header
-  // launcher (scopes Roadmaps to this analysis's Scoping Set). Keep the strip hidden; the
-  // embedded generator body (#rdReviewBody) stays in markup but unreachable, pending a
-  // dead-code removal pass.
+  // The run-detail "Review & Plan" tab is retired — review/enhancement/PR generation has
+  // ONE home (Roadmaps), reached via the "Review this analysis →" header launcher. The
+  // embedded generator body + its listeners + openRunDetailReview were removed in the
+  // dead-code purge; rdSwitchTab now just keeps the Analysis body shown.
   document.getElementById('rdTabStrip').style.display = 'none';
-  try { rdSwitchTab('run'); } catch (_) {}   // force the Analysis body visible (the Review tab is retired)
+  try { rdSwitchTab('run'); } catch (_) {}   // keep the Analysis body visible
   document.getElementById('rdTitle').textContent = name;
   document.getElementById('rdSub').textContent = 'loading…';
   // Reset run body
