@@ -1,0 +1,64 @@
+    <section class="pf-view" id="view-improve">
+      <!-- F8: merged Prompts & Improvement — top tabs -->
+      <div style="display:flex;gap:4px;padding:8px 14px 0;border-bottom:1px solid var(--border);">
+        <button class="btn ghost btn-sm pi-tab active" data-pi="prompts" onclick="switchPiTab('prompts')">📝 Prompt management</button>
+        <button class="btn ghost btn-sm pi-tab" data-pi="improve" onclick="switchPiTab('improve')">🩺 Improvement</button>
+      </div>
+      <!-- Prompt management pane -->
+      <div id="promptPane" style="padding:14px;height:calc(100vh - 104px);overflow:auto;">
+        <div style="max-width:1100px;">
+          <div class="panel-title">Prompt management</div>
+          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 12px;">Per-project customization of the prompt used at each DAV stage — add grounding context and/or override named sections of the base prompt. Requires the <b>prompt.manage</b> privilege to save.</div>
+          <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+            <label style="font-size:11px;color:var(--text-dim);">Stage</label>
+            <select id="pmStage" onchange="pmLoadStage()" style="font-size:12px;min-width:300px;"></select>
+            <span id="pmStageStatus" style="font-size:10px;"></span>
+            <span id="pmSaveStatus" style="font-size:11px;color:var(--text-faint);margin-left:auto;"></span>
+          </div>
+          <div id="pmBody"><div class="empty">loading…</div></div>
+        </div>
+      </div>
+      <!-- Improvement pane (existing diagnose/propose/experiments) -->
+      <div id="improvePane" style="display:none;">
+      <div style="display:grid;grid-template-columns:1fr 1.5fr;gap:14px;padding:14px;height:calc(100vh - 104px);">
+        <!-- Left: proposal queue + diagnose control -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div style="display:flex;gap:4px;">
+                <button class="btn ghost btn-sm improve-mode-tab active" data-mode="proposals">Proposals</button>
+                <button class="btn ghost btn-sm improve-mode-tab" data-mode="experiments">🔬 Experiments</button>
+              </div>
+              <button class="btn ghost btn-icon" id="improveRefreshBtn" title="Refresh">↻</button>
+            </div>
+            <!-- Diagnose a run -->
+            <div style="display:flex;gap:6px;align-items:center;">
+              <select id="improveRunSelect" style="flex:1;min-width:0;font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);">
+                <option value="">Diagnose an ingestion…</option>
+              </select>
+              <label style="font-size:10px;color:var(--text-faint);display:flex;align-items:center;gap:3px;" title="Also ask the configured arch-review model for a second opinion">
+                <input type="checkbox" id="improveLLMChk" checked style="width:auto;height:auto;accent-color:var(--accent);"> LLM
+              </label>
+              <button class="btn primary btn-sm" id="improveDiagnoseBtn">Diagnose</button>
+            </div>
+            <!-- Status filter chips -->
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+              <span style="font-size:10px;color:var(--text-faint);">Status:</span>
+              <button class="btn ghost btn-sm improve-status-chip active" data-status="proposed">Proposed</button>
+              <button class="btn ghost btn-sm improve-status-chip" data-status="accepted">Accepted</button>
+              <button class="btn ghost btn-sm improve-status-chip" data-status="rejected">Rejected</button>
+              <button class="btn ghost btn-sm improve-status-chip" data-status="">All</button>
+            </div>
+          </div>
+          <div id="improveList" style="flex:1;overflow-y:auto;min-height:0;"></div>
+        </div>
+        <!-- Right: proposal detail -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div id="improveDetailEmpty" style="padding:32px;text-align:center;color:var(--text-faint);font-size:12px;">
+            Select a proposal to review, or diagnose a run to generate proposals.
+          </div>
+          <div id="improveDetailBody" style="display:none;flex:1;overflow-y:auto;min-height:0;padding:16px;"></div>
+        </div>
+      </div>
+      </div><!-- /improvePane -->
+    </section>

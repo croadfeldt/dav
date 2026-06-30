@@ -1,0 +1,41 @@
+    <section class="pf-view" id="view-engineering">
+      <div class="rp-split">
+        <div class="rp-controls" id="engControls">
+          <div id="engScopeRow">
+            <label style="font-size:11px;color:var(--text-dim);">Scoping Set</label>
+            <select id="engRunSel" style="width:100%;font-size:11px;"></select>
+          </div>
+          <div style="font-size:10px;color:var(--text-faint);">Scope: set in the masthead ▴</div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:4px 0;">
+          <button class="btn ghost" id="rpCapMapBtn" style="width:100%;" title="Aggregate which capabilities the most UCs in this Scoping Set demand (latest eval per UC; no model needed)">▶ Capability Map</button>
+          <button class="btn ghost" id="rpFoundBtn" style="width:100%;margin-top:4px;" title="Rank capabilities by how many others depend on them — foundational building blocks (this Scoping Set)">▶ Foundational</button>
+        </div>
+        <div class="rp-output" id="engOutput">
+          <!-- ── Track 2 · Engineering Roadmap (capability-driven) ── -->
+          <div style="background:var(--bg-raised);border-left:2px solid var(--blue);padding:8px 12px;border-radius:2px;">
+            <div style="font-size:12px;color:var(--text);"><strong>Track 2 · Engineering Roadmap</strong> <span style="color:var(--text-faint);">— capability-driven</span></div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">What to build, in what order, to satisfy the use cases. <em>Output:</em> a dependency-ordered capability roadmap. <em style="color:var(--text-faint);">Provisional until the capability catalog lands — capability ids are still raw model output.</em></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin:10px 0 6px;flex-wrap:wrap;">
+            <strong style="font-size:12px;">Roadmap</strong>
+            <select id="rpRoadmapGroupBy" style="font-size:10px;" title="How to cluster the gaps into a roadmap (theme works now; capability/subdomain sharpen once the catalog is curated)">
+              <option value="theme">by theme</option>
+              <option value="capability">by capability</option>
+              <option value="subdomain">by subdomain</option>
+            </select>
+            <span id="rpRoadmapMeta" style="font-size:10px;color:var(--text-faint);"></span>
+            <span style="flex:1;"></span>
+            <button class="btn ghost btn-sm" id="rpRoadmapExport" type="button" title="Download the roadmap as markdown">⬇ Markdown</button>
+            <button class="btn ghost btn-sm" id="rpRoadmapRefresh" type="button" title="Refresh">↻</button>
+          </div>
+          <div id="rpRoadmap"><div style="font-size:11px;color:var(--text-faint);">Synthesizing roadmap from the gap analysis…</div></div>
+          <hr style="border:none;border-top:1px solid var(--border);margin:12px 0;">
+          <div id="rpCapMapSection">
+            <div class="rp-section-title">Capability Map / Foundational</div>
+            <div id="rpCapMap">
+              <div style="font-size:11px;color:var(--text-faint);">Select an ingestion, then <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on).</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>

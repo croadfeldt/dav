@@ -1,0 +1,42 @@
+    <section class="pf-view" id="view-capmap">
+      <style>
+        #cmMatrix table.capmap { border-collapse:collapse; font-size:11px; }
+        #cmMatrix table.capmap th, #cmMatrix table.capmap td { border:1px solid var(--border); }
+        #cmMatrix .cm-corner { position:sticky; left:0; top:0; z-index:4; background:var(--bg-panel); padding:4px 8px; font-size:10px; color:var(--text-faint); }
+        #cmMatrix .cm-uc { position:sticky; left:0; z-index:1; background:var(--bg-panel); text-align:left; padding:2px 8px; white-space:nowrap; max-width:300px; overflow:hidden; text-overflow:ellipsis; cursor:pointer; font-family:var(--mono,monospace); }
+        #cmMatrix .cm-caphead { position:sticky; top:0; z-index:2; background:var(--bg-panel); cursor:pointer; vertical-align:bottom; padding:4px 2px; }
+        #cmMatrix .cm-caphead > div { writing-mode:vertical-rl; transform:rotate(180deg); white-space:nowrap; max-height:180px; overflow:hidden; text-overflow:ellipsis; margin:0 auto; }
+        #cmMatrix td.cm-cell { width:16px; min-width:16px; height:16px; text-align:center; }
+        #cmMatrix td.cm-cell.on { background:var(--accent); }
+        #cmMatrix .hl { background:var(--accent-bg) !important; }
+        #cmMatrix td.cm-cell.on.hl { background:var(--green) !important; }
+        #cmMatrix .cm-found { color:var(--amber,gold); }
+      </style>
+      <div style="display:flex;flex-direction:column;height:calc(100vh - 60px);padding:14px;gap:10px;">
+        <div style="background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;padding:12px 14px;">
+          <div class="panel-title">Capability Map</div>
+          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 8px;">Bidirectional UC ↔ capability matrix for an analysis. Rows = use cases, columns = capabilities. Click a UC to highlight its capabilities; click a capability header to highlight the UCs that demand it. Column ★ = foundational (other capabilities depend on it); the count is demand (how many UCs).</div>
+          <div style="font-size:10px;color:var(--text-faint);margin:-4px 0 8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;" title="Column underline = R4 disposition from the catalog (≈ Gartner TIME). Set it in the Catalog → Board.">
+            <span>Disposition underline:</span>
+            <span><span style="display:inline-block;width:10px;border-bottom:2px solid var(--green);"></span> Reuse·Tolerate</span>
+            <span><span style="display:inline-block;width:10px;border-bottom:2px solid var(--blue);"></span> Refurbish·Invest</span>
+            <span><span style="display:inline-block;width:10px;border-bottom:2px solid var(--amber,#d97706);"></span> Replace·Migrate</span>
+            <span><span style="display:inline-block;width:10px;border-bottom:2px solid var(--red);"></span> Retire·Eliminate</span>
+            <span style="opacity:0.7;">— none = undecided</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <select id="cmRunSel" style="display:none;"></select>
+            <span id="cmScopeWrap" style="display:none;align-items:center;gap:8px;">
+              <label style="font-size:11px;color:var(--text-dim);">Scoping Set</label>
+              <select id="cmSetSel" style="min-width:200px;font-size:11px;"><option value="">All use cases</option></select>
+            </span>
+            <span style="font-size:11px;color:var(--text-faint);">Scope: set in the masthead ▴</span>
+            <button class="btn primary btn-sm" id="cmLoadBtn" onclick="renderCapMap()">Load map</button>
+            <span id="cmStatus" style="font-size:11px;color:var(--text-faint);"></span>
+          </div>
+        </div>
+        <div class="scrollable" id="cmMatrix" style="flex:1;overflow:auto;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;padding:10px;">
+          <div class="empty">Pick an analysis and click “Load map”.</div>
+        </div>
+      </div>
+    </section>

@@ -39,7 +39,7 @@ import { dirname, join } from 'node:path';
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SRC = join(ROOT, 'src');
 const INDEX = join(ROOT, 'index.html');
-const MARKER = /^<!--@DAV-MODULE (\S+) (style|script)-->$/;
+const MARKER = /^<!--@DAV-MODULE (\S+) (style|script|html)-->$/;
 
 const readLines = (p) => readFileSync(p, 'utf8').split('\n');
 const isDir = (name) => name.endsWith('/');
@@ -58,6 +58,7 @@ function expand(line) {
   } else {
     body = readLines(join(SRC, ref));
   }
+  if (kind === 'html') return body;   // raw include — no wrapper (markup partials)
   const [open, close] = kind === 'style' ? ['<style>', '</style>'] : ['<script>', '</script>'];
   return [open, ...body, close];
 }

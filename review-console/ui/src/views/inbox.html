@@ -1,0 +1,37 @@
+    <section class="pf-view" id="view-inbox">
+      <div style="display:grid;grid-template-columns:1fr 1.4fr;gap:14px;padding:14px;height:calc(100vh - 60px);">
+        <!-- Left: comment list -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div>
+                <div class="panel-title">Discussion</div>
+                <div style="font-size:10px;color:var(--text-faint);">PR comments ingested from repos with role=issue-source</div>
+              </div>
+              <button class="btn ghost btn-icon" id="inboxRefreshBtn" title="Refresh">↻</button>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+              <span style="font-size:10px;color:var(--text-faint);">Status:</span>
+              <button class="btn ghost btn-sm inbox-status-chip active" data-status="new">New</button>
+              <button class="btn ghost btn-sm inbox-status-chip" data-status="drafted_to_uc">Drafted</button>
+              <button class="btn ghost btn-sm inbox-status-chip" data-status="dismissed">Dismissed</button>
+              <button class="btn ghost btn-sm inbox-status-chip" data-status="all">All</button>
+              <label style="margin-left:8px;font-size:10px;color:var(--text-faint);display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="inboxThreadToggle" style="width:auto;accent-color:var(--accent);"> Thread by PR</label>
+              <span style="margin-left:8px;font-size:10px;color:var(--text-faint);">Repo:</span>
+              <select id="inboxRepoFilter" style="font-size:11px;padding:2px 6px;background:var(--bg-input,var(--bg-raised));border:1px solid var(--border);">
+                <option value="">all</option>
+              </select>
+            </div>
+          </div>
+          <div id="inboxList" style="flex:1;overflow-y:auto;min-height:0;"></div>
+        </div>
+
+        <!-- Right: comment detail + actions -->
+        <div style="display:flex;flex-direction:column;min-height:0;background:var(--bg-panel);border:1px solid var(--border);border-radius:2px;" id="inboxDetailPanel">
+          <div id="inboxDetailEmpty" style="padding:32px;text-align:center;color:var(--text-faint);font-size:12px;">
+            Select a comment from the list to see its full body and curation actions.
+          </div>
+          <div id="inboxDetailBody" style="display:none;flex:1;overflow-y:auto;min-height:0;padding:14px;"></div>
+        </div>
+      </div>
+    </section>
