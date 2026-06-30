@@ -6539,3 +6539,36 @@ async def pr_create(payload: PrCreateIn, request: Request):
         raise HTTPException(502, f"Remote API error: {e}")
 
     return {"pr_url": pr_url}
+
+
+# ── Vocabulary: "run" → "analyze" (operating-model DR §3a) ────────────────────────────────────
+# The user-facing verb is **Analyze**; "run" is legacy. Rather than rewrite 18 handlers (risky) we
+# register ADDITIVE aliases: every existing `/api/runs…` route is also served at `/api/analyses…`.
+# Pure superset — the old paths keep working for every current caller (UI, agentctl, pipeline), so
+# this is safe to ship without a flag day. (`/api/analysis/runs` is a distinct resource and is left
+# as-is.) The UI relabel and eventual deprecation of the `/api/runs` paths are separate follow-ups.
+# New clients SHOULD use `/api/analyses…`.
+def _register_analyze_aliases(_app: FastAPI) -> None:
+    seen: set[tuple[str, str]] = set()
+    for r in list(_app.router.routes):
+        path = getattr(r, "path", None)
+        endpoint = getattr(r, "endpoint", None)
+        methods = getattr(r, "methods", None)
+        if not path or endpoint is None or not methods:
+            continue
+        if path == "/api/runs":
+            alias = "/api/analyses"
+        elif path.startswith("/api/runs/"):
+            alias = "/api/analyses/" + path[len("/api/runs/"):]
+        else:
+            continue
+        key = (alias, ",".join(sorted(methods)))
+        if key in seen:
+            continue
+        seen.add(key)
+        # Reuse the same handler + same path params; just a second URL. (Alias drops response_model
+        # niceties but returns identical payloads; auth is enforced inside handlers, not route-level.)
+        _app.add_api_route(alias, endpoint, methods=sorted(methods),
+                           include_in_schema=False, name=f"{getattr(r,'name','')}__analyze_alias")
+
+_register_analyze_aliases(app)

@@ -360,7 +360,9 @@ re-pointing existing docs/runbooks. All one-time.
 3. **Ingest validation gate** — validate via the real engine loader; **quarantine** invalid UCs with
    reason; enforce mandatory curated corpus subpath (no whole-repo scan).
 4. **Background validation sweep** → UC-health view (drift detection).
-5. **Rename run→analyze** (API + UI "Analyses" + docs; back-compat alias on `/api/runs`).
+5. **Rename run→analyze** — *API alias DONE* (`/api/analyses…` additively aliases every `/api/runs…`
+   route; old paths unchanged, no flag day). **Follow-ups:** UI relabel to "Analyses" (cosmetic; do
+   with eyes on it — disruptive to a live session), then eventual deprecation of the `/api/runs` paths.
 6. **Tenancy collapse** — migrate `tenant_flightpath` → `public`, strip `search_path` plumbing, drop
    test tenants.
 7. **Corpus/spec hygiene** — set curated subpaths on every corpus repo (dcm/udlm = their approved
