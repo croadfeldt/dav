@@ -918,25 +918,11 @@
     <span id="freshSummary" style="font-size:11px;color:inherit;">—</span>
     <div id="freshnessPopover" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:70;min-width:240px;background:var(--bg-panel);border:1px solid var(--border);border-radius:4px;box-shadow:0 6px 20px rgba(0,0,0,0.35);padding:8px 10px;cursor:default;font-size:11px;"></div>
   </div>
-  <!-- Quick selectors: jump to an assessment / blueprint (mirrors project + run). -->
-  <div class="run-context-chip" id="assessmentChip" title="Assessment — jump to one" style="cursor:default;display:none;">
-    <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Assessment</span>
-    <select id="globalAssessmentSel" title="Assessment in the active project" style="font-size:11px;max-width:220px;background:transparent;border:none;color:inherit;cursor:pointer;">
-      <option value="">— select —</option>
-    </select>
-  </div>
-  <div class="run-context-chip" id="blueprintChip" title="Blueprint — reuse a setup (task #95)" style="cursor:default;display:none;">
-    <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Blueprint</span>
-    <select id="globalBlueprintSel" title="Blueprint / template project" style="font-size:11px;max-width:200px;background:transparent;border:none;color:inherit;cursor:pointer;">
-      <option value="">— select —</option>
-    </select>
-  </div>
+  <!-- Assessment / Blueprint selection lives in their own views, not the masthead
+       (UI lean slice 1): selecting an assessment happens in the Assessments view,
+       like opening a file; Blueprint (#95) isn't built. Persona chip removed —
+       navigation is one stable RBAC-gated rail for everyone, not reshuffled per role. -->
   <div class="pf-masthead-right">
-    <div class="run-context-chip" id="personaChip" title="Persona — the lens you're working in (the objectives are constant; the persona selects which domains + projections you see)" style="cursor:default;">
-      <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Persona</span>
-      <select id="personaSel" title="Persona" style="font-size:11px;background:transparent;border:none;color:inherit;cursor:pointer;font-family:inherit;"></select>
-    </div>
-    <button class="viewmode-chip" id="viewModeToggle" title="View mode — browse read-only (hide edit actions)"><span aria-hidden="true">✎</span> <span id="viewModeLabel">Editing</span></button>
     <span id="triggerStatus" style="color:var(--text-faint);font-size:10px;"></span>
     <span style="position:relative;display:none;" id="presenceWrap">
       <button id="presenceChip" title="Who's online — click for details (online ≤2 min · active ≤5 min)"
@@ -951,6 +937,9 @@
       <div class="theme-menu" id="acctMenu">
         <div class="theme-menu-section" id="acctMenuWho" style="white-space:nowrap;color:var(--text-dim);"></div>
         <button class="dropdown-item" id="acctChangePw">Change password…</button>
+        <hr>
+        <div class="theme-menu-section">Posture</div>
+        <button class="dropdown-item" id="viewModeToggle" title="View mode — browse read-only (hide edit actions)"><span aria-hidden="true">✎</span> <span id="viewModeLabel">Editing</span></button>
         <hr>
         <div class="theme-menu-section">Appearance · Mode</div>
         <button class="dropdown-item" data-mode="auto">Auto (system)</button>
@@ -3876,11 +3865,12 @@ function _defaultPersona() {
       && !(me && me.is_platform_admin)) return 'assessor';
   return 'architect';
 }
-// The active persona's domains, in order, that the user is permitted to see.
+// UI lean slice 1: personas removed as a navigation mechanism. The nav is one
+// stable rail for everyone — every domain the user is PERMITTED to see (RBAC),
+// in canonical DOMAINS order. No per-role reshuffling (that breaks spatial
+// memory / recognition). Permission gates visibility, not persona.
 function _personaDomains() {
-  return _activePersona().domains
-    .map(k => DOMAINS.find(d => d.key === k))
-    .filter(d => d && _domainPermitted(d));
+  return DOMAINS.filter(d => _domainPermitted(d));
 }
 // canEdit = can(priv) AND not browsing in read-only View mode.
 function canEdit(priv) { return can(priv) && !_viewMode; }
