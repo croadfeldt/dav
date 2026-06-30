@@ -124,12 +124,104 @@ function _ucCloseFilterMenu() {
   const menu = document.getElementById('ucAddFilterMenu'); if (menu) menu.style.display = 'none';
 }
 
+// ── Live autocomplete on the search box ──────────────────────────────────────
+// As you type, suggest facet KEYS for a bare word and facet VALUES once past the `:`
+// (tag values match live against the loaded set). Keyboard: ↑/↓ move, Enter/Tab accept,
+// Esc dismiss. Accepting a key inserts `key:`; accepting a value lifts it to a chip.
+let _ucSuggestItems = [];    // [{kind:'key'|'value', facet, val, label, hint}]
+let _ucSuggestActive = -1;   // highlighted index
+
+// The trailing whitespace-delimited chunk currently being typed, and its start offset.
+function _ucTrailingToken() {
+  const inp = document.getElementById('ucFilterInput'); if (!inp) return { tok:'', start:0 };
+  const m = inp.value.match(/(\S*)$/); const tok = m ? m[1] : '';
+  return { tok, start: inp.value.length - tok.length };
+}
+
+function _ucComputeSuggest() {
+  const { tok } = _ucTrailingToken();
+  if (!tok) return [];
+  const ci = tok.indexOf(':');
+  if (ci === -1) {
+    const q = tok.toLowerCase();
+    return UC_FACETS.filter(f => f.key.startsWith(q) || f.label.toLowerCase().startsWith(q))
+      .map(f => ({ kind:'key', facet:f, label:`${f.key}:`, hint:f.label }));
+  }
+  const facet = _ucFacetByKey(tok.slice(0, ci).toLowerCase()); if (!facet) return [];
+  const partial = tok.slice(ci + 1).replace(/^"|"$/g, '').toLowerCase();
+  return _ucFacetValues(facet)
+    .filter(([val, lbl]) => val.toLowerCase().includes(partial) || String(lbl).toLowerCase().includes(partial))
+    .slice(0, 12)
+    .map(([val, lbl]) => ({ kind:'value', facet, val, label:lbl, hint:facet.label }));
+}
+
+function _ucRenderSuggest() {
+  const box = document.getElementById('ucFilterSuggest'); if (!box) return;
+  _ucSuggestItems = _ucComputeSuggest();
+  if (!_ucSuggestItems.length) { _ucHideSuggest(); return; }
+  if (_ucSuggestActive >= _ucSuggestItems.length) _ucSuggestActive = -1;
+  box.innerHTML = '';
+  _ucSuggestItems.forEach((it, i) => {
+    const row = document.createElement('div');
+    row.className = 'uc-fb-sugg-item' + (i === _ucSuggestActive ? ' active' : '');
+    row.innerHTML = `<span class="uc-fb-sugg-lbl">${esc(it.label)}</span><span class="uc-fb-sugg-hint">${esc(it.hint)}</span>`;
+    row.addEventListener('mousedown', e => { e.preventDefault(); _ucAcceptSuggest(i); });
+    box.appendChild(row);
+  });
+  box.style.display = 'block';
+}
+
+function _ucAcceptSuggest(i) {
+  const it = _ucSuggestItems[i]; if (!it) return;
+  const inp = document.getElementById('ucFilterInput'); if (!inp) return;
+  const { start } = _ucTrailingToken();
+  if (it.kind === 'key') {
+    // Replace the partial word with `key:`; keep focus and immediately offer its values.
+    inp.value = inp.value.slice(0, start) + it.label;
+    inp.focus(); _ucRenderSuggest();
+  } else {
+    _ucSetFacet(it.facet.key, it.val);                       // lift to a chip
+    inp.value = inp.value.slice(0, start).replace(/\s+$/, '');
+    if (inp.value) inp.value += ' ';
+    const hidden = document.getElementById('ucFilter');      // sync residual free text
+    if (hidden) { hidden.value = inp.value.trim(); hidden.dispatchEvent(new Event('input', { bubbles: true })); }
+    inp.focus(); _ucHideSuggest();
+  }
+}
+
+function _ucHideSuggest() {
+  const box = document.getElementById('ucFilterSuggest');
+  if (box) { box.style.display = 'none'; box.innerHTML = ''; }
+  _ucSuggestItems = []; _ucSuggestActive = -1;
+}
+
 // Wiring (runs once at load; the UC view markup is always present in the DOM).
 (function _ucFilterBarInit() {
   const inp = document.getElementById('ucFilterInput');
   if (inp) {
-    inp.addEventListener('input', () => _ucOnFilterTyped(false));
-    inp.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); _ucOnFilterTyped(true); } });
+    inp.addEventListener('input', () => { _ucOnFilterTyped(false); _ucRenderSuggest(); });
+    inp.addEventListener('focus', () => _ucRenderSuggest());
+    inp.addEventListener('blur', () => setTimeout(_ucHideSuggest, 120));   // let a click land first
+    inp.addEventListener('keydown', e => {
+      const n = _ucSuggestItems.length;
+      if (n && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+        e.preventDefault();
+        _ucSuggestActive = e.key === 'ArrowDown'
+          ? (_ucSuggestActive + 1) % n
+          : (_ucSuggestActive - 1 + n) % n;
+        _ucRenderSuggest();
+      } else if (e.key === 'Tab' && n) {
+        e.preventDefault(); _ucAcceptSuggest(_ucSuggestActive >= 0 ? _ucSuggestActive : 0);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const { tok } = _ucTrailingToken();
+        if (_ucSuggestActive >= 0) _ucAcceptSuggest(_ucSuggestActive);
+        else if (n && tok.includes(':')) _ucAcceptSuggest(0);   // finishing a value → take best match
+        else _ucOnFilterTyped(true);                            // bare text → just commit/lift
+      } else if (e.key === 'Escape') {
+        _ucHideSuggest();
+      }
+    });
   }
   const addBtn = document.getElementById('ucAddFilterBtn');
   if (addBtn) addBtn.addEventListener('click', e => { e.stopPropagation(); _ucToggleFilterMenu(); });
