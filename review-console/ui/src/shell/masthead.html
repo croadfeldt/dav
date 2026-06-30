@@ -1,0 +1,92 @@
+<!-- ══ Masthead ══ -->
+<header class="pf-masthead">
+  <button class="pf-masthead-toggle" id="navToggleBtn" title="Toggle sidebar">☰</button>
+  <div class="pf-masthead-brand">
+    <div class="brand-mark">DAV <em>Console</em></div>
+  </div>
+  <div class="run-context-chip" id="projectChip" title="Active project — scopes all data" style="cursor:default;">
+    <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Project</span>
+    <select id="globalProjectSel" title="Active project" style="font-size:11px;max-width:200px;background:transparent;border:none;color:inherit;cursor:pointer;">
+      <option value="">Default</option>
+    </select>
+    <a href="javascript:void(0)" id="projSetDefaultBtn" title="Make this my default project" style="display:none;font-size:12px;color:var(--text-faint);text-decoration:none;">☆</a>
+  </div>
+  <!-- Active CUSTOMER (customer-demand-dedup-design.md #130): peer to Project — filters
+       customer-attributed surfaces (UC demand, etc.) to this customer. Default = all. -->
+  <div class="run-context-chip" id="customerChip" title="Customer — filters customer-attributed surfaces (demand) to this customer; the other axis of the (customer × project) matrix" style="display:none;">
+    <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Customer</span>
+    <select id="globalCustomerSel" title="Active customer" style="font-size:11px;max-width:180px;background:transparent;border:none;color:inherit;cursor:pointer;font-family:inherit;">
+      <option value="">All customers</option>
+    </select>
+  </div>
+  <!-- Active SCOPE (uc-scoped-evaluation-design.md: "Scope = a Scoping Set"). App-wide
+       chrome like Project — one selection drives Results, Cap Map, and Engineering, and
+       the Analysis freshness chip reflects it. Per-view pickers are retired. -->
+  <div class="run-context-chip" id="scopeChip" title="Scoping Set — filters Results, Cap Map and Roadmap to this set (latest evaluation per use case)" style="display:none;">
+    <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Scope</span>
+    <select id="globalScopeSel" title="Active Scoping Set" style="font-size:11px;max-width:220px;background:transparent;border:none;color:inherit;cursor:pointer;font-family:inherit;">
+      <option value="">All use cases</option>
+    </select>
+  </div>
+  <!-- Active run: read-only STATUS (the run is working context, not global chrome —
+       see ux-paradigm-design.md). Selection happens in Execution → Runs. -->
+  <div class="run-context-chip" id="runContextChip" title="Analyses — live progress when active; click for in-flight items" style="cursor:pointer;position:relative;">
+    <span class="rcc-dot" id="rccDot"></span>
+    <span id="rccLabel" style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Analysis</span>
+    <span id="rccName" style="font-size:11px;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit;">— no analysis —</span>
+    <span class="llm-spinner" id="runLoadSpinner" style="display:none;margin:0 0 0 6px;" title="Loading analysis data…"></span>
+    <div id="runChipPopover" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:70;min-width:280px;max-height:340px;overflow-y:auto;background:var(--bg-panel);border:1px solid var(--border);border-radius:4px;box-shadow:0 6px 20px rgba(0,0,0,0.35);padding:8px 10px;cursor:default;font-size:11px;"></div>
+  </div>
+  <!-- Coverage (#112 / uc-scoped-evaluation-design.md): UC analysis coverage + staleness for the
+       active project. Status, not selection. Click → breakdown popover. Distinct from the run-status
+       "Analysis" chip above (active runs) — this is how much of the corpus has fresh analysis. -->
+  <div class="run-context-chip" id="freshnessChip" title="Coverage — UC analysis coverage + staleness (click for detail)" style="cursor:pointer;position:relative;">
+    <span class="rcc-dot" id="freshDot"></span>
+    <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Coverage</span>
+    <span id="freshSummary" style="font-size:11px;color:inherit;">—</span>
+    <div id="freshnessPopover" style="display:none;position:absolute;top:calc(100% + 6px);left:0;z-index:70;min-width:240px;background:var(--bg-panel);border:1px solid var(--border);border-radius:4px;box-shadow:0 6px 20px rgba(0,0,0,0.35);padding:8px 10px;cursor:default;font-size:11px;"></div>
+  </div>
+  <!-- Assessment / Blueprint selection lives in their own views, not the masthead
+       (UI lean slice 1): selecting an assessment happens in the Assessments view,
+       like opening a file; Blueprint (#95) isn't built. Persona chip removed —
+       navigation is one stable RBAC-gated rail for everyone, not reshuffled per role. -->
+  <div class="pf-masthead-right">
+    <span id="triggerStatus" style="color:var(--text-faint);font-size:10px;"></span>
+    <span style="position:relative;display:none;" id="presenceWrap">
+      <button id="presenceChip" title="Who's online — click for details (online ≤2 min · active ≤5 min)"
+            style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text-dim);white-space:nowrap;cursor:pointer;background:transparent;border:none;padding:2px 4px;font-family:inherit;">
+        <span style="opacity:.8;color:var(--green);">●</span><span id="presenceOnline">–</span> online
+        <span style="opacity:.45;">·</span><span id="presenceActive">–</span> active
+      </button>
+      <div id="presencePopover" style="display:none;position:absolute;right:0;top:100%;margin-top:6px;z-index:80;min-width:220px;max-height:340px;overflow-y:auto;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:3px;box-shadow:0 6px 18px rgba(0,0,0,0.4);padding:6px;"></div>
+    </span>
+    <div class="theme-chip">
+      <button class="theme-chip-btn" id="acctChipBtn"><span id="acctChipLabel">—</span> <span style="opacity:.55;">▾</span></button>
+      <div class="theme-menu" id="acctMenu">
+        <div class="theme-menu-section" id="acctMenuWho" style="white-space:nowrap;color:var(--text-dim);"></div>
+        <button class="dropdown-item" id="acctChangePw">Change password…</button>
+        <hr>
+        <div class="theme-menu-section">Posture</div>
+        <button class="dropdown-item" id="viewModeToggle" title="View mode — browse read-only (hide edit actions)"><span aria-hidden="true">✎</span> <span id="viewModeLabel">Editing</span></button>
+        <hr>
+        <div class="theme-menu-section">Appearance · Mode</div>
+        <button class="dropdown-item" data-mode="auto">Auto (system)</button>
+        <button class="dropdown-item" data-mode="light">Light</button>
+        <button class="dropdown-item" data-mode="dark">Dark</button>
+        <div class="theme-menu-section">Theme</div>
+        <button class="dropdown-item" data-theme="amber">Amber (warm)</button>
+        <button class="dropdown-item" data-theme="slate">Slate (cool)</button>
+        <button class="dropdown-item" data-theme="solarized">Solarized</button>
+        <button class="dropdown-item" data-theme="redhat">Red Hat</button>
+        <hr>
+        <div class="theme-menu-section">Session</div>
+        <label class="dropdown-item" style="display:flex;align-items:center;gap:8px;cursor:pointer;" title="Sync your settings + working context (project · scope · customer · persona · view) to the server, so you continue where you left off on any device. Off = this browser only.">
+          <input type="checkbox" id="syncSessionToggle" onchange="setSyncSession(this.checked)" style="width:auto;accent-color:var(--accent);"> Continue session across devices
+        </label>
+        <hr>
+        <button class="dropdown-item" id="acctLogout">Sign out</button>
+        <div class="theme-menu-section" style="border-top:1px solid var(--border);margin-top:2px;color:var(--text-faint);font-size:10px;">UI build <span id="buildStamp">dev</span></div>
+      </div>
+    </div>
+  </div>
+</header>
