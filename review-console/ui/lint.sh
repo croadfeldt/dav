@@ -16,6 +16,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Modularization drift guard: index.html is GENERATED from src/ by build.mjs. Fail if a
+# dev edited index.html directly (run `node build.mjs` and commit). Keeps the single
+# deployed artifact in lock-step with its source modules. See src/README.md.
+echo "→ build drift check (src/ → index.html)"
+node build.mjs --check
+
 TMP="$(mktemp /tmp/dav_ui.XXXXXX.js)"
 trap 'rm -f "$TMP"' EXIT
 
