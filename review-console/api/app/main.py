@@ -7577,9 +7577,21 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                     break
             _basename_index.setdefault(_leaf, set()).add(_p)
         emitted_uuids = set()   # #121: track which UCs the engine actually produced
+        _dup_uuids = 0          # duplicate uc_uuid rows in this run-summary (see guard below)
         for uc in (summary.get("ucs") or []):
             uc_uuid = uc.get("uc_uuid")
             if not uc_uuid:
+                continue
+            # De-dup uc_uuid WITHIN a run. uc_analyses is uniquely keyed on (run_id, uc_uuid), so a
+            # run-summary that lists the same uc_uuid twice would make the second INSERT violate
+            # uc_analyses_run_id_uc_uuid_key — and since the whole ingest is one transaction, that
+            # rolls back EVERY row, so the run never lands in analysis_runs and the 5-min ingest loop
+            # retries it forever (observed: the Piotr-feedback corpus emits the sentinel
+            # `uc_uuid: <load-failed>` once per unparseable file → 9 identical keys → permanent wedge).
+            # First occurrence wins; the rest are counted + logged (the underlying corpus parse
+            # failures are a separate data-quality issue, tracked elsewhere).
+            if uc_uuid in emitted_uuids:
+                _dup_uuids += 1
                 continue
             emitted_uuids.add(uc_uuid)
             # Load full analysis for this UC
@@ -7818,10 +7830,16 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             await conn.execute(
                 "UPDATE analysis_runs SET failed = COALESCE(failed,0) + $2 WHERE run_id=$1",
                 run_id, _dropped)
+        if _dup_uuids:
+            log.warning(
+                "ingest %s: skipped %d duplicate uc_uuid row(s) in run-summary "
+                "(e.g. repeated '<load-failed>' sentinels); first occurrence kept per uc_uuid",
+                run_id, _dup_uuids)
 
     return {
         "run_id": run_id,
         "ingested_ucs": ingested_ucs,
+        "duplicate_uc_uuids_skipped": _dup_uuids,
         "ingested_gaps": ingested_gaps,
         "ingested_capabilities": ingested_caps,
         "ingested_capability_deps": ingested_deps,
