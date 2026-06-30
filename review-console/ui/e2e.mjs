@@ -178,7 +178,7 @@ async function runRole(role) {
   // panels keep their own privilege gating (the e2e reads each panel's inline display).
   if (role === 'platform-admin') {
     ck('presence chip rendered', disp('presenceWrap') !== 'none', 'display=' + disp('presenceWrap'));
-    ck('Platform config tab visible', disp('configTabAccess') !== 'none', 'display=' + disp('configTabAccess'));
+    ck('Access & Membership tab visible', disp('configTabAccess') !== 'none', 'display=' + disp('configTabAccess'));
     ck('Projects tab list present (relocated)', !!document.getElementById('projectsList'), 'projectsList in DOM');
     ck('Email (SMTP) panel visible', disp('configSmtpPanel') !== 'none', 'display=' + disp('configSmtpPanel'));
     ck('LDAP panel visible', disp('configLdapPanel') !== 'none', 'display=' + disp('configLdapPanel'));
@@ -191,7 +191,7 @@ async function runRole(role) {
     // project admin: manages projects in the Customers & Projects → Projects tab now; the
     // Config Platform tab is hidden (only platform-admin settings — SMTP/LDAP/Users — remain there).
     ck('presence chip hidden', disp('presenceWrap') === 'none', 'display=' + disp('presenceWrap'));
-    ck('Platform config tab hidden (projects moved out)', disp('configTabAccess') === 'none', 'display=' + disp('configTabAccess'));
+    ck('Access & Membership tab hidden', disp('configTabAccess') === 'none', 'display=' + disp('configTabAccess'));
     ck('Projects tab list present (relocated)', !!document.getElementById('projectsList'), 'projectsList in DOM');
     ck('Email (SMTP) panel hidden', disp('configSmtpPanel') === 'none', 'display=' + disp('configSmtpPanel'));
     ck('LDAP panel hidden', disp('configLdapPanel') === 'none', 'display=' + disp('configLdapPanel'));
@@ -202,7 +202,7 @@ async function runRole(role) {
     ck('Bundles panel hidden (no usecat.manage)', disp('configBundlesPanel') === 'none', 'display=' + disp('configBundlesPanel'));
   } else {
     ck('presence chip hidden', disp('presenceWrap') === 'none', 'display=' + disp('presenceWrap'));
-    ck('Platform config tab hidden', disp('configTabAccess') === 'none', 'display=' + disp('configTabAccess'));
+    ck('Access & Membership tab hidden', disp('configTabAccess') === 'none', 'display=' + disp('configTabAccess'));
   }
   // (Audit's gating — platform-admin only — rides the same _domainPermitted/__platAdmin
   // predicate as the Config Platform panels checked above; it surfaces in the Operator
