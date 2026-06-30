@@ -5345,15 +5345,19 @@ const DOMAINS = [
   { key:'roadmap', label:'Roadmaps',   icon:'✦', focus:'architecture', subviews:[
       { view:'review',      label:'Arch Review' },
       { view:'enhancement', label:'Enhancement / PR' },
-      { view:'capmap',      label:'Cap Map' },
       { view:'engineering', label:'Engineering Roadmap' },
   ]},
   { key:'assess',  label:'Assessments', icon:'📊', focus:'assessment', navId:'navAssess', subviews:[
       { view:'assess',   label:'Assessments', priv:'assessment.view' },
       { view:'maturity', label:'Maturity Wall', priv:'assessment.view' },
   ]},
-  { key:'catalog', label:'Catalog',    icon:'📒', focus:'both', subviews:[
+  // IA slice 2: capability spine = one domain. The Catalog (registry, List/Board) and the
+  // Cap Map (UC↔capability matrix) are both capability surfaces, so they live together under
+  // "Capabilities" rather than Cap Map sitting in Roadmaps. (The Engineering Roadmap view's own
+  // inline cap-map render is the remaining duplicate — removed in the generator-collapse slice.)
+  { key:'catalog', label:'Capabilities', icon:'📒', focus:'both', subviews:[
       { view:'catalog', label:'Catalog' },
+      { view:'capmap',  label:'Cap Map' },
   ]},
   // UI lean slice 3: setup/admin surfaces folded into one Settings group (9 → 6 top-level
   // domains; Miller's 7±2). Config, Prompts & Improvement, Customers & Projects, and Audit
