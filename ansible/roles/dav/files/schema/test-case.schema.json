@@ -112,7 +112,7 @@
           "type": "string",
           "enum": [
             "system_defaults_only",
-            "single_gatekeeper",
+            "single_gating",
             "multi_policy_chain",
             "conflicting_policies",
             "orchestration_flow_static",
