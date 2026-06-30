@@ -18,12 +18,16 @@ This mirrors the repo's existing "generate + `--check`" pattern (cf.
 ## Layout
 | Path | What |
 |------|------|
-| `app.template.html` | the HTML shell + all view markup, with `@DAV-MODULE` markers |
+| `app.template.html` | the ~168-line skeleton: `<head>`, body chrome, footer + `@DAV-MODULE` markers |
+| `shell/masthead.html` | the masthead (`<header class="pf-masthead">`) markup |
+| `shell/modals.html` | all the modal-overlay dialogs |
+| `views/<id>.html` | one `<section class="pf-view" id="view-<id>">` per file (17 views) |
 | `styles/app.css` | the head `<style>` body — **edit as CSS** |
 | `js/theme-init.js` | the early FOUC-guard script body — **edit as JS** |
-| `js/app/*.js` | the main script body, concatenated in **filename order** |
+| `js/app/*.js` | the main script body in 16 feature modules, concatenated in **filename order** |
 
-Modules are assembled in template order; `js/app/` files concatenate by sorted filename.
+The 17k-line single file is now ~40 modules. Assembled in template order; `js/app/` files
+concatenate by sorted filename (`000-core`, `100-runs`, …, `900-core`).
 Everything is line-based and joined with `\n`, so module files hold exact lines with **no
 trailing newline** — `files.join('\n')` reproduces the original bytes.
 
