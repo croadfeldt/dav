@@ -5451,9 +5451,10 @@ function switchView(name) {
   if (name === 'improve')  { pmInit(); loadImproveQueue(); }
   if (name === 'config') {
     loadConfig();
-    // Platform settings now live in Config → Platform (the separate Users/Projects views
-    // are retired) — load their data here, gated like the panels.
-    if (me && me.is_admin) { loadProjectsAdmin(); loadProjectSwitcher(); }
+    // Platform settings (accounts/roles/bindings/LDAP/SMTP/agents/tenants/groups) live in
+    // Config → Platform. Project management is its own Settings → Projects view now, so the
+    // projects loaders are NOT fired here (IA slice 4: drop the redundant double-load — the
+    // 'projects' branch below is the single owner).
     if (me && me.is_platform_admin) { loadAccounts(); loadRolesMatrix(); loadRoleBindings(); loadLdapStatus(); loadLdapSettings(); loadSmtpSettings(); loadAgentTokens(); loadTenants(); loadGroups(); }
     if (can('usecat.manage')) loadBundles();
   }
