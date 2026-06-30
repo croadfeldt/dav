@@ -21,11 +21,26 @@ authoritative prose. Validation rules here mirror §9.4 (scoring) of spec 05.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass, field, asdict, fields as dc_fields
 from datetime import datetime, timezone
 from typing import Any
 from enum import Enum
+
+log = logging.getLogger(__name__)
+
+
+def _known_fields(cls, data: dict[str, Any], *, where: str) -> dict[str, Any]:
+    """Filter `data` to dataclass `cls`'s declared fields, dropping + warning on unknown keys
+    instead of letting `cls(**data)` raise TypeError. Authoring drift in a UC (e.g. an extra
+    `metadata.note`) must degrade to a warning, never hard-fail the whole UC at load time.
+    See docs/operating-model-decision-record.md §6 (tolerant loader)."""
+    known = {f.name for f in dc_fields(cls)}
+    extra = sorted(k for k in data if k not in known)
+    if extra:
+        log.warning("%s: ignoring unknown key(s): %s", where, ", ".join(extra))
+    return {k: v for k, v in data.items() if k in known}
 
 # --- Controlled vocabularies ---
 # Pre-ε.1 these were hardcoded Python lists (LIFECYCLE_PHASES, PROVIDER_TYPES,
@@ -421,6 +436,8 @@ class UseCaseMetadata:
     promoted_from_run: str | None = None
     initial_baseline_path: str | None = None
     author: str | None = None
+    note: str | None = None          # free-form human annotation
+    edited: Any = None               # authoring provenance (bool/timestamp); free-form
 
 @dataclass
 class UseCase:
@@ -488,9 +505,11 @@ class UseCase:
             profile=scenario_data["profile"],
             expected_domain_interactions=expected,
         )
-        generated_by = GeneratedBy(**data["generated_by"])
+        generated_by = GeneratedBy(**_known_fields(GeneratedBy, data["generated_by"],
+                                                   where=f"use_case[{data.get('handle', '?')}].generated_by"))
         metadata_data = data.get("metadata") or {}
-        metadata = UseCaseMetadata(**metadata_data)
+        metadata = UseCaseMetadata(**_known_fields(UseCaseMetadata, metadata_data,
+                                                   where=f"use_case[{data.get('handle', '?')}].metadata"))
         return cls(
             uuid=data["uuid"],
             handle=data["handle"],
