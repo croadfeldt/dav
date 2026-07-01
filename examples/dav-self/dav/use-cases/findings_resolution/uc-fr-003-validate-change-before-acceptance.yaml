@@ -1,0 +1,64 @@
+use_case_uuid: uc-fr-003
+uc_type: analytical
+domain: findings_resolution
+description: A candidate ADR is validated by use-case evaluation before it can be accepted.
+gate_class: advisory
+
+metadata:
+  author: dav-self
+  created: 2026-06-19
+  tags: [validation, evaluation, gate, same-engine, adversarial]
+  references:
+    - "findings-resolution-design.md"
+    - "dav-self-improvement-vision.md"
+
+analytical:
+  scenario: |
+    Before a DecisionRecord can reach CANONICAL, DAV validates it: applicable use cases — both
+    submitted and generated-with-variance (coverage + adversarial C-modes) — are evaluated against
+    the candidate resolution on the SAME engine that performs gap analysis. The evaluation target is
+    parameterized: spec/architecture → gap analysis, resolution → validation, chosen per evaluation
+    phase; there is one engine, not a fork.
+
+    UC application and purpose are determined per phase (relevance selection + variance generation),
+    not pre-bound. The candidate passes only if it supports the use cases it claims to support AND
+    regresses no previously-supported use case. Where the decision is not testable (e.g. a naming
+    choice) the gate does not apply and the record may be accepted without validation evidence,
+    preserving compatibility with ordinary ADRs. Validation evidence is attached to the record:
+    the WHY is earned, not asserted — "framework proposes, and now proves; architect disposes."
+
+  success_criteria:
+    - free_form: >
+        A candidate resolution is evaluated against applicable submitted AND generated-with-variance
+        use cases on the same engine used for gap analysis — not a separate, divergent checker.
+    - free_form: >
+        Pass requires supporting the claimed use cases AND introducing no regression in any
+        previously-supported use case; a regression blocks acceptance.
+    - free_form: >
+        The evaluation target is parameterized (architecture | resolution | other) and UC selection
+        is determined per phase, not hard-bound to one purpose.
+    - free_form: >
+        Passing validation evidence is attached to the DecisionRecord; non-testable decisions may be
+        accepted without it.
+    - bounded_by:
+        resource: regressions_allowed_for_acceptance
+        limit: 0
+    - visible_to:
+        actors: [architect, agent_triage]
+
+  expected_capabilities:
+    - validate_resolution
+    - parameterized_evaluation_target
+    - generate_variance_use_cases
+    - detect_regression
+    - attach_validation_evidence
+  expected_components:
+    - evaluation_engine
+    - variance_generator
+    - decision_record_store
+  expected_gaps:
+    - "Continuous re-validation on drift reuses the freshness substrate (#114-120); see uc-fr-006"
+  focus_areas:
+    - one_engine_target_parameterized
+    - validate_before_accept
+    - no_regression_guarantee

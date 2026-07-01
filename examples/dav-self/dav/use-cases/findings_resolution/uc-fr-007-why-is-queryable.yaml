@@ -1,0 +1,56 @@
+use_case_uuid: uc-fr-007
+uc_type: analytical
+domain: findings_resolution
+description: Every architecture decision's WHY is a first-class, queryable record (depends_on → ADR).
+gate_class: advisory
+
+metadata:
+  author: dav-self
+  created: 2026-06-19
+  tags: [why, queryable, depends_on, provenance, knowledge-substrate]
+  references:
+    - "findings-resolution-design.md"
+    - "knowledge-family.md"
+
+analytical:
+  scenario: |
+    The triggering feedback was "depends_on says *what* but not *why*." The systemic answer is that the
+    WHY lives in the substrate: a DecisionRecord is a first-class UDLM Knowledge entity anchored to the
+    capability / dependency / spec element it justifies, so any consumer — DAV, DCM, or a peer — carries
+    decision provenance natively rather than re-deriving it from prose.
+
+    From any capability_dependency edge (e.g. capability A depends_on capability B) a user or agent can
+    traverse to the DecisionRecord(s) that justify it and read the rationale, the options considered, and
+    the validation evidence. The store becomes DAV's queryable "why the architecture is the way it is":
+    ask "why does A depend on B?" and get the decision, not silence. This is the payoff of treating the
+    resolution write-up as a record type instead of a comment thread.
+
+  success_criteria:
+    - free_form: >
+        Any capability_dependency edge can be traversed to the DecisionRecord(s) that justify it; the
+        WHY is reachable from the architecture graph, not buried in prose.
+    - free_form: >
+        A query "why does capability A depend on capability B?" returns the decision, its rationale,
+        options considered, and validation evidence.
+    - free_form: >
+        The WHY is anchored field-level to the capability/dep/spec element, so provenance travels with
+        the architecture data to any consumer (DAV, DCM, peers).
+    - free_form: >
+        Decisions with no recorded WHY are themselves surfaceable as findings (the gap is visible).
+    - visible_to:
+        actors: [architect, reviewer, dcm_consumer, agent_triage]
+
+  expected_capabilities:
+    - query_decision_why
+    - traverse_dependency_to_decision
+    - anchor_why_field_level
+    - surface_undocumented_decisions
+  expected_components:
+    - decision_record_store
+    - capability_dependency_graph
+  expected_gaps:
+    - "Eliciting depends_on edges (#126) is the upstream prerequisite for full coverage"
+  focus_areas:
+    - why_is_first_class
+    - reachable_from_architecture_graph
+    - provenance_travels_with_data

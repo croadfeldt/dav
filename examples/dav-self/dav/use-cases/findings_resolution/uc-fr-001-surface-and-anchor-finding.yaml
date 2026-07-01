@@ -1,0 +1,57 @@
+use_case_uuid: uc-fr-001
+uc_type: analytical
+domain: findings_resolution
+description: A PR review comment becomes a tracked, classified, capability-anchored Finding.
+gate_class: advisory
+
+metadata:
+  author: dav-self
+  created: 2026-06-19
+  tags: [findings, ingest, provenance, capability-anchor]
+  references:
+    - "findings-resolution-design.md"
+    - "knowledge-family.md"
+
+analytical:
+  scenario: |
+    A reviewer leaves a comment on a dcm-project pull request — e.g. "depends_on says *what*
+    but not *why*". DAV's PR-comment poller ingests the comment. On ingest, the LLM classifies it
+    into a finding_type and emits a normalized one-line statement; a multi-comment thread collapses
+    to a single Finding. Full provenance is preserved (origin repo/PR, author, file/line/thread, the
+    commit SHA at observation), recorded field-level per UDLM.
+
+    The Finding is then anchored to at least one resolution target — its primary anchor being a
+    capability, a capability_dependency, or a spec section ("depends_on" → the dependency-modeling
+    capability). The same shape applies whether the signal came from a PR comment, an assessment
+    finding, or a gap: a PR comment is just one *source* of a Finding, elevated onto the shared
+    spine rather than handled by a bespoke subsystem.
+
+  success_criteria:
+    - free_form: >
+        Ingesting a PR comment produces exactly one Finding (thread collapsed), with a
+        finding_type and a normalized one-line statement, not a raw comment dump.
+    - free_form: >
+        The Finding carries complete, field-level provenance: origin, author, file/line/thread,
+        and the observation SHA — sufficient to trace it back to the exact source.
+    - free_form: >
+        The Finding is anchored to at least one stable target (capability / capability_dependency /
+        spec section); architecture is the primary anchor but not the boundary.
+    - visible_to:
+        actors: [architect, reviewer, agent_triage]
+
+  expected_capabilities:
+    - ingest_finding_signal
+    - classify_finding
+    - normalize_finding_statement
+    - anchor_finding_to_target
+    - preserve_field_level_provenance
+  expected_components:
+    - pr_comment_poller
+    - finding_classifier
+    - finding_anchor
+  expected_gaps:
+    - "P1 limits anchors to capability/dep/spec; People-Process and Enablement anchors are later"
+  focus_areas:
+    - source_agnostic_finding_shape
+    - provenance_completeness
+    - capability_anchoring

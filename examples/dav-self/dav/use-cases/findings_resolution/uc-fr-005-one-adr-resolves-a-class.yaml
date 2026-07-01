@@ -1,0 +1,54 @@
+use_case_uuid: uc-fr-005
+uc_type: analytical
+domain: findings_resolution
+description: One ADR resolves a class of findings; new near-identical findings auto-match and cite it.
+gate_class: advisory
+
+metadata:
+  author: dav-self
+  created: 2026-06-19
+  tags: [m-to-n, one-resolves-many, dedup, already-addressed, systemic]
+  references:
+    - "findings-resolution-design.md"
+
+analytical:
+  scenario: |
+    Findings recur across sources and over time. DAV de-dups / clusters near-identical findings
+    (reusing the demand-dedup mechanism) so a class is resolved once. A single DecisionRecord may
+    close many Findings (M:N); duplicates close with the class. When a new Finding is surfaced that
+    matches an existing CANONICAL DecisionRecord, DAV auto-matches it and cites the record
+    ("already-addressed") rather than reopening the question or drafting a duplicate resolution.
+
+    This is what makes the loop systemic rather than a point tracker: the answer to "what is open
+    against this capability?" is a single cross-source query, and one well-validated decision retires
+    a whole family of findings instead of each being handled individually.
+
+  success_criteria:
+    - free_form: >
+        Near-identical findings across sources cluster into one class so the question is resolved
+        once, not repeatedly.
+    - free_form: >
+        A single DecisionRecord can close many Findings (M:N); resolving the class closes its
+        duplicates.
+    - free_form: >
+        A newly-surfaced finding matching an existing CANONICAL DecisionRecord auto-matches and cites
+        it (already-addressed) instead of producing a duplicate resolution.
+    - free_form: >
+        A single cross-source backlog query answers "what is open against capability X?".
+    - visible_to:
+        actors: [architect, agent_triage]
+
+  expected_capabilities:
+    - cluster_findings
+    - resolve_class_m_to_n
+    - auto_match_to_decision_record
+    - cross_source_backlog_query
+  expected_components:
+    - finding_dedup
+    - decision_record_store
+  expected_gaps:
+    - "Capability coverage / most-contested view and roadmap projection land in P2"
+  focus_areas:
+    - one_resolves_many
+    - already_addressed_citation
+    - systemic_not_point_solution
