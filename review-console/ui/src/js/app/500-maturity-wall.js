@@ -735,7 +735,12 @@ async function _loadRoadmapProjection() {
   const gb = document.getElementById('rpRoadmapGroupBy');
   box.innerHTML = '<div style="font-size:11px;color:var(--text-faint);">Synthesizing roadmap from the gap analysis…</div>';
   try {
-    const q = (gb && gb.value) ? ('?group_by=' + encodeURIComponent(gb.value)) : '';
+    // #239 / TODO1: the synthesized roadmap follows the masthead Scope (set_id), like every other
+    // Roadmaps surface — not just group_by. The backend resolves the scope to its UCs' gaps.
+    const params = [];
+    if (gb && gb.value) params.push('group_by=' + encodeURIComponent(gb.value));
+    if (typeof _activeScope !== 'undefined' && _activeScope) params.push('set_id=' + encodeURIComponent(_activeScope));
+    const q = params.length ? ('?' + params.join('&')) : '';
     const d = await api('/api/analysis/roadmap' + q);
     _roadmapData = d;
     const sc = d.severity_counts || {};
