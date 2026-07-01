@@ -25,7 +25,7 @@
   ],
   "policy_complexities": [
     "system_defaults_only",
-    "single_gating",
+    "single_validation",
     "multi_policy_chain",
     "conflicting_policies",
     "orchestration_flow_static",
