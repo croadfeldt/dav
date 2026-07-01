@@ -5207,6 +5207,130 @@ def _derive_uc_handle(parsed: dict) -> str:
     return f"managed/{profile.strip()}/{slug}"
 
 
+# ── Semi-automated UC fix — deterministic suggester (TODO 2, docs/uc-fix-design.md) ──
+# The six dimensions and their allowed value sets, in validation order. Safe defaults are the
+# simplest/happy-path value for each — used when a dimension is missing or holds a value that can't
+# be relocated. NB: kept in sync with _validate_uc_yaml's dimension loop.
+_DIM_SETS = {
+    "lifecycle_phase":     _DCM_LIFECYCLE_PHASES,
+    "resource_complexity": _DCM_RESOURCE_COMPLEXITIES,
+    "policy_complexity":   _DCM_POLICY_COMPLEXITIES,
+    "provider_landscape":  _DCM_PROVIDER_LANDSCAPES,
+    "governance_context":  _DCM_GOVERNANCE_CONTEXTS,
+    "failure_mode":        _DCM_FAILURE_MODES,
+}
+_DIM_DEFAULTS = {
+    "lifecycle_phase":     "new_request",
+    "resource_complexity": "single_no_deps",
+    "policy_complexity":   "system_defaults_only",
+    "provider_landscape":  "single_eligible",
+    "governance_context":  "standard_governance",
+    "failure_mode":        "happy_path",
+}
+# Reverse index: value → the dimension whose set contains it (for enum relocation). Built once; if a
+# value legitimately appears in two dimensions the first (validation-order) wins — a stable choice.
+_DIM_VALUE_OWNER = {}
+for _dn, _dvals in _DIM_SETS.items():
+    for _v in _dvals:
+        _DIM_VALUE_OWNER.setdefault(_v, _dn)
+
+# Semantic errors a machine can't fix (need LLM/human — slice B). Matched by substring on the
+# validator's messages so the suggester can partition remaining errors honestly.
+_SEMANTIC_MARKERS = (
+    "scenario.description", "scenario.intent", "success_criteria", "actor.persona",
+    "scenario must be a mapping",
+)
+
+
+def _suggest_uc_fixes(parsed: dict):
+    """Deterministic UC-fix suggester (dry-run; does NOT mutate `parsed`). Returns
+    (proposed:dict, changes:list, remaining_errors:list, needs_semantic:list).
+
+    Fixes, in order: missing `handle` (derive); invalid `generated_by.mode/source` (→ default);
+    dimension enum errors (relocate a misplaced value to its owning dimension if that slot is
+    empty/invalid, else set the offending dimension to its safe default; fill missing dimensions);
+    profile mismatch (copy the valid twin, else 'standard'); invalid optional `priority` (drop).
+    Semantic gaps (empty description/intent/criteria/persona) are left for tier 2/3 and reported.
+    The result always re-validates to >= the original validity (never makes a UC more invalid)."""
+    import copy
+    proposed = copy.deepcopy(parsed) if isinstance(parsed, dict) else {}
+    changes: list[dict] = []
+
+    def _ch(field, frm, to, kind):
+        changes.append({"field": field, "from": frm, "to": to, "kind": kind})
+
+    # generated_by.mode / source
+    gb = proposed.get("generated_by")
+    if not isinstance(gb, dict):
+        gb = {}
+        proposed["generated_by"] = gb
+    if gb.get("mode") not in _VALID_GEN_MODES:
+        _ch("generated_by.mode", gb.get("mode"), "authoring", "default")
+        gb["mode"] = "authoring"
+    if gb.get("source") not in _VALID_GEN_SOURCES:
+        _ch("generated_by.source", gb.get("source"), "human-authored", "default")
+        gb["source"] = "human-authored"
+
+    sc = proposed.get("scenario")
+    if isinstance(sc, dict):
+        # dimensions — two passes so relocation isn't lost to default-fill ordering.
+        dims = sc.get("dimensions")
+        if not isinstance(dims, dict):
+            dims = {}
+            sc["dimensions"] = dims
+        orig = dict(dims)   # snapshot: judge "was this slot originally filled?" against the input
+        # Pass 1 — relocate a misplaced value into its owning dimension IF that slot was originally
+        # empty/invalid AND hasn't been claimed by an earlier relocation this pass.
+        for name in _DIM_SETS:
+            v = orig.get(name)
+            if v in _DIM_SETS[name]:
+                continue
+            owner = _DIM_VALUE_OWNER.get(v) if isinstance(v, str) else None
+            if (owner and owner != name
+                    and orig.get(owner) not in _DIM_SETS[owner]
+                    and dims.get(owner) not in _DIM_SETS[owner]):
+                _ch(f"dimensions.{owner}", dims.get(owner), v, "relocate")
+                dims[owner] = v
+        # Pass 2 — fill any dimension still empty/invalid with its safe default (this also resets the
+        # slot a value was relocated OUT of, unless that slot itself received a relocation).
+        for name in _DIM_SETS:
+            if dims.get(name) not in _DIM_SETS[name]:
+                _ch(f"dimensions.{name}", dims.get(name), _DIM_DEFAULTS[name], "default")
+                dims[name] = _DIM_DEFAULTS[name]
+
+        # profile mismatch — copy the valid twin (actor.profile ↔ scenario.profile), else default.
+        actor = sc.get("actor") if isinstance(sc.get("actor"), dict) else None
+        ap = actor.get("profile") if actor else None
+        spf = sc.get("profile")
+        ap_ok, sp_ok = ap in _DCM_PROFILES, spf in _DCM_PROFILES
+        if actor is not None and not ap_ok:
+            newv = spf if sp_ok else "standard"
+            _ch("scenario.actor.profile", ap, newv, "copy" if sp_ok else "default")
+            actor["profile"] = newv
+        if not sp_ok:
+            newv = (actor.get("profile") if actor and actor.get("profile") in _DCM_PROFILES else "standard")
+            _ch("scenario.profile", spf, newv, "copy" if (actor and actor.get("profile") in _DCM_PROFILES) else "default")
+            sc["profile"] = newv
+
+    # handle — derived LAST so it reflects the corrected profile/title (managed/<profile>/<slug>).
+    h = proposed.get("handle")
+    if not isinstance(h, str) or not h.strip():
+        proposed["handle"] = _derive_uc_handle(proposed)
+        _ch("handle", h, proposed["handle"], "derive")
+
+    # priority (optional) — drop an invalid value rather than block.
+    if proposed.get("priority") is not None:
+        try:
+            _normalize_uc_priority(proposed.get("priority"))
+        except ValueError:
+            _ch("priority", proposed.get("priority"), None, "drop")
+            proposed.pop("priority", None)
+
+    remaining = _validate_uc_yaml(proposed)
+    needs_semantic = [e for e in remaining if any(m in e for m in _SEMANTIC_MARKERS)]
+    return proposed, changes, remaining, needs_semantic
+
+
 @app.get("/api/use-cases")
 async def list_use_cases(
     request: Request,
@@ -5409,6 +5533,57 @@ async def use_cases_health(request: Request):
     return {"total": len(ucs), "invalid": sum(1 for u in ucs if not u["valid"]), "ucs": ucs}
 
 
+@app.get("/api/use-cases/fix-suggestions")
+async def bulk_fix_suggestions(request: Request, set_id: Optional[str] = Query(None)):
+    """Bulk dry-run of the deterministic UC-fix suggester over every INVALID managed UC in the active
+    project (optionally restricted to a Scoping Set). Powers the bulk "Fix N invalid" preview + count.
+    Suggest only — never writes; apply is per-UC via POST …/suggest-fix?apply=true.
+    NB: declared BEFORE /api/use-cases/{uuid} so it isn't swallowed by the greedy uuid route."""
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        if set_id and set_id not in ("", "__all__"):
+            uuids = await _resolve_scope_uc_uuids(conn, pid, set_id, None)
+            rows = await conn.fetch(
+                "SELECT uuid, title, yaml_content FROM managed_use_cases WHERE project_id=$1 AND uuid=ANY($2)",
+                pid, uuids) if uuids else []
+        else:
+            rows = await conn.fetch(
+                "SELECT uuid, title, yaml_content FROM managed_use_cases WHERE project_id=$1", pid)
+    items = []
+    fixable_clean = partial = needs_semantic_n = 0
+    for r in rows:
+        try:
+            data = _parse_uc_yaml(r["yaml_content"])
+            errors_before = _validate_uc_yaml(data)
+        except ValueError as e:
+            errors_before = [str(e)]
+            data = None
+        if not errors_before:
+            continue                              # already valid — skip
+        if data is None:
+            items.append({"uuid": r["uuid"], "title": r["title"], "parses": False,
+                          "errors_before": errors_before, "changes": [], "valid_after": False,
+                          "remaining_errors": errors_before, "needs_semantic": errors_before})
+            needs_semantic_n += 1
+            continue
+        proposed, changes, remaining, needs_semantic = _suggest_uc_fixes(data)
+        if not remaining:
+            fixable_clean += 1
+        elif needs_semantic:
+            needs_semantic_n += 1
+        else:
+            partial += 1
+        items.append({
+            "uuid": r["uuid"], "title": r["title"], "parses": True,
+            "errors_before": errors_before, "changes": changes,
+            "valid_after": not remaining, "remaining_errors": remaining,
+            "needs_semantic": needs_semantic,
+        })
+    return {"total_invalid": len(items), "fixable_clean": fixable_clean,
+            "partial": partial, "needs_semantic": needs_semantic_n, "items": items}
+
+
 @app.get("/api/use-cases/{uuid}")
 async def get_use_case(uuid: str, request: Request):
     """Return a single use case by uuid — managed DB first, then corpus files.
@@ -5526,6 +5701,48 @@ async def repair_use_case(uuid: str, request: Request):
             "UPDATE managed_use_cases SET yaml_content=$2, title=$3, updated_by=$4, updated_at=now() WHERE uuid=$1",
             uuid, new_yaml, title, user)
     return {"ok": not remaining, "repaired": repaired, "remaining_errors": remaining, "yaml_content": new_yaml}
+
+
+@app.post("/api/use-cases/{uuid}/suggest-fix")
+async def suggest_fix_use_case(uuid: str, request: Request, apply: bool = Query(False)):
+    """Semi-automated UC fix (TODO 2, docs/uc-fix-design.md). Deterministic tier: identify validation
+    errors → propose a concrete corrected YAML (enum relocation/defaults, handle, generated_by,
+    profile, priority) → return the change list + proposed YAML + what still needs a human/LLM.
+
+    Dry-run by default (suggest only). With ?apply=true it saves the proposal — but ONLY if it
+    strictly improves validity (fewer errors), so applying can never make a UC more broken."""
+    user = get_user(request)
+    async with pool.acquire() as conn:
+        await _gate_resource(conn, request, "managed_use_cases", "uuid", uuid,
+                             rbac.P_PROJECT_USECASES if apply else rbac.P_PROJECT_READ,
+                             "use case not found")
+        yc = await conn.fetchval("SELECT yaml_content FROM managed_use_cases WHERE uuid=$1", uuid)
+    try:
+        data = _parse_uc_yaml(yc)
+    except ValueError as e:
+        raise HTTPException(400, f"cannot suggest a fix — YAML does not parse: {e}")
+    errors_before = _validate_uc_yaml(data)
+    proposed, changes, remaining, needs_semantic = _suggest_uc_fixes(data)
+    proposed_yaml = _yaml.safe_dump(proposed, sort_keys=False, allow_unicode=True)
+    result = {
+        "uuid": uuid, "method": "deterministic",
+        "valid_before": not errors_before, "errors_before": errors_before,
+        "changes": changes, "proposed_yaml": proposed_yaml,
+        "valid_after": not remaining, "remaining_errors": remaining,
+        "needs_semantic": needs_semantic, "applied": False,
+    }
+    if apply:
+        if not changes:
+            raise HTTPException(400, "nothing to fix")
+        if len(remaining) >= len(errors_before):   # never save a non-improvement
+            raise HTTPException(409, "the deterministic fix would not improve validity — review manually")
+        title = _derive_uc_title(proposed, uuid)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE managed_use_cases SET yaml_content=$2, title=$3, updated_by=$4, updated_at=now() WHERE uuid=$1",
+                uuid, proposed_yaml, title, user)
+        result["applied"] = True
+    return result
 
 
 @app.post("/api/use-cases")

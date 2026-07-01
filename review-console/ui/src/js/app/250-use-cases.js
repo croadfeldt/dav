@@ -85,24 +85,22 @@ async function _loadUCHealth() {
       if (!h.invalid) { pill.style.display = 'none'; pill.innerHTML = ''; }
       else {
         pill.style.display = '';
+        // ✦ Review & fix (TODO 2): filter the list to invalid UCs — each row offers a per-UC
+        // deterministic Suggest-fix. Replaces the old handle-only "⚕ Repair N".
         pill.innerHTML = `<span title="Use cases failing engine validation" style="color:var(--red);font-size:10px;">⚠ ${h.invalid} invalid</span>`
-          + (repairable ? ` <button class="btn ghost btn-sm" style="font-size:10px;padding:0 6px;border-radius:999px;" onclick="_repairAllUCs()" title="Backfill a missing handle (from the title) + save, for each repairable UC">⚕ Repair ${repairable}</button>` : '');
+          + ` <button class="btn ghost btn-sm" style="font-size:10px;padding:0 6px;border-radius:999px;" onclick="_reviewFixInvalidUCs()" title="Show only the invalid use cases so you can suggest a fix for each">✦ Review &amp; fix</button>`;
       }
     }
   } catch (_) {}
 }
-async function _repairAllUCs() {
-  const repairable = Object.values(_ucHealth).filter(u => u.repairable);
-  if (!repairable.length) return;
-  if (!confirm(`Auto-repair ${repairable.length} use case(s)? This backfills a handle derived from each title (e.g. "managed/standard/secure-model-training") and saves it.`)) return;
-  let ok = 0, fail = 0;
-  for (const u of repairable) {
-    try { const r = await api(`/api/use-cases/${encodeURIComponent(u.uuid)}/repair`, { method: 'POST' });
-          ((r.repaired || []).length) ? ok++ : fail++; }
-    catch (_) { fail++; }
-  }
-  toast(`Repaired ${ok}${fail ? `, ${fail} unchanged/failed` : ''}`);
-  await loadUCs();
+// TODO 2: focus the UC list on invalid UCs so the author can suggest+apply a fix per UC
+// (via the row's "✦ fix" flag → openUCFixModal). Drives the existing health filter + its backing
+// control so the filter chip stays in sync (#244).
+function _reviewFixInvalidUCs() {
+  ucHealthFilter = 'invalid';
+  const backing = document.getElementById('ucHealthFilter');
+  if (backing) { backing.value = 'invalid'; if (typeof _ucRenderChips === 'function') _ucRenderChips(); }
+  renderUCList();
 }
 
 function renderUCList() {
@@ -215,7 +213,7 @@ function renderUCList() {
                   : lcHtml(u.lifecycle_state))
               : `<span class="src-badge src-${u.source}">${u.source}</span>`}
           ${(_ucHealth[u.uuid] && !_ucHealth[u.uuid].valid)
-              ? `<span title="Fails engine validation: ${esc((_ucHealth[u.uuid].errors || []).join('; '))}${_ucHealth[u.uuid].repairable ? ' — auto-repairable (open + ⚕ Repair)' : ''}" style="font-size:8px;background:var(--red);color:#fff;border-radius:2px;padding:0 4px;cursor:help;">⚠ invalid</span>`
+              ? `<span onclick="event.stopPropagation();openUCFixModal('${esc(u.uuid)}')" title="Fails engine validation: ${esc((_ucHealth[u.uuid].errors || []).join('; '))} — click to suggest a fix" style="font-size:8px;background:var(--red);color:#fff;border-radius:2px;padding:0 4px;cursor:pointer;">⚠ invalid · ✦ fix</span>`
               : ''}
           ${prioHtml(u.priority, u.priority_score)}
           ${readinessHtml(u.readiness_score)}
