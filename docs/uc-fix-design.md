@@ -56,7 +56,12 @@ Deterministic-only in slice A → both endpoints work with **no model endpoint c
   majority (enum relocation/defaults, handle, gen_by, priority, profile) safely and offline.
 - **Slice B — LLM tier.** For `needs_semantic` errors, offer a `uc_assist`-backed suggestion
   (re-validated) as an opt-in second pass in the same panel.
-- **Slice C — bulk-apply UI.** Review-list + apply-selected/all over the bulk endpoint.
+- **Slice C (done) — bulk-apply UI.** The health pill's "✦ Fix all…" opens a review-list modal over
+  `GET /api/use-cases/fix-suggestions` (scope-aware): one row per invalid UC with its change count +
+  outcome badge (becomes valid / needs a human / doesn't parse), a checkbox (default-checked only
+  where the deterministic fix improves validity), a per-row "details" (→ single modal), and
+  **Apply selected** which loops the per-UC gated `?apply=true` (409 "wouldn't improve" → skipped,
+  not failed). No new endpoint — apply reuses the single gated path.
 
 ## Verification
 - `py_compile` + `node build.mjs --check` + eslint no-undef + e2e 100/0.
