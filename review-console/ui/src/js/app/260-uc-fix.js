@@ -51,7 +51,7 @@ async function openUCFixModal(uuid) {
   const sub = document.getElementById('ucFixSub');
   const applyBtn = document.getElementById('ucFixApplyBtn');
   applyBtn.disabled = true;
-  _ucFixState = { uuid, proposed_yaml: null };
+  _ucFixState = { uuid, method: 'deterministic' };
   body.innerHTML = '<div class="empty">analyzing…</div>';
   if (sub) sub.textContent = uuid;
   let r;
@@ -62,6 +62,28 @@ async function openUCFixModal(uuid) {
     return;
   }
   _ucFixState.proposed_yaml = r.proposed_yaml;
+  _ucFixState.method = r.method || 'deterministic';
+  _renderUCFix(r);
+}
+
+// Escalate to the LLM tier (slice B): ask the project's UC-authoring model to fill the semantic
+// gaps the deterministic tier left. Dry-run; re-renders the modal with the model's proposal.
+async function _llmAssistFix() {
+  if (!_ucFixState || !_ucFixState.uuid) return;
+  const body = document.getElementById('ucFixBody');
+  const applyBtn = document.getElementById('ucFixApplyBtn');
+  applyBtn.disabled = true;
+  body.innerHTML = '<div class="empty"><span class="llm-spinner" style="display:inline-block;margin-right:6px;"></span>asking the model to draft the missing content…</div>';
+  let r;
+  try {
+    r = await api(`/api/use-cases/${encodeURIComponent(_ucFixState.uuid)}/suggest-fix-llm`, { method: 'POST' });
+  } catch (e) {
+    // Re-render the deterministic view with the error surfaced (e.g. no model configured).
+    body.innerHTML = `<div class="empty" style="color:var(--red)">AI-assist unavailable: ${esc(e.message)}</div>`;
+    return;
+  }
+  _ucFixState.proposed_yaml = r.proposed_yaml;
+  _ucFixState.method = r.method || 'llm';
   _renderUCFix(r);
 }
 
@@ -69,9 +91,6 @@ function _renderUCFix(r) {
   const body = document.getElementById('ucFixBody');
   const applyBtn = document.getElementById('ucFixApplyBtn');
   const changes = r.changes || [];
-  const canFix = changes.length && (r.remaining_errors || []).length < (r.errors_before || []).length;
-  applyBtn.disabled = !canFix || !canEdit('project.usecases');
-
   const sect = (title, inner) => `<div style="margin-bottom:12px;"><div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:5px;">${title}</div>${inner}</div>`;
 
   // Change list
@@ -96,29 +115,48 @@ function _renderUCFix(r) {
   const before = r.errors_before || [], remaining = r.remaining_errors || [], semantic = r.needs_semantic || [];
   const errLine = (e, isSem) => `<div style="font-size:10px;color:${isSem ? 'var(--amber,#d79a2b)' : 'var(--red)'};padding:1px 0;">• ${esc(e)}</div>`;
 
+  const isLLM = _ucFixState && _ucFixState.method === 'llm';
   let statusHtml;
   if (r.valid_after) {
     statusHtml = `<div style="font-size:11px;color:var(--green);">✓ These changes make the use case valid.</div>`;
   } else if (semantic.length) {
-    statusHtml = `<div style="font-size:11px;color:var(--amber,#d79a2b);margin-bottom:4px;">${semantic.length} issue${semantic.length === 1 ? '' : 's'} need${semantic.length === 1 ? 's' : ''} a human/AI edit (can't be auto-filled):</div>`
-      + semantic.map(e => errLine(e, true)).join('');
+    statusHtml = `<div style="font-size:11px;color:var(--amber,#d79a2b);margin-bottom:4px;">${semantic.length} issue${semantic.length === 1 ? '' : 's'} need${semantic.length === 1 ? 's' : ''} written content (can't be auto-filled):</div>`
+      + semantic.map(e => errLine(e, true)).join('')
+      // Slice B: offer to escalate to the LLM tier (only from the deterministic view).
+      + (!isLLM && canEdit('project.usecases')
+          ? `<button class="btn ghost btn-sm" style="margin-top:8px;font-size:10px;border-radius:999px;" onclick="_llmAssistFix()" title="Ask the project's UC-authoring model to draft the missing written content">✦ AI-assist the rest</button>`
+          : '');
   } else if (remaining.length) {
     statusHtml = remaining.map(e => errLine(e, false)).join('');
   }
 
+  // LLM explanation (what the model wrote + why), shown above the change list when present.
+  const explHtml = (isLLM && r.explanation)
+    ? sect('AI draft', `<div style="font-size:11px;color:var(--text-dim);white-space:pre-wrap;">${esc(r.explanation)}</div>`)
+    : '';
+
   body.innerHTML =
-      sect(`${before.length} validation error${before.length === 1 ? '' : 's'} — proposed changes`, changesHtml)
+      explHtml
+    + sect(`${before.length} validation error${before.length === 1 ? '' : 's'} — ${isLLM ? 'structural changes' : 'proposed changes'}`, changesHtml)
     + (statusHtml ? sect('After applying', statusHtml) : '')
     + sect('Proposed use case (YAML)',
         `<pre style="background:var(--bg);border:1px solid var(--border);border-radius:2px;padding:8px;font-size:10px;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;">${esc(r.proposed_yaml || '')}</pre>`);
+
+  // Apply is enabled whenever the shown proposal strictly improves validity.
+  const canApply = (r.remaining_errors || []).length < before.length && (r.proposed_yaml || '').trim();
+  applyBtn.disabled = !canApply || !canEdit('project.usecases');
+  applyBtn.textContent = isLLM ? 'Apply AI fix' : 'Apply fix';
 }
 
 async function _applyUCFix() {
   if (!_ucFixState || !_ucFixState.uuid) return;
   const btn = document.getElementById('ucFixApplyBtn');
+  const label = btn.textContent;
   btn.disabled = true; btn.textContent = 'Applying…';
+  // Apply against the tier whose proposal is currently shown (deterministic vs LLM).
+  const path = _ucFixState.method === 'llm' ? 'suggest-fix-llm' : 'suggest-fix';
   try {
-    const r = await api(`/api/use-cases/${encodeURIComponent(_ucFixState.uuid)}/suggest-fix?apply=true`, { method: 'POST' });
+    const r = await api(`/api/use-cases/${encodeURIComponent(_ucFixState.uuid)}/${path}?apply=true`, { method: 'POST' });
     toast(r.valid_after ? 'Fixed — now valid' : `Applied ${(r.changes || []).length} change(s); ${(r.remaining_errors || []).length} issue(s) still need a manual edit`);
     closeUCFix();
     await loadUCs();                 // refresh list + health flags
@@ -127,7 +165,7 @@ async function _applyUCFix() {
     }
   } catch (e) {
     toast('Apply failed: ' + e.message, true);
-    btn.disabled = false; btn.textContent = 'Apply fix';
+    btn.disabled = false; btn.textContent = label;
   }
 }
 
