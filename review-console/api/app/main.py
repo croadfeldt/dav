@@ -5745,6 +5745,76 @@ async def suggest_fix_use_case(uuid: str, request: Request, apply: bool = Query(
     return result
 
 
+@app.post("/api/use-cases/{uuid}/suggest-fix-llm")
+async def suggest_fix_use_case_llm(uuid: str, request: Request, apply: bool = Query(False)):
+    """LLM-assisted UC fix (TODO 2, slice B / docs/uc-fix-design.md tier 2). For the *semantic* gaps
+    the deterministic tier can't invent (empty description/intent/success_criteria/persona): run the
+    deterministic fix first, then ask the project's UC-authoring model to fill ONLY those fields,
+    inferring plausible content from the rest of the UC. Dry-run by default; ?apply=true saves only
+    if the model's YAML re-validates to strictly better than the original. Preserves the UC uuid."""
+    user = get_user(request)
+    if pool is None:
+        raise HTTPException(503, "pool not initialized")
+    async with pool.acquire() as conn:
+        await _gate_resource(conn, request, "managed_use_cases", "uuid", uuid,
+                             rbac.P_PROJECT_USECASES, "use case not found")
+        pid = await _active_project_id(request, conn)
+        yc = await conn.fetchval("SELECT yaml_content FROM managed_use_cases WHERE uuid=$1", uuid)
+        cfg = await _model_default_row(conn, "uc-authoring", project_id=pid)   # project UC-authoring model (env fallback in uc_assist)
+        _uctx = await _stage_context(conn, "uc-authoring", pid)                 # #125 append-live prompt context
+    try:
+        data = _parse_uc_yaml(yc)
+    except ValueError as e:
+        raise HTTPException(400, f"cannot fix — YAML does not parse: {e}")
+    errors_before = _validate_uc_yaml(data)
+    # Deterministic pass first, so the model only has to fill the written-content gaps.
+    proposed, changes, det_remaining, needs_semantic = _suggest_uc_fixes(data)
+    det_yaml = _yaml.safe_dump(proposed, sort_keys=False, allow_unicode=True)
+    if not needs_semantic:
+        # Nothing needs the model — the deterministic fix already covers it.
+        return {"uuid": uuid, "method": "deterministic", "valid_before": not errors_before,
+                "errors_before": errors_before, "changes": changes, "proposed_yaml": det_yaml,
+                "valid_after": not det_remaining, "remaining_errors": det_remaining,
+                "needs_semantic": [], "applied": False,
+                "explanation": "No written-content gaps — the deterministic fix is sufficient."}
+    msg = ("This use case fails validation on fields that require written content. Fill in ONLY the "
+           "following fields so it becomes valid, inferring plausible, specific content from the rest "
+           "of the use case; keep every other field exactly as-is: " + "; ".join(needs_semantic))
+    result = await uc_assist.chat(user_message=msg, current_yaml=det_yaml, context=_uctx, cfg=cfg, pool=pool)
+    if "error" in result and not result.get("yaml_suggestion"):
+        raise HTTPException(503, result["error"])
+    llm_yaml = result.get("yaml_suggestion")
+    if not llm_yaml:
+        raise HTTPException(502, "the model did not return a YAML suggestion")
+    explanation = result.get("explanation", "")
+    try:
+        llm_data = _parse_uc_yaml(llm_yaml)
+    except ValueError as e:
+        return {"uuid": uuid, "method": "llm", "explanation": explanation,
+                "valid_before": not errors_before, "errors_before": errors_before, "changes": changes,
+                "proposed_yaml": llm_yaml, "valid_after": False, "parses": False,
+                "remaining_errors": [f"model YAML did not parse: {e}"], "needs_semantic": [], "applied": False}
+    llm_data["uuid"] = uuid                          # the server owns UC identity — never let the model change it
+    llm_remaining = _validate_uc_yaml(llm_data)
+    proposed_yaml = _yaml.safe_dump(llm_data, sort_keys=False, allow_unicode=True)
+    resp = {"uuid": uuid, "method": "llm", "explanation": explanation,
+            "valid_before": not errors_before, "errors_before": errors_before, "changes": changes,
+            "proposed_yaml": proposed_yaml, "valid_after": not llm_remaining,
+            "remaining_errors": llm_remaining,
+            "needs_semantic": [e for e in llm_remaining if any(m in e for m in _SEMANTIC_MARKERS)],
+            "applied": False}
+    if apply:
+        if len(llm_remaining) >= len(errors_before):   # never save a non-improvement
+            raise HTTPException(409, "the model's fix would not improve validity — review manually")
+        title = _derive_uc_title(llm_data, uuid)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE managed_use_cases SET yaml_content=$2, title=$3, updated_by=$4, updated_at=now() WHERE uuid=$1",
+                uuid, proposed_yaml, title, user)
+        resp["applied"] = True
+    return resp
+
+
 @app.post("/api/use-cases")
 async def create_use_case(payload: ManagedUCIn, request: Request):
     """Create a managed use case. UUID is taken from the YAML content."""

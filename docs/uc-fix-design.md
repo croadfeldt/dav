@@ -54,8 +54,13 @@ Deterministic-only in slice A → both endpoints work with **no model endpoint c
 ## Rollout slices
 - **Slice A (this) — deterministic engine + endpoints + single-UC UI.** No LLM. Fixes the mechanical
   majority (enum relocation/defaults, handle, gen_by, priority, profile) safely and offline.
-- **Slice B — LLM tier.** For `needs_semantic` errors, offer a `uc_assist`-backed suggestion
-  (re-validated) as an opt-in second pass in the same panel.
+- **Slice B (done) — LLM tier.** `POST /api/use-cases/{uuid}/suggest-fix-llm` runs the deterministic
+  fix first, then asks the project's UC-authoring model (via `uc_assist`) to fill ONLY the
+  `needs_semantic` fields, re-validates, and returns a dry-run proposal (`?apply=true` saves iff it
+  strictly improves validity; the UC uuid is force-preserved so the model can't change identity). In
+  the single-fix modal, an **"✦ AI-assist the rest"** button appears when semantic gaps remain; it
+  re-renders the modal with the model's draft (explanation + YAML) and Apply targets the LLM tier.
+  Requires a UC-authoring model endpoint (or the env fallback); degrades with a clear message if none.
 - **Slice C (done) — bulk-apply UI.** The health pill's "✦ Fix all…" opens a review-list modal over
   `GET /api/use-cases/fix-suggestions` (scope-aware): one row per invalid UC with its change count +
   outcome badge (becomes valid / needs a human / doesn't parse), a checkbox (default-checked only
