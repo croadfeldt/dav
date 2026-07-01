@@ -7911,9 +7911,30 @@ async def project_freshness(request: Request):
     masthead chip: UC coverage (ingested/total), staleness, and last-eval age. Staleness now has TWO
     axes (#114): the UC was **edited** since its eval (updated_at > eval_at), OR the **code drifted**
     (captured source_repo_shas != current repo HEADs). Either makes it stale."""
+    # #239 / TODO3: Coverage follows the masthead Scope. An optional `set_id` (the active
+    # Scoping Set, '__unassigned__', or '__all__'/empty for the whole project) restricts the
+    # coverage corpus to that set's use cases — so the pill reflects exactly what the consumer
+    # views (Results, Roadmaps, Cap Map) are scoped to, not the whole project.
+    set_id = (request.query_params.get("set_id") or "").strip()
     async with pool.acquire() as conn:
         pid = await _active_project_id(request, conn)
         await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        # scope_uuids: None = whole project; otherwise the set of UC uuids (managed + corpus) the
+        # Scope restricts to. Membership is keyed by uuid (use_case_set_members), so it covers both.
+        scope_uuids = None
+        if set_id and set_id != "__all__":
+            if set_id == "__unassigned__":
+                srows = await conn.fetch(
+                    "SELECT uuid FROM managed_use_cases u WHERE project_id=$1 AND lifecycle_state<>'deprecated' "
+                    "AND NOT EXISTS (SELECT 1 FROM use_case_set_members m WHERE m.uc_uuid = u.uuid)", pid)
+                scope_uuids = {r["uuid"] for r in srows}
+            else:
+                try:
+                    _sid = int(set_id)
+                    srows = await conn.fetch("SELECT uc_uuid FROM use_case_set_members WHERE set_id=$1", _sid)
+                    scope_uuids = {r["uc_uuid"] for r in srows}
+                except ValueError:
+                    scope_uuids = set()          # unparseable scope → empty (coverage of nothing)
         rows = await conn.fetch(
             """
             WITH ucs AS (
@@ -7929,12 +7950,19 @@ async def project_freshness(request: Request):
             SELECT u.uuid, u.updated_at, l.analysis_id, l.status, l.eval_at, l.source_repo_shas
             FROM ucs u LEFT JOIN latest l ON l.uc_uuid = u.uuid
             """, pid)
+        if scope_uuids is not None:           # restrict the managed corpus to the active Scope
+            rows = [r for r in rows if r["uuid"] in scope_uuids]
         current = await _current_project_repo_shas_cached(conn, pid)
         dep = await _dep_drift_map(conn, [r["analysis_id"] for r in rows])   # #128 dependency-aware
         # Deprecated UCs are excluded from the analyzable corpus above; surface the count
         # so the masthead's `total` reconciles with the Use Cases view (which lists all).
-        deprecated = await conn.fetchval(
-            "SELECT count(*) FROM managed_use_cases WHERE project_id=$1 AND lifecycle_state='deprecated'", pid)
+        if scope_uuids is None:
+            deprecated = await conn.fetchval(
+                "SELECT count(*) FROM managed_use_cases WHERE project_id=$1 AND lifecycle_state='deprecated'", pid)
+        else:
+            deprecated = await conn.fetchval(
+                "SELECT count(*) FROM managed_use_cases WHERE project_id=$1 AND lifecycle_state='deprecated' "
+                "AND uuid = ANY($2)", pid, list(scope_uuids))
         # Corpus UCs from the project's corpus-role repos (managed_repos roles @> {corpus}), matched
         # by namespace — included in the total so the pill is the complete story (drift re-runs). #199.
         corpus_rows = await conn.fetch(
@@ -7985,7 +8013,7 @@ async def project_freshness(request: Request):
         except Exception:
             continue
         u = d.get("uuid") if isinstance(d, dict) else None
-        if u and u not in managed_uuids:
+        if u and u not in managed_uuids and (scope_uuids is None or u in scope_uuids):
             corpus_n += 1
     total_available = managed_n + corpus_n          # managed + the project's corpus (complete story)
     return {
@@ -8004,6 +8032,7 @@ async def project_freshness(request: Request):
         "last_eval": last_eval.isoformat() if last_eval else None,
         "oldest_stale_eval": oldest_stale_eval.isoformat() if oldest_stale_eval else None,
         "drift": stale_drifted or None,         # commits-since (ahead_by) = #114 Pass B
+        "scope_set_id": set_id or None,         # #239: which Scope this coverage reflects ('' = whole project)
     }
 
 

@@ -120,6 +120,31 @@ Design decisions:
 - **Slice 3 — Reuse across views.** Generalize the chip bar + facet registry into the Results view and
   the Scoping-Sets palette (#244 "UC list **+ views**", #111 reusable widget).
 
+## 5a. Project + Scope = the universal content basis (#239 / TODO1/3)
+
+The masthead **Project** (hard data scope) + **Scope** (a Scoping Set) are the content basis for every
+**consumer/projection** view — the surfaces that *read* evaluations, not the *authoring registries* that
+*write* them. This is the established contextual-chrome rule (`_updateContextChrome`): the Scope chip
+shows only on consumer views and is hidden on authoring views.
+
+| Domain / view | Kind | Honors masthead Scope? |
+|---|---|---|
+| Analyze › Results | consumer | ✅ `scopeQuery()` |
+| Analyze › Runs (analyses list) | working context | ➖ intentionally not scoped (a run is execution context, not a projection) |
+| Roadmaps › Arch Review | consumer | ✅ `_activeScope` |
+| Roadmaps › Enhancement / PR | consumer | ✅ `_activeScope` |
+| Roadmaps › Engineering Roadmap (cap views) | consumer | ✅ `scopeQuery()` |
+| Roadmaps › Engineering Roadmap (synthesized projection) | consumer | ✅ **fixed here** — `_loadRoadmapProjection` now passes `set_id`; `setScope` refreshes it |
+| Capabilities › Cap Map | consumer | ✅ `set_id` |
+| Capabilities › Catalog | **authoring registry** | ➖ intentionally not scoped (the capability registry, like the UC list — carries its own filters) |
+| Coverage chip | consumer status | ✅ **added here** — `/api/freshness?set_id=…` |
+| Assessments · Maturity Wall | consumer | ✅ `_activeScope` (assessment-specific scoping still open — see #200) |
+
+Rule of thumb: **authoring registries (Use Cases, Catalog) are never scope-filtered** — they are where
+you *curate* the corpus, and have their own in-view filter bars (§1–3). **Consumer views are always
+scope-filtered** by Project + Scope. A Scoping Set chosen in the masthead is the content basis for all
+of them at once. (Assessments scoping is deferred — its unit isn't a UC set; tracked as #200.)
+
 ## 6. Verification
 - Drift guard (`node build.mjs --check`) + `eslint no-undef` + e2e boot-smoke (all roles) stay green.
 - Every old filter still works (the hidden controls + their listeners are untouched).

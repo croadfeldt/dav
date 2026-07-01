@@ -82,7 +82,7 @@ function setScope(v) {
   else if (_curView === 'capmap') renderCapMap();
   else if (_curView === 'review') { try { _rpUpdateScopeName(); _rpLoadCached(); } catch (_) {} }
   else if (_curView === 'enhancement') { try { loadEnhancementWorkbench(); } catch (_) {} }
-  else if (_curView === 'engineering') { try { _loadEngCapMap(); } catch (_) {} }
+  else if (_curView === 'engineering') { try { _loadEngCapMap(); _loadRoadmapProjection(); } catch (_) {} }
   try { loadFreshness(); } catch (_) {}
   try { _persistUserSettings(); } catch (_) {}   // #129/sync: working context follows the user
 }
