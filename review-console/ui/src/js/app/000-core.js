@@ -2193,7 +2193,7 @@ function switchView(name) {
   // Start/stop the runs-list poll based on whether we're on that tab
   if (name === 'runs') _startRunsListPoll();
   else                 _stopRunsListPoll();
-  if (name === 'runs')     { loadRuns(); setTimeout(_renderIngestionAudit, 40); }
+  if (name === 'runs')     { loadRuns(); setTimeout(_renderAnalysisAudit, 40); }
   if (name === 'results')  { loadResults(); _showCurrentRunResults(); }
   if (name === 'usecases') { loadUCs(); loadSets(); }
   if (name === 'scopingsets') loadScopingSets();
