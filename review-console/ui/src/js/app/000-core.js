@@ -1326,7 +1326,7 @@ function _selectProject(pid) {
   det.querySelector('#pd-move')?.addEventListener('change', async function() {
     const tgt = this.value; if (!tgt) return;
     const tgtName = this.options[this.selectedIndex].text;
-    if (!confirm(`Move ALL data from "${p.name}" into "${tgtName}"? This reassigns use cases, ingestions, sessions, Scoping Sets and cached outputs.`)) { this.value=''; return; }
+    if (!confirm(`Move ALL data from "${p.name}" into "${tgtName}"? This reassigns use cases, analyses, sessions, Scoping Sets and cached outputs.`)) { this.value=''; return; }
     try { const rr = await api(`/api/projects/${pid}/move-data`, { method:'POST', body: JSON.stringify({ target_project_id: parseInt(tgt,10) }) });
       toast(`Moved ${rr.total} item(s): ${rr.source} → ${rr.target}`); loadProjectsAdmin(); loadProjectSwitcher(); }
     catch(e){ toast(e.message, true); this.value=''; }

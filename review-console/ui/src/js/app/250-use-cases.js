@@ -442,7 +442,7 @@ function renderUCDetail(data, lifecycle) {
              ${_renderManagedTestBtn(data, titleText)}
              <button class="btn ghost" onclick="editUC('${esc(uuid)}')">Edit</button>
              <button class="btn danger" onclick="deleteUC('${esc(uuid)}',this)">Delete</button>`
-          : `<button class="btn primary" title="Ingest just this UC now (project defaults) and jump to the ingestion" onclick="testRunUC('${esc(uuid)}', ${attrJson(data.path||'')}, ${attrJson(titleText)})">▶ Ingest this UC</button>
+          : `<button class="btn primary" title="Analyze just this UC now (project defaults) and jump to the analysis" onclick="testRunUC('${esc(uuid)}', ${attrJson(data.path||'')}, ${attrJson(titleText)})">▶ Analyze this UC</button>
              <button class="btn ghost" onclick="cloneUC('${esc(uuid)}')">Clone to managed</button>`}
       </div>
     </div>
@@ -688,7 +688,7 @@ async function loadUCTestHistory(uuid) {
     const resp = await api(`/api/use-cases/${encodeURIComponent(uuid)}/runs?limit=10`);
     const runs = resp.runs || [];
     if (!runs.length) {
-      body.innerHTML = '<div class="analysis-block-body" style="padding:8px 12px;color:var(--text-faint);font-size:11px">No ingestions have processed this UC yet.</div>';
+      body.innerHTML = '<div class="analysis-block-body" style="padding:8px 12px;color:var(--text-faint);font-size:11px">No analyses have processed this UC yet.</div>';
       return;
     }
     let h = '<div class="analysis-block-body" style="padding:4px 0">';
@@ -801,12 +801,12 @@ async function testRunUC(uuid, ucPath, title, branchOverride) {
   try {
     const resp = await api('/api/runs', { method: 'POST', body: JSON.stringify(payload) });
     const name = resp.run?.name || '?';
-    toast(`Ingestion triggered: ${name}`);
+    toast(`Analysis started: ${name}`);
     switchView('runs');
     try { await loadRuns(); } catch (_) {}
     if (name && name !== '?') selectRun(name);
   } catch (e) {
-    toast('Ingestion failed: ' + e.message, true);
+    toast('Analysis failed: ' + e.message, true);
   }
 }
 
@@ -868,7 +868,7 @@ async function openLCModal(uuid, toState, label) {
     gate.style.display = 'block';
     gate.style.background = 'var(--bg-input)';
     gate.style.border = '1px solid var(--border)';
-    gate.innerHTML = '<span style="color:var(--text-faint);">Checking for passing ingestions…</span>';
+    gate.innerHTML = '<span style="color:var(--text-faint);">Checking for passing analyses…</span>';
     try {
       const resp = await api(`/api/use-cases/${encodeURIComponent(uuid)}/runs?limit=50`);
       const passing = (resp.runs || []).filter(r =>
@@ -877,11 +877,11 @@ async function openLCModal(uuid, toState, label) {
       if (passing.length) {
         gate.style.background = 'rgba(146,194,92,0.10)';
         gate.style.border = '1px solid var(--green)';
-        gate.innerHTML = `<strong style="color:var(--green);">✓ ${passing.length} passing ingestion${passing.length>1?'s':''} on file</strong> — approval is unblocked.`;
+        gate.innerHTML = `<strong style="color:var(--green);">✓ ${passing.length} passing analys${passing.length>1?'es':'is'} on file</strong> — approval is unblocked.`;
       } else {
         gate.style.background = 'rgba(224,122,79,0.10)';
         gate.style.border = '1px solid var(--red)';
-        gate.innerHTML = `<strong style="color:var(--red);">⚠ No passing ingestions on file.</strong> Approval is gated. Either run a test evaluation first (push to corpus → run a Scoping Set containing this UC), or tick the override below and explain why.`;
+        gate.innerHTML = `<strong style="color:var(--red);">⚠ No passing analyses on file.</strong> Approval is gated. Either run a test evaluation first (push to corpus → run a Scoping Set containing this UC), or tick the override below and explain why.`;
         overrideRow.style.display = '';
         notesLabel.textContent = 'Notes (REQUIRED when overriding)';
       }

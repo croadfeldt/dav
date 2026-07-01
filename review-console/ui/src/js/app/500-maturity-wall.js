@@ -746,7 +746,7 @@ async function _loadRoadmapProjection() {
     const sc = d.severity_counts || {};
     const meta = document.getElementById('rpRoadmapMeta');
     if (meta) meta.textContent = `${d.total_gaps} gaps · ${d.cluster_count} clusters · ${sc.critical || 0} critical`;
-    if (!d.total_gaps) { box.innerHTML = '<div class="empty" style="font-size:11px;">No gaps in scope yet — run an ingestion to populate the roadmap.</div>'; return; }
+    if (!d.total_gaps) { box.innerHTML = '<div class="empty" style="font-size:11px;">No gaps in scope yet — run an analysis to populate the roadmap.</div>'; return; }
     const chip = (s, n) => n ? `<span style="font-size:9px;padding:0 5px;border-radius:8px;margin-left:3px;background:${_RM_SEVCOLOR[s] || '#666'};color:#fff;">${n} ${s}</span>` : '';
     let h = '';
     if ((d.critical_gaps || []).length) {

@@ -40,7 +40,7 @@ async function loadImproveQueue() {
     const sel = document.getElementById('improveRunSelect');
     if (sel) {
       const cur = sel.value;
-      sel.innerHTML = '<option value="">Diagnose an ingestion…</option>' +
+      sel.innerHTML = '<option value="">Diagnose an analysis…</option>' +
         runs.slice(0, 40).map(r =>
           `<option value="${esc(r.name)}">${r.phase === 'Failed' ? '⚠ ' : ''}${esc(r.name)} · ${esc(r.phase || '')}</option>`
         ).join('');
@@ -96,7 +96,7 @@ function _statusBadge(s) {
 function renderImproveList() {
   const el = document.getElementById('improveList');
   if (!_improveState.list.length) {
-    el.innerHTML = `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);font-size:12px;">No proposals${_improveState.statusFilter ? ` (${esc(_improveState.statusFilter)})` : ''}. Diagnose an ingestion to generate some.</div>`;
+    el.innerHTML = `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);font-size:12px;">No proposals${_improveState.statusFilter ? ` (${esc(_improveState.statusFilter)})` : ''}. Diagnose an analysis to generate some.</div>`;
     return;
   }
   el.innerHTML = _improveState.list.map(p => {
@@ -177,7 +177,7 @@ async function selectProposal(id) {
           <select id="abSet" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);"><option value="">eval set…</option></select>
           <button class="btn primary btn-sm" onclick="launchExperiment(${p.id}, parseInt(document.getElementById('abCandidate').value), parseInt(document.getElementById('abSet').value)||null)">🔬 A/B</button>
         </div>
-        <div style="font-size:9px;color:var(--text-faint);margin-top:4px;">Evaluates baseline (current config) + candidate (this max_tokens) on the eval set; the gate auto-reverts a regression OR a new failure mode. Candidate is a per-ingestion override — production + spamllm untouched.</div>
+        <div style="font-size:9px;color:var(--text-faint);margin-top:4px;">Evaluates baseline (current config) + candidate (this max_tokens) on the eval set; the gate auto-reverts a regression OR a new failure mode. Candidate is a per-analysis override — production + spamllm untouched.</div>
       </div>` : ''}`;
   if (p.change_spec && p.change_spec.type === 'max_tokens') _populateAbSets();
   _loadProposalActivity(p.id);
@@ -246,7 +246,7 @@ async function reviewProposal(id, status) {
 async function diagnoseSelectedRun() {
   const sel = document.getElementById('improveRunSelect');
   const run = sel?.value;
-  if (!run) { toast('Pick an ingestion to diagnose', true); return; }
+  if (!run) { toast('Pick an analysis to diagnose', true); return; }
   const useLlm = document.getElementById('improveLLMChk')?.checked ? 'true' : 'false';
   const btn = document.getElementById('improveDiagnoseBtn');
   const orig = btn.textContent; btn.textContent = '…'; btn.disabled = true;
@@ -329,7 +329,7 @@ function _adhocForm() {
           <label style="font-size:10px;color:var(--text-faint);display:flex;align-items:center;gap:3px;" title="Sampling only: auto-write the winning profile (reversible)"><input type="checkbox" id="adhocAuto" style="width:auto;height:auto;accent-color:var(--accent);"> auto-promote</label>
           <button class="btn primary btn-sm" onclick="launchAdhocExperiment()">🔬 Launch</button>
         </div>
-        <div style="font-size:9px;color:var(--text-faint);">Evaluates baseline + candidate on the eval set; the gate auto-reverts a regression or new failure mode. Candidate is per-ingestion — production + spamllm untouched.</div>
+        <div style="font-size:9px;color:var(--text-faint);">Evaluates baseline + candidate on the eval set; the gate auto-reverts a regression or new failure mode. Candidate is per-analysis — production + spamllm untouched.</div>
       </div>
     </details>`;
 }
@@ -337,15 +337,15 @@ function _adhocForm() {
 function _staticCompareForm() {
   return `
     <details style="border-bottom:1px solid var(--border);padding:8px 14px;">
-      <summary style="cursor:pointer;font-size:11px;color:var(--accent);user-select:none;">+ Static A/B (compare two existing ingestions)</summary>
+      <summary style="cursor:pointer;font-size:11px;color:var(--accent);user-select:none;">+ Static A/B (compare two existing analyses)</summary>
       <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
-        <input id="scRunA" placeholder="ingestion A (id)" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);font-family:var(--mono,monospace);">
-        <input id="scRunB" placeholder="ingestion B (id)" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);font-family:var(--mono,monospace);">
+        <input id="scRunA" placeholder="analysis A (id)" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);font-family:var(--mono,monospace);">
+        <input id="scRunB" placeholder="analysis B (id)" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);font-family:var(--mono,monospace);">
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
           <select id="scSet" style="font-size:11px;padding:3px 5px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);"><option value="">eval set…</option></select>
           <button class="btn primary btn-sm" onclick="launchStaticCompare()">⚖ Compare</button>
         </div>
-        <div style="font-size:9px;color:var(--text-faint);">Semantically diffs the two ingestions' analyses (equivalent/changed + severity). No new ingestions; server-side — raw analyses stay on the cluster.</div>
+        <div style="font-size:9px;color:var(--text-faint);">Semantically diffs the two analyses (equivalent/changed + severity). No new analyses; server-side — raw analyses stay on the cluster.</div>
       </div>
     </details>`;
 }
@@ -354,7 +354,7 @@ async function launchStaticCompare() {
   const a = (document.getElementById('scRunA').value || '').trim();
   const b = (document.getElementById('scRunB').value || '').trim();
   const setId = parseInt(document.getElementById('scSet').value) || null;
-  if (!a || !b) { toast('Enter both ingestion ids', true); return; }
+  if (!a || !b) { toast('Enter both analysis ids', true); return; }
   if (!setId) { toast('Pick an eval set', true); return; }
   try {
     const r = await api('/api/experiments/static-compare', { method: 'POST',
@@ -452,11 +452,11 @@ async function selectExperiment(id) {
     ${isStatic ? `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
       <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
-        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Ingestion A</div>
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Analysis A</div>
         <div style="font-size:11px;font-family:var(--mono,monospace);margin-top:4px;word-break:break-all;">${esc(x.baseline_run || '')}</div>
       </div>
       <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
-        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Ingestion B</div>
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Analysis B</div>
         <div style="font-size:11px;font-family:var(--mono,monospace);margin-top:4px;word-break:break-all;">${esc(x.candidate_run || '')}</div>
       </div>
     </div>` : `
@@ -474,7 +474,7 @@ async function selectExperiment(id) {
     </div>`}
     ${x.verdict_reason ? `<div style="margin-top:12px;font-size:12px;line-height:1.5;padding:10px;background:var(--bg-raised);border-left:2px solid ${_expVerdictColor(x.verdict)};border-radius:2px;">${esc(x.verdict_reason)}</div>` : ''}
     ${_renderSemanticDiff(semDiff)}
-    ${x.status === 'running' ? `<div style="margin-top:12px;font-size:11px;color:var(--text-faint);">⏳ Ingestions in flight — refresh to update. (Candidate is a per-ingestion override; production + spamllm untouched.)</div>` : ''}
+    ${x.status === 'running' ? `<div style="margin-top:12px;font-size:11px;color:var(--text-faint);">⏳ Analyses in flight — refresh to update. (Candidate is a per-analysis override; production + spamllm untouched.)</div>` : ''}
     ${x.auto_promote ? `<div style="margin-top:8px;font-size:10px;color:var(--accent);">⚡ auto-promote on (a winning sampling verdict applies automatically, reversibly)</div>` : ''}
     ${x.verdict === 'promote' && x.status !== 'promoted' ? `
       <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
@@ -518,7 +518,7 @@ async function launchExperiment(proposalId, candidateValue, setId) {
         change_spec: { type: 'max_tokens', candidate: candidateValue },
         set_id: setId, sample_count: 1 }),
     });
-    toast(`A/B experiment #${r.id} launched (baseline + candidate ingestions)`, false);
+    toast(`A/B experiment #${r.id} launched (baseline + candidate analyses)`, false);
     document.querySelectorAll('.improve-mode-tab').forEach(b => b.classList.toggle('active', b.dataset.mode === 'experiments'));
     _improveState.mode = 'experiments';
     await loadImproveQueue();

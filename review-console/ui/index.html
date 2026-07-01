@@ -826,8 +826,10 @@
 
   /* Use Cases filter bar (#244) — qualifier search + PatternFly-style chips. */
   .uc-filterbar { padding:7px 9px; border-bottom:1px solid var(--border); display:flex; flex-direction:column; gap:6px; flex-shrink:0; }
-  .uc-fb-row { display:flex; gap:6px; align-items:center; }
-  .uc-fb-input { position:relative; flex:1; display:flex; align-items:center; gap:6px; }
+  /* Wrap so the sort/select-all controls drop to a second row in the narrow (340px) UC panel
+     instead of overflowing (was clipping "type to search" + the trailing buttons). */
+  .uc-fb-row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .uc-fb-input { position:relative; flex:1 1 100%; display:flex; align-items:center; gap:6px; }
   .uc-fb-search-icon { position:absolute; left:7px; color:var(--text-faint); font-size:12px; pointer-events:none; }
   .uc-fb-input > input { flex:1; padding-left:22px; }
   .uc-fb-menu { position:absolute; right:0; top:100%; margin-top:4px; z-index:60; background:var(--bg-panel); border:1px solid var(--border-bright); border-radius:3px; box-shadow:0 4px 12px rgba(0,0,0,0.35); min-width:200px; max-height:320px; overflow-y:auto; padding:4px; }
@@ -1264,7 +1266,7 @@
       <!-- Active-set banner (visible only when a Scoping Set filter is applied) -->
       <div id="ucListSetBanner" style="display:none;padding:6px 10px;background:var(--accent-bg);border-bottom:1px solid var(--accent-soft);align-items:center;gap:6px;font-size:11px;">
         <span id="ucListSetBannerLabel" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--accent)"></span>
-        <button class="btn ghost btn-sm" id="ucListSetBannerRunBtn" title="Run this Scoping Set">▶ Ingest</button>
+        <button class="btn ghost btn-sm" id="ucListSetBannerRunBtn" title="Analyze this Scoping Set">▶ Analyze</button>
         <button class="btn ghost btn-sm" id="ucListSetBannerManageBtn" title="Manage this Scoping Set">⚙</button>
         <button class="btn ghost btn-sm" id="ucListSetBannerClearBtn" title="Clear Set filter">×</button>
       </div>
@@ -1395,9 +1397,9 @@
         <!-- Controls panel -->
         <div class="rp-controls" id="rpControls">
           <div style="display:none;"><!-- run is selected globally in the masthead -->
-            <label>Ingest</label>
+            <label>Analysis</label>
             <select id="rpRunSel" style="width:100%;font-size:11px;">
-              <option value="">— select an ingestion —</option>
+              <option value="">— select an analysis —</option>
             </select>
           </div>
           <div>
@@ -1446,7 +1448,7 @@
             <div style="font-size:11px;color:var(--text-dim);margin:-2px 0 8px;">
               <strong>What:</strong> a prose assessment of how the architecture handles the use case(s) and where it falls short.
               <strong>Use:</strong> understand the problem before fixing it.
-              <strong>From:</strong> reads the ingested analysis verdict + gaps directly.
+              <strong>From:</strong> reads the analysis verdict + gaps directly.
             </div>
             <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
               <button class="btn ghost btn-sm" id="rpRevCopyBtn" style="display:none;">⧉ Copy</button>
@@ -1572,7 +1574,7 @@
           <div id="rpCapMapSection">
             <div class="rp-section-title">Capability Map / Foundational</div>
             <div id="rpCapMap">
-              <div style="font-size:11px;color:var(--text-faint);">Select an ingestion, then <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on).</div>
+              <div style="font-size:11px;color:var(--text-faint);">Select an analysis, then <strong>Capability Map</strong> (most-demanded) or <strong>Foundational</strong> (most-depended-on).</div>
             </div>
           </div>
         </div>
@@ -1813,7 +1815,7 @@
             <!-- Diagnose a run -->
             <div style="display:flex;gap:6px;align-items:center;">
               <select id="improveRunSelect" style="flex:1;min-width:0;font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);">
-                <option value="">Diagnose an ingestion…</option>
+                <option value="">Diagnose an analysis…</option>
               </select>
               <label style="font-size:10px;color:var(--text-faint);display:flex;align-items:center;gap:3px;" title="Also ask the configured arch-review model for a second opinion">
                 <input type="checkbox" id="improveLLMChk" checked style="width:auto;height:auto;accent-color:var(--accent);"> LLM
@@ -2198,7 +2200,7 @@
         <div class="panel-card-header">
           <div>
             <div class="pc-title">Evaluation model</div>
-            <div class="pc-sub">Project default for new analysis ingestions — applies to all users. Can be overridden per ingestion in the New Ingestion modal.</div>
+            <div class="pc-sub">Project default for new analyses — applies to all users. Can be overridden per analysis in the New Analysis modal.</div>
           </div>
           <span id="evalDefaultStatus" style="font-size:10px;color:var(--text-faint);"></span>
         </div>
@@ -2240,7 +2242,7 @@
         <div class="panel-card-header">
           <div>
             <div class="pc-title">Architecture Review model</div>
-            <div class="pc-sub">Project default for architectural review (Review &amp; Plan tab) — applies to all users. Can be overridden per call from the ingestion drawer's Review &amp; Plan tab.</div>
+            <div class="pc-sub">Project default for architectural review (Review &amp; Plan tab) — applies to all users. Can be overridden per call from the analysis drawer's Review &amp; Plan tab.</div>
           </div>
           <span id="archDefaultStatus" style="font-size:10px;color:var(--text-faint);"></span>
         </div>
@@ -2600,7 +2602,7 @@
 
 </div><!-- /pf-shell -->
 
-<!-- ══════════════════════════ NEW INGESTION MODAL ══════════════════════════ -->
+<!-- ══════════════════════════ NEW ANALYSIS MODAL ══════════════════════════ -->
 <div class="modal-overlay" id="newRunModal">
   <div class="modal">
     <div class="modal-header">
@@ -2610,25 +2612,25 @@
     <div class="modal-body">
       <div id="newRunBanner" style="display:none;" class="modal-banner"></div>
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Use cases</div>
-      <div class="form-field"><label>Scoping Set (which use cases to ingest)</label>
+      <div class="form-field"><label>Scoping Set (which use cases to analyze)</label>
         <select id="nrSetSel" style="width:100%;">
           <option value="">Full corpus (all corpus UCs, unfiltered)</option>
         </select>
-        <div class="form-hint" id="nrSetHint">Pick a Scoping Set (e.g. <strong>All Use Cases</strong> = every managed + corpus UC) to ingest exactly its UCs, or <strong>Full corpus</strong> to ingest the whole corpus repo unfiltered (corpus UCs only).</div>
+        <div class="form-hint" id="nrSetHint">Pick a Scoping Set (e.g. <strong>All Use Cases</strong> = every managed + corpus UC) to analyze exactly its UCs, or <strong>Full corpus</strong> to analyze the whole corpus repo unfiltered (corpus UCs only).</div>
       </div>
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Session</div>
       <div class="form-row">
         <div class="form-field" style="flex:2"><label>Name (optional)</label>
           <input id="nrSessionName" placeholder="e.g. regression after policy-v3 merge" maxlength="120" />
-          <div class="form-hint">Human-friendly label shown in the Ingestions list. The auto-generated pipeline name stays the underlying ID.</div>
+          <div class="form-hint">Human-friendly label shown in the Analyses list. The auto-generated pipeline name stays the underlying ID.</div>
         </div>
         <div class="form-field"><label>Category</label>
           <select id="nrCategory"><option value="ad-hoc">ad-hoc</option></select>
         </div>
       </div>
       <div class="form-field"><label>Description (optional)</label>
-        <textarea id="nrDescription" rows="2" placeholder="What's this ingestion for? Compared against? Anything to remember when reviewing later?"></textarea>
+        <textarea id="nrDescription" rows="2" placeholder="What's this analysis for? Compared against? Anything to remember when reviewing later?"></textarea>
       </div>
       <hr class="section-sep">
       <div class="form-row">
@@ -2647,7 +2649,7 @@
       <div class="form-row">
         <div class="form-field"><label>Time allowed (hours)</label>
           <input id="nrTimeAllowed" type="number" min="0.5" max="24" step="0.5" placeholder="(auto from UC count)" />
-          <div class="form-hint">Failsafe that stops a runaway ingestion — it won't cut short an ingestion that finishes first. Auto-suggested from the UC count (ETA + buffer); blank = auto. Editable mid-ingestion.</div>
+          <div class="form-hint">Failsafe that stops a runaway analysis — it won't cut short an analysis that finishes first. Auto-suggested from the UC count (ETA + buffer); blank = auto. Editable mid-analysis.</div>
         </div>
         <div class="form-field"></div>
       </div>
@@ -2656,14 +2658,14 @@
         <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint);">Corpus <span id="nrCorpusDetected" style="text-transform:none;letter-spacing:0;color:var(--text-faint);font-size:10px;"></span></div>
         <button type="button" class="btn ghost" style="font-size:10px; padding:2px 8px;" id="nrReloadDefaults">↻ reload defaults</button>
       </div>
-      <div class="form-field"><label>UC subpath (partial ingestion)</label>
+      <div class="form-field"><label>UC subpath (partial analysis)</label>
         <input id="nrCorpusSubpath" placeholder="(detecting…)" />
         <div class="form-hint">Relative path within the cloned corpus. Auto-detected from <code>dav/use-cases/</code> or <code>use-cases/</code>. Blank = full corpus.</div>
       </div>
       <div class="form-field" id="nrCorpusSourcesWrap" style="display:none;">
-        <label>Corpus sources (per-ingestion filter)</label>
+        <label>Corpus sources (per-analysis filter)</label>
         <div id="nrCorpusSources" style="display:flex;flex-direction:column;gap:4px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:2px;max-height:160px;overflow-y:auto;"></div>
-        <div class="form-hint">Select which corpus sources to include in this ingestion. Blank/all = every registered <code>role=corpus</code> repo. Multi-source mode only.</div>
+        <div class="form-hint">Select which corpus sources to include in this analysis. Blank/all = every registered <code>role=corpus</code> repo. Multi-source mode only.</div>
       </div>
       <div class="form-row" id="nrCorpusLegacyWrap">
         <div class="form-field"><label>Corpus repo URL</label>
@@ -2674,9 +2676,9 @@
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Spec / Architecture</div>
       <div class="form-field" id="nrSpecSourcesWrap" style="display:none;">
-        <label>Spec sources (per-ingestion filter)</label>
+        <label>Spec sources (per-analysis filter)</label>
         <div id="nrSpecSources" style="display:flex;flex-direction:column;gap:4px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:2px;max-height:160px;overflow-y:auto;"></div>
-        <div class="form-hint">Narrow which <code>role=spec</code> sources the LLM grounds against for this ingestion. Blank/all = the engine sees every registered spec namespace via MCP. Soft enforcement — passed to the engine as a focus hint; the MCP itself still holds all sources.</div>
+        <div class="form-hint">Narrow which <code>role=spec</code> sources the LLM grounds against for this analysis. Blank/all = the engine sees every registered spec namespace via MCP. Soft enforcement — passed to the engine as a focus hint; the MCP itself still holds all sources.</div>
       </div>
       <div class="form-row" id="nrSpecLegacyWrap">
         <div class="form-field"><label>Spec repo URL</label>
@@ -4521,7 +4523,7 @@ function _selectProject(pid) {
   det.querySelector('#pd-move')?.addEventListener('change', async function() {
     const tgt = this.value; if (!tgt) return;
     const tgtName = this.options[this.selectedIndex].text;
-    if (!confirm(`Move ALL data from "${p.name}" into "${tgtName}"? This reassigns use cases, ingestions, sessions, Scoping Sets and cached outputs.`)) { this.value=''; return; }
+    if (!confirm(`Move ALL data from "${p.name}" into "${tgtName}"? This reassigns use cases, analyses, sessions, Scoping Sets and cached outputs.`)) { this.value=''; return; }
     try { const rr = await api(`/api/projects/${pid}/move-data`, { method:'POST', body: JSON.stringify({ target_project_id: parseInt(tgt,10) }) });
       toast(`Moved ${rr.total} item(s): ${rr.source} → ${rr.target}`); loadProjectsAdmin(); loadProjectSwitcher(); }
     catch(e){ toast(e.message, true); this.value=''; }
@@ -5558,7 +5560,7 @@ function _renderRunItemHtml(r) {
       <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
       <div class="rli-actions">
         ${!['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase) ? `<button class="btn ghost btn-sm" title="Stop this analysis (cancel the pipeline)" onclick="event.stopPropagation();stopRunConfirm('${r.name}')">⏹ Stop</button>` : ''}
-        <button class="btn ghost btn-sm" title="Re-ingest with the same Scoping Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
+        <button class="btn ghost btn-sm" title="Re-analyze with the same Scoping Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
         <button class="btn ghost btn-sm" title="${r.archived ? 'Unarchive' : 'Archive (hide from list)'}" onclick="event.stopPropagation();archiveRun('${r.name}',${r.archived ? 'false' : 'true'})">${r.archived ? 'Unarchive' : 'Archive'}</button>
         <button class="btn danger btn-sm" title="Delete completely — irreversible" onclick="event.stopPropagation();deleteRunConfirm('${r.name}')">Delete</button>
       </div>
@@ -5683,7 +5685,7 @@ async function archiveSelectedRuns(){
   let ok=0, fail=0;
   for (const nm of names){ try { await api(`/api/runs/${encodeURIComponent(nm)}/archive`, {method:'POST', body: JSON.stringify({archived:true})}); ok++; } catch(e){ fail++; } }
   _selectedRuns.clear();
-  toast(`Archived ${ok} ingestion${ok===1?'':'s'}${fail?`, ${fail} failed`:''}`, fail>0);
+  toast(`Archived ${ok} analys${ok===1?'is':'es'}${fail?`, ${fail} failed`:''}`, fail>0);
   loadRuns();
 }
 async function deleteSelectedRuns(){
@@ -5693,7 +5695,7 @@ async function deleteSelectedRuns(){
   let ok=0, fail=0;
   for (const nm of names){ try { await api(`/api/runs/${encodeURIComponent(nm)}`, {method:'DELETE'}); ok++; } catch(e){ fail++; } }
   _selectedRuns.clear();
-  toast(`Deleted ${ok} ingestion${ok===1?'':'s'}${fail?`, ${fail} failed`:''}`, fail>0);
+  toast(`Deleted ${ok} analys${ok===1?'is':'es'}${fail?`, ${fail} failed`:''}`, fail>0);
   loadRuns();
 }
 document.getElementById('runSelArchiveBtn')?.addEventListener('click', archiveSelectedRuns);
@@ -6049,7 +6051,7 @@ function setAuditFilter(f) { _auditFilter = f; _paintIngestionAudit(); }
 async function _renderIngestionAudit() {
   const el = document.getElementById('rdRunBody');
   if (!el || _rdName) return;   // only the default (no run open) state
-  el.innerHTML = '<div class="rd-empty">loading ingestion audit…</div>';
+  el.innerHTML = '<div class="rd-empty">loading analysis audit…</div>';
   let r;
   try { r = await api('/api/results/uc-latest'); }
   catch (e) { el.innerHTML = `<div class="rd-empty" style="color:var(--red)">${esc(e.message)}</div>`; return; }
@@ -6084,17 +6086,17 @@ function _paintIngestionAudit() {
       <td style="padding:5px 8px;color:var(--text-dim);font-size:10px;white-space:nowrap;">${u.analyzed_at ? _ago(u.analyzed_at) : '—'}</td>
       <td style="padding:5px 8px;font-family:var(--mono,monospace);font-size:9px;color:var(--text-faint);">${u.run_id ? esc(u.run_id.slice(0, 18)) : '—'}</td>
       <td style="padding:5px 8px;white-space:nowrap;">${_ucStateCell(u)}</td>
-      <td style="padding:5px 8px;white-space:nowrap;">${needsReingest ? `<button class="btn ghost btn-icon" title="Re-ingest just this use case" onclick="_reingestUC('${esc(u.uc_uuid)}')" style="font-size:11px;">↻</button>` : ''}</td>
+      <td style="padding:5px 8px;white-space:nowrap;">${needsReingest ? `<button class="btn ghost btn-icon" title="Re-analyze just this use case" onclick="_reingestUC('${esc(u.uc_uuid)}')" style="font-size:11px;">↻</button>` : ''}</td>
     </tr>`;
   }).join('');
   el.innerHTML = `
     <div style="padding:10px 14px;">
-      <div style="font-size:13px;font-weight:600;margin-bottom:2px;">UC Ingestion Audit</div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:2px;">UC Analysis Audit</div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
         <div style="font-size:11px;color:var(--text-faint);flex:1;min-width:160px;">
-          <strong>${_auditMeta.evaluated}/${_auditMeta.total}</strong> evaluated${failedN ? ` · <span style="color:var(--red);">${failedN} failed</span>` : ''} · latest ingestion per use case.</div>
+          <strong>${_auditMeta.evaluated}/${_auditMeta.total}</strong> evaluated${failedN ? ` · <span style="color:var(--red);">${failedN} failed</span>` : ''} · latest analysis per use case.</div>
         ${needsN
-          ? `<button class="btn primary btn-sm" onclick="_evaluateNeedsEval()" title="Open a new ingestion scoped to the use cases needing evaluation (failed / stale / never ingested)">▶ Ingest ${needsN} needing evaluation</button>`
+          ? `<button class="btn primary btn-sm" onclick="_evaluateNeedsEval()" title="Open a new ingestion scoped to the use cases needing evaluation (failed / stale / never ingested)">▶ Analyze ${needsN} needing evaluation</button>`
           : '<span style="font-size:11px;color:var(--green);">all evaluated &amp; fresh</span>'}
       </div>
       <div style="display:flex;gap:5px;margin-bottom:8px;">
@@ -6102,7 +6104,7 @@ function _paintIngestionAudit() {
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:11px;">
         <thead><tr style="text-align:left;color:var(--text-faint);font-size:10px;text-transform:uppercase;letter-spacing:.05em;">
-          <th style="padding:4px 8px;">Use case</th><th style="padding:4px 8px;">Verdict</th><th style="padding:4px 8px;">Last eval</th><th style="padding:4px 8px;">Ingestion</th><th style="padding:4px 8px;">State</th><th style="padding:4px 8px;"></th>
+          <th style="padding:4px 8px;">Use case</th><th style="padding:4px 8px;">Verdict</th><th style="padding:4px 8px;">Last eval</th><th style="padding:4px 8px;">Analysis</th><th style="padding:4px 8px;">State</th><th style="padding:4px 8px;"></th>
         </tr></thead>
         <tbody>${rows || `<tr><td colspan="6" style="padding:12px;color:var(--text-faint);">${ucs.length ? 'No use cases match this filter.' : 'No use cases in this project.'}</td></tr>`}</tbody>
       </table>
@@ -6576,7 +6578,7 @@ function renderRunDrawerDetail(d) {
   let timeBits = `${phaseHtml(d.phase)} · started ${esc(fmtTs(_start))} · ${_terminal?'':'elapsed '}${esc(fmtDuration(_start, d.completed_at))}`;
   if (!_terminal && etaMs) timeBits += ` · ETA ${esc(_fmtClock(etaMs))}${perUcLive?' <span style="color:var(--blue);font-size:9px">live</span>':''}`;
   if (!_terminal && toSec) timeBits += ` · time allowed <b style="color:var(--text);font-family:var(--mono)">${esc(_fmtDurShort(toSec))}</b><span class="rd-hstat-edit" title="Edit time allowed (failsafe — don't go past this long; never auto-extended)" onclick="editRunTimeout('${esc(d.name)}',${toSec})">✎</span>`;
-  if (willExceed) timeBits += ` · <span style="color:var(--red);font-weight:500" title="At the current pace the ingestion won't finish before the time allowed — extend it (✎) or it will be stopped">⚠ exceeds time allowed</span>`;
+  if (willExceed) timeBits += ` · <span style="color:var(--red);font-weight:500" title="At the current pace the analysis won't finish before the time allowed — extend it (✎) or it will be stopped">⚠ exceeds time allowed</span>`;
   if (_terminal && d.status_reason) timeBits += ` · <span style="color:var(--text-dim)">${esc(d.status_reason)}</span>`;
   document.getElementById('rdSub').innerHTML = timeBits;
   // Row 3 — scope / estimate
@@ -6595,8 +6597,8 @@ function renderRunDrawerDetail(d) {
   }
   if (!_terminal && ucCount != null) {
     const tag = perUcLive
-      ? `<span style="color:var(--blue);font-size:9px;margin-left:3px" title="Live — actual pace observed this ingestion (${liveDone}/${ucCount} done)">live</span>`
-      : (d.est_per_uc_is_default ? `<span style="color:var(--text-faint);font-size:9px;margin-left:3px" title="No ingestion history yet — adjusts as ingestions complete + live once UCs finish">≈ default</span>` : '');
+      ? `<span style="color:var(--blue);font-size:9px;margin-left:3px" title="Live — actual pace observed this analysis (${liveDone}/${ucCount} done)">live</span>`
+      : (d.est_per_uc_is_default ? `<span style="color:var(--text-faint);font-size:9px;margin-left:3px" title="No analysis history yet — adjusts as analyses complete + live once UCs finish">≈ default</span>` : '');
     hs.push(`<span class="rd-hstat"><span class="l">est/UC</span><b>~${esc(_fmtDurShort(perUc))}</b>${tag}</span>`);
     if (estTotal) hs.push(`<span class="rd-hstat"><span class="l">est total</span><b>~${esc(_fmtDurShort(estTotal))}</b></span>`);
   }
@@ -6710,8 +6712,8 @@ function renderRunDrawerMetrics(snap, opts) {
   // Label the sections: live cluster state (in-flight) vs the run's own window
   // averages (completed). Historical values come from the timeseries.
   const _hist = !!(opts && opts.historical) || !!(snap && snap._historical);
-  const _gm = document.getElementById('rdGpuMode'); if (_gm) _gm.textContent = _hist ? '(during ingestion)' : '(live)';
-  const _vm = document.getElementById('rdVllmMode'); if (_vm) _vm.textContent = _hist ? 'during ingestion' : 'live';
+  const _gm = document.getElementById('rdGpuMode'); if (_gm) _gm.textContent = _hist ? '(during analysis)' : '(live)';
+  const _vm = document.getElementById('rdVllmMode'); if (_vm) _vm.textContent = _hist ? 'during analysis' : 'live';
   const gpusEl = document.getElementById('rdGpus');
   const vllmEl = document.getElementById('rdVllm');
   if (snap._err) {
@@ -6936,7 +6938,7 @@ async function loadNewRunDefaults(forcedSubpath) {
     }
     await _populateCorpusSourcesPicker();
   } catch (e) {
-    toast('Could not load ingestion defaults: ' + e.message, true);
+    toast('Could not load analysis defaults: ' + e.message, true);
   }
 }
 
@@ -7109,12 +7111,12 @@ async function rerunRun(name) {
   // until it has loaded — never "defaults with a Rerun name".
   let rc = null;
   try { rc = await api(`/api/runs/${encodeURIComponent(name)}/rerun-config`); }
-  catch(e) { toast('Could not load the original ingestion configuration — not opening Re-ingest', true); return; }
+  catch(e) { toast('Could not load the original analysis configuration — not opening Re-analyze', true); return; }
   const cfg = rc.config || null;            // exact RunTriggerIn payload (durable)
   const P   = rc.params || (allRuns || []).find(x => x.name === name)?.params || {};
   const sess = rc.session || {};
   if (!cfg && !Object.keys(P).length) {
-    toast('Original configuration unavailable (pre-upgrade ingestion, PipelineRun pruned) — opening defaults', true);
+    toast('Original configuration unavailable (pre-upgrade analysis, PipelineRun pruned) — opening defaults', true);
   }
   let det = null;   // legacy fallback only: time-allowed lives in the payload now
   if (!cfg) { try { det = await api(`/api/runs/${encodeURIComponent(name)}`); } catch(_) {} }
@@ -7203,7 +7205,7 @@ async function openNewRun(banner, subpath, ucFilter, branchOverride, lineage) {
   document.getElementById('newRunModal').classList.add('open');
   document.getElementById('nrStatus').textContent = '';
   document.getElementById('submitNewRun').disabled = false;
-  document.getElementById('newRunTitle').textContent = 'New ingestion';
+  document.getElementById('newRunTitle').textContent = 'New analysis';
   document.getElementById('nrSessionName').value = '';
   document.getElementById('nrDescription').value = '';
   _pendingRunFilter = ucFilter || null;
@@ -7361,7 +7363,7 @@ async function submitNewRun() {
     const resp = await api('/api/runs', {method:'POST', body:JSON.stringify(payload)});
     const name = resp.run?.name || '?';
     status.innerHTML = `<span style="color:var(--green)">triggered: ${esc(name)}</span>`;
-    toast(`Ingestion triggered: ${name}`);
+    toast(`Analysis started: ${name}`);
     // Navigate to the Runs tab and open this run's detail so the user can
     // watch progress immediately. loadRuns() needs to finish first so the
     // run shows up in allRuns before selectRun tries to find it.
@@ -7558,7 +7560,7 @@ async function _showScopedResults() {
     const hdr = document.getElementById('runResultsHeader');
     if (hdr) {
       hdr.style.display = '';
-      hdr.innerHTML = `<div style="font-size:12px;"><strong>${r.evaluated}/${r.total}</strong> use cases evaluated <span style="color:var(--text-faint);">· latest eval per UC (may span ingestions)</span></div>`;
+      hdr.innerHTML = `<div style="font-size:12px;"><strong>${r.evaluated}/${r.total}</strong> use cases evaluated <span style="color:var(--text-faint);">· latest eval per UC (may span analyses)</span></div>`;
     }
     _renderScopedUCList();
     const p = document.getElementById('ucListPanel'); if (p) p.style.display = '';
@@ -7577,14 +7579,14 @@ async function selectScopedUC(ucUuid, runId) {
   if (_m && _m.failed) {
     document.getElementById('analysisDetail').innerHTML =
       `<div class="detail-pane"><div style="padding:20px;max-width:640px;">
-        <div style="font-size:14px;font-weight:600;color:var(--red);margin-bottom:6px;">✗ Ingestion failed ${_phaseBadge(_m.error_phase)}</div>
+        <div style="font-size:14px;font-weight:600;color:var(--red);margin-bottom:6px;">✗ Analysis failed ${_phaseBadge(_m.error_phase)}</div>
         <div style="font-size:12px;color:var(--text-dim);line-height:1.5;margin-bottom:14px;">${esc(_m.error_reason || 'No failure detail was recorded for this use case.')}</div>
-        <button class="btn primary btn-sm" onclick="_reingestUC('${esc(ucUuid)}')">↻ Re-ingest this use case</button>
+        <button class="btn primary btn-sm" onclick="_reingestUC('${esc(ucUuid)}')">↻ Re-analyze this use case</button>
       </div></div>`;
     return;
   }
   if (!runId) {
-    document.getElementById('analysisDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">This use case hasn’t been evaluated yet — trigger an ingestion in the Ingestions tab.</div></div>';
+    document.getElementById('analysisDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">This use case hasn’t been evaluated yet — trigger an analysis in the Analyses tab.</div></div>';
     return;
   }
   try {
@@ -7622,14 +7624,14 @@ async function selectRunResult(runId) {
 document.getElementById('ingestResultBtn').addEventListener('click', async () => {
   if (!activeRunResultId) return;
   const btn = document.getElementById('ingestResultBtn');
-  btn.disabled = true; btn.textContent = 'Ingesting…';
+  btn.disabled = true; btn.textContent = 'Reloading…';
   try {
     const resp = await api(`/api/analysis/ingest/${encodeURIComponent(activeRunResultId)}`, { method: 'POST' });
-    toast(`Ingested ${resp.ingested_ucs} UCs, ${resp.ingested_gaps} gaps`);
+    toast(`Reloaded ${resp.ingested_ucs} UCs, ${resp.ingested_gaps} gaps`);
   } catch(e) {
-    toast('Ingest failed: ' + e.message, true);
+    toast('Reload failed: ' + e.message, true);
   } finally {
-    btn.disabled = false; btn.textContent = '↓ Ingest';
+    btn.disabled = false; btn.textContent = '↓ Reload';
   }
 });
 
@@ -7736,7 +7738,7 @@ function _ucRowEl(u, { stripCategory = false } = {}) {
   if (u.lifecycle_state_at_run) {
     const stateColors = { draft:'var(--text-faint)', ready:'var(--blue)', in_review:'var(--accent)', approved:'var(--green)', deprecated:'var(--red)' };
     const c = stateColors[u.lifecycle_state_at_run] || 'var(--text-faint)';
-    stateBadge = `<span style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;" title="UC lifecycle state when this ingestion was triggered">${esc(u.lifecycle_state_at_run)}</span>`;
+    stateBadge = `<span style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;" title="UC lifecycle state when this analysis was triggered">${esc(u.lifecycle_state_at_run)}</span>`;
   }
   // Advisory grounding flag (#45a): a thin-but-successful analysis.
   let shallowBadge = '';
@@ -7890,7 +7892,7 @@ function _exitCompareMode() {
   document.getElementById('ucPanelTitle').textContent = 'Use Cases';
   document.getElementById('cmpToggleBtn').style.color = '';
   if (activeRunSummary) renderUCResultList(activeRunSummary);
-  else document.getElementById('ucResultList').innerHTML = '<div class="empty">select an ingestion</div>';
+  else document.getElementById('ucResultList').innerHTML = '<div class="empty">select an analysis</div>';
   _clearAnalysis();
 }
 
@@ -7899,7 +7901,7 @@ document.getElementById('cmpToggleBtn').addEventListener('click', () => {
   if (!activeRunResultId) return;
   // Populate run B picker with all other result runs
   const sel = document.getElementById('cmpRunBSelect');
-  sel.innerHTML = '<option value="">— pick an ingestion —</option>';
+  sel.innerHTML = '<option value="">— pick an analysis —</option>';
   allResults.forEach(r => {
     if (r.run_id === activeRunResultId) return;
     const opt = document.createElement('option');
@@ -7953,7 +7955,7 @@ function renderCompareHeader() {
   const dtSign = (v) => v === null ? '—' : (v > 0 ? '+' + v : '' + v);
   const el = document.getElementById('analysisDetail');
   el.innerHTML = `<div class="detail-pane">
-    <div class="detail-title">Ingestion <em>comparison</em></div>
+    <div class="detail-title">Analysis <em>comparison</em></div>
     <div class="detail-sub">${esc(compareData.run_a)} → ${esc(compareData.run_b)}</div>
     <div class="stat-row">
       <div class="stat-box"><div class="sv">${d.verdict_changes}</div><div class="sl">Verdict changes</div></div>
@@ -8050,19 +8052,19 @@ function selectCompareUC(diff) {
     <div class="cmp-side-grid" style="margin-bottom:16px;">
       <div class="cmp-side">
         <div class="cmp-side-label">A</div>
-        ${diff.only_a ? '<span class="cmp-only-a">only in ingestion A</span>' : ''}
+        ${diff.only_a ? '<span class="cmp-only-a">only in analysis A</span>' : ''}
         ${!diff.only_a ? `<span class="${verdictClass(va)}" style="font-size:18px;font-family:var(--serif);font-weight:300">${esc((va||'—').replace(/_/g,' '))}</span>` : ''}
         ${diff.wall_time_a != null ? `<div style="font-size:10px;color:var(--text-faint);margin-top:6px">${diff.wall_time_a}s</div>` : ''}
       </div>
       <div class="cmp-side">
         <div class="cmp-side-label">B</div>
-        ${diff.only_b ? '<span class="cmp-only-b">only in ingestion B</span>' : ''}
+        ${diff.only_b ? '<span class="cmp-only-b">only in analysis B</span>' : ''}
         ${!diff.only_b ? `<span class="${verdictClass(vb)}" style="font-size:18px;font-family:var(--serif);font-weight:300">${esc((vb||'—').replace(/_/g,' '))}</span>` : ''}
         ${diff.wall_time_b != null ? `<div style="font-size:10px;color:var(--text-faint);margin-top:6px">${diff.wall_time_b}s</div>` : ''}
       </div>
     </div>
     ${gapHtml}
-    ${!diff.changed && !diff.only_a && !diff.only_b ? '<div style="color:var(--text-faint);font-style:italic;font-size:12px;">Verdict unchanged between ingestions.</div>' : ''}
+    ${!diff.changed && !diff.only_a && !diff.only_b ? '<div style="color:var(--text-faint);font-style:italic;font-size:12px;">Verdict unchanged between analyses.</div>' : ''}
   </div>`;
 }
 
@@ -8175,7 +8177,7 @@ function renderAnalysis(data, ucUuid) {
 
   actionBar.innerHTML = `<div class="analysis-action-bar">
     <button class="btn ghost btn-sm" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(ucUuid)}'),200)" title="Open this UC in the editor">✏ Edit UC</button>
-    <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')" title="Open ingestion trigger pre-filled for re-analysis">↺ Re-analyze</button>
+    <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')" title="Open the analysis trigger pre-filled for re-analysis">↺ Re-analyze</button>
     <button class="btn ghost btn-sm" onclick="_copyGapReport()" title="Copy gap report as markdown">⧉ Copy report</button>
     <button class="btn ghost btn-sm" onclick="openReviewPane('uc','${esc(ucUuid)}','review')" title="Get an architectural review of these findings">Arch Review</button>
     <button class="btn ghost btn-sm" onclick="openReviewPane('uc','${esc(ucUuid)}','enhance')" title="Plan enhancements to address these findings">Enhancements</button>
@@ -8275,7 +8277,7 @@ function renderAnalysis(data, ucUuid) {
   // Run metadata
   const hasMetaRow = meta.model||meta.mode||meta.sample_count||meta.tool_call_count||meta.total_tokens||meta.wall_time_seconds||meta.engine_version||meta.endpoint_url;
   if (hasMetaRow) {
-    html += `<div class="detail-section"><div class="detail-section-title">Ingestion metadata</div><div class="kv-grid">
+    html += `<div class="detail-section"><div class="detail-section-title">Analysis metadata</div><div class="kv-grid">
       ${meta.mode          ? `<div class="kv-label">mode</div><div class="kv-val">${esc(meta.mode)}</div>` : ''}
       ${meta.model         ? `<div class="kv-label">model</div><div class="kv-val">${esc(meta.model)}</div>` : ''}
       ${meta.sample_count  ? `<div class="kv-label">samples</div><div class="kv-val">${meta.sample_count}</div>` : ''}
@@ -8798,7 +8800,7 @@ function renderUCDetail(data, lifecycle) {
              ${_renderManagedTestBtn(data, titleText)}
              <button class="btn ghost" onclick="editUC('${esc(uuid)}')">Edit</button>
              <button class="btn danger" onclick="deleteUC('${esc(uuid)}',this)">Delete</button>`
-          : `<button class="btn primary" title="Ingest just this UC now (project defaults) and jump to the ingestion" onclick="testRunUC('${esc(uuid)}', ${attrJson(data.path||'')}, ${attrJson(titleText)})">▶ Ingest this UC</button>
+          : `<button class="btn primary" title="Analyze just this UC now (project defaults) and jump to the analysis" onclick="testRunUC('${esc(uuid)}', ${attrJson(data.path||'')}, ${attrJson(titleText)})">▶ Analyze this UC</button>
              <button class="btn ghost" onclick="cloneUC('${esc(uuid)}')">Clone to managed</button>`}
       </div>
     </div>
@@ -9044,7 +9046,7 @@ async function loadUCTestHistory(uuid) {
     const resp = await api(`/api/use-cases/${encodeURIComponent(uuid)}/runs?limit=10`);
     const runs = resp.runs || [];
     if (!runs.length) {
-      body.innerHTML = '<div class="analysis-block-body" style="padding:8px 12px;color:var(--text-faint);font-size:11px">No ingestions have processed this UC yet.</div>';
+      body.innerHTML = '<div class="analysis-block-body" style="padding:8px 12px;color:var(--text-faint);font-size:11px">No analyses have processed this UC yet.</div>';
       return;
     }
     let h = '<div class="analysis-block-body" style="padding:4px 0">';
@@ -9157,12 +9159,12 @@ async function testRunUC(uuid, ucPath, title, branchOverride) {
   try {
     const resp = await api('/api/runs', { method: 'POST', body: JSON.stringify(payload) });
     const name = resp.run?.name || '?';
-    toast(`Ingestion triggered: ${name}`);
+    toast(`Analysis started: ${name}`);
     switchView('runs');
     try { await loadRuns(); } catch (_) {}
     if (name && name !== '?') selectRun(name);
   } catch (e) {
-    toast('Ingestion failed: ' + e.message, true);
+    toast('Analysis failed: ' + e.message, true);
   }
 }
 
@@ -9224,7 +9226,7 @@ async function openLCModal(uuid, toState, label) {
     gate.style.display = 'block';
     gate.style.background = 'var(--bg-input)';
     gate.style.border = '1px solid var(--border)';
-    gate.innerHTML = '<span style="color:var(--text-faint);">Checking for passing ingestions…</span>';
+    gate.innerHTML = '<span style="color:var(--text-faint);">Checking for passing analyses…</span>';
     try {
       const resp = await api(`/api/use-cases/${encodeURIComponent(uuid)}/runs?limit=50`);
       const passing = (resp.runs || []).filter(r =>
@@ -9233,11 +9235,11 @@ async function openLCModal(uuid, toState, label) {
       if (passing.length) {
         gate.style.background = 'rgba(146,194,92,0.10)';
         gate.style.border = '1px solid var(--green)';
-        gate.innerHTML = `<strong style="color:var(--green);">✓ ${passing.length} passing ingestion${passing.length>1?'s':''} on file</strong> — approval is unblocked.`;
+        gate.innerHTML = `<strong style="color:var(--green);">✓ ${passing.length} passing analys${passing.length>1?'es':'is'} on file</strong> — approval is unblocked.`;
       } else {
         gate.style.background = 'rgba(224,122,79,0.10)';
         gate.style.border = '1px solid var(--red)';
-        gate.innerHTML = `<strong style="color:var(--red);">⚠ No passing ingestions on file.</strong> Approval is gated. Either run a test evaluation first (push to corpus → run a Scoping Set containing this UC), or tick the override below and explain why.`;
+        gate.innerHTML = `<strong style="color:var(--red);">⚠ No passing analyses on file.</strong> Approval is gated. Either run a test evaluation first (push to corpus → run a Scoping Set containing this UC), or tick the override below and explain why.`;
         overrideRow.style.display = '';
         notesLabel.textContent = 'Notes (REQUIRED when overriding)';
       }
@@ -11250,7 +11252,7 @@ function _renderManagedTestBtn(data, titleText) {
   //      — push to a PR branch AND test against that branch. Useful when
   //      the reviewer wants the test recorded against a corpus path.
   const uuid = data.uuid;
-  const direct = `<button class="btn primary" title="Ingest just this managed UC now — engine fetches the YAML from the console API at ingestion start, no push required; jumps to the ingestion" onclick="testRunUC('${esc(uuid)}', '', ${attrJson(titleText)})">▶ Ingest this UC</button>`;
+  const direct = `<button class="btn primary" title="Analyze just this managed UC now — engine fetches the YAML from the console API at analysis start, no push required; jumps to the analysis" onclick="testRunUC('${esc(uuid)}', '', ${attrJson(titleText)})">▶ Analyze this UC</button>`;
   const st = _corpusPushStatus || {configured:false, host:'unknown'};
   const pushReady = st.host === 'github' && st.configured;
   if (data.corpus_synced_path && data.corpus_branch) {
@@ -11650,7 +11652,7 @@ function _renderSetMgmtInto(elId) {
             ${s.created_at ? 'created ' + esc(fmtTs(s.created_at)) : ''}${s.updated_at ? ' · updated ' + esc(fmtTs(s.updated_at)) : ''}
           </div>` : ''}
         </div>
-        <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${attrJson(s.name)})">▶ Ingest</button>
+        <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${attrJson(s.name)})">▶ Analyze</button>
         ${defBtn}
         <button class="btn ghost btn-sm" onclick="openSetModal(${s.id})">Edit</button>
         <button class="btn ghost btn-sm" onclick="openPromoteModal(${s.id}, ${attrJson(s.name)})">↑ Promote</button>
@@ -12251,7 +12253,7 @@ function _renderCorpusPanelReadOnly(s) {
   document.getElementById('srcCorpusWho').textContent  = s.last_applied_by || '—';
   const statusEl = document.getElementById('srcCorpusStatus');
   // Corpus has no Deployment to roll; show static "n/a"
-  statusEl.innerHTML = '<span style="color:var(--text-faint);">no rollout — Tekton reads ConfigMap fresh per ingestion</span>';
+  statusEl.innerHTML = '<span style="color:var(--text-faint);">no rollout — Tekton reads ConfigMap fresh per analysis</span>';
 }
 
 async function loadBranches(kind, repoUrl) {
@@ -12380,7 +12382,7 @@ async function loadFreshness() {
       + row('Stale', `${stale}${stale ? ` <span style="color:var(--text-faint);">(${f.stale_edited || 0} edited · ${f.stale_drifted || 0} code-drifted)</span>` : ''}`)
       + row('Last evaluation', f.last_eval ? _ago(f.last_eval) : '—')
       + ((stale + (f.uncovered || 0)) > 0
-          ? `<button class="btn primary btn-sm" style="margin-top:8px;width:100%;" onclick="ingestStaleUCs()" title="Open a new ingestion scoped to the un-evaluated / stale use cases">▶ Ingest ${stale + (f.uncovered || 0)} un-evaluated / stale</button>`
+          ? `<button class="btn primary btn-sm" style="margin-top:8px;width:100%;" onclick="ingestStaleUCs()" title="Start a new analysis scoped to the un-evaluated / stale use cases">▶ Analyze ${stale + (f.uncovered || 0)} un-evaluated / stale</button>`
           : `<div style="margin-top:6px;font-size:10px;color:var(--green);">All use cases evaluated &amp; fresh.</div>`);
   }
 }
@@ -12514,7 +12516,7 @@ function _runLoading(on) {
       ov = document.createElement('div');
       ov.id = 'runLoadOverlay';
       ov.style.cssText = 'position:fixed;left:0;right:0;top:48px;bottom:0;z-index:60;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(0,0,0,0.12);pointer-events:none;';
-      ov.innerHTML = '<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);background:var(--bg-panel);border:1px solid var(--border);border-radius:3px;padding:8px 14px;box-shadow:0 4px 14px rgba(0,0,0,0.3);"><span class="llm-spinner"></span>Loading ingestion…</div>';
+      ov.innerHTML = '<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);background:var(--bg-panel);border:1px solid var(--border);border-radius:3px;padding:8px 14px;box-shadow:0 4px 14px rgba(0,0,0,0.3);"><span class="llm-spinner"></span>Loading analysis…</div>';
       document.body.appendChild(ov);
     }
     ov.style.display = '';
@@ -13496,7 +13498,7 @@ function rdSwitchTab(tab) {
 function openReviewPane(scope, ucUuid, startAt = 'review') {
   // Navigate to top-level Review & Plan tab
   const runId = activeRunResultId;
-  if (!runId) { toast('Select an analysis ingestion in the Results tab first'); return; }
+  if (!runId) { toast('Select an analysis in the Results tab first'); return; }
 
   // Pre-populate the Review & Plan tab
   _reviewCtx = { runId, ucUuid: ucUuid || null };
@@ -13540,7 +13542,7 @@ async function loadReviewTab() {
   const sel = document.getElementById('rpRunSel');
   if (!sel) return;
   const prev = sel.value;
-  sel.innerHTML = '<option value="">— select an ingestion —</option>';
+  sel.innerHTML = '<option value="">— select an analysis —</option>';
   allResults.forEach(r => {
     const o = document.createElement('option');
     o.value = r.run_id;
@@ -13592,10 +13594,10 @@ document.getElementById('rpStageCtxSave')?.addEventListener('click', async () =>
 async function _rpPopulateUCs(runId) {
   const sel = document.getElementById('rpUCSel');
   if (!sel) return;
-  if (!runId) { sel.innerHTML = '<option value="">— select an ingestion first —</option>'; sel.disabled = true; return; }
+  if (!runId) { sel.innerHTML = '<option value="">— select an analysis first —</option>'; sel.disabled = true; return; }
   const summary = activeRunSummary?.run_id === runId ? activeRunSummary : null;
   if (summary) {
-    sel.innerHTML = '<option value="">— full ingestion —</option>';
+    sel.innerHTML = '<option value="">— full analysis —</option>';
     (summary.ucs||[]).forEach(u => {
       const o = document.createElement('option');
       o.value = u.uc_uuid; o.textContent = u.uc_handle || u.uc_uuid;
@@ -13607,7 +13609,7 @@ async function _rpPopulateUCs(runId) {
   try {
     const s = await api(`/api/results/${encodeURIComponent(runId)}`);
     activeRunSummary = s;
-    sel.innerHTML = '<option value="">— full ingestion —</option>';
+    sel.innerHTML = '<option value="">— full analysis —</option>';
     (s.ucs||[]).forEach(u => {
       const o = document.createElement('option');
       o.value = u.uc_uuid; o.textContent = u.uc_handle || u.uc_uuid;
@@ -13716,7 +13718,7 @@ async function _rpLoadCached(){
       const cp = document.getElementById(cfg.copy); if (cp) cp.style.display = 'none';
       if (chip) {
         const haveCtx = runId && !(scope === 'uc' && !ucUuid);
-        chip.textContent = haveCtx ? 'not generated for this ingestion yet' : '';
+        chip.textContent = haveCtx ? 'not generated for this analysis yet' : '';
         chip.style.color = 'var(--text-faint)';
       }
     }
@@ -14903,7 +14905,7 @@ async function _loadRoadmapProjection() {
     const sc = d.severity_counts || {};
     const meta = document.getElementById('rpRoadmapMeta');
     if (meta) meta.textContent = `${d.total_gaps} gaps · ${d.cluster_count} clusters · ${sc.critical || 0} critical`;
-    if (!d.total_gaps) { box.innerHTML = '<div class="empty" style="font-size:11px;">No gaps in scope yet — run an ingestion to populate the roadmap.</div>'; return; }
+    if (!d.total_gaps) { box.innerHTML = '<div class="empty" style="font-size:11px;">No gaps in scope yet — run an analysis to populate the roadmap.</div>'; return; }
     const chip = (s, n) => n ? `<span style="font-size:9px;padding:0 5px;border-radius:8px;margin-left:3px;background:${_RM_SEVCOLOR[s] || '#666'};color:#fff;">${n} ${s}</span>` : '';
     let h = '';
     if ((d.critical_gaps || []).length) {
@@ -16506,7 +16508,7 @@ async function loadImproveQueue() {
     const sel = document.getElementById('improveRunSelect');
     if (sel) {
       const cur = sel.value;
-      sel.innerHTML = '<option value="">Diagnose an ingestion…</option>' +
+      sel.innerHTML = '<option value="">Diagnose an analysis…</option>' +
         runs.slice(0, 40).map(r =>
           `<option value="${esc(r.name)}">${r.phase === 'Failed' ? '⚠ ' : ''}${esc(r.name)} · ${esc(r.phase || '')}</option>`
         ).join('');
@@ -16562,7 +16564,7 @@ function _statusBadge(s) {
 function renderImproveList() {
   const el = document.getElementById('improveList');
   if (!_improveState.list.length) {
-    el.innerHTML = `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);font-size:12px;">No proposals${_improveState.statusFilter ? ` (${esc(_improveState.statusFilter)})` : ''}. Diagnose an ingestion to generate some.</div>`;
+    el.innerHTML = `<div class="empty" style="padding:22px;text-align:center;color:var(--text-faint);font-size:12px;">No proposals${_improveState.statusFilter ? ` (${esc(_improveState.statusFilter)})` : ''}. Diagnose an analysis to generate some.</div>`;
     return;
   }
   el.innerHTML = _improveState.list.map(p => {
@@ -16643,7 +16645,7 @@ async function selectProposal(id) {
           <select id="abSet" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);"><option value="">eval set…</option></select>
           <button class="btn primary btn-sm" onclick="launchExperiment(${p.id}, parseInt(document.getElementById('abCandidate').value), parseInt(document.getElementById('abSet').value)||null)">🔬 A/B</button>
         </div>
-        <div style="font-size:9px;color:var(--text-faint);margin-top:4px;">Evaluates baseline (current config) + candidate (this max_tokens) on the eval set; the gate auto-reverts a regression OR a new failure mode. Candidate is a per-ingestion override — production + spamllm untouched.</div>
+        <div style="font-size:9px;color:var(--text-faint);margin-top:4px;">Evaluates baseline (current config) + candidate (this max_tokens) on the eval set; the gate auto-reverts a regression OR a new failure mode. Candidate is a per-analysis override — production + spamllm untouched.</div>
       </div>` : ''}`;
   if (p.change_spec && p.change_spec.type === 'max_tokens') _populateAbSets();
   _loadProposalActivity(p.id);
@@ -16712,7 +16714,7 @@ async function reviewProposal(id, status) {
 async function diagnoseSelectedRun() {
   const sel = document.getElementById('improveRunSelect');
   const run = sel?.value;
-  if (!run) { toast('Pick an ingestion to diagnose', true); return; }
+  if (!run) { toast('Pick an analysis to diagnose', true); return; }
   const useLlm = document.getElementById('improveLLMChk')?.checked ? 'true' : 'false';
   const btn = document.getElementById('improveDiagnoseBtn');
   const orig = btn.textContent; btn.textContent = '…'; btn.disabled = true;
@@ -16795,7 +16797,7 @@ function _adhocForm() {
           <label style="font-size:10px;color:var(--text-faint);display:flex;align-items:center;gap:3px;" title="Sampling only: auto-write the winning profile (reversible)"><input type="checkbox" id="adhocAuto" style="width:auto;height:auto;accent-color:var(--accent);"> auto-promote</label>
           <button class="btn primary btn-sm" onclick="launchAdhocExperiment()">🔬 Launch</button>
         </div>
-        <div style="font-size:9px;color:var(--text-faint);">Evaluates baseline + candidate on the eval set; the gate auto-reverts a regression or new failure mode. Candidate is per-ingestion — production + spamllm untouched.</div>
+        <div style="font-size:9px;color:var(--text-faint);">Evaluates baseline + candidate on the eval set; the gate auto-reverts a regression or new failure mode. Candidate is per-analysis — production + spamllm untouched.</div>
       </div>
     </details>`;
 }
@@ -16803,15 +16805,15 @@ function _adhocForm() {
 function _staticCompareForm() {
   return `
     <details style="border-bottom:1px solid var(--border);padding:8px 14px;">
-      <summary style="cursor:pointer;font-size:11px;color:var(--accent);user-select:none;">+ Static A/B (compare two existing ingestions)</summary>
+      <summary style="cursor:pointer;font-size:11px;color:var(--accent);user-select:none;">+ Static A/B (compare two existing analyses)</summary>
       <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
-        <input id="scRunA" placeholder="ingestion A (id)" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);font-family:var(--mono,monospace);">
-        <input id="scRunB" placeholder="ingestion B (id)" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);font-family:var(--mono,monospace);">
+        <input id="scRunA" placeholder="analysis A (id)" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);font-family:var(--mono,monospace);">
+        <input id="scRunB" placeholder="analysis B (id)" style="font-size:11px;padding:3px 6px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);font-family:var(--mono,monospace);">
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
           <select id="scSet" style="font-size:11px;padding:3px 5px;background:var(--bg-raised);border:1px solid var(--border);color:var(--text);"><option value="">eval set…</option></select>
           <button class="btn primary btn-sm" onclick="launchStaticCompare()">⚖ Compare</button>
         </div>
-        <div style="font-size:9px;color:var(--text-faint);">Semantically diffs the two ingestions' analyses (equivalent/changed + severity). No new ingestions; server-side — raw analyses stay on the cluster.</div>
+        <div style="font-size:9px;color:var(--text-faint);">Semantically diffs the two analyses (equivalent/changed + severity). No new analyses; server-side — raw analyses stay on the cluster.</div>
       </div>
     </details>`;
 }
@@ -16820,7 +16822,7 @@ async function launchStaticCompare() {
   const a = (document.getElementById('scRunA').value || '').trim();
   const b = (document.getElementById('scRunB').value || '').trim();
   const setId = parseInt(document.getElementById('scSet').value) || null;
-  if (!a || !b) { toast('Enter both ingestion ids', true); return; }
+  if (!a || !b) { toast('Enter both analysis ids', true); return; }
   if (!setId) { toast('Pick an eval set', true); return; }
   try {
     const r = await api('/api/experiments/static-compare', { method: 'POST',
@@ -16918,11 +16920,11 @@ async function selectExperiment(id) {
     ${isStatic ? `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;">
       <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
-        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Ingestion A</div>
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Analysis A</div>
         <div style="font-size:11px;font-family:var(--mono,monospace);margin-top:4px;word-break:break-all;">${esc(x.baseline_run || '')}</div>
       </div>
       <div style="background:var(--bg-raised);border:1px solid var(--border);border-radius:2px;padding:10px;">
-        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Ingestion B</div>
+        <div style="font-size:10px;color:var(--text-faint);text-transform:uppercase;">Analysis B</div>
         <div style="font-size:11px;font-family:var(--mono,monospace);margin-top:4px;word-break:break-all;">${esc(x.candidate_run || '')}</div>
       </div>
     </div>` : `
@@ -16940,7 +16942,7 @@ async function selectExperiment(id) {
     </div>`}
     ${x.verdict_reason ? `<div style="margin-top:12px;font-size:12px;line-height:1.5;padding:10px;background:var(--bg-raised);border-left:2px solid ${_expVerdictColor(x.verdict)};border-radius:2px;">${esc(x.verdict_reason)}</div>` : ''}
     ${_renderSemanticDiff(semDiff)}
-    ${x.status === 'running' ? `<div style="margin-top:12px;font-size:11px;color:var(--text-faint);">⏳ Ingestions in flight — refresh to update. (Candidate is a per-ingestion override; production + spamllm untouched.)</div>` : ''}
+    ${x.status === 'running' ? `<div style="margin-top:12px;font-size:11px;color:var(--text-faint);">⏳ Analyses in flight — refresh to update. (Candidate is a per-analysis override; production + spamllm untouched.)</div>` : ''}
     ${x.auto_promote ? `<div style="margin-top:8px;font-size:10px;color:var(--accent);">⚡ auto-promote on (a winning sampling verdict applies automatically, reversibly)</div>` : ''}
     ${x.verdict === 'promote' && x.status !== 'promoted' ? `
       <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
@@ -16984,7 +16986,7 @@ async function launchExperiment(proposalId, candidateValue, setId) {
         change_spec: { type: 'max_tokens', candidate: candidateValue },
         set_id: setId, sample_count: 1 }),
     });
-    toast(`A/B experiment #${r.id} launched (baseline + candidate ingestions)`, false);
+    toast(`A/B experiment #${r.id} launched (baseline + candidate analyses)`, false);
     document.querySelectorAll('.improve-mode-tab').forEach(b => b.classList.toggle('active', b.dataset.mode === 'experiments'));
     _improveState.mode = 'experiments';
     await loadImproveQueue();

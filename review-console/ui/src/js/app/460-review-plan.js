@@ -9,7 +9,7 @@ async function loadReviewTab() {
   const sel = document.getElementById('rpRunSel');
   if (!sel) return;
   const prev = sel.value;
-  sel.innerHTML = '<option value="">— select an ingestion —</option>';
+  sel.innerHTML = '<option value="">— select an analysis —</option>';
   allResults.forEach(r => {
     const o = document.createElement('option');
     o.value = r.run_id;
@@ -61,10 +61,10 @@ document.getElementById('rpStageCtxSave')?.addEventListener('click', async () =>
 async function _rpPopulateUCs(runId) {
   const sel = document.getElementById('rpUCSel');
   if (!sel) return;
-  if (!runId) { sel.innerHTML = '<option value="">— select an ingestion first —</option>'; sel.disabled = true; return; }
+  if (!runId) { sel.innerHTML = '<option value="">— select an analysis first —</option>'; sel.disabled = true; return; }
   const summary = activeRunSummary?.run_id === runId ? activeRunSummary : null;
   if (summary) {
-    sel.innerHTML = '<option value="">— full ingestion —</option>';
+    sel.innerHTML = '<option value="">— full analysis —</option>';
     (summary.ucs||[]).forEach(u => {
       const o = document.createElement('option');
       o.value = u.uc_uuid; o.textContent = u.uc_handle || u.uc_uuid;
@@ -76,7 +76,7 @@ async function _rpPopulateUCs(runId) {
   try {
     const s = await api(`/api/results/${encodeURIComponent(runId)}`);
     activeRunSummary = s;
-    sel.innerHTML = '<option value="">— full ingestion —</option>';
+    sel.innerHTML = '<option value="">— full analysis —</option>';
     (s.ucs||[]).forEach(u => {
       const o = document.createElement('option');
       o.value = u.uc_uuid; o.textContent = u.uc_handle || u.uc_uuid;
@@ -185,7 +185,7 @@ async function _rpLoadCached(){
       const cp = document.getElementById(cfg.copy); if (cp) cp.style.display = 'none';
       if (chip) {
         const haveCtx = runId && !(scope === 'uc' && !ucUuid);
-        chip.textContent = haveCtx ? 'not generated for this ingestion yet' : '';
+        chip.textContent = haveCtx ? 'not generated for this analysis yet' : '';
         chip.style.color = 'var(--text-faint)';
       }
     }

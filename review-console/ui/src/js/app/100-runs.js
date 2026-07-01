@@ -100,7 +100,7 @@ function _renderRunItemHtml(r) {
       <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
       <div class="rli-actions">
         ${!['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase) ? `<button class="btn ghost btn-sm" title="Stop this analysis (cancel the pipeline)" onclick="event.stopPropagation();stopRunConfirm('${r.name}')">⏹ Stop</button>` : ''}
-        <button class="btn ghost btn-sm" title="Re-ingest with the same Scoping Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
+        <button class="btn ghost btn-sm" title="Re-analyze with the same Scoping Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
         <button class="btn ghost btn-sm" title="${r.archived ? 'Unarchive' : 'Archive (hide from list)'}" onclick="event.stopPropagation();archiveRun('${r.name}',${r.archived ? 'false' : 'true'})">${r.archived ? 'Unarchive' : 'Archive'}</button>
         <button class="btn danger btn-sm" title="Delete completely — irreversible" onclick="event.stopPropagation();deleteRunConfirm('${r.name}')">Delete</button>
       </div>
@@ -225,7 +225,7 @@ async function archiveSelectedRuns(){
   let ok=0, fail=0;
   for (const nm of names){ try { await api(`/api/runs/${encodeURIComponent(nm)}/archive`, {method:'POST', body: JSON.stringify({archived:true})}); ok++; } catch(e){ fail++; } }
   _selectedRuns.clear();
-  toast(`Archived ${ok} ingestion${ok===1?'':'s'}${fail?`, ${fail} failed`:''}`, fail>0);
+  toast(`Archived ${ok} analys${ok===1?'is':'es'}${fail?`, ${fail} failed`:''}`, fail>0);
   loadRuns();
 }
 async function deleteSelectedRuns(){
@@ -235,7 +235,7 @@ async function deleteSelectedRuns(){
   let ok=0, fail=0;
   for (const nm of names){ try { await api(`/api/runs/${encodeURIComponent(nm)}`, {method:'DELETE'}); ok++; } catch(e){ fail++; } }
   _selectedRuns.clear();
-  toast(`Deleted ${ok} ingestion${ok===1?'':'s'}${fail?`, ${fail} failed`:''}`, fail>0);
+  toast(`Deleted ${ok} analys${ok===1?'is':'es'}${fail?`, ${fail} failed`:''}`, fail>0);
   loadRuns();
 }
 document.getElementById('runSelArchiveBtn')?.addEventListener('click', archiveSelectedRuns);
@@ -591,7 +591,7 @@ function setAuditFilter(f) { _auditFilter = f; _paintIngestionAudit(); }
 async function _renderIngestionAudit() {
   const el = document.getElementById('rdRunBody');
   if (!el || _rdName) return;   // only the default (no run open) state
-  el.innerHTML = '<div class="rd-empty">loading ingestion audit…</div>';
+  el.innerHTML = '<div class="rd-empty">loading analysis audit…</div>';
   let r;
   try { r = await api('/api/results/uc-latest'); }
   catch (e) { el.innerHTML = `<div class="rd-empty" style="color:var(--red)">${esc(e.message)}</div>`; return; }
@@ -626,17 +626,17 @@ function _paintIngestionAudit() {
       <td style="padding:5px 8px;color:var(--text-dim);font-size:10px;white-space:nowrap;">${u.analyzed_at ? _ago(u.analyzed_at) : '—'}</td>
       <td style="padding:5px 8px;font-family:var(--mono,monospace);font-size:9px;color:var(--text-faint);">${u.run_id ? esc(u.run_id.slice(0, 18)) : '—'}</td>
       <td style="padding:5px 8px;white-space:nowrap;">${_ucStateCell(u)}</td>
-      <td style="padding:5px 8px;white-space:nowrap;">${needsReingest ? `<button class="btn ghost btn-icon" title="Re-ingest just this use case" onclick="_reingestUC('${esc(u.uc_uuid)}')" style="font-size:11px;">↻</button>` : ''}</td>
+      <td style="padding:5px 8px;white-space:nowrap;">${needsReingest ? `<button class="btn ghost btn-icon" title="Re-analyze just this use case" onclick="_reingestUC('${esc(u.uc_uuid)}')" style="font-size:11px;">↻</button>` : ''}</td>
     </tr>`;
   }).join('');
   el.innerHTML = `
     <div style="padding:10px 14px;">
-      <div style="font-size:13px;font-weight:600;margin-bottom:2px;">UC Ingestion Audit</div>
+      <div style="font-size:13px;font-weight:600;margin-bottom:2px;">UC Analysis Audit</div>
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
         <div style="font-size:11px;color:var(--text-faint);flex:1;min-width:160px;">
-          <strong>${_auditMeta.evaluated}/${_auditMeta.total}</strong> evaluated${failedN ? ` · <span style="color:var(--red);">${failedN} failed</span>` : ''} · latest ingestion per use case.</div>
+          <strong>${_auditMeta.evaluated}/${_auditMeta.total}</strong> evaluated${failedN ? ` · <span style="color:var(--red);">${failedN} failed</span>` : ''} · latest analysis per use case.</div>
         ${needsN
-          ? `<button class="btn primary btn-sm" onclick="_evaluateNeedsEval()" title="Open a new ingestion scoped to the use cases needing evaluation (failed / stale / never ingested)">▶ Ingest ${needsN} needing evaluation</button>`
+          ? `<button class="btn primary btn-sm" onclick="_evaluateNeedsEval()" title="Open a new ingestion scoped to the use cases needing evaluation (failed / stale / never ingested)">▶ Analyze ${needsN} needing evaluation</button>`
           : '<span style="font-size:11px;color:var(--green);">all evaluated &amp; fresh</span>'}
       </div>
       <div style="display:flex;gap:5px;margin-bottom:8px;">
@@ -644,7 +644,7 @@ function _paintIngestionAudit() {
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:11px;">
         <thead><tr style="text-align:left;color:var(--text-faint);font-size:10px;text-transform:uppercase;letter-spacing:.05em;">
-          <th style="padding:4px 8px;">Use case</th><th style="padding:4px 8px;">Verdict</th><th style="padding:4px 8px;">Last eval</th><th style="padding:4px 8px;">Ingestion</th><th style="padding:4px 8px;">State</th><th style="padding:4px 8px;"></th>
+          <th style="padding:4px 8px;">Use case</th><th style="padding:4px 8px;">Verdict</th><th style="padding:4px 8px;">Last eval</th><th style="padding:4px 8px;">Analysis</th><th style="padding:4px 8px;">State</th><th style="padding:4px 8px;"></th>
         </tr></thead>
         <tbody>${rows || `<tr><td colspan="6" style="padding:12px;color:var(--text-faint);">${ucs.length ? 'No use cases match this filter.' : 'No use cases in this project.'}</td></tr>`}</tbody>
       </table>
@@ -1118,7 +1118,7 @@ function renderRunDrawerDetail(d) {
   let timeBits = `${phaseHtml(d.phase)} · started ${esc(fmtTs(_start))} · ${_terminal?'':'elapsed '}${esc(fmtDuration(_start, d.completed_at))}`;
   if (!_terminal && etaMs) timeBits += ` · ETA ${esc(_fmtClock(etaMs))}${perUcLive?' <span style="color:var(--blue);font-size:9px">live</span>':''}`;
   if (!_terminal && toSec) timeBits += ` · time allowed <b style="color:var(--text);font-family:var(--mono)">${esc(_fmtDurShort(toSec))}</b><span class="rd-hstat-edit" title="Edit time allowed (failsafe — don't go past this long; never auto-extended)" onclick="editRunTimeout('${esc(d.name)}',${toSec})">✎</span>`;
-  if (willExceed) timeBits += ` · <span style="color:var(--red);font-weight:500" title="At the current pace the ingestion won't finish before the time allowed — extend it (✎) or it will be stopped">⚠ exceeds time allowed</span>`;
+  if (willExceed) timeBits += ` · <span style="color:var(--red);font-weight:500" title="At the current pace the analysis won't finish before the time allowed — extend it (✎) or it will be stopped">⚠ exceeds time allowed</span>`;
   if (_terminal && d.status_reason) timeBits += ` · <span style="color:var(--text-dim)">${esc(d.status_reason)}</span>`;
   document.getElementById('rdSub').innerHTML = timeBits;
   // Row 3 — scope / estimate
@@ -1137,8 +1137,8 @@ function renderRunDrawerDetail(d) {
   }
   if (!_terminal && ucCount != null) {
     const tag = perUcLive
-      ? `<span style="color:var(--blue);font-size:9px;margin-left:3px" title="Live — actual pace observed this ingestion (${liveDone}/${ucCount} done)">live</span>`
-      : (d.est_per_uc_is_default ? `<span style="color:var(--text-faint);font-size:9px;margin-left:3px" title="No ingestion history yet — adjusts as ingestions complete + live once UCs finish">≈ default</span>` : '');
+      ? `<span style="color:var(--blue);font-size:9px;margin-left:3px" title="Live — actual pace observed this analysis (${liveDone}/${ucCount} done)">live</span>`
+      : (d.est_per_uc_is_default ? `<span style="color:var(--text-faint);font-size:9px;margin-left:3px" title="No analysis history yet — adjusts as analyses complete + live once UCs finish">≈ default</span>` : '');
     hs.push(`<span class="rd-hstat"><span class="l">est/UC</span><b>~${esc(_fmtDurShort(perUc))}</b>${tag}</span>`);
     if (estTotal) hs.push(`<span class="rd-hstat"><span class="l">est total</span><b>~${esc(_fmtDurShort(estTotal))}</b></span>`);
   }
@@ -1252,8 +1252,8 @@ function renderRunDrawerMetrics(snap, opts) {
   // Label the sections: live cluster state (in-flight) vs the run's own window
   // averages (completed). Historical values come from the timeseries.
   const _hist = !!(opts && opts.historical) || !!(snap && snap._historical);
-  const _gm = document.getElementById('rdGpuMode'); if (_gm) _gm.textContent = _hist ? '(during ingestion)' : '(live)';
-  const _vm = document.getElementById('rdVllmMode'); if (_vm) _vm.textContent = _hist ? 'during ingestion' : 'live';
+  const _gm = document.getElementById('rdGpuMode'); if (_gm) _gm.textContent = _hist ? '(during analysis)' : '(live)';
+  const _vm = document.getElementById('rdVllmMode'); if (_vm) _vm.textContent = _hist ? 'during analysis' : 'live';
   const gpusEl = document.getElementById('rdGpus');
   const vllmEl = document.getElementById('rdVllm');
   if (snap._err) {
@@ -1478,7 +1478,7 @@ async function loadNewRunDefaults(forcedSubpath) {
     }
     await _populateCorpusSourcesPicker();
   } catch (e) {
-    toast('Could not load ingestion defaults: ' + e.message, true);
+    toast('Could not load analysis defaults: ' + e.message, true);
   }
 }
 
@@ -1651,12 +1651,12 @@ async function rerunRun(name) {
   // until it has loaded — never "defaults with a Rerun name".
   let rc = null;
   try { rc = await api(`/api/runs/${encodeURIComponent(name)}/rerun-config`); }
-  catch(e) { toast('Could not load the original ingestion configuration — not opening Re-ingest', true); return; }
+  catch(e) { toast('Could not load the original analysis configuration — not opening Re-analyze', true); return; }
   const cfg = rc.config || null;            // exact RunTriggerIn payload (durable)
   const P   = rc.params || (allRuns || []).find(x => x.name === name)?.params || {};
   const sess = rc.session || {};
   if (!cfg && !Object.keys(P).length) {
-    toast('Original configuration unavailable (pre-upgrade ingestion, PipelineRun pruned) — opening defaults', true);
+    toast('Original configuration unavailable (pre-upgrade analysis, PipelineRun pruned) — opening defaults', true);
   }
   let det = null;   // legacy fallback only: time-allowed lives in the payload now
   if (!cfg) { try { det = await api(`/api/runs/${encodeURIComponent(name)}`); } catch(_) {} }
@@ -1745,7 +1745,7 @@ async function openNewRun(banner, subpath, ucFilter, branchOverride, lineage) {
   document.getElementById('newRunModal').classList.add('open');
   document.getElementById('nrStatus').textContent = '';
   document.getElementById('submitNewRun').disabled = false;
-  document.getElementById('newRunTitle').textContent = 'New ingestion';
+  document.getElementById('newRunTitle').textContent = 'New analysis';
   document.getElementById('nrSessionName').value = '';
   document.getElementById('nrDescription').value = '';
   _pendingRunFilter = ucFilter || null;
@@ -1903,7 +1903,7 @@ async function submitNewRun() {
     const resp = await api('/api/runs', {method:'POST', body:JSON.stringify(payload)});
     const name = resp.run?.name || '?';
     status.innerHTML = `<span style="color:var(--green)">triggered: ${esc(name)}</span>`;
-    toast(`Ingestion triggered: ${name}`);
+    toast(`Analysis started: ${name}`);
     // Navigate to the Runs tab and open this run's detail so the user can
     // watch progress immediately. loadRuns() needs to finish first so the
     // run shows up in allRuns before selectRun tries to find it.
