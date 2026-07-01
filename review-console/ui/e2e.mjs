@@ -113,7 +113,7 @@ async function runRole(role) {
   // UI lean slice 2: contextual masthead chrome. Scope + Customer are filters shown only on the
   // views that consume them. Boot lands on Use Cases (author domain) → Customer shown, Scope hidden.
   ck('contextual chrome: Customer shown on Use Cases', disp('customerChip') !== 'none', 'display=' + disp('customerChip'));
-  ck('contextual chrome: Scope hidden on Use Cases', disp('scopeChip') === 'none', 'display=' + disp('scopeChip'));
+  ck('persistent chrome: Scope shown on Use Cases (#259)', disp('scopeChip') !== 'none', 'display=' + disp('scopeChip'));
   // Masthead run selector retired → read-only run-status label (run is working context, not chrome).
   ck('run selector retired (read-only status)',
      !document.getElementById('globalRunSel') && !!document.getElementById('rccName'),

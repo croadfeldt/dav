@@ -675,7 +675,10 @@
   /* Masthead */
   .pf-masthead {
     display:flex; align-items:center; gap:12px;
-    padding:0 16px; height:52px; flex-shrink:0;
+    /* Wrap to a second row instead of clipping chips off the right edge (the Scope/Coverage
+       chips were falling off-screen). min-height keeps the single-row look when it fits. */
+    flex-wrap:wrap; row-gap:6px;
+    padding:6px 16px; min-height:52px; flex-shrink:0;
     background:var(--bg-raised); border-bottom:1px solid var(--border);
     z-index:50;
   }
@@ -700,7 +703,7 @@
 
   /* Active run chip in masthead (OpenShift project-selector pattern) */
   .run-context-chip {
-    display:flex; align-items:center; gap:6px;
+    display:flex; align-items:center; gap:6px; flex-shrink:0;
     padding:4px 10px; background:var(--bg-input); border:1px solid var(--border);
     border-radius:2px; font-size:11px; cursor:pointer; color:var(--text-dim);
     transition:color .15s, border-color .15s;
@@ -921,7 +924,7 @@
   <!-- Active SCOPE (uc-scoped-evaluation-design.md: "Scope = a Scoping Set"). App-wide
        chrome like Project — one selection drives Results, Cap Map, and Engineering, and
        the Analysis freshness chip reflects it. Per-view pickers are retired. -->
-  <div class="run-context-chip" id="scopeChip" title="Scoping Set — filters Results, Cap Map and Roadmap to this set (latest evaluation per use case)" style="display:none;">
+  <div class="run-context-chip" id="scopeChip" title="Scope — the active Scoping Set drives what Results, Roadmaps, Cap Map and Coverage use (latest evaluation per use case). App-wide, like Project." style="display:none;">
     <span style="font-size:10px;color:var(--text-faint);text-transform:uppercase;letter-spacing:.08em;">Scope</span>
     <select id="globalScopeSel" title="Active Scoping Set" style="font-size:11px;max-width:220px;background:transparent;border:none;color:inherit;cursor:pointer;font-family:inherit;">
       <option value="">All use cases</option>
@@ -3701,6 +3704,7 @@ async function init() {
   // (same archived-aware source as the Runs tab).
   loadRuns();
   loadFreshness();   // masthead analysis-freshness chip (#112)
+  try { loadSets(); } catch (_) {}   // #259: populate the persistent masthead Scope selector on boot
 }
 
 let _defaultProject = '';
@@ -7507,7 +7511,10 @@ const _CUSTOMER_VIEWS = new Set(['usecases']);
 function _updateContextChrome(name) {
   const sc = document.getElementById('scopeChip');
   const cu = document.getElementById('customerChip');
-  if (sc) sc.style.display = _SCOPE_VIEWS.has(name) ? '' : 'none';
+  // #259: Scope is the app-wide content basis (drives Results/Roadmaps/Cap Map/Coverage) — now that
+  // it's foundational (#31/#239) it's PERSISTENT like Project, not hidden per-view. (It had been
+  // clipped off the masthead's right edge even where shown; the masthead now wraps.)
+  if (sc) sc.style.display = '';
   if (cu) cu.style.display = _CUSTOMER_VIEWS.has(name) ? '' : 'none';
 }
 
