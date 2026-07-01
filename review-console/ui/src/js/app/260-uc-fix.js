@@ -220,11 +220,12 @@ async function openBulkFixModal() {
   ov.style.display = 'flex';
   const body = document.getElementById('ucBulkBody');
   body.innerHTML = '<div class="empty">analyzing invalid use cases…</div>';
-  // Follow the masthead Scope so bulk-fix matches what the list shows (#239).
-  const scopeQ = (typeof _activeScope !== 'undefined' && _activeScope) ? ('?set_id=' + encodeURIComponent(_activeScope)) : '';
+  // Project-wide (NOT scoped) so this matches the "N invalid" health pill, which is unscoped.
+  // Fixing invalid UCs is an authoring-hygiene task on the (unscoped) authoring list — scoping it
+  // to the masthead Scope made a corpus-set scope report "0 invalid" while the pill showed 13.
   let r;
   try {
-    r = await api('/api/use-cases/fix-suggestions' + scopeQ);
+    r = await api('/api/use-cases/fix-suggestions');
   } catch (e) {
     body.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
     return;
