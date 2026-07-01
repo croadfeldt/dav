@@ -8403,8 +8403,11 @@ async function loadUCs() {
     // Badge = active UCs (deprecated are hidden by default), so it reconciles with the list + masthead.
     document.getElementById('badgeUC').textContent = allUCs.filter(u => u.lifecycle_state !== 'deprecated').length;
     renderUCList();
-    // Counts in the rail depend on allUCs — refresh whenever UCs reload
+    // Counts in the rail + the "All Use Cases (N UCs)" banner depend on allUCs — refresh whenever
+    // UCs reload (the banner is otherwise only rendered by loadSets/selectSet, which can fire while
+    // allUCs is still empty → the banner would stick at "0 UCs" even though the list shows N/N).
     renderSetFilterRail();
+    renderUCListSetBanner();
     _loadUCHealth();   // #122: per-UC validity → flag invalid UCs in the list
   } catch (e) {
     document.getElementById('ucList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
