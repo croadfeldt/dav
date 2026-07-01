@@ -179,10 +179,10 @@ _GENERIC_REFERENCE_PROFILE = ConsumerProfile(
         "partial_fulfillment", "timeout", "resource_exhaustion",
     ],
     profiles=["minimal", "dev", "standard", "prod", "fsi", "sovereign"],
-    provider_types=["service", "information", "auth", "peer_dcm", "process"],
+    provider_types=["service", "information", "meta", "auth", "peer_dcm", "process"],
     policy_modes=["Internal", "External"],
     abstractions_summary="Data, Provider, Policy",
-    provider_summary="capabilities that fulfill intent (five types: service, information, auth, peer_dcm, process; compound-service composition is a Data concept orchestrated by the Control Plane, not a provider type)",
+    provider_summary="capabilities that fulfill intent (six types: service, information, meta, auth, peer_dcm, process)",
     policy_summary="evaluation engine with two modes (Internal/External), Evaluation Context, multi-pass convergence",
 )
 

@@ -48,49 +48,69 @@
         <button class="btn ghost btn-sm" id="ucSelClearBtn" title="Clear selection">×</button>
         <div id="ucSelAddSetPopover" style="display:none;position:absolute;top:100%;right:6px;margin-top:4px;z-index:60;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:3px;box-shadow:0 4px 12px rgba(0,0,0,0.35);min-width:240px;max-height:280px;overflow-y:auto;"></div>
       </div>
-      <!-- Unified header/filter style — matches the Scoping Sets tab's Use Case palette (.ss-pal-filters). -->
-      <div class="ss-pal-filters">
-        <input id="ucFilter" placeholder="search title / uuid / tag…" style="flex:1 1 100%;" />
-        <select id="ucAssignFilter" title="Assignment" style="flex:1;">
-          <option value="">all</option>
-          <option value="unassigned">unassigned</option>
-          <option value="assigned">assigned</option>
-        </select>
-        <select id="ucSourceFilter" title="Source" style="flex:1;">
-          <option value="">any source</option>
-          <option value="managed">managed</option>
-          <option value="corpus">corpus</option>
-        </select>
-        <select id="ucRepoFilter" onchange="loadUCs()" title="Corpus repo / branch (#243): show only the UCs from one corpus repo+branch. Picking a repo shows that repo/branch's UCs distinctly (same-uuid versions are not collapsed against main/managed)." style="flex:1;">
-          <option value="">all repos</option>
-        </select>
-        <select id="ucScopeFilter" onchange="loadUCs()" title="Project scope (#43): UCs in this project (home or referenced) vs the pool of managed UCs from other projects in this tenant, available to reference in" style="flex:1;">
-          <option value="">in this project</option>
-          <option value="pool">available to apply</option>
-        </select>
-        <select id="ucStateFilter" title="Lifecycle state — 'active' hides deprecated UCs" style="flex:1;">
-          <option value="">active (no deprecated)</option>
-          <option value="__all__">all (incl. deprecated)</option>
-          <option value="draft">draft</option>
-          <option value="ready">ready</option>
-          <option value="in_review">in review</option>
-          <option value="approved">approved</option>
-          <option value="deprecated">deprecated</option>
-        </select>
-        <select id="ucHealthFilter" title="Validation health (#122)" style="flex:1;">
-          <option value="">any health</option>
-          <option value="invalid">invalid only</option>
-          <option value="valid">valid only</option>
-        </select>
-        <select id="ucPriorityFilter" title="Roadmap priority" style="flex:1;">
-          <option value="">any priority</option>
-          <option value="critical">critical</option>
-          <option value="high">high</option>
-          <option value="medium">medium</option>
-          <option value="low">low</option>
-        </select>
-        <button class="btn ghost btn-sm" id="ucSortPriority" title="Sort by roadmap weight (highest priority first)" style="flex:0 0 auto;">↑ prio</button>
-        <button class="btn ghost btn-sm" id="ucSelectAllBtn" title="Select / deselect all UCs visible in the list" style="flex:0 0 auto;" onclick="_toggleSelectAllUCs()">☑ All</button>
+      <!-- Unified filter bar (#244) — GitHub/GitLab qualifier grammar + PatternFly-style chips.
+           Type to search, or `key:value` qualifiers (state:draft priority:high tag:billing), or use
+           the + Filter menu. The legacy controls below are RETAINED HIDDEN as the state store so
+           loadUCs/renderUCList read them unchanged; ucFilterBar writes into them + fires their events.
+           See docs/uc-filtering-design.md. -->
+      <div class="uc-filterbar">
+        <div class="uc-fb-row">
+          <div class="uc-fb-input">
+            <span class="uc-fb-search-icon">⌕</span>
+            <input id="ucFilterInput" placeholder="filter — type to search, or state:draft tag:billing …" autocomplete="off" />
+            <div id="ucFilterSuggest" class="uc-fb-suggest" style="display:none;"></div>
+            <div style="position:relative;">
+              <button class="btn ghost btn-sm" id="ucAddFilterBtn" title="Add a filter">+ Filter ▾</button>
+              <div id="ucAddFilterMenu" class="uc-fb-menu" style="display:none;"></div>
+            </div>
+          </div>
+          <button class="btn ghost btn-sm" id="ucSortPriority" title="Sort by roadmap weight (highest priority first)" style="flex:0 0 auto;">↑ prio</button>
+          <button class="btn ghost btn-sm" id="ucSelectAllBtn" title="Select / deselect all UCs visible in the list" style="flex:0 0 auto;" onclick="_toggleSelectAllUCs()">☑ All</button>
+        </div>
+        <div id="ucFilterChips" class="uc-fb-chips"></div>
+        <!-- Hidden state store — the canonical filter values; the bar drives these + dispatches events. -->
+        <div id="ucFilterBacking" hidden>
+          <input id="ucFilter" />
+          <input id="ucTagFilter" />
+          <select id="ucAssignFilter">
+            <option value="">all</option>
+            <option value="unassigned">unassigned</option>
+            <option value="assigned">assigned</option>
+          </select>
+          <select id="ucSourceFilter">
+            <option value="">any source</option>
+            <option value="managed">managed</option>
+            <option value="corpus">corpus</option>
+          </select>
+          <select id="ucRepoFilter" onchange="loadUCs()">
+            <option value="">all repos</option>
+          </select>
+          <select id="ucScopeFilter" onchange="loadUCs()">
+            <option value="">in this project</option>
+            <option value="pool">available to apply</option>
+          </select>
+          <select id="ucStateFilter">
+            <option value="">active (no deprecated)</option>
+            <option value="__all__">all (incl. deprecated)</option>
+            <option value="draft">draft</option>
+            <option value="ready">ready</option>
+            <option value="in_review">in review</option>
+            <option value="approved">approved</option>
+            <option value="deprecated">deprecated</option>
+          </select>
+          <select id="ucHealthFilter">
+            <option value="">any health</option>
+            <option value="invalid">invalid only</option>
+            <option value="valid">valid only</option>
+          </select>
+          <select id="ucPriorityFilter">
+            <option value="">any priority</option>
+            <option value="critical">critical</option>
+            <option value="high">high</option>
+            <option value="medium">medium</option>
+            <option value="low">low</option>
+          </select>
+        </div>
       </div>
       <div class="scrollable" id="ucList"><div class="empty">loading…</div></div>
     </div>
