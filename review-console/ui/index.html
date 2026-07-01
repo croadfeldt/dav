@@ -12481,19 +12481,28 @@ document.addEventListener('click', (e) => {
 // while any ingestion is active; a slow heartbeat when idle so a newly-started run is picked
 // up without visiting the Ingestions tab. Self-reschedules; guarded against double-arming.
 let _runChipPollTimer = null;
+let _prevActiveRuns = new Set();   // #178: names of runs that were active last tick (finish-edge detect)
 function _ensureRunChipPoll() {
   if (_runChipPollTimer) return;            // already scheduled — the tick reschedules itself
   // NB: tick must NOT null _runChipPollTimer before awaiting loadRuns — loadRuns() itself calls
   // _ensureRunChipPoll(), and a null would let it arm a SECOND timer → the chain doubles every
   // cycle (a /api/runs flood). Keep the (expired) id truthy so that re-entrant call short-circuits;
   // tick is the sole re-armer.
+  const _activeNames = () => new Set((allRuns || []).filter(_runIsActive).map(r => r.name));
   const tick = async () => {
     try { await loadRuns({ silent: true }); } catch {}   // refreshes allRuns + _renderRunChipLive
-    const active = (allRuns || []).some(_runIsActive);
-    _runChipPollTimer = setTimeout(tick, active ? 7000 : 30000);
+    const nowActive = _activeNames();
+    // #178: when a run that WAS active is no longer active, it just finished → its evaluations were
+    // ingested, so the masthead Coverage pill's ingested/total is stale. Refresh it on that edge
+    // only (not every tick) so /api/freshness isn't polled while runs merely progress.
+    let finished = false;
+    _prevActiveRuns.forEach(n => { if (!nowActive.has(n)) finished = true; });
+    if (finished) { try { loadFreshness(); } catch {} }
+    _prevActiveRuns = nowActive;
+    _runChipPollTimer = setTimeout(tick, nowActive.size ? 7000 : 30000);
   };
-  const active = (allRuns || []).some(_runIsActive);
-  _runChipPollTimer = setTimeout(tick, active ? 7000 : 30000);
+  _prevActiveRuns = _activeNames();
+  _runChipPollTimer = setTimeout(tick, _prevActiveRuns.size ? 7000 : 30000);
 }
 try { _applyViewMode(); } catch (e) { console.warn('view-mode init failed', e); }
 

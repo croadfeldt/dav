@@ -6,7 +6,7 @@ single-source).
 The API container does not import the engine, so the dimension/profile enums it
 uses to validate UC YAML at save time used to be a hand-copied duplicate of the
 engine's `get_generic_reference_profile()`. That drifted (the
-`single_gatekeeper`→`single_gating` rename had to be applied in two places).
+`single_gatekeeper`→`single_gating`→`single_validation` rename had to be applied in two places).
 
 This generator makes the engine the single source of truth: it writes
 `review-console/api/app/dcm_vocab.json` from the reference profile. The API loads
