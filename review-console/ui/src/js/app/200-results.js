@@ -200,7 +200,7 @@ async function selectScopedUC(ucUuid, runId) {
       `<div class="detail-pane"><div style="padding:20px;max-width:640px;">
         <div style="font-size:14px;font-weight:600;color:var(--red);margin-bottom:6px;">✗ Analysis failed ${_phaseBadge(_m.error_phase)}</div>
         <div style="font-size:12px;color:var(--text-dim);line-height:1.5;margin-bottom:14px;">${esc(_m.error_reason || 'No failure detail was recorded for this use case.')}</div>
-        <button class="btn primary btn-sm" onclick="_reingestUC('${esc(ucUuid)}')">↻ Re-analyze this use case</button>
+        <button class="btn primary btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}')">↻ Re-analyze this use case</button>
       </div></div>`;
     return;
   }

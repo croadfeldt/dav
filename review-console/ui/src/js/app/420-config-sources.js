@@ -290,13 +290,13 @@ async function loadFreshness() {
       + row('Stale', `${stale}${stale ? ` <span style="color:var(--text-faint);">(${f.stale_edited || 0} edited · ${f.stale_drifted || 0} code-drifted)</span>` : ''}`)
       + row('Last evaluation', f.last_eval ? _ago(f.last_eval) : '—')
       + ((stale + (f.uncovered || 0)) > 0
-          ? `<button class="btn primary btn-sm" style="margin-top:8px;width:100%;" onclick="ingestStaleUCs()" title="Start a new analysis scoped to the un-evaluated / stale use cases">▶ Analyze ${stale + (f.uncovered || 0)} un-evaluated / stale</button>`
+          ? `<button class="btn primary btn-sm" style="margin-top:8px;width:100%;" onclick="analyzeStaleUCs()" title="Start a new analysis scoped to the un-evaluated / stale use cases">▶ Analyze ${stale + (f.uncovered || 0)} un-evaluated / stale</button>`
           : `<div style="margin-top:6px;font-size:10px;color:var(--green);">All use cases evaluated &amp; fresh.</div>`);
   }
 }
 // One-click "ingest what's missing" from the masthead freshness popover (mirrors the
 // Ingestions-tab audit button, but self-contained so it works from anywhere).
-async function ingestStaleUCs() {
+async function analyzeStaleUCs() {
   // Open New Ingestion pre-selected to the Stale / un-ingested scope (UCs needing evaluation).
   const pop = document.getElementById('freshnessPopover'); if (pop) pop.style.display = 'none';
   openNewRun(undefined, undefined, undefined, undefined, { set_id: '__stale__', selection_mode: 'selection' });

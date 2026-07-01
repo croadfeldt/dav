@@ -582,13 +582,13 @@ function _ucStateCell(u) {
     : '<span style="color:var(--green);font-size:10px;">fresh</span>';
   return '<span style="color:var(--text-faint);font-size:10px;">never ingested</span>';
 }
-function _reingestUC(uuid) {
+function _reanalyzeUC(uuid) {
   if (!uuid) return;
   openNewRun(undefined, undefined, { handles: [], uuids: [uuid], managed: [uuid] },
     undefined, { selection_mode: 'selection' });
 }
-function setAuditFilter(f) { _auditFilter = f; _paintIngestionAudit(); }
-async function _renderIngestionAudit() {
+function setAuditFilter(f) { _auditFilter = f; _paintAnalysisAudit(); }
+async function _renderAnalysisAudit() {
   const el = document.getElementById('rdRunBody');
   if (!el || _rdName) return;   // only the default (no run open) state
   el.innerHTML = '<div class="rd-empty">loading analysis audit…</div>';
@@ -599,10 +599,10 @@ async function _renderIngestionAudit() {
   _auditUCs = r.ucs || [];
   _auditMeta = { total: r.total || 0, evaluated: r.evaluated || 0, failed: r.failed || 0 };
   _auditNeedsEval = _auditUCs.filter(u => !u.evaluated || u.stale).map(u => u.uc_uuid);
-  _paintIngestionAudit();
+  _paintAnalysisAudit();
 }
 let _auditMeta = { total: 0, evaluated: 0, failed: 0 };
-function _paintIngestionAudit() {
+function _paintAnalysisAudit() {
   const el = document.getElementById('rdRunBody');
   if (!el || _rdName) return;
   const ucs = _auditUCs || [];
@@ -626,7 +626,7 @@ function _paintIngestionAudit() {
       <td style="padding:5px 8px;color:var(--text-dim);font-size:10px;white-space:nowrap;">${u.analyzed_at ? _ago(u.analyzed_at) : '—'}</td>
       <td style="padding:5px 8px;font-family:var(--mono,monospace);font-size:9px;color:var(--text-faint);">${u.run_id ? esc(u.run_id.slice(0, 18)) : '—'}</td>
       <td style="padding:5px 8px;white-space:nowrap;">${_ucStateCell(u)}</td>
-      <td style="padding:5px 8px;white-space:nowrap;">${needsReingest ? `<button class="btn ghost btn-icon" title="Re-analyze just this use case" onclick="_reingestUC('${esc(u.uc_uuid)}')" style="font-size:11px;">↻</button>` : ''}</td>
+      <td style="padding:5px 8px;white-space:nowrap;">${needsReingest ? `<button class="btn ghost btn-icon" title="Re-analyze just this use case" onclick="_reanalyzeUC('${esc(u.uc_uuid)}')" style="font-size:11px;">↻</button>` : ''}</td>
     </tr>`;
   }).join('');
   el.innerHTML = `

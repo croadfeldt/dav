@@ -5390,7 +5390,7 @@ function switchView(name) {
   // Start/stop the runs-list poll based on whether we're on that tab
   if (name === 'runs') _startRunsListPoll();
   else                 _stopRunsListPoll();
-  if (name === 'runs')     { loadRuns(); setTimeout(_renderIngestionAudit, 40); }
+  if (name === 'runs')     { loadRuns(); setTimeout(_renderAnalysisAudit, 40); }
   if (name === 'results')  { loadResults(); _showCurrentRunResults(); }
   if (name === 'usecases') { loadUCs(); loadSets(); }
   if (name === 'scopingsets') loadScopingSets();
@@ -6042,13 +6042,13 @@ function _ucStateCell(u) {
     : '<span style="color:var(--green);font-size:10px;">fresh</span>';
   return '<span style="color:var(--text-faint);font-size:10px;">never ingested</span>';
 }
-function _reingestUC(uuid) {
+function _reanalyzeUC(uuid) {
   if (!uuid) return;
   openNewRun(undefined, undefined, { handles: [], uuids: [uuid], managed: [uuid] },
     undefined, { selection_mode: 'selection' });
 }
-function setAuditFilter(f) { _auditFilter = f; _paintIngestionAudit(); }
-async function _renderIngestionAudit() {
+function setAuditFilter(f) { _auditFilter = f; _paintAnalysisAudit(); }
+async function _renderAnalysisAudit() {
   const el = document.getElementById('rdRunBody');
   if (!el || _rdName) return;   // only the default (no run open) state
   el.innerHTML = '<div class="rd-empty">loading analysis audit…</div>';
@@ -6059,10 +6059,10 @@ async function _renderIngestionAudit() {
   _auditUCs = r.ucs || [];
   _auditMeta = { total: r.total || 0, evaluated: r.evaluated || 0, failed: r.failed || 0 };
   _auditNeedsEval = _auditUCs.filter(u => !u.evaluated || u.stale).map(u => u.uc_uuid);
-  _paintIngestionAudit();
+  _paintAnalysisAudit();
 }
 let _auditMeta = { total: 0, evaluated: 0, failed: 0 };
-function _paintIngestionAudit() {
+function _paintAnalysisAudit() {
   const el = document.getElementById('rdRunBody');
   if (!el || _rdName) return;
   const ucs = _auditUCs || [];
@@ -6086,7 +6086,7 @@ function _paintIngestionAudit() {
       <td style="padding:5px 8px;color:var(--text-dim);font-size:10px;white-space:nowrap;">${u.analyzed_at ? _ago(u.analyzed_at) : '—'}</td>
       <td style="padding:5px 8px;font-family:var(--mono,monospace);font-size:9px;color:var(--text-faint);">${u.run_id ? esc(u.run_id.slice(0, 18)) : '—'}</td>
       <td style="padding:5px 8px;white-space:nowrap;">${_ucStateCell(u)}</td>
-      <td style="padding:5px 8px;white-space:nowrap;">${needsReingest ? `<button class="btn ghost btn-icon" title="Re-analyze just this use case" onclick="_reingestUC('${esc(u.uc_uuid)}')" style="font-size:11px;">↻</button>` : ''}</td>
+      <td style="padding:5px 8px;white-space:nowrap;">${needsReingest ? `<button class="btn ghost btn-icon" title="Re-analyze just this use case" onclick="_reanalyzeUC('${esc(u.uc_uuid)}')" style="font-size:11px;">↻</button>` : ''}</td>
     </tr>`;
   }).join('');
   el.innerHTML = `
@@ -7581,7 +7581,7 @@ async function selectScopedUC(ucUuid, runId) {
       `<div class="detail-pane"><div style="padding:20px;max-width:640px;">
         <div style="font-size:14px;font-weight:600;color:var(--red);margin-bottom:6px;">✗ Analysis failed ${_phaseBadge(_m.error_phase)}</div>
         <div style="font-size:12px;color:var(--text-dim);line-height:1.5;margin-bottom:14px;">${esc(_m.error_reason || 'No failure detail was recorded for this use case.')}</div>
-        <button class="btn primary btn-sm" onclick="_reingestUC('${esc(ucUuid)}')">↻ Re-analyze this use case</button>
+        <button class="btn primary btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}')">↻ Re-analyze this use case</button>
       </div></div>`;
     return;
   }
@@ -12385,13 +12385,13 @@ async function loadFreshness() {
       + row('Stale', `${stale}${stale ? ` <span style="color:var(--text-faint);">(${f.stale_edited || 0} edited · ${f.stale_drifted || 0} code-drifted)</span>` : ''}`)
       + row('Last evaluation', f.last_eval ? _ago(f.last_eval) : '—')
       + ((stale + (f.uncovered || 0)) > 0
-          ? `<button class="btn primary btn-sm" style="margin-top:8px;width:100%;" onclick="ingestStaleUCs()" title="Start a new analysis scoped to the un-evaluated / stale use cases">▶ Analyze ${stale + (f.uncovered || 0)} un-evaluated / stale</button>`
+          ? `<button class="btn primary btn-sm" style="margin-top:8px;width:100%;" onclick="analyzeStaleUCs()" title="Start a new analysis scoped to the un-evaluated / stale use cases">▶ Analyze ${stale + (f.uncovered || 0)} un-evaluated / stale</button>`
           : `<div style="margin-top:6px;font-size:10px;color:var(--green);">All use cases evaluated &amp; fresh.</div>`);
   }
 }
 // One-click "ingest what's missing" from the masthead freshness popover (mirrors the
 // Ingestions-tab audit button, but self-contained so it works from anywhere).
-async function ingestStaleUCs() {
+async function analyzeStaleUCs() {
   // Open New Ingestion pre-selected to the Stale / un-ingested scope (UCs needing evaluation).
   const pop = document.getElementById('freshnessPopover'); if (pop) pop.style.display = 'none';
   openNewRun(undefined, undefined, undefined, undefined, { set_id: '__stale__', selection_mode: 'selection' });
