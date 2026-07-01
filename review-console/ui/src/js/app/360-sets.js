@@ -106,7 +106,7 @@ function _renderManagedTestBtn(data, titleText) {
   //      — push to a PR branch AND test against that branch. Useful when
   //      the reviewer wants the test recorded against a corpus path.
   const uuid = data.uuid;
-  const direct = `<button class="btn primary" title="Ingest just this managed UC now — engine fetches the YAML from the console API at ingestion start, no push required; jumps to the ingestion" onclick="testRunUC('${esc(uuid)}', '', ${attrJson(titleText)})">▶ Ingest this UC</button>`;
+  const direct = `<button class="btn primary" title="Analyze just this managed UC now — engine fetches the YAML from the console API at analysis start, no push required; jumps to the analysis" onclick="testRunUC('${esc(uuid)}', '', ${attrJson(titleText)})">▶ Analyze this UC</button>`;
   const st = _corpusPushStatus || {configured:false, host:'unknown'};
   const pushReady = st.host === 'github' && st.configured;
   if (data.corpus_synced_path && data.corpus_branch) {
@@ -506,7 +506,7 @@ function _renderSetMgmtInto(elId) {
             ${s.created_at ? 'created ' + esc(fmtTs(s.created_at)) : ''}${s.updated_at ? ' · updated ' + esc(fmtTs(s.updated_at)) : ''}
           </div>` : ''}
         </div>
-        <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${attrJson(s.name)})">▶ Ingest</button>
+        <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${attrJson(s.name)})">▶ Analyze</button>
         ${defBtn}
         <button class="btn ghost btn-sm" onclick="openSetModal(${s.id})">Edit</button>
         <button class="btn ghost btn-sm" onclick="openPromoteModal(${s.id}, ${attrJson(s.name)})">↑ Promote</button>

@@ -21,7 +21,7 @@ function _exitCompareMode() {
   document.getElementById('ucPanelTitle').textContent = 'Use Cases';
   document.getElementById('cmpToggleBtn').style.color = '';
   if (activeRunSummary) renderUCResultList(activeRunSummary);
-  else document.getElementById('ucResultList').innerHTML = '<div class="empty">select an ingestion</div>';
+  else document.getElementById('ucResultList').innerHTML = '<div class="empty">select an analysis</div>';
   _clearAnalysis();
 }
 
@@ -30,7 +30,7 @@ document.getElementById('cmpToggleBtn').addEventListener('click', () => {
   if (!activeRunResultId) return;
   // Populate run B picker with all other result runs
   const sel = document.getElementById('cmpRunBSelect');
-  sel.innerHTML = '<option value="">— pick an ingestion —</option>';
+  sel.innerHTML = '<option value="">— pick an analysis —</option>';
   allResults.forEach(r => {
     if (r.run_id === activeRunResultId) return;
     const opt = document.createElement('option');
@@ -84,7 +84,7 @@ function renderCompareHeader() {
   const dtSign = (v) => v === null ? '—' : (v > 0 ? '+' + v : '' + v);
   const el = document.getElementById('analysisDetail');
   el.innerHTML = `<div class="detail-pane">
-    <div class="detail-title">Ingestion <em>comparison</em></div>
+    <div class="detail-title">Analysis <em>comparison</em></div>
     <div class="detail-sub">${esc(compareData.run_a)} → ${esc(compareData.run_b)}</div>
     <div class="stat-row">
       <div class="stat-box"><div class="sv">${d.verdict_changes}</div><div class="sl">Verdict changes</div></div>
@@ -181,19 +181,19 @@ function selectCompareUC(diff) {
     <div class="cmp-side-grid" style="margin-bottom:16px;">
       <div class="cmp-side">
         <div class="cmp-side-label">A</div>
-        ${diff.only_a ? '<span class="cmp-only-a">only in ingestion A</span>' : ''}
+        ${diff.only_a ? '<span class="cmp-only-a">only in analysis A</span>' : ''}
         ${!diff.only_a ? `<span class="${verdictClass(va)}" style="font-size:18px;font-family:var(--serif);font-weight:300">${esc((va||'—').replace(/_/g,' '))}</span>` : ''}
         ${diff.wall_time_a != null ? `<div style="font-size:10px;color:var(--text-faint);margin-top:6px">${diff.wall_time_a}s</div>` : ''}
       </div>
       <div class="cmp-side">
         <div class="cmp-side-label">B</div>
-        ${diff.only_b ? '<span class="cmp-only-b">only in ingestion B</span>' : ''}
+        ${diff.only_b ? '<span class="cmp-only-b">only in analysis B</span>' : ''}
         ${!diff.only_b ? `<span class="${verdictClass(vb)}" style="font-size:18px;font-family:var(--serif);font-weight:300">${esc((vb||'—').replace(/_/g,' '))}</span>` : ''}
         ${diff.wall_time_b != null ? `<div style="font-size:10px;color:var(--text-faint);margin-top:6px">${diff.wall_time_b}s</div>` : ''}
       </div>
     </div>
     ${gapHtml}
-    ${!diff.changed && !diff.only_a && !diff.only_b ? '<div style="color:var(--text-faint);font-style:italic;font-size:12px;">Verdict unchanged between ingestions.</div>' : ''}
+    ${!diff.changed && !diff.only_a && !diff.only_b ? '<div style="color:var(--text-faint);font-style:italic;font-size:12px;">Verdict unchanged between analyses.</div>' : ''}
   </div>`;
 }
 
@@ -306,7 +306,7 @@ function renderAnalysis(data, ucUuid) {
 
   actionBar.innerHTML = `<div class="analysis-action-bar">
     <button class="btn ghost btn-sm" onclick="switchView('usecases');setTimeout(()=>editUC('${esc(ucUuid)}'),200)" title="Open this UC in the editor">✏ Edit UC</button>
-    <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')" title="Open ingestion trigger pre-filled for re-analysis">↺ Re-analyze</button>
+    <button class="btn ghost btn-sm" onclick="_reanalyzeUC('${esc(ucUuid)}','${esc(ucHandle)}')" title="Open the analysis trigger pre-filled for re-analysis">↺ Re-analyze</button>
     <button class="btn ghost btn-sm" onclick="_copyGapReport()" title="Copy gap report as markdown">⧉ Copy report</button>
     <button class="btn ghost btn-sm" onclick="openReviewPane('uc','${esc(ucUuid)}','review')" title="Get an architectural review of these findings">Arch Review</button>
     <button class="btn ghost btn-sm" onclick="openReviewPane('uc','${esc(ucUuid)}','enhance')" title="Plan enhancements to address these findings">Enhancements</button>
@@ -406,7 +406,7 @@ function renderAnalysis(data, ucUuid) {
   // Run metadata
   const hasMetaRow = meta.model||meta.mode||meta.sample_count||meta.tool_call_count||meta.total_tokens||meta.wall_time_seconds||meta.engine_version||meta.endpoint_url;
   if (hasMetaRow) {
-    html += `<div class="detail-section"><div class="detail-section-title">Ingestion metadata</div><div class="kv-grid">
+    html += `<div class="detail-section"><div class="detail-section-title">Analysis metadata</div><div class="kv-grid">
       ${meta.mode          ? `<div class="kv-label">mode</div><div class="kv-val">${esc(meta.mode)}</div>` : ''}
       ${meta.model         ? `<div class="kv-label">model</div><div class="kv-val">${esc(meta.model)}</div>` : ''}
       ${meta.sample_count  ? `<div class="kv-label">samples</div><div class="kv-val">${meta.sample_count}</div>` : ''}

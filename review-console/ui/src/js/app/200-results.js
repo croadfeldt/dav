@@ -179,7 +179,7 @@ async function _showScopedResults() {
     const hdr = document.getElementById('runResultsHeader');
     if (hdr) {
       hdr.style.display = '';
-      hdr.innerHTML = `<div style="font-size:12px;"><strong>${r.evaluated}/${r.total}</strong> use cases evaluated <span style="color:var(--text-faint);">· latest eval per UC (may span ingestions)</span></div>`;
+      hdr.innerHTML = `<div style="font-size:12px;"><strong>${r.evaluated}/${r.total}</strong> use cases evaluated <span style="color:var(--text-faint);">· latest eval per UC (may span analyses)</span></div>`;
     }
     _renderScopedUCList();
     const p = document.getElementById('ucListPanel'); if (p) p.style.display = '';
@@ -198,14 +198,14 @@ async function selectScopedUC(ucUuid, runId) {
   if (_m && _m.failed) {
     document.getElementById('analysisDetail').innerHTML =
       `<div class="detail-pane"><div style="padding:20px;max-width:640px;">
-        <div style="font-size:14px;font-weight:600;color:var(--red);margin-bottom:6px;">✗ Ingestion failed ${_phaseBadge(_m.error_phase)}</div>
+        <div style="font-size:14px;font-weight:600;color:var(--red);margin-bottom:6px;">✗ Analysis failed ${_phaseBadge(_m.error_phase)}</div>
         <div style="font-size:12px;color:var(--text-dim);line-height:1.5;margin-bottom:14px;">${esc(_m.error_reason || 'No failure detail was recorded for this use case.')}</div>
-        <button class="btn primary btn-sm" onclick="_reingestUC('${esc(ucUuid)}')">↻ Re-ingest this use case</button>
+        <button class="btn primary btn-sm" onclick="_reingestUC('${esc(ucUuid)}')">↻ Re-analyze this use case</button>
       </div></div>`;
     return;
   }
   if (!runId) {
-    document.getElementById('analysisDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">This use case hasn’t been evaluated yet — trigger an ingestion in the Ingestions tab.</div></div>';
+    document.getElementById('analysisDetail').innerHTML = '<div class="detail-pane"><div class="detail-empty">This use case hasn’t been evaluated yet — trigger an analysis in the Analyses tab.</div></div>';
     return;
   }
   try {
@@ -243,14 +243,14 @@ async function selectRunResult(runId) {
 document.getElementById('ingestResultBtn').addEventListener('click', async () => {
   if (!activeRunResultId) return;
   const btn = document.getElementById('ingestResultBtn');
-  btn.disabled = true; btn.textContent = 'Ingesting…';
+  btn.disabled = true; btn.textContent = 'Reloading…';
   try {
     const resp = await api(`/api/analysis/ingest/${encodeURIComponent(activeRunResultId)}`, { method: 'POST' });
-    toast(`Ingested ${resp.ingested_ucs} UCs, ${resp.ingested_gaps} gaps`);
+    toast(`Reloaded ${resp.ingested_ucs} UCs, ${resp.ingested_gaps} gaps`);
   } catch(e) {
-    toast('Ingest failed: ' + e.message, true);
+    toast('Reload failed: ' + e.message, true);
   } finally {
-    btn.disabled = false; btn.textContent = '↓ Ingest';
+    btn.disabled = false; btn.textContent = '↓ Reload';
   }
 });
 
@@ -357,7 +357,7 @@ function _ucRowEl(u, { stripCategory = false } = {}) {
   if (u.lifecycle_state_at_run) {
     const stateColors = { draft:'var(--text-faint)', ready:'var(--blue)', in_review:'var(--accent)', approved:'var(--green)', deprecated:'var(--red)' };
     const c = stateColors[u.lifecycle_state_at_run] || 'var(--text-faint)';
-    stateBadge = `<span style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;" title="UC lifecycle state when this ingestion was triggered">${esc(u.lifecycle_state_at_run)}</span>`;
+    stateBadge = `<span style="font-size:8px;text-transform:uppercase;letter-spacing:0.08em;color:${c};border:1px solid ${c};padding:0 4px;border-radius:2px;flex-shrink:0;" title="UC lifecycle state when this analysis was triggered">${esc(u.lifecycle_state_at_run)}</span>`;
   }
   // Advisory grounding flag (#45a): a thin-but-successful analysis.
   let shallowBadge = '';

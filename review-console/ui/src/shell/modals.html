@@ -1,4 +1,4 @@
-<!-- ══════════════════════════ NEW INGESTION MODAL ══════════════════════════ -->
+<!-- ══════════════════════════ NEW ANALYSIS MODAL ══════════════════════════ -->
 <div class="modal-overlay" id="newRunModal">
   <div class="modal">
     <div class="modal-header">
@@ -8,25 +8,25 @@
     <div class="modal-body">
       <div id="newRunBanner" style="display:none;" class="modal-banner"></div>
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Use cases</div>
-      <div class="form-field"><label>Scoping Set (which use cases to ingest)</label>
+      <div class="form-field"><label>Scoping Set (which use cases to analyze)</label>
         <select id="nrSetSel" style="width:100%;">
           <option value="">Full corpus (all corpus UCs, unfiltered)</option>
         </select>
-        <div class="form-hint" id="nrSetHint">Pick a Scoping Set (e.g. <strong>All Use Cases</strong> = every managed + corpus UC) to ingest exactly its UCs, or <strong>Full corpus</strong> to ingest the whole corpus repo unfiltered (corpus UCs only).</div>
+        <div class="form-hint" id="nrSetHint">Pick a Scoping Set (e.g. <strong>All Use Cases</strong> = every managed + corpus UC) to analyze exactly its UCs, or <strong>Full corpus</strong> to analyze the whole corpus repo unfiltered (corpus UCs only).</div>
       </div>
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Session</div>
       <div class="form-row">
         <div class="form-field" style="flex:2"><label>Name (optional)</label>
           <input id="nrSessionName" placeholder="e.g. regression after policy-v3 merge" maxlength="120" />
-          <div class="form-hint">Human-friendly label shown in the Ingestions list. The auto-generated pipeline name stays the underlying ID.</div>
+          <div class="form-hint">Human-friendly label shown in the Analyses list. The auto-generated pipeline name stays the underlying ID.</div>
         </div>
         <div class="form-field"><label>Category</label>
           <select id="nrCategory"><option value="ad-hoc">ad-hoc</option></select>
         </div>
       </div>
       <div class="form-field"><label>Description (optional)</label>
-        <textarea id="nrDescription" rows="2" placeholder="What's this ingestion for? Compared against? Anything to remember when reviewing later?"></textarea>
+        <textarea id="nrDescription" rows="2" placeholder="What's this analysis for? Compared against? Anything to remember when reviewing later?"></textarea>
       </div>
       <hr class="section-sep">
       <div class="form-row">
@@ -45,7 +45,7 @@
       <div class="form-row">
         <div class="form-field"><label>Time allowed (hours)</label>
           <input id="nrTimeAllowed" type="number" min="0.5" max="24" step="0.5" placeholder="(auto from UC count)" />
-          <div class="form-hint">Failsafe that stops a runaway ingestion — it won't cut short an ingestion that finishes first. Auto-suggested from the UC count (ETA + buffer); blank = auto. Editable mid-ingestion.</div>
+          <div class="form-hint">Failsafe that stops a runaway analysis — it won't cut short an analysis that finishes first. Auto-suggested from the UC count (ETA + buffer); blank = auto. Editable mid-analysis.</div>
         </div>
         <div class="form-field"></div>
       </div>
@@ -54,14 +54,14 @@
         <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint);">Corpus <span id="nrCorpusDetected" style="text-transform:none;letter-spacing:0;color:var(--text-faint);font-size:10px;"></span></div>
         <button type="button" class="btn ghost" style="font-size:10px; padding:2px 8px;" id="nrReloadDefaults">↻ reload defaults</button>
       </div>
-      <div class="form-field"><label>UC subpath (partial ingestion)</label>
+      <div class="form-field"><label>UC subpath (partial analysis)</label>
         <input id="nrCorpusSubpath" placeholder="(detecting…)" />
         <div class="form-hint">Relative path within the cloned corpus. Auto-detected from <code>dav/use-cases/</code> or <code>use-cases/</code>. Blank = full corpus.</div>
       </div>
       <div class="form-field" id="nrCorpusSourcesWrap" style="display:none;">
-        <label>Corpus sources (per-ingestion filter)</label>
+        <label>Corpus sources (per-analysis filter)</label>
         <div id="nrCorpusSources" style="display:flex;flex-direction:column;gap:4px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:2px;max-height:160px;overflow-y:auto;"></div>
-        <div class="form-hint">Select which corpus sources to include in this ingestion. Blank/all = every registered <code>role=corpus</code> repo. Multi-source mode only.</div>
+        <div class="form-hint">Select which corpus sources to include in this analysis. Blank/all = every registered <code>role=corpus</code> repo. Multi-source mode only.</div>
       </div>
       <div class="form-row" id="nrCorpusLegacyWrap">
         <div class="form-field"><label>Corpus repo URL</label>
@@ -72,9 +72,9 @@
       <hr class="section-sep">
       <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.14em; color:var(--text-faint); margin-bottom:8px;">Spec / Architecture</div>
       <div class="form-field" id="nrSpecSourcesWrap" style="display:none;">
-        <label>Spec sources (per-ingestion filter)</label>
+        <label>Spec sources (per-analysis filter)</label>
         <div id="nrSpecSources" style="display:flex;flex-direction:column;gap:4px;padding:6px 8px;background:var(--bg-input);border:1px solid var(--border);border-radius:2px;max-height:160px;overflow-y:auto;"></div>
-        <div class="form-hint">Narrow which <code>role=spec</code> sources the LLM grounds against for this ingestion. Blank/all = the engine sees every registered spec namespace via MCP. Soft enforcement — passed to the engine as a focus hint; the MCP itself still holds all sources.</div>
+        <div class="form-hint">Narrow which <code>role=spec</code> sources the LLM grounds against for this analysis. Blank/all = the engine sees every registered spec namespace via MCP. Soft enforcement — passed to the engine as a focus hint; the MCP itself still holds all sources.</div>
       </div>
       <div class="form-row" id="nrSpecLegacyWrap">
         <div class="form-field"><label>Spec repo URL</label>

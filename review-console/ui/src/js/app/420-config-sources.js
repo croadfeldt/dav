@@ -161,7 +161,7 @@ function _renderCorpusPanelReadOnly(s) {
   document.getElementById('srcCorpusWho').textContent  = s.last_applied_by || '—';
   const statusEl = document.getElementById('srcCorpusStatus');
   // Corpus has no Deployment to roll; show static "n/a"
-  statusEl.innerHTML = '<span style="color:var(--text-faint);">no rollout — Tekton reads ConfigMap fresh per ingestion</span>';
+  statusEl.innerHTML = '<span style="color:var(--text-faint);">no rollout — Tekton reads ConfigMap fresh per analysis</span>';
 }
 
 async function loadBranches(kind, repoUrl) {
@@ -290,7 +290,7 @@ async function loadFreshness() {
       + row('Stale', `${stale}${stale ? ` <span style="color:var(--text-faint);">(${f.stale_edited || 0} edited · ${f.stale_drifted || 0} code-drifted)</span>` : ''}`)
       + row('Last evaluation', f.last_eval ? _ago(f.last_eval) : '—')
       + ((stale + (f.uncovered || 0)) > 0
-          ? `<button class="btn primary btn-sm" style="margin-top:8px;width:100%;" onclick="ingestStaleUCs()" title="Open a new ingestion scoped to the un-evaluated / stale use cases">▶ Ingest ${stale + (f.uncovered || 0)} un-evaluated / stale</button>`
+          ? `<button class="btn primary btn-sm" style="margin-top:8px;width:100%;" onclick="ingestStaleUCs()" title="Start a new analysis scoped to the un-evaluated / stale use cases">▶ Analyze ${stale + (f.uncovered || 0)} un-evaluated / stale</button>`
           : `<div style="margin-top:6px;font-size:10px;color:var(--green);">All use cases evaluated &amp; fresh.</div>`);
   }
 }
@@ -424,7 +424,7 @@ function _runLoading(on) {
       ov = document.createElement('div');
       ov.id = 'runLoadOverlay';
       ov.style.cssText = 'position:fixed;left:0;right:0;top:48px;bottom:0;z-index:60;display:flex;align-items:flex-start;justify-content:center;padding-top:12vh;background:rgba(0,0,0,0.12);pointer-events:none;';
-      ov.innerHTML = '<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);background:var(--bg-panel);border:1px solid var(--border);border-radius:3px;padding:8px 14px;box-shadow:0 4px 14px rgba(0,0,0,0.3);"><span class="llm-spinner"></span>Loading ingestion…</div>';
+      ov.innerHTML = '<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);background:var(--bg-panel);border:1px solid var(--border);border-radius:3px;padding:8px 14px;box-shadow:0 4px 14px rgba(0,0,0,0.3);"><span class="llm-spinner"></span>Loading analysis…</div>';
       document.body.appendChild(ov);
     }
     ov.style.display = '';
@@ -1406,7 +1406,7 @@ function rdSwitchTab(tab) {
 function openReviewPane(scope, ucUuid, startAt = 'review') {
   // Navigate to top-level Review & Plan tab
   const runId = activeRunResultId;
-  if (!runId) { toast('Select an analysis ingestion in the Results tab first'); return; }
+  if (!runId) { toast('Select an analysis in the Results tab first'); return; }
 
   // Pre-populate the Review & Plan tab
   _reviewCtx = { runId, ucUuid: ucUuid || null };
