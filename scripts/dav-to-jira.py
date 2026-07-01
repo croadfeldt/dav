@@ -10,6 +10,18 @@ Env:
     DAV_BASE_URL     DAV API base (default: https://10.0.90.22:8843)
     DAV_TOKEN_FILE   path to bearer token file (default: ~/.claude-work/.dav-token)
     DAV_PROJECT_ID   DAV project ID (default: 20)
+
+Definitive UC list (34 stories):
+    14 pipeline UCs (uc-pipeline-*) — new, in git YAML
+    13 Section 16 UCs — kept, no pipeline overlap
+     7 trifecta companion UCs — Piotr-feedback validation
+     6 Section 16 UCs REMOVED (replaced by pipeline UCs):
+       uc-baremetal-pxe-provision → uc-pipeline-bm-001
+       uc-6e1e27735e9c → uc-pipeline-drift-001
+       uc-126b4231c0f8 → uc-pipeline-rehydrate-001
+       uc-b53c099c325d → uc-pipeline-rto-001
+       uc-a4f95cd66c7c → uc-pipeline-portable-001
+       uc-c600fab7 → uc-pipeline-idempotent-001
 """
 from __future__ import annotations
 
@@ -48,16 +60,10 @@ UC_GATE_MAP = {
     "uc-73071912": ["G3"],
     "uc-a537b0a9": ["G1", "G3"],
     "uc-4908573a": ["G3"],
-    "uc-126b4231c0f8": ["G1", "G3", "G4", "G5"],
     "uc-seed-006a": ["G4", "G6"],
-    "uc-b53c099c325d": ["G4", "G5"],
-    "uc-c600fab7": ["G1", "G2", "G6"],
-    "uc-6e1e27735e9c": ["G2", "G6"],
     "uc-seed-007a": ["G7"],
     "uc-seed-005a": ["G7"],
     "uc-cd9b798f": ["G8"],
-    "uc-a4f95cd66c7c": ["G8"],
-    "uc-baremetal-pxe-provision": ["G1", "G4"],
     "uc-policy-resolution-capability": ["G1", "G7"],
     "uc-policy-applicability-data-model": ["G1", "G7"],
     "uc-profile-resolution-capability": ["G1"],
@@ -91,16 +97,10 @@ UC_WORKSTREAM_MAP = {
     "uc-73071912": "WS-I",
     "uc-a537b0a9": "WS-B",
     "uc-4908573a": "WS-B",
-    "uc-126b4231c0f8": "WS-A",
     "uc-seed-006a": "WS-B",
-    "uc-b53c099c325d": "WS-E",
-    "uc-c600fab7": "WS-B",
-    "uc-6e1e27735e9c": "WS-E",
     "uc-seed-007a": "WS-E",
     "uc-seed-005a": "WS-C",
     "uc-cd9b798f": "WS-H",
-    "uc-a4f95cd66c7c": "WS-H",
-    "uc-baremetal-pxe-provision": "WS-A",
     "uc-policy-resolution-capability": "WS-F",
     "uc-policy-applicability-data-model": "WS-F",
     "uc-profile-resolution-capability": "WS-F",
@@ -134,16 +134,10 @@ UC_WEEK_MAP = {
     "uc-73071912": "wk3",
     "uc-a537b0a9": "wk3",
     "uc-4908573a": "wk3",
-    "uc-126b4231c0f8": "wk4",
     "uc-seed-006a": "wk4",
-    "uc-b53c099c325d": "wk4",
-    "uc-c600fab7": "wk3-4",
-    "uc-6e1e27735e9c": "wk3-4",
     "uc-seed-007a": "wk5",
     "uc-seed-005a": "wk5",
     "uc-cd9b798f": "wk3-5",
-    "uc-a4f95cd66c7c": "wk5",
-    "uc-baremetal-pxe-provision": "wk2-3",
     "uc-policy-resolution-capability": "wk3",
     "uc-policy-applicability-data-model": "wk3",
     "uc-profile-resolution-capability": "wk3",

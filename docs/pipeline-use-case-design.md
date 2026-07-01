@@ -154,89 +154,83 @@ This is authoring metadata only — DAV's engine does not enforce execution orde
 It enables tooling (Jira sync, DAV console, demo scripts) to present UCs in
 pipeline order.
 
-## 6. Pipeline UCs by week (finalized)
+## 6. Definitive UC list for Jira (34 stories)
 
-All 14 gap UCs have been authored and validated. 42 total UCs in the DCM corpus
-(28 existing + 14 new pipeline UCs). All validate against the JSON schema.
+34 UCs go to Jira as Stories in FLPATH. Pipeline UCs replace 6 overlapping
+Section 16 UCs. All 42 UCs in the DCM corpus validate against the JSON schema.
 
-### Week 2 — Authenticate + Bootstrap
+### 14 Pipeline UCs (new, in git YAML files)
 
-| Seq | Handle | UUID | Act | WS |
-|---|---|---|---|---|
-| 1 | `identity/actor-authentication` | uc-pipeline-authn-001 | 0 | WS-B |
-| 2 | `infrastructure/bare-metal-pxe-bootstrap` | uc-pipeline-bm-001 | 1 | WS-A |
-| 3 | `infrastructure/cluster-bootstrap` | uc-pipeline-cluster-001 | 1 | WS-A |
-| 4 | `infrastructure/control-plane-deployment` | uc-pipeline-cp-001 | 1 | WS-B |
-| 7 | `data/four-state-store-conformance` | uc-pipeline-4state-001 | 2 | WS-D |
+| Seq | Handle | UUID | Act | WS | Week |
+|---|---|---|---|---|---|
+| 1 | `identity/actor-authentication` | uc-pipeline-authn-001 | 0 | WS-B | wk2 |
+| 2 | `infrastructure/bare-metal-pxe-bootstrap` | uc-pipeline-bm-001 | 1 | WS-A | wk2 |
+| 3 | `infrastructure/cluster-bootstrap` | uc-pipeline-cluster-001 | 1 | WS-A | wk2 |
+| 4 | `infrastructure/control-plane-deployment` | uc-pipeline-cp-001 | 1 | WS-B | wk2 |
+| 5 | `cross-domain/composite-service-to-catalog-item` | uc-pipeline-catalog-001 | 2 | WS-C | wk3 |
+| 6 | `cross-domain/composite-service-provision` | uc-pipeline-composite-001 | 2 | WS-B | wk3 |
+| 7 | `data/four-state-store-conformance` | uc-pipeline-4state-001 | 2 | WS-D | wk2-3 |
+| 8 | `governance/sovereignty-validation-policy` | uc-pipeline-sov-001 | 2 | WS-F | wk3 |
+| 9 | `observability/drift-detection-remediation` | uc-pipeline-drift-001 | 3 | WS-B | wk4 |
+| 10 | `compute/idempotent-reconvergence` | uc-pipeline-idempotent-001 | 3 | WS-B | wk4 |
+| 11 | `cross-domain/dynamic-rehydration` | uc-pipeline-rehydrate-001 | 4 | WS-A | wk4 |
+| 12 | `observability/rehydration-rto-measurement` | uc-pipeline-rto-001 | 4 | WS-E | wk4 |
+| 13 | `cross-domain/provider-portable-rebuild` | uc-pipeline-portable-001 | 5 | WS-B | wk5 |
+| 14 | `infrastructure/profile-based-deployment` | uc-pipeline-profile-001 | 5 | WS-F | wk5 |
 
-**Milestone:** Control plane operational on bare metal; four-state stores initialized.
+### 13 Section 16 UCs (kept, no pipeline overlap)
 
-### Week 3 — Provision from Composite Service
+| # | Handle | UUID | Gates | WS | Week |
+|---|---|---|---|---|---|
+| 1 | `libvirt-vm-provider/standard/vm-resource-representation` | uc-895e5ab0 | G1 | WS-D | wk2 |
+| 2 | `cross-domain/solution-architecture-deployment` | uc-a4a4f8def3ca | G1,G3 | WS-C | wk3 |
+| 3 | `compute/vm-standard-provision` [PF] | uc-seed-001a | G1,G2,G6,G7 | WS-B | wk2-3 |
+| 4 | `governance/minimal-profile-policy-scope-boundary` [PF] | uc-seed-009a | G1 | WS-F | wk3 |
+| 5 | `libvirt-vm-provider/standard/vm-status-provenance` | uc-8b603f5a | G2 | WS-I | wk3 |
+| 6 | `data/persistent-volume-provision` [PF] | uc-seed-004a | G2 | WS-B | wk3 |
+| 7 | `dcm-core/standard/udlm-dependency-graph-data-model` | uc-73071912 | G3 | WS-I | wk3 |
+| 8 | `libvirt-vm-provider/standard/cross-provider-dependency-ordering` | uc-a537b0a9 | G1,G3 | WS-B | wk3 |
+| 9 | `libvirt-vm-provider/standard/dependency-failure-impact` | uc-4908573a | G3 | WS-B | wk3 |
+| 11 | `compute/vm-provision-with-provider-failure` [PF] | uc-seed-006a | G4,G6 | WS-B | wk4 |
+| 15 | `governance/audit-merkle-tree-verification` [PF] | uc-seed-007a | G7 | WS-E | wk5 |
+| 16 | `governance/policy-override-approval` [PF] | uc-seed-005a | G7 | WS-C | wk5 |
+| 17 | `libvirt-vm-provider/standard/provider-registration-capability` | uc-cd9b798f | G8 | WS-H | wk3-5 |
 
-| Seq | Handle | UUID | Act | WS |
-|---|---|---|---|---|
-| 5 | `cross-domain/composite-service-to-catalog-item` | uc-pipeline-catalog-001 | 2 | WS-C |
-| 6 | `cross-domain/composite-service-provision` | uc-pipeline-composite-001 | 2 | WS-B |
-| 8 | `governance/sovereignty-validation-policy` | uc-pipeline-sov-001 | 2 | WS-F |
-| — | `compute/vm-standard-provision` (existing) | uc-seed-001a | 2 | WS-B |
-| — | `cross-domain/tenant-onboarding` (existing) | uc-seed-008a | 2 | WS-B |
-| — | `governance/minimal-profile-policy-scope-boundary` (existing) | uc-seed-009a | 2 | WS-F |
+### 7 Trifecta companion UCs (Piotr-feedback validation)
 
-**Milestone:** Full provision arc from composite service definition to running stack.
+| # | Handle | UUID | Gates | WS | Week |
+|---|---|---|---|---|---|
+| 19a | `policy-resolution-capability` | uc-policy-resolution-capability | G1,G7 | WS-F | wk3 |
+| 19b | `policy-applicability-data-model` | uc-policy-applicability-data-model | G1,G7 | WS-F | wk3 |
+| 20a | `profile-resolution-capability` | uc-profile-resolution-capability | G1 | WS-F | wk3 |
+| 20b | `profile-approved-list-data-model` | uc-profile-approved-list-data-model | G1 | WS-F | wk3 |
+| 21a | `audit-chain-proofs-capability` | uc-audit-chain-proofs-capability | G7 | WS-I | wk5 |
+| 21b | `audit-chain-output-verification` | uc-audit-chain-output-verification | G7 | WS-I | wk5 |
+| 21c | `audit-chain-data-model` | uc-audit-chain-data-model | G7 | WS-I | wk5 |
 
-### Week 4 — Operate + Destroy and Rebuild (headline)
+### 6 Section 16 UCs REMOVED (replaced by pipeline UCs)
 
-| Seq | Handle | UUID | Act | WS |
-|---|---|---|---|---|
-| 9 | `observability/drift-detection-remediation` | uc-pipeline-drift-001 | 3 | WS-B |
-| 10 | `compute/idempotent-reconvergence` | uc-pipeline-idempotent-001 | 3 | WS-B |
-| 11 | `cross-domain/dynamic-rehydration` | uc-pipeline-rehydrate-001 | 4 | WS-A |
-| 12 | `observability/rehydration-rto-measurement` | uc-pipeline-rto-001 | 4 | WS-E |
-| — | `compute/vm-provision-with-provider-failure` (existing) | uc-seed-006a | 4 | WS-B |
-
-**Milestone:** Destroy and rebuild from data model; RTO measured; idempotency proven.
-
-### Week 5 — Portability + Hardening (stretch)
-
-| Seq | Handle | UUID | Act | WS |
-|---|---|---|---|---|
-| 13 | `cross-domain/provider-portable-rebuild` | uc-pipeline-portable-001 | 5 | WS-B |
-| 14 | `infrastructure/profile-based-deployment` | uc-pipeline-profile-001 | 5 | WS-F |
-| — | `governance/audit-merkle-tree-verification` (existing) | uc-seed-007a | — | WS-E |
-| — | `governance/policy-override-approval` (existing) | uc-seed-005a | — | WS-C |
-
-**Milestone:** Provider portability proven; software profile reproducibility validated.
-
-### Existing UCs adopted into pipeline (not sequenced)
-
-These existing UCs contribute to the pipeline narrative but don't carry pipeline
-sequence numbers — they validate specific capabilities the pipeline depends on:
-
-| Handle | UUID | Relevant Act |
-|---|---|---|
-| `compute/vm-tenant-isolation-enforcement` | uc-tenant-iso-001 | 2 |
-| `identity/auth-provider-drift-detection` | uc-seed-003a | 3 |
-| `cross-domain/sovereign-decommission-with-peer` | uc-seed-002a | 4 |
-| `data/persistent-volume-provision` | uc-seed-004a | 2 |
+| Removed UC | Replaced by |
+|---|---|
+| uc-baremetal-pxe-provision (#10a) | uc-pipeline-bm-001 |
+| uc-6e1e27735e9c (#14 drift detection) | uc-pipeline-drift-001 |
+| uc-126b4231c0f8 (#10 full DC rehydration) | uc-pipeline-rehydrate-001 |
+| uc-b53c099c325d (#12 resilience posture) | uc-pipeline-rto-001 |
+| uc-a4f95cd66c7c (#18 workload portability) | uc-pipeline-portable-001 |
+| uc-c600fab7 (#13 VM lifecycle reconciliation) | uc-pipeline-idempotent-001 |
 
 ### Parallel UC streams
 
-**Cost management (Pau Garcia Quiles):** 22 cost UCs incoming as YAML files via a
-`dav` directory in the cost DCM provider repo. These feed into the same
-UC → capability → workstream → Jira pipeline but are authored by Pau's team, not
-as part of this pipeline sequence. DAV will auto-ingest them for gap analysis once
-the directory is created.
+**Cost management (Pau Garcia Quiles):** 22 cost UCs incoming, separate from this pipeline.
 
 ## 7. Jira mapping
 
-Each pipeline seed UC becomes a **Story** in FLPATH, linked in pipeline order:
+Each UC becomes a **Story** in FLPATH (34 total):
 
-- `blocks` / `is blocked by` relationships mirror the `depends_on` UUIDs
-- Labels: `pipeline`, `act-N`, `demo-wkN`, workstream labels
-- Epic: one per act (e.g., "Act 2 — Provision from Composite Service")
-- The trifecta companions become sub-tasks of the seed story
-- Pau's 22 cost UCs also become Jira tickets (Piotr's ask, Jun 30)
-- Jira mapping script: `dav/scripts/dav-to-jira.py` (updated with all 14 new UCs)
+- Labels: `pipeline` + `act-N` (pipeline UCs), gate labels, workstream, demo-week
+- Epic: one per act for pipeline UCs
+- Trifecta companions: sub-tasks of their seed story
+- Jira mapping script: `dav/scripts/dav-to-jira.py`
 
 ## 8. Architecture gaps (from roadmap Section 12)
 

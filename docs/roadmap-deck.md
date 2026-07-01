@@ -6,7 +6,7 @@ paginate: true
 
 # DCM 6-Week Roadmap — Pipeline Use Cases
 
-**25 UCs tell one continuous story: authenticate → bootstrap → provision → operate → rebuild → portability**
+**34 UCs tell one continuous story: authenticate → bootstrap → provision → operate → rebuild → portability**
 
 ```
 Act 0: AUTHENTICATE           Act 1: BOOTSTRAP              Act 2: PROVISION
@@ -26,18 +26,18 @@ Act 0: AUTHENTICATE           Act 1: BOOTSTRAP              Act 2: PROVISION
                                                        → rebuild on alternate
 ```
 
-**14 new + 11 existing = 25 pipeline UCs | Trifecta: seed + capability + data-model**
+**14 pipeline + 13 Section 16 + 7 trifecta = 34 Jira stories | Trifecta: seed + capability + data-model**
 
 ---
 
 # Weekly Deliverables
 
-| Week | Act | Pipeline UCs | Key Milestone |
-|------|-----|-------------|---------------|
-| **wk2** | 0, 1 | actor-authentication, bare-metal-pxe-bootstrap, cluster-bootstrap, control-plane-deployment, four-state-store-conformance | Control plane operational on bare metal |
-| **wk3** | 2 | composite-service-to-catalog-item, composite-service-provision, sovereignty-validation-policy, + vm-standard-provision, tenant-onboarding, policy-scope-boundary | Full provision arc from composite service |
-| **wk4** | 3, 4 | drift-detection-remediation, idempotent-reconvergence, dynamic-rehydration, rehydration-rto-measurement, + provider-failure | **Headline: destroy and rebuild from data model** |
-| **wk5** | 5 | provider-portable-rebuild, profile-based-deployment, + audit-merkle-tree, policy-override | Portability + hardening (stretch) |
+| Week | Act | Pipeline UCs | Section 16 UCs | Key Milestone |
+|------|-----|-------------|----------------|---------------|
+| **wk2** | 0, 1 | actor-authentication, bare-metal-pxe-bootstrap, cluster-bootstrap, control-plane-deployment, four-state-store-conformance | vm-resource-representation, vm-standard-provision | Control plane operational on bare metal |
+| **wk3** | 2 | composite-service-to-catalog-item, composite-service-provision, sovereignty-validation-policy | architecture-to-composite, profile-policy-boundary, vm-status-provenance, PV-provision, dependency-graph, cross-provider-ordering, dependency-failure + trifecta UCs | Full provision arc from composite service |
+| **wk4** | 3, 4 | drift-detection-remediation, idempotent-reconvergence, dynamic-rehydration, rehydration-rto-measurement | provider-failure-recovery | **Headline: destroy and rebuild from data model** |
+| **wk5** | 5 | provider-portable-rebuild, profile-based-deployment | audit-merkle-tree, policy-override, provider-registration + audit trifecta UCs | Portability + hardening (stretch) |
 
 **Architecture gaps:** Authz undecided (Authorino/Kessel/OPA) | Common taxonomy repo needed | OSAC = Red Hat-only
 
