@@ -85,10 +85,11 @@ async function _loadUCHealth() {
       if (!h.invalid) { pill.style.display = 'none'; pill.innerHTML = ''; }
       else {
         pill.style.display = '';
-        // ✦ Review & fix (TODO 2): filter the list to invalid UCs — each row offers a per-UC
-        // deterministic Suggest-fix. Replaces the old handle-only "⚕ Repair N".
+        // ✦ Fix all (TODO 2 slice C): bulk review+apply modal over every invalid UC. The secondary
+        // "filter" shortcut narrows the list to invalid UCs (each row has its own per-UC ✦ fix).
         pill.innerHTML = `<span title="Use cases failing engine validation" style="color:var(--red);font-size:10px;">⚠ ${h.invalid} invalid</span>`
-          + ` <button class="btn ghost btn-sm" style="font-size:10px;padding:0 6px;border-radius:999px;" onclick="_reviewFixInvalidUCs()" title="Show only the invalid use cases so you can suggest a fix for each">✦ Review &amp; fix</button>`;
+          + ` <button class="btn ghost btn-sm" style="font-size:10px;padding:0 6px;border-radius:999px;" onclick="openBulkFixModal()" title="Review + apply a deterministic fix for each invalid use case (bulk)">✦ Fix all…</button>`
+          + ` <button class="btn ghost btn-sm" style="font-size:10px;padding:0 4px;border-radius:999px;" onclick="_reviewFixInvalidUCs()" title="Filter the list to just the invalid use cases">filter</button>`;
       }
     }
   } catch (_) {}

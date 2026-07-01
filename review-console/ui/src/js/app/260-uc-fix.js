@@ -130,3 +130,134 @@ async function _applyUCFix() {
     btn.disabled = false; btn.textContent = 'Apply fix';
   }
 }
+
+// ── Bulk review + apply (TODO 2, slice C) ────────────────────────────────────
+// GET /api/use-cases/fix-suggestions (dry-run over all invalid UCs) → a review list; Apply loops
+// the per-UC gated apply. Selection defaults to rows the deterministic fix actually improves.
+let _ucBulkItems = [];          // [{uuid,title,changes,valid_after,errors_before,remaining_errors,needs_semantic,parses}]
+let _ucBulkSel = new Set();     // uuids checked for apply
+
+function _ucBulkApplyable(it) {
+  return it.parses !== false && (it.changes || []).length > 0
+      && (it.remaining_errors || []).length < (it.errors_before || []).length;
+}
+
+function _ucFixEnsureBulkModal() {
+  let ov = document.getElementById('ucBulkFixModal');
+  if (ov) return ov;
+  ov = document.createElement('div');
+  ov.className = 'modal-overlay';
+  ov.id = 'ucBulkFixModal';
+  ov.innerHTML = `
+    <div class="modal" style="max-width:820px;width:94%;">
+      <div class="modal-header">
+        <div class="modal-title">✦ Fix invalid use cases <span id="ucBulkSub" style="font-size:11px;color:var(--text-faint);font-weight:400;"></span></div>
+        <button class="btn ghost btn-icon" onclick="closeUCBulkFix()">✕</button>
+      </div>
+      <div class="modal-body" id="ucBulkBody" style="max-height:64vh;overflow-y:auto;">
+        <div class="empty">loading…</div>
+      </div>
+      <div class="modal-footer" style="display:flex;gap:8px;align-items:center;">
+        <label style="font-size:11px;color:var(--text-dim);display:flex;align-items:center;gap:5px;cursor:pointer;">
+          <input type="checkbox" id="ucBulkSelAll" onchange="_ucBulkToggleAll(this.checked)" style="width:auto;accent-color:var(--accent);"> select all fixable
+        </label>
+        <span style="flex:1;"></span>
+        <button class="btn ghost" onclick="closeUCBulkFix()">Close</button>
+        <button class="btn primary" id="ucBulkApplyBtn" data-edit-gate="project.usecases" onclick="_applyUCBulkFix()" disabled>Apply selected</button>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  ov.addEventListener('click', e => { if (e.target === ov) closeUCBulkFix(); });
+  return ov;
+}
+
+function closeUCBulkFix() {
+  const ov = document.getElementById('ucBulkFixModal');
+  if (ov) ov.style.display = 'none';
+  _ucBulkItems = []; _ucBulkSel = new Set();
+}
+
+async function openBulkFixModal() {
+  const ov = _ucFixEnsureBulkModal();
+  ov.style.display = 'flex';
+  const body = document.getElementById('ucBulkBody');
+  body.innerHTML = '<div class="empty">analyzing invalid use cases…</div>';
+  // Follow the masthead Scope so bulk-fix matches what the list shows (#239).
+  const scopeQ = (typeof _activeScope !== 'undefined' && _activeScope) ? ('?set_id=' + encodeURIComponent(_activeScope)) : '';
+  let r;
+  try {
+    r = await api('/api/use-cases/fix-suggestions' + scopeQ);
+  } catch (e) {
+    body.innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
+    return;
+  }
+  _ucBulkItems = r.items || [];
+  _ucBulkSel = new Set(_ucBulkItems.filter(_ucBulkApplyable).map(it => it.uuid));
+  const sub = document.getElementById('ucBulkSub');
+  if (sub) sub.textContent = `${r.total_invalid} invalid · ${r.fixable_clean} auto-fixable · ${r.partial} partial · ${r.needs_semantic} need attention`;
+  _renderUCBulk();
+}
+
+function _renderUCBulk() {
+  const body = document.getElementById('ucBulkBody');
+  if (!_ucBulkItems.length) { body.innerHTML = '<div class="empty" style="color:var(--green)">No invalid use cases in scope.</div>'; return; }
+  body.innerHTML = _ucBulkItems.map(it => {
+    const applyable = _ucBulkApplyable(it);
+    const checked = _ucBulkSel.has(it.uuid) ? 'checked' : '';
+    const nChanges = (it.changes || []).length;
+    let badge;
+    if (it.valid_after) badge = `<span style="color:var(--green);font-size:10px;">✓ becomes valid</span>`;
+    else if ((it.needs_semantic || []).length) badge = `<span style="color:var(--amber,#d79a2b);font-size:10px;" title="${esc((it.needs_semantic || []).join('; '))}">⚠ ${it.needs_semantic.length} need${it.needs_semantic.length === 1 ? 's' : ''} a human/AI edit</span>`;
+    else if (it.parses === false) badge = `<span style="color:var(--red);font-size:10px;">✕ YAML doesn't parse</span>`;
+    else badge = `<span style="color:var(--text-dim);font-size:10px;">${(it.remaining_errors || []).length} issue(s) remain</span>`;
+    return `<div style="display:flex;gap:8px;align-items:center;padding:6px 4px;border-bottom:1px solid var(--border);">
+      <input type="checkbox" data-uuid="${esc(it.uuid)}" ${checked} ${applyable ? '' : 'disabled'} onchange="_ucBulkToggle('${esc(it.uuid)}',this.checked)" style="width:auto;accent-color:var(--accent);${applyable ? '' : 'opacity:.4;'}">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(it.title || it.uuid)}</div>
+        <div style="font-size:9px;color:var(--text-faint);">${nChanges} change${nChanges === 1 ? '' : 's'} · ${badge}</div>
+      </div>
+      <button class="btn ghost btn-sm" style="font-size:9px;flex:0 0 auto;" onclick="openUCFixModal('${esc(it.uuid)}')" title="Review this fix in detail">details</button>
+    </div>`;
+  }).join('');
+  _ucBulkSyncFooter();
+}
+
+function _ucBulkToggle(uuid, on) {
+  if (on) _ucBulkSel.add(uuid); else _ucBulkSel.delete(uuid);
+  _ucBulkSyncFooter();
+}
+function _ucBulkToggleAll(on) {
+  _ucBulkSel = on ? new Set(_ucBulkItems.filter(_ucBulkApplyable).map(it => it.uuid)) : new Set();
+  _renderUCBulk();
+}
+function _ucBulkSyncFooter() {
+  const btn = document.getElementById('ucBulkApplyBtn');
+  if (btn) {
+    btn.disabled = !_ucBulkSel.size || !canEdit('project.usecases');
+    btn.textContent = _ucBulkSel.size ? `Apply ${_ucBulkSel.size} selected` : 'Apply selected';
+  }
+  const all = document.getElementById('ucBulkSelAll');
+  const applyableN = _ucBulkItems.filter(_ucBulkApplyable).length;
+  if (all) all.checked = applyableN > 0 && _ucBulkSel.size === applyableN;
+}
+
+async function _applyUCBulkFix() {
+  const uuids = [..._ucBulkSel];
+  if (!uuids.length) return;
+  const btn = document.getElementById('ucBulkApplyBtn');
+  btn.disabled = true;
+  let ok = 0, skipped = 0, fail = 0;
+  for (let i = 0; i < uuids.length; i++) {
+    btn.textContent = `Applying ${i + 1}/${uuids.length}…`;
+    try {
+      await api(`/api/use-cases/${encodeURIComponent(uuids[i])}/suggest-fix?apply=true`, { method: 'POST' });
+      ok++;
+    } catch (e) {
+      // 409 = the fix wouldn't improve validity (nothing safely applyable) → skip, not a hard fail.
+      if (/\b409\b|not improve/i.test(e.message || '')) skipped++; else fail++;
+    }
+  }
+  toast(`Fixed ${ok}${skipped ? `, ${skipped} skipped` : ''}${fail ? `, ${fail} failed` : ''}`, fail > 0);
+  closeUCBulkFix();
+  await loadUCs();
+}
