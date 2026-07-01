@@ -126,7 +126,10 @@ const _CUSTOMER_VIEWS = new Set(['usecases']);
 function _updateContextChrome(name) {
   const sc = document.getElementById('scopeChip');
   const cu = document.getElementById('customerChip');
-  if (sc) sc.style.display = _SCOPE_VIEWS.has(name) ? '' : 'none';
+  // #259: Scope is the app-wide content basis (drives Results/Roadmaps/Cap Map/Coverage) — now that
+  // it's foundational (#31/#239) it's PERSISTENT like Project, not hidden per-view. (It had been
+  // clipped off the masthead's right edge even where shown; the masthead now wraps.)
+  if (sc) sc.style.display = '';
   if (cu) cu.style.display = _CUSTOMER_VIEWS.has(name) ? '' : 'none';
 }
 

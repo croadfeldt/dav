@@ -504,6 +504,7 @@ async function init() {
   // (same archived-aware source as the Runs tab).
   loadRuns();
   loadFreshness();   // masthead analysis-freshness chip (#112)
+  try { loadSets(); } catch (_) {}   // #259: populate the persistent masthead Scope selector on boot
 }
 
 let _defaultProject = '';

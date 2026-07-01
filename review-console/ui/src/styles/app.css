@@ -644,7 +644,10 @@
   /* Masthead */
   .pf-masthead {
     display:flex; align-items:center; gap:12px;
-    padding:0 16px; height:52px; flex-shrink:0;
+    /* Wrap to a second row instead of clipping chips off the right edge (the Scope/Coverage
+       chips were falling off-screen). min-height keeps the single-row look when it fits. */
+    flex-wrap:wrap; row-gap:6px;
+    padding:6px 16px; min-height:52px; flex-shrink:0;
     background:var(--bg-raised); border-bottom:1px solid var(--border);
     z-index:50;
   }
@@ -669,7 +672,7 @@
 
   /* Active run chip in masthead (OpenShift project-selector pattern) */
   .run-context-chip {
-    display:flex; align-items:center; gap:6px;
+    display:flex; align-items:center; gap:6px; flex-shrink:0;
     padding:4px 10px; background:var(--bg-input); border:1px solid var(--border);
     border-radius:2px; font-size:11px; cursor:pointer; color:var(--text-dim);
     transition:color .15s, border-color .15s;
