@@ -479,6 +479,33 @@ async function _ssDropAddUC(setId, uc, label) {
   renderScopingSetsBoard();
 }
 
+// ── Sortable column state ────────────────────────────────────────────────────
+let _ssSortKey = 'name';
+let _ssSortDir = 'asc';
+
+function _ssSortSets(sets) {
+  const k = _ssSortKey, d = _ssSortDir === 'asc' ? 1 : -1;
+  return sets.slice().sort((a, b) => {
+    let av = a[k], bv = b[k];
+    if (k === 'member_count') return d * ((av || 0) - (bv || 0));
+    if (av == null) av = '';
+    if (bv == null) bv = '';
+    return d * String(av).localeCompare(String(bv));
+  });
+}
+
+function _ssToggleSort(key) {
+  if (_ssSortKey === key) _ssSortDir = _ssSortDir === 'asc' ? 'desc' : 'asc';
+  else { _ssSortKey = key; _ssSortDir = 'asc'; }
+  _renderSetMgmtInto('scopingSetsList');
+  _ssWireSetDrops();
+}
+
+function _ssSortIndicator(key) {
+  if (_ssSortKey !== key) return '';
+  return _ssSortDir === 'asc' ? ' ▲' : ' ▼';
+}
+
 function _renderSetMgmtInto(elId) {
   const el = document.getElementById(elId);
   if (!el) return;
@@ -486,40 +513,56 @@ function _renderSetMgmtInto(elId) {
     el.innerHTML = '<div class="empty" style="padding:24px;">No Scoping Sets yet. Use + New Scoping Set to create one.</div>';
     return;
   }
-  let h = '';
-  allSets.filter(s => s.id !== ALL_SET_ID).forEach(s => {
+  const cols = [
+    { key: 'name',         label: 'Name' },
+    { key: 'created_at',   label: 'Created' },
+    { key: 'updated_at',   label: 'Modified' },
+    { key: 'member_count', label: 'Count' },
+    { key: 'created_by',   label: 'Created by' },
+  ];
+  let h = '<div class="ss-col-header">';
+  h += '<span></span>';
+  cols.forEach(c => {
+    const active = _ssSortKey === c.key ? ' ss-sort-active' : '';
+    h += `<span class="${active}" onclick="_ssToggleSort('${c.key}')" title="Sort by ${c.label}">${c.label}${_ssSortIndicator(c.key)}</span>`;
+  });
+  h += '<span style="text-align:right;">Actions</span></div>';
+
+  const sorted = _ssSortSets(allSets.filter(s => s.id !== ALL_SET_ID));
+  sorted.forEach(s => {
     const defBadge = s.is_default
-      ? '<span style="font-size:9px;color:var(--accent);border:1px solid var(--accent-soft);padding:1px 5px;border-radius:2px;margin-left:8px;">DEFAULT</span>'
+      ? ' <span style="font-size:8px;color:var(--accent);border:1px solid var(--accent-soft);padding:0 4px;border-radius:2px;">DEF</span>'
       : '';
     const defBtn = s.is_default
       ? `<button class="btn ghost btn-sm" title="Clear default" onclick="clearDefaultSet(${s.id}).then(_refreshSetMgmt)">Clear default</button>`
       : `<button class="btn ghost btn-sm" title="Mark as project default" onclick="setDefaultSet(${s.id}).then(_refreshSetMgmt)">★ Default</button>`;
     h += `<div data-set-row="${s.id}" style="border-top:1px solid var(--border);">
-      <div style="display:flex;align-items:center;gap:8px;padding:10px 16px;">
-        <button class="btn ghost btn-icon" title="Show / hide members" onclick="_toggleSetMembers(${s.id}, this)" style="min-width:18px;padding:2px 6px;">▶</button>
-        <div style="flex:1;min-width:0;">
-          <div style="font-size:13px;font-weight:500;">${esc(s.name)}${defBadge}</div>
-          <div style="font-size:11px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-            ${esc(s.description || '—')} · ${s.member_count} UC${s.member_count !== 1 ? 's' : ''}
-          </div>
-          ${(s.created_at || s.updated_at) ? `<div style="font-size:9px;color:var(--text-faint);margin-top:2px;" title="${esc((s.created_by ? 'created by ' + s.created_by + ' · ' : '') + (s.created_at ? new Date(s.created_at).toLocaleString() : '') + (s.updated_at ? ' · updated ' + new Date(s.updated_at).toLocaleString() : ''))}">
-            ${s.created_at ? 'created ' + esc(fmtTs(s.created_at)) : ''}${s.updated_at ? ' · updated ' + esc(fmtTs(s.updated_at)) : ''}
-          </div>` : ''}
+      <div class="ss-set-grid">
+        <div><button class="btn ghost btn-icon" title="Show / hide members" onclick="_toggleSetMembers(${s.id}, this)" style="min-width:18px;padding:2px 4px;">▶</button></div>
+        <div style="min-width:0;">
+          <div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}${defBadge}</div>
+          <div style="font-size:10px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.description || '')}</div>
         </div>
-        <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${attrJson(s.name)})">▶ Analyze</button>
-        ${defBtn}
-        <button class="btn ghost btn-sm" onclick="openSetModal(${s.id})">Edit</button>
-        <button class="btn ghost btn-sm" onclick="openPromoteModal(${s.id}, ${attrJson(s.name)})">↑ Promote</button>
-        <div style="position:relative;display:inline-block;">
-          <button class="btn ghost btn-sm" onclick="toggleExportSetMenu(${s.id}, event)">↓ Export</button>
-          <div id="exportSetMenu-${s.id}" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:140px;">
-            <button class="dropdown-item" onclick="exportSet(${s.id},'tar.gz')">tar.gz (gzip)</button>
-            <button class="dropdown-item" onclick="exportSet(${s.id},'zip')">zip</button>
-            <button class="dropdown-item" onclick="exportSet(${s.id},'tar')">tar (uncompressed)</button>
+        <div style="color:var(--text-faint);" title="${esc(s.created_at ? new Date(s.created_at).toLocaleString() : '')}">${s.created_at ? esc(fmtTs(s.created_at)) : '—'}</div>
+        <div style="color:var(--text-faint);" title="${esc(s.updated_at ? new Date(s.updated_at).toLocaleString() : '')}">${s.updated_at ? esc(fmtTs(s.updated_at)) : '—'}</div>
+        <div style="text-align:center;font-family:var(--mono,monospace);">${s.member_count}</div>
+        <div style="color:var(--text-faint);" title="${esc(s.created_by || '')}">${esc(s.created_by || '—')}</div>
+        <div class="ss-set-actions">
+          <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${attrJson(s.name)})">▶ Analyze</button>
+          ${defBtn}
+          <button class="btn ghost btn-sm" onclick="openSetModal(${s.id})">Edit</button>
+          <button class="btn ghost btn-sm" onclick="openPromoteModal(${s.id}, ${attrJson(s.name)})">↑ Promote</button>
+          <div style="position:relative;display:inline-block;">
+            <button class="btn ghost btn-sm" onclick="toggleExportSetMenu(${s.id}, event)">↓ Export</button>
+            <div id="exportSetMenu-${s.id}" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:140px;">
+              <button class="dropdown-item" onclick="exportSet(${s.id},'tar.gz')">tar.gz (gzip)</button>
+              <button class="dropdown-item" onclick="exportSet(${s.id},'zip')">zip</button>
+              <button class="dropdown-item" onclick="exportSet(${s.id},'tar')">tar (uncompressed)</button>
+            </div>
           </div>
+          <button class="btn ghost btn-sm" onclick="openAddMember(${s.id})" title="Add a UC to this Scoping Set">+ UC</button>
+          <button class="btn danger btn-sm" onclick="deleteSet(${s.id}, this)">×</button>
         </div>
-        <button class="btn ghost btn-sm" onclick="openAddMember(${s.id})" title="Add a UC to this Scoping Set">+ UC</button>
-        <button class="btn danger btn-sm" onclick="deleteSet(${s.id}, this)">×</button>
       </div>
       <div id="setMembers-${s.id}" style="display:none;padding:0 0 10px 50px;"></div>
     </div>`;

@@ -20,6 +20,20 @@
         .ss-uc-unassigned { font-size:8px; color:var(--text-faint); }
         /* the vertical set accordion is a drop target for UC drags */
         [data-set-row].ss-drop { box-shadow:inset 0 0 0 2px var(--accent); background:var(--accent-bg); }
+        /* sortable column header */
+        .ss-col-header { display:grid; grid-template-columns:24px 2fr 110px 110px 54px 110px auto;
+                         gap:0; padding:0 16px; border-bottom:2px solid var(--border);
+                         background:var(--bg-panel); position:sticky; top:0; z-index:2; }
+        .ss-col-header span { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.5px;
+                              color:var(--text-faint); padding:7px 4px; cursor:pointer; user-select:none;
+                              white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .ss-col-header span:hover { color:var(--text); }
+        .ss-col-header span.ss-sort-active { color:var(--accent); }
+        /* grid row matching header columns */
+        .ss-set-grid { display:grid; grid-template-columns:24px 2fr 110px 110px 54px 110px auto;
+                       gap:0; align-items:center; padding:8px 16px; }
+        .ss-set-grid > div { font-size:11px; padding:0 4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .ss-set-actions { display:flex; flex-wrap:wrap; gap:3px; justify-content:flex-end; }
       </style>
       <div class="ss-split">
         <!-- Left: static, filterable full Use Case list (drag source) -->
