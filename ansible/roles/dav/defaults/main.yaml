@@ -109,6 +109,9 @@ review_console_loadbalancer_port: 8843           # external/shared port
 review_console_loadbalancer_tls_port: 9443       # in-pod nginx TLS listener
 review_console_loadbalancer_ip: ""               # explicit MetalLB IP (e.g. 10.0.90.22)
 review_console_loadbalancer_pool: ""             # OR a MetalLB address-pool name (leave IP blank)
+review_console_loadbalancer_etp: Cluster         # externalTrafficPolicy. Cluster = resilient to pod
+                                                 # migration on a BGP pool (default). Use Local only
+                                                 # for an L2 pool where source-IP preservation matters.
 review_console_loadbalancer_tls_secret: "dav-review-ui-public-tls"
 # Public cert. DNS-01 sidesteps the router/port-80 conflict that arises because
 # the hostname resolves to the MetalLB IP. Set create_cert: true to have the
