@@ -1,0 +1,6 @@
+# Baseline profile that passes on current content. The repo carries pre-existing
+# style/role-prefix debt (var-naming[no-role-prefix] etc.); `min` catches what
+# actually breaks Ansible. Raise the profile as the debt is paid down.
+profile: min
+exclude_paths:
+  - .github/

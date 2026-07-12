@@ -1,0 +1,24 @@
+# Validation gate for the DAV Ansible deployment role + manifests.
+# Baselined to pass on current main (the repo carries pre-existing lint debt — see
+# .ansible-lint `profile: min` and .yamllint disabled rules); tighten as debt is paid.
+name: validate
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install yamllint ansible-lint ansible-core jinja2
+      # Real YAML (manifests, defaults, vars) — Jinja *.j2 excluded (see .yamllint).
+      - run: yamllint .
+      # Ansible correctness at the `min` profile (what actually breaks Ansible).
+      - run: ansible-lint ansible/
+      # Jinja *.j2 templates: syntax-parse (yamllint cannot read Jinja).
+      - run: python3 tests/lint_templates.py
