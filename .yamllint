@@ -1,0 +1,22 @@
+# yamllint config — validates real YAML (the Jinja *.j2 templates are excluded and
+# instead rendered+parsed by the template smoke-test). Pre-existing repo style is
+# baselined here (line-length, brace spacing, comments, truthy); tighten over time.
+extends: default
+ignore: |
+  *.j2
+  **/*.j2
+rules:
+  line-length: disable
+  braces: disable
+  brackets: disable
+  comments: disable
+  comments-indentation: disable
+  truthy: disable
+  document-start: disable
+  octal-values: disable
+  empty-lines: disable
+  indentation:
+    spaces: consistent
+    indent-sequences: whatever
+  trailing-spaces: enable
+  new-line-at-end-of-file: enable

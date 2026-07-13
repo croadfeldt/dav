@@ -1,0 +1,12 @@
+# Baseline profile that passes on current content. The repo carries pre-existing
+# style/role-prefix debt; `min` catches what actually breaks Ansible. Raise over time.
+profile: min
+exclude_paths:
+  - .github/
+skip_list:
+  # The dedicated yamllint CI step owns YAML style (with .yamllint); ansible-lint's
+  # bundled yamllint conflicts with that config — let the yamllint step be authoritative.
+  - yaml
+  # `ansible-playbook --syntax-check` requires the Ansible Vault password, which is a
+  # deploy secret not present in CI. Structure is covered by yamllint + the Jinja parse.
+  - internal-error
