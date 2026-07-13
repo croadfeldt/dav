@@ -22,9 +22,13 @@ metadata:
 {% endif %}
 spec:
   type: LoadBalancer
-  # Preserve the client source IP (and keep MetalLB L2 routing the IP to the
-  # node hosting the pod).
-  externalTrafficPolicy: Local
+  # externalTrafficPolicy: the server-vlan MetalLB pool is advertised via BGP (not L2), so
+  # `Local` blackholes the VIP whenever the pod migrates to a node MetalLB isn't advertising
+  # from — the advertisement does not follow the pod (observed 2026-07-11). `Cluster` advertises
+  # from all nodes and routes to the pod wherever it runs, resilient to migration. Source IP is
+  # SNAT'd at the node, but the real client is still visible via X-Forwarded-For at the nginx TLS
+  # layer. Override per-environment (e.g. `Local` for an L2 pool) with review_console_loadbalancer_etp.
+  externalTrafficPolicy: {{ review_console_loadbalancer_etp | default('Cluster') }}
   selector:
     app: dav-review
     component: review-console-ui
