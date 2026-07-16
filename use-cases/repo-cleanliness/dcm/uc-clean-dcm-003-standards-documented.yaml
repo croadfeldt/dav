@@ -1,0 +1,30 @@
+uuid: uc-clean-dcm-003
+handle: repo-clean/dcm/standards-documented
+scenario:
+  description: >-
+    An adopted standard is cited but not properly documented: no register entry (adopt↔register), no declared tier/disposition, prose-only citation, or a bespoke model where a real standard exists. Every adoption must be fully documented and grounded.
+  actor:
+    persona: architect
+    profile: dcm
+  intent: >-
+    Ensure every adopted standard is documented — registered, tiered, and truly adopted not invented
+  success_criteria:
+  - Every adopts entry has a matching register entry (adopt↔register holds)
+  - Every adopts entry declares its disposition/tier (value/codelist vs record/schema)
+  - No standard cited in prose while absent from adopts + the register
+  - Where a credible external standard exists, it is adopted rather than a bespoke model invented
+  dimensions:
+    lifecycle_phase: audit
+    resource_complexity: cross_reference
+    policy_complexity: single_rule
+    provider_landscape: single_repo
+    governance_context: internal
+    failure_mode: undocumented_standard
+  profile: dcm
+  expected_domain_interactions:
+  - domain: data
+    interaction: the definitions/types/fields under audit
+  - domain: policy
+    interaction: the cleanliness rule/guard that gates the check
+  - domain: audit
+    interaction: the finding is recorded with its location and fix

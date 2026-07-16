@@ -1,0 +1,30 @@
+uuid: uc-clean-udlm-006
+handle: repo-clean/udlm/provider-neutral
+scenario:
+  description: >-
+    A definition dictates a mechanism/provider as the/preferred way to realize a fact, or leaks estate specifics into the portable spec (host names, a site's tool choice, group_vars, scripts). Definitions must model the fact and treat providers/mechanisms as examples only.
+  actor:
+    persona: reviewer
+    profile: udlm
+  intent: >-
+    Ensure definitions model the fact, never dictate a mechanism/provider, and carry no estate specifics
+  success_criteria:
+  - No definition names a mechanism/provider as the or preferred way to realize a fact
+  - Concrete providers appear only as examples/reference realizations, never as the model or normative text
+  - No estate/deployment specifics in the portable spec
+  - The origin/method of a fact is a field, not a prescribed mechanism
+  dimensions:
+    lifecycle_phase: audit
+    resource_complexity: single_definition
+    policy_complexity: single_rule
+    provider_landscape: single_repo
+    governance_context: internal
+    failure_mode: boundary_leak
+  profile: udlm
+  expected_domain_interactions:
+  - domain: data
+    interaction: the definitions/types/fields under audit
+  - domain: policy
+    interaction: the cleanliness rule/guard that gates the check
+  - domain: audit
+    interaction: the finding is recorded with its location and fix

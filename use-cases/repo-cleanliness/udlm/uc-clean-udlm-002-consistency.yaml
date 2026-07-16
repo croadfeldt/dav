@@ -1,0 +1,30 @@
+uuid: uc-clean-udlm-002
+handle: repo-clean/udlm/consistency
+scenario:
+  description: >-
+    The same concept is spelled or shaped differently across types/docs (per-type enum synonyms, a shared shape reinvented inline, divergent field names/casing). Names, casing, and shared shapes must be used consistently, referencing the canonical shared definitions.
+  actor:
+    persona: reviewer
+    profile: udlm
+  intent: >-
+    Ensure names, casing, and shared shapes are consistent across the repo
+  success_criteria:
+  - Shared shapes reference the canonical $defs rather than reinventing them inline
+  - No per-type synonyms for a canonical enum/field
+  - Field/type/file naming follows conventions uniformly
+  - Divergent spellings/casing of the same concept are flagged
+  dimensions:
+    lifecycle_phase: audit
+    resource_complexity: whole_estate
+    policy_complexity: single_rule
+    provider_landscape: single_repo
+    governance_context: internal
+    failure_mode: inconsistency
+  profile: udlm
+  expected_domain_interactions:
+  - domain: data
+    interaction: the definitions/types/fields under audit
+  - domain: policy
+    interaction: the cleanliness rule/guard that gates the check
+  - domain: audit
+    interaction: the finding is recorded with its location and fix

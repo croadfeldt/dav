@@ -1,0 +1,8 @@
+# Repo-cleanliness consumer profile (udlm) — dimension vocabulary
+lifecycle_phases: [audit, remediation, verification]
+resource_complexities: [single_definition, cross_reference, whole_estate]
+policy_complexities: [none, single_rule, multi_rule]
+provider_landscapes: [single_repo, multi_repo]
+governance_contexts: [internal, contribution_review]
+failure_modes: [happy_path, duplication, drift, dangling_reference, boundary_leak, undocumented_standard, orphan_field, inconsistency, mis_scoped]
+profiles: [udlm]

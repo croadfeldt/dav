@@ -1,0 +1,30 @@
+uuid: uc-clean-udlm-009
+handle: repo-clean/udlm/versioning-discipline
+scenario:
+  description: >-
+    A change ships without correct versioning discipline: version not bumped to the change class, id/version segment out of sync, or adopts/tier/disposition undeclared. Every change must carry the correct bump, a matching id, and complete adoption metadata.
+  actor:
+    persona: architect
+    profile: udlm
+  intent: >-
+    Ensure every change carries correct versioning discipline and complete adoption metadata
+  success_criteria:
+  - A change bumps the version to at least the required class per the pre-1.0 relaxation in force
+  - The id/uri version segment matches the version field
+  - New/changed adopts carry version, register pairing, and disposition/tier
+  - No content change ships without the corresponding version + metadata update
+  dimensions:
+    lifecycle_phase: verification
+    resource_complexity: single_definition
+    policy_complexity: single_rule
+    provider_landscape: single_repo
+    governance_context: contribution_review
+    failure_mode: drift
+  profile: udlm
+  expected_domain_interactions:
+  - domain: data
+    interaction: the definitions/types/fields under audit
+  - domain: policy
+    interaction: the cleanliness rule/guard that gates the check
+  - domain: audit
+    interaction: the finding is recorded with its location and fix

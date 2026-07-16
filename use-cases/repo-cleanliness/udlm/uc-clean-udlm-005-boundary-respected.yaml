@@ -1,0 +1,30 @@
+uuid: uc-clean-udlm-005
+handle: repo-clean/udlm/boundary-respected
+scenario:
+  description: >-
+    Content sits on the wrong side of the data↔orchestration boundary — implementation/runtime detail in the data-model layer (or vice versa). Apply the peer test (ADR-008): could a peer implement it differently and still be valid? If yes it belongs in the orchestration layer, not the data model.
+  actor:
+    persona: reviewer
+    profile: udlm
+  intent: >-
+    Ensure content is on the correct side of the data↔orchestration boundary
+  success_criteria:
+  - Every passage passes the peer test — peer-could-differ items live in the orchestration layer
+  - No runtime/engine/pipeline mechanism described in a data-model document
+  - Documents are titled and scoped to the layer they belong to
+  - Cross-layer references are pointers, not embedded implementation
+  dimensions:
+    lifecycle_phase: audit
+    resource_complexity: cross_reference
+    policy_complexity: single_rule
+    provider_landscape: multi_repo
+    governance_context: contribution_review
+    failure_mode: boundary_leak
+  profile: udlm
+  expected_domain_interactions:
+  - domain: data
+    interaction: the definitions/types/fields under audit
+  - domain: policy
+    interaction: the cleanliness rule/guard that gates the check
+  - domain: audit
+    interaction: the finding is recorded with its location and fix

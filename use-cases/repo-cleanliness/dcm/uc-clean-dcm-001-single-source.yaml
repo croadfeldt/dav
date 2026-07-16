@@ -1,0 +1,30 @@
+uuid: uc-clean-dcm-001
+handle: repo-clean/dcm/single-source
+scenario:
+  description: >-
+    A concept, rule, vocabulary, or wire-shape is defined in more than one document (restated, not referenced) so the copies drift. Every definition must have exactly one correct home and be cited by ID/link everywhere else; prose restatement counts, not just duplicated rule-IDs.
+  actor:
+    persona: reviewer
+    profile: dcm
+  intent: >-
+    Keep every definition single-sourced so drift can't accumulate
+  success_criteria:
+  - Every normative concept/rule/vocabulary resolves to exactly one owning document
+  - Other documents reference it by ID/link, never restate it
+  - No two documents carry a conflicting copy of the same rule/enum/table
+  - A prose restatement of a definition owned elsewhere is flagged, not only a duplicated rule-ID
+  dimensions:
+    lifecycle_phase: audit
+    resource_complexity: cross_reference
+    policy_complexity: single_rule
+    provider_landscape: multi_repo
+    governance_context: internal
+    failure_mode: duplication
+  profile: dcm
+  expected_domain_interactions:
+  - domain: data
+    interaction: the definitions/types/fields under audit
+  - domain: policy
+    interaction: the cleanliness rule/guard that gates the check
+  - domain: audit
+    interaction: the finding is recorded with its location and fix

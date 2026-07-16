@@ -1,0 +1,30 @@
+uuid: uc-clean-udlm-008
+handle: repo-clean/udlm/referential-integrity
+scenario:
+  description: >-
+    A reference or relationship target does not resolve — a dangling pointer to a removed/nonexistent type/doc, or a forward-reference never authored. Every reference/relationship target must resolve to a real, in-scope resource, and forward-references must be real commitments.
+  actor:
+    persona: reviewer
+    profile: udlm
+  intent: >-
+    Ensure every reference/relationship target resolves — no dangling or phantom references
+  success_criteria:
+  - Every relationship/reference target resolves to a registered, in-scope resource
+  - No reference points at a removed or nonexistent type/document
+  - Forward-references name a real, tracked commitment or are removed
+  - Prose cross-references resolve to a real section/document
+  dimensions:
+    lifecycle_phase: verification
+    resource_complexity: cross_reference
+    policy_complexity: single_rule
+    provider_landscape: multi_repo
+    governance_context: internal
+    failure_mode: dangling_reference
+  profile: udlm
+  expected_domain_interactions:
+  - domain: data
+    interaction: the definitions/types/fields under audit
+  - domain: policy
+    interaction: the cleanliness rule/guard that gates the check
+  - domain: audit
+    interaction: the finding is recorded with its location and fix

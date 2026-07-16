@@ -1,0 +1,30 @@
+uuid: uc-clean-udlm-007
+handle: repo-clean/udlm/correctly-scoped-docs
+scenario:
+  description: >-
+    A definition's docs are mis-scoped: provider-specific config modeled field-by-field in the portable base, or provenance/changelog/issue-backstory in normative field descriptions. Docs must be concise and correctly scoped — portable definition + graph/audit, provider config projected not modeled.
+  actor:
+    persona: reviewer
+    profile: udlm
+  intent: >-
+    Ensure each definition's docs are concise and correctly scoped (portable definition + graph/audit)
+  success_criteria:
+  - Base models the portable definition + graph/audit; provider-specific config projected not modeled field-by-field
+  - Field descriptions state what the field is, not change history/issue numbers/backstory
+  - Provenance/changelog/license rationale lives in git/register, not normative text
+  - Opaque provider bodies are version-pinned passthroughs, not restated schemas
+  dimensions:
+    lifecycle_phase: audit
+    resource_complexity: single_definition
+    policy_complexity: single_rule
+    provider_landscape: single_repo
+    governance_context: internal
+    failure_mode: mis_scoped
+  profile: udlm
+  expected_domain_interactions:
+  - domain: data
+    interaction: the definitions/types/fields under audit
+  - domain: policy
+    interaction: the cleanliness rule/guard that gates the check
+  - domain: audit
+    interaction: the finding is recorded with its location and fix

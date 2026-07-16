@@ -1,0 +1,30 @@
+uuid: uc-clean-dcm-004
+handle: repo-clean/dcm/data-pipelines-complete
+scenario:
+  description: >-
+    A field/output exists with no real producer or no real consumer — a dead-end in the produce→consume flow. Every modeled field must earn its place: a real producer writes it and a real consumer reads it, and the producer→consumer pipeline is complete and traceable.
+  actor:
+    persona: architect
+    profile: dcm
+  intent: >-
+    Ensure every modeled field has a real producer and consumer — complete pipelines, no orphans
+  success_criteria:
+  - Every field/output has an identified producer that writes it and consumer that reads it
+  - No field asserted without a demonstrated produce/consume
+  - Producer→consumer flows are traceable end to end
+  - Orphan fields (no consumer) and phantom fields (no producer) are flagged
+  dimensions:
+    lifecycle_phase: verification
+    resource_complexity: whole_estate
+    policy_complexity: multi_rule
+    provider_landscape: multi_repo
+    governance_context: internal
+    failure_mode: orphan_field
+  profile: dcm
+  expected_domain_interactions:
+  - domain: data
+    interaction: the definitions/types/fields under audit
+  - domain: policy
+    interaction: the cleanliness rule/guard that gates the check
+  - domain: audit
+    interaction: the finding is recorded with its location and fix
