@@ -1,0 +1,97 @@
+---
+# dav-ops-mcp — MCP server exposing the DAV use-case/set/run/analysis CRUD as
+# tools. A stateless pass-through in front of the review-console API; it stores
+# nothing and relays the caller's own DAV PAT, so authorization stays with DAV.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dav-ops-mcp
+  namespace: {{ dav_namespace }}
+  labels:
+    app: dav-ops-mcp
+    component: mcp-server
+  annotations:
+    # Auto-rollout when the dav-ops-mcp:latest ImageStreamTag is updated.
+    image.openshift.io/triggers: |
+      [{"from":{"kind":"ImageStreamTag","name":"dav-ops-mcp:latest","namespace":"{{ dav_namespace }}"},"fieldPath":"spec.template.spec.containers[?(@.name==\"mcp-server\")].image"}]
+    dav.dev/last-applied-at: "{{ ansible_date_time.iso8601 }}"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dav-ops-mcp
+  template:
+    metadata:
+      labels:
+        app: dav-ops-mcp
+        component: mcp-server
+    spec:
+      containers:
+        - name: mcp-server
+          image: {{ mcp_ops_image }}
+          command: ["python", "server.py", "--transport", "sse", "--host", "0.0.0.0", "--port", "8080"]
+          env:
+            - name: DAV_API_BASE
+              value: "http://dav-review-api.{{ dav_namespace }}.svc:8000"
+            - name: DAV_API_VERIFY
+              value: "true"
+{% if dav_ops_mcp_default_project is defined and dav_ops_mcp_default_project %}
+            - name: DAV_DEFAULT_PROJECT
+              value: "{{ dav_ops_mcp_default_project }}"
+{% endif %}
+            # Optional service PAT fallback. Absent by default: callers relay
+            # their own DAV PAT via the Authorization header, which always wins.
+            - name: DAV_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dav-ops-mcp-token
+                  key: token
+                  optional: true
+          ports:
+            - containerPort: 8080
+              name: http
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dav-ops-mcp
+  namespace: {{ dav_namespace }}
+spec:
+  selector:
+    app: dav-ops-mcp
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: dav-ops-mcp
+  namespace: {{ dav_namespace }}
+spec:
+  to:
+    kind: Service
+    name: dav-ops-mcp
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

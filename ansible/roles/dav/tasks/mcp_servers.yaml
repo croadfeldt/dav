@@ -131,6 +131,116 @@
   when: not (dav_docs_mcp_refresh_enabled | bool)
   changed_when: false
 
+# --- dav-ops-mcp: UC/set/run CRUD proxy in front of the review-console API ---
+
+- name: Check if BuildConfig exists (dav-ops-mcp)
+  kubernetes.core.k8s_info:
+    kind: BuildConfig
+    api_version: build.openshift.io/v1
+    namespace: "{{ dav_namespace }}"
+    name: dav-ops-mcp
+  register: ops_bc_check
+  when: dav_build_mcp_images | bool
+
+- name: Create BuildConfig for dav-ops-mcp
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: build.openshift.io/v1
+      kind: BuildConfig
+      metadata:
+        name: dav-ops-mcp
+        namespace: "{{ dav_namespace }}"
+      spec:
+        source:
+          type: Binary
+        strategy:
+          type: Docker
+          dockerStrategy:
+            dockerfilePath: Containerfile
+        output:
+          to:
+            kind: ImageStreamTag
+            name: "dav-ops-mcp:latest"
+  when:
+    - dav_build_mcp_images | bool
+    - ops_bc_check.resources | length == 0
+
+- name: Check if ImageStream exists (dav-ops-mcp)
+  kubernetes.core.k8s_info:
+    kind: ImageStream
+    api_version: image.openshift.io/v1
+    namespace: "{{ dav_namespace }}"
+    name: dav-ops-mcp
+  register: ops_is_check
+  when: dav_build_mcp_images | bool
+
+- name: Create ImageStream for dav-ops-mcp
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: image.openshift.io/v1
+      kind: ImageStream
+      metadata:
+        name: dav-ops-mcp
+        namespace: "{{ dav_namespace }}"
+  when:
+    - dav_build_mcp_images | bool
+    - ops_is_check.resources | length == 0
+
+- name: Start binary build for dav-ops-mcp
+  ansible.builtin.command:
+    cmd: >-
+      oc start-build dav-ops-mcp
+      --from-dir=/tmp/dav-mcp-build/dav-ops-mcp
+      --build-arg=DAV_REPO_COMMIT={{ dav_repo_commit }}
+      --build-arg=DAV_REPO_DIRTY={{ dav_repo_dirty }}
+      -n {{ dav_namespace }}
+      --wait
+  register: ops_build_result
+  when: dav_build_mcp_images | bool
+
+- name: Report ops build result
+  ansible.builtin.debug:
+    msg: "dav-ops-mcp build: {{ ops_build_result.stdout | default('skipped') }}"
+  when: dav_build_mcp_images | bool
+
+- name: Check if dav-ops-mcp deployment exists
+  kubernetes.core.k8s_info:
+    kind: Deployment
+    namespace: "{{ dav_namespace }}"
+    name: dav-ops-mcp
+  register: ops_mcp_existing
+
+- name: Deploy dav-ops-mcp server
+  kubernetes.core.k8s:
+    state: present
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    definition: "{{ lookup('template', 'mcp-ops-deployment.yaml.j2') | from_yaml_all | list }}"
+  register: ops_mcp_deploy
+
+- name: Restart dav-ops-mcp deployment if updated (not on initial create)
+  ansible.builtin.command:
+    cmd: "oc rollout restart deployment/dav-ops-mcp -n {{ dav_namespace }}"
+  when:
+    - ops_mcp_existing.resources | length > 0
+    - ops_mcp_deploy.changed or (ops_build_result is defined and ops_build_result.changed)
+
+- name: Wait for dav-ops-mcp rollout to complete
+  ansible.builtin.command:
+    cmd: "oc rollout status deployment/dav-ops-mcp -n {{ dav_namespace }} --timeout=120s"
+  register: ops_rollout_status
+  ignore_errors: true
+  when:
+    - ops_mcp_existing.resources | length > 0
+    - ops_mcp_deploy.changed or (ops_build_result is defined and ops_build_result.changed)
+
+- name: Report dav-ops-mcp status
+  ansible.builtin.debug:
+    msg: "{{ ops_rollout_status.stdout | default('No changes or fresh deploy — no restart needed') }}"
+
 - name: Clean up build context
   ansible.builtin.file:
     path: /tmp/dav-mcp-build

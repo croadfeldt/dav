@@ -85,7 +85,10 @@ consumer_corpus_repo_branch: "main"
 
 # --- MCP Servers ---
 mcp_docs_image: "{{ dav_registry }}/dav-docs-mcp:latest"
+mcp_ops_image: "{{ dav_registry }}/dav-ops-mcp:latest"
 dav_registry: "image-registry.openshift-image-registry.svc:5000/{{ dav_namespace }}"
+# Optional default project id for dav-ops-mcp when a tool call omits project_id.
+# dav_ops_mcp_default_project: 20
 
 # --- Webhook Route ---
 # dav_webhook_hostname is site-specific; supplied via vars.local.yaml.
