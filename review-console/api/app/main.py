@@ -5057,7 +5057,7 @@ _DCM_VOCAB_FALLBACK = {
         "peer_dcm_disconnect", "data_inconsistency", "rollback_required",
         "partial_fulfillment", "timeout", "resource_exhaustion",
     ],
-    "profiles": ["minimal", "dev", "standard", "prod", "fsi", "sovereign"],
+    "profiles": ["homelab", "dev", "standard", "prod", "fsi", "sovereign"],
 }
 
 

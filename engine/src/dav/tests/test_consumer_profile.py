@@ -143,7 +143,7 @@ def test_dcm_reference_has_expected_provider_types():
 def test_dcm_reference_has_expected_profiles():
     p = get_generic_reference_profile()
     assert_eq(set(p.profiles),
-              {"minimal", "dev", "standard", "prod", "fsi", "sovereign"},
+              {"homelab", "dev", "standard", "prod", "fsi", "sovereign"},
               "DCM profiles match historical hardcoded values")
 
 def test_dcm_reference_returns_fresh_copies():

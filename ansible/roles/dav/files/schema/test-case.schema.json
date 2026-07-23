@@ -53,10 +53,10 @@
         },
         "profiles": {
           "oneOf": [
-            { "type": "string", "enum": ["minimal", "dev", "standard", "prod", "fsi", "sovereign"] },
+            { "type": "string", "enum": ["homelab", "dev", "standard", "prod", "fsi", "sovereign"] },
             {
               "type": "array",
-              "items": { "type": "string", "enum": ["minimal", "dev", "standard", "prod", "fsi", "sovereign"] },
+              "items": { "type": "string", "enum": ["homelab", "dev", "standard", "prod", "fsi", "sovereign"] },
               "minItems": 1,
               "uniqueItems": true
             }

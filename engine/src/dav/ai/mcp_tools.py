@@ -120,7 +120,7 @@ DCM_DOC_TOOLS: list[ToolDefinition] = [
         name="get_profile",
         description=(
             "Retrieve details of a DCM operational profile by name. Profiles "
-            "include: minimal, dev, standard, prod, fsi, sovereign."
+            "include: homelab, dev, standard, prod, fsi, sovereign."
         ),
         parameters={
             "type": "object",

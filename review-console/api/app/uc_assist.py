@@ -56,7 +56,7 @@ Required structure:
     actor:
       persona: <free-text persona>           # any non-empty string
                                              # (e.g. consumer | operator | admin)
-      profile: minimal | dev | standard | prod | fsi | sovereign
+      profile: homelab | dev | standard | prod | fsi | sovereign
     intent: <what the actor wants>           # non-empty
     success_criteria:                        # at least one item
       - <observable criterion>
