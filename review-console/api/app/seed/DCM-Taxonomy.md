@@ -35,8 +35,8 @@ The DCM taxonomy defines the precise vocabulary used throughout the architecture
 
 | Term | Definition |
 |------|-----------|
-| **GateKeeper Policy** | Typed Policy. Declares `enforcement_class: compliance` (boolean deny — halts request) or `operational` (contributes `risk_score_contribution` to request risk score). Compliance-class is the default and fail-safe. See [Scoring Model](data-model/scoring-model/). |
-| **Validation Policy** | Typed Policy. Declares `output_class: structural` (boolean pass/fail — halts on fail) or `advisory` (contributes completeness score + warning list without blocking). Structural is the default and fail-safe. See [Scoring Model](data-model/scoring-model/). |
+| **GateKeeper Policy** | Typed Policy. Declares `enforcement_class: compliance` (boolean deny — halts request) or `operational` (contributes `risk_score_contribution` to request risk score). Compliance-class is the default and fail-safe. See [Scoring Model](`data-model/scoring-model/` — pre-split path, superseded). |
+| **Validation Policy** | Typed Policy. Declares `output_class: structural` (boolean pass/fail — halts on fail) or `advisory` (contributes completeness score + warning list without blocking). Structural is the default and fail-safe. See [Scoring Model](`data-model/scoring-model/` — pre-split path, superseded). |
 | **Transformation Policy** | Typed Policy. Output: mutations[] — field additions, changes, locks. Fires on request payload. All mutations collected and applied with provenance. |
 | **Recovery Policy** | Typed Policy. Output: action + parameters. Fires on failure/timeout trigger conditions. Governs what DCM does when things go wrong. |
 | **Orchestration Flow Policy** | Typed Policy. Output: ordered step sequence. Fires on pipeline payload type events. Named workflow artifacts — the explicit, visible pipeline skeleton. |
