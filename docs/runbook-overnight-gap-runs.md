@@ -16,7 +16,7 @@ the gaps into a report.
 `POST /api/runs` with header `X-DAV-Project: <pid>` and body (`RunTriggerIn`):
 - `mode`: `verification` (default gap mode; 3 ensemble samples/UC).
 - Whole corpus: `{"selection_mode":"corpus","set_id":"__all__"}`.
-- One set (e.g. 21-Sept): `{"selection_mode":"set","set_id":29,"set_name":"FF Extended Target"}`.
+- One set: `{"selection_mode":"set","set_id":<id>,"set_name":"<your set>"}` (ids from GET /api/sets).
 - Always set `name` + `description` (they show in the console).
 
 ```bash
