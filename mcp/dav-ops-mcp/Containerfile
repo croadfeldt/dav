@@ -1,0 +1,24 @@
+FROM python:3.11-slim
+
+# Source provenance — populated by Ansible at build time via --build-arg.
+ARG DAV_REPO_COMMIT=unknown
+ARG DAV_REPO_DIRTY=unknown
+LABEL org.opencontainers.image.title="dav-ops-mcp" \
+      org.opencontainers.image.revision="${DAV_REPO_COMMIT}" \
+      io.dav.repo.dirty="${DAV_REPO_DIRTY}"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY server.py .
+
+EXPOSE 8080
+
+# The Deployment runs this with SSE; the ENTRYPOINT is the same for local use.
+ENTRYPOINT ["python", "server.py", "--transport", "sse", "--port", "8080"]
