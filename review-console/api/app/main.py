@@ -219,7 +219,10 @@ async def _finalizer_loop():
             await asyncio.sleep(60)
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
-                    "SELECT run_name FROM run_sessions "
+                    "SELECT run_name, started_at, "
+                    "  (trigger_payload->>'effective_timeout_seconds')::int AS eff_timeout, "
+                    "  coalesce((trigger_payload->>'console_timeout_fired')::bool, false) AS timeout_fired "
+                    "FROM run_sessions "
                     "WHERE finalized_at IS NULL "
                     "AND created_at < now() - interval '2 minutes' "
                     "ORDER BY created_at DESC LIMIT 20"
@@ -229,6 +232,20 @@ async def _finalizer_loop():
                     detail = await asyncio.to_thread(validations.get_run_detail, r["run_name"])
                     if detail.get("phase") in TERMINAL_PHASES:
                         await _maybe_finalize_session(detail)
+                    elif (r["eff_timeout"] and r["started_at"] and not r["timeout_fired"]
+                          and (datetime.now(timezone.utc) - r["started_at"]).total_seconds() > r["eff_timeout"]):
+                        # Console-enforced "time allowed": the Tekton spec timeout is the
+                        # immutable 24h failsafe; the effective (user/ETA) timeout is
+                        # enforced here by cancelling — a status update Tekton allows.
+                        log.warning("run %s exceeded console time-allowed (%ss) — cancelling",
+                                    r["run_name"], r["eff_timeout"])
+                        await asyncio.to_thread(validations.cancel_run, r["run_name"])
+                        async with pool.acquire() as conn:
+                            await conn.execute(
+                                "UPDATE run_sessions SET trigger_payload = jsonb_set("
+                                "  coalesce(trigger_payload,'{}'::jsonb),"
+                                "  '{console_timeout_fired}', 'true'::jsonb)"
+                                " WHERE run_name=$1", r["run_name"])
                 except KeyError:
                     # PipelineRun expired/deleted before finalize; mark as
                     # finalized to stop trying. Use a sentinel value of
@@ -3425,14 +3442,25 @@ async def set_run_time_allowed(name: str, payload: RunTimeoutIn, request: Reques
     """Edit a run's 'time allowed' (pipeline timeout) — extend or shorten it
     mid-run. The failsafe is a safety net, not a budget; this lets the operator
     say "don't go past this long" live. Gated on runs.execute."""
+    clamped = max(3600, min(86400, int(payload.seconds)))
     async with pool.acquire() as conn:
         rpid = await _run_project_id(conn, name)
         await _require_priv_conn(conn, request, rbac.P_PROJECT_RUNS_EXECUTE, rpid)
-    ok = await asyncio.to_thread(validations.set_run_timeout, name, payload.seconds)
-    if not ok:
+        # Tekton rejects spec updates on a started PipelineRun (the old spec-patch
+        # here 500'd on the admission webhook), so "time allowed" is CONSOLE-
+        # enforced: stored per run, checked by the finalizer-loop watchdog, which
+        # cancels (a status update — allowed) when elapsed exceeds it. Extend and
+        # shorten both work, up to the run's immutable 24h Tekton failsafe.
+        row = await conn.fetchrow(
+            "UPDATE run_sessions SET trigger_payload = jsonb_set("
+            "  coalesce(trigger_payload, '{}'::jsonb),"
+            "  '{effective_timeout_seconds}', to_jsonb($2::int))"
+            " WHERE run_name=$1 AND finalized_at IS NULL"
+            " RETURNING run_name", name, clamped)
+    if not row:
         raise HTTPException(404, "run not found or already finished")
-    return {"ok": True, "name": name,
-            "timeout_seconds": max(3600, min(86400, int(payload.seconds)))}
+    return {"ok": True, "name": name, "timeout_seconds": clamped,
+            "enforced_by": "console (finalizer watchdog); Tekton failsafe fixed at 24h"}
 
 
 @app.delete("/api/runs/{name}")
@@ -3708,7 +3736,11 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                 json.dumps(uc_state_snapshot) if uc_state_snapshot else None,
                 payload.spec_namespaces, payload.corpus_namespaces, _run_pid,
                 # Durable rerun record — survives Tekton PipelineRun pruning.
-                json.dumps(payload.model_dump()),
+                # effective_timeout_seconds = the console-enforced "time allowed"
+                # (user value or the ETA-derived failsafe); the Tekton spec timeout
+                # is fixed at the 24h cap (immutable once started).
+                json.dumps({**payload.model_dump(),
+                            "effective_timeout_seconds": _trig_time_allowed}),
                 # Evaluated branch (resolved override → registry default); the HEAD
                 # SHA is filled in at ingest once the repos are actually cloned.
                 params.get("corpus_repo_branch"), params.get("spec_repo_branch"),
@@ -4188,6 +4220,19 @@ async def get_run_detail(name: str):
     session = await _maybe_finalize_session(detail)
     if session is not None:
         detail["session"] = session
+
+    # "Time allowed" shown to the UI = the CONSOLE-ENFORCED effective timeout
+    # (run_sessions trigger_payload.effective_timeout_seconds), not the Tekton
+    # spec value — the spec is pinned at the immutable 24h failsafe.
+    try:
+        async with pool.acquire() as conn:
+            eff = await conn.fetchval(
+                "SELECT (trigger_payload->>'effective_timeout_seconds')::int "
+                "FROM run_sessions WHERE run_name=$1", name)
+        if eff:
+            detail["timeout_seconds"] = eff
+    except Exception:
+        pass
 
     # Per-UC outcome counts from the ingested analysis (authoritative once the
     # run completes; run_sessions.uc_* stay NULL — the finalizer defers them).

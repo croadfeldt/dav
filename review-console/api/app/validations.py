@@ -31,7 +31,7 @@ WORKSPACE_PVC  = os.environ.get("DAV_PIPELINE_WORKSPACE_PVC", "dav-workspace")
 # Run time budgeting. The pipeline timeout ("time allowed") defaults to the
 # estimate (uc_count × per-UC) PLUS a failsafe buffer — a safety net to catch a
 # genuinely hung run, NOT a tight budget that kills working ones. It's editable
-# mid-run via PATCH (set_run_timeout). Per-UC estimate + buffer are env-tunable
+# mid-run via POST /api/runs/{name}/timeout (console-enforced; Tekton spec is the immutable 24h cap). Per-UC estimate + buffer are env-tunable
 # and refine over time from observed run history (see main.py est_per_uc).
 EST_SEC_PER_UC = int(os.environ.get("DAV_EST_SEC_PER_UC", "1800"))       # 30 min (until history)
 FAILSAFE_BUFFER_SEC = int(os.environ.get("DAV_FAILSAFE_BUFFER_SEC", "7200"))  # +2 h
@@ -272,9 +272,12 @@ def _mk_pipelinerun(
                     "persistentVolumeClaim": {"claimName": WORKSPACE_PVC},
                 }
             ],
-            "timeouts": {"pipeline": "%ds" % (
-                max(_TIMEOUT_FLOOR_SEC, min(_TIMEOUT_CAP_SEC, int(time_allowed_seconds)))
-                if time_allowed_seconds else failsafe_timeout_sec(uc_count))},
+            # The Tekton spec timeout is the IMMUTABLE ultimate failsafe (the webhook
+            # rejects spec updates once a run starts), so it is always the cap; the
+            # user/ETA "time allowed" is CONSOLE-ENFORCED (run_sessions
+            # trigger_payload.effective_timeout_seconds, watchdog in the finalizer
+            # loop) and stays editable mid-run via POST /api/runs/{name}/timeout.
+            "timeouts": {"pipeline": "%ds" % _TIMEOUT_CAP_SEC},
         },
     }
 
@@ -390,28 +393,6 @@ def delete_run(name: str) -> bool:
         if e.status == 404:
             return False
         log.error("Failed to delete PipelineRun %s: %s", name, e)
-        raise
-
-
-def set_run_timeout(name: str, seconds: int) -> bool:
-    """Edit a run's 'time allowed' mid-flight by patching spec.timeouts.pipeline.
-    Tekton re-evaluates the timeout against the run's startTime, so this extends
-    (or shortens) a running PipelineRun. Returns True if patched, False if gone.
-    Clamped to [1h, 24h]."""
-    if not is_available():
-        return False
-    seconds = max(_TIMEOUT_FLOOR_SEC, min(_TIMEOUT_CAP_SEC, int(seconds)))
-    try:
-        _api().patch_namespaced_custom_object(
-            group=_TEKTON_GROUP, version=_TEKTON_VERSION, namespace=NAMESPACE,
-            plural=_PIPELINERUN_PLURAL, name=name,
-            body={"spec": {"timeouts": {"pipeline": f"{seconds}s"}}},
-        )
-        return True
-    except ApiException as e:
-        if e.status == 404:
-            return False
-        log.error("Failed to set timeout on PipelineRun %s: %s", name, e)
         raise
 
 
@@ -653,8 +634,9 @@ def get_run_detail(name: str) -> dict:
             {"name": w.get("name"), "pvc": (w.get("persistentVolumeClaim") or {}).get("claimName")}
             for w in spec.get("workspaces", [])
         ],
-        # Current "time allowed" (editable via set_run_timeout) so the header can
-        # show it + compute the kill clock.
+        # Tekton spec timeout (the immutable 24h failsafe). The API layer overrides
+        # this with the console-enforced effective "time allowed" from run_sessions
+        # before serving the UI — do not read this field as the user-facing value.
         "timeout_seconds": _parse_go_duration_sec((spec.get("timeouts") or {}).get("pipeline")),
         "tasks": tasks,
     }
