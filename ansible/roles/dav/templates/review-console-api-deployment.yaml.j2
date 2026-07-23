@@ -240,18 +240,24 @@ spec:
               port: 8000
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /healthz
               port: 8000
             initialDelaySeconds: 30
             periodSeconds: 15
+            # 1s (the default) is too tight: a transient event-loop stall from the thanos/vllm
+            # metrics fan-out or a brief CPU-throttle spuriously fails liveness and restarts the pod.
+            timeoutSeconds: 5
+            failureThreshold: 3
           resources:
             requests:
               cpu: "50m"
               memory: "128Mi"
             limits:
-              cpu: "500m"
+              cpu: "1"
               memory: "512Mi"
       volumes:
         - name: corpus
