@@ -24,7 +24,7 @@ scenario:
   dimensions:
     lifecycle_phase: modification
     resource_complexity: cross_dependency_payload
-    policy_complexity: single_gating
+    policy_complexity: single_validation
     provider_landscape: single_eligible
     governance_context: sovereignty_enforced
     failure_mode: policy_violation

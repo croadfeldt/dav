@@ -56,7 +56,7 @@ Required structure:
     actor:
       persona: <free-text persona>           # any non-empty string
                                              # (e.g. consumer | operator | admin)
-      profile: minimal | dev | standard | prod | fsi | sovereign
+      profile: homelab | dev | standard | prod | fsi | sovereign
     intent: <what the actor wants>           # non-empty
     success_criteria:                        # at least one item
       - <observable criterion>
@@ -70,7 +70,7 @@ Required structure:
       resource_complexity:  single_no_deps | hard_dependencies | composite_service
                           | conditional_soft_deps | process_resource
                           | cross_dependency_payload
-      policy_complexity:    system_defaults_only | single_gating
+      policy_complexity:    system_defaults_only | single_validation
                           | multi_policy_chain | conflicting_policies
                           | orchestration_flow_static | dynamic_conditional_flow
                           | cross_domain_constraint | human_escalation_required

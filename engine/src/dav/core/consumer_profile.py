@@ -178,7 +178,7 @@ _GENERIC_REFERENCE_PROFILE = ConsumerProfile(
         "peer_dcm_disconnect", "data_inconsistency", "rollback_required",
         "partial_fulfillment", "timeout", "resource_exhaustion",
     ],
-    profiles=["minimal", "dev", "standard", "prod", "fsi", "sovereign"],
+    profiles=["homelab", "dev", "standard", "prod", "fsi", "sovereign"],
     provider_types=["service", "information", "meta", "auth", "peer_dcm", "process"],
     policy_modes=["Internal", "External"],
     abstractions_summary="Data, Provider, Policy",

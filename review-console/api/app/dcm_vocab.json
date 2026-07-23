@@ -62,7 +62,7 @@
     "resource_exhaustion"
   ],
   "profiles": [
-    "minimal",
+    "homelab",
     "dev",
     "standard",
     "prod",
