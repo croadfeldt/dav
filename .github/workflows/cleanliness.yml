@@ -1,0 +1,40 @@
+# Scheduled repo-cleanliness gate (docs/repo-cleanliness-review.md — the nine questions).
+# Runs the deterministic suite monthly + on demand; opens a review issue with the results
+# and the semantic-sweep reminder. PR-time gating lives in validate.yml.
+name: cleanliness
+on:
+  schedule:
+    - cron: "17 6 1 * *"   # monthly, 1st 06:17 UTC
+  workflow_dispatch:
+permissions:
+  issues: write
+  contents: read
+jobs:
+  cleanliness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install yamllint ansible-lint ansible-core jinja2
+      - name: gates
+        id: gates
+        run: |
+          set +e; fail=0; summary=""
+          for c in "yamllint ." "ansible-lint ansible/" "python3 tests/lint_templates.py" "python3 tests/check_links.py"; do
+            out=$($c 2>&1); rc=$?
+            [ $rc -ne 0 ] && fail=1
+            summary="$summary\n### \`$c\` — $([ $rc -eq 0 ] && echo PASS || echo FAIL)\n\`\`\`\n$(echo "$out" | tail -12)\n\`\`\`"
+          done
+          echo "fail=$fail" >> "$GITHUB_OUTPUT"
+          printf '%b' "$summary" > /tmp/summary.md
+      - name: open review issue
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          title="Cleanliness review $(date -u +%Y-%m)"
+          body="Monthly repo-cleanliness run — deterministic gates $([ '${{ steps.gates.outputs.fail }}' = '1' ] && echo '**FAILED — fix before other work**' || echo 'all green').
+          $(cat /tmp/summary.md)
+
+          **Semantic sweep due:** run the nine-question review brief (docs/repo-cleanliness-review.md) — dispatch review agents for the Q1–Q7 semantic residues; findings as file:line + severity into a cleanup plan."
+          gh issue create --title "$title" --body "$body" --label cleanliness || gh issue create --title "$title" --body "$body"
