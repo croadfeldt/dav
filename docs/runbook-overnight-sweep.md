@@ -16,14 +16,14 @@ the questions; this file owns the procedure.
 
 1. **Sync** local clones of udlm, dcm, dav (and the operational repos for Part 3) to origin/main.
 2. **Deterministic gates first** — run each repo's full gate suite (udlm `scripts/signoff.sh`; dcm
-   `tests/*.py`; estate `tests/validate_estate.py`). Anything red is finding #1; the sweep does not
+   `tests/*.py`; any instance-data repos their validators). Anything red is finding #1; the sweep does not
    argue with a green gate, it hunts what gates cannot see.
 3. **Dispatch two parallel sweep agents** (one udlm, one dcm+cross-repo), each briefed with:
    the nine questions + Q10–Q12, the standing parameters above, the list of changes since the last
    sweep ("verify the changes left no seams" — half-updated passages, references to moved homes,
    orphaned content), and the deliverable format below.
 4. **Cross-repo dimensions** (second agent): the Q10 pin audit across ALL repos incl. operational
-   (estate CI refs, explorer refs, image tags, corpus paths); Q11 vocabulary parity from the
+   (CI spec-dependency refs, deployment git refs, image tags, corpus paths); Q11 vocabulary parity from the
    retired-term list; consumer-tooling parity (does every generator/validator/tool consume the
    current registry surface — run them, don't just read them).
 5. **Deliverables:** one report per agent at `~/SWEEP-<scope>-<date>.md` — verdict first (will

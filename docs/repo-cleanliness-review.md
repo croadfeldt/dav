@@ -78,9 +78,10 @@ the maintainer approves (the 2026-07-23 sweep is the reference run).
   resolves AND points at current, merged reality. A pin to a review branch, a never-merged commit, or a
   rewritten SHA is a HIGH finding even while the fetch still works (orphaned SHAs keep resolving on
   borrowed time).
-- **Type specimens (2026-07-24, one night, three instances):** estate CI `UDLM_REF` pinned a
-  never-merged branch commit (red pipeline, 1072 schema failures); estate-explorer `ESTATE_GIT_REF`
-  pinned two different long-merged feature branches (frozen UI).
+- **Type specimens (one night, three instances):** an instance-data repo's CI pinned its spec
+  dependency at a never-merged branch commit (red pipeline, 1000+ schema failures the moment the
+  pin was bumped); a visualizer deployment pinned two different long-merged feature branches
+  (silently frozen data).
 - **CI:** `tools/sweep/check_pins.py` (this repo) — point it at any repo root; wire into each repo's
   `cleanliness.yml`.
 - **Semantic residue:** "current" needs judgment — the pin may resolve to a live ref that is still the
@@ -88,8 +89,8 @@ the maintainer approves (the 2026-07-23 sweep is the reference run).
 
 ### 11. Cross-repo vocabulary parity *(deterministic)*
 - A rename ratified in the owning repo must not survive in sibling repos. The owner's guard protects
-  only the owner: `kind`→`edge_type` was fixed in udlm while still live in dcm prose, the estate's
-  validator+tools, and the estate schema pin — four repos, one drift.
+  only the owner: `kind`→`edge_type` was fixed in udlm while still live in dcm prose and in a
+  downstream instance-data repo's validator, tools, and schema pin — four repos, one drift.
 - **CI:** `tools/sweep/vocab_parity.py` (this repo) — retired-term list swept across the sibling
   repos' surfaces; wire into each consumer repo's `cleanliness.yml`.
 - Retired-term list lives in the script (one home); extend it in the same PR as any future rename.

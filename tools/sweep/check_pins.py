@@ -4,8 +4,8 @@
 Scans a repo's CI/config surfaces for pinned git SHAs and git refs, then verifies each against
 its remote: a 40-hex SHA must be reachable from the remote's default branch (an orphaned or
 never-merged SHA fails even if it still fetches); a pinned branch must exist on the remote.
-Type specimens: estate UDLM_REF (never-merged branch commit), estate-explorer ESTATE_GIT_REF
-(long-merged feature branches). Exit 1 on any stale pin.
+Type specimens: a CI spec-dependency pinned at a never-merged branch commit; a deployment
+git ref pinned at long-merged feature branches. Exit 1 on any stale pin.
 
 Usage: check_pins.py <repo-root> [--remote-map name=url ...]
 """
