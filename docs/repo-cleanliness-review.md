@@ -73,6 +73,55 @@ the maintainer approves (the 2026-07-23 sweep is the reference run).
   version/metadata update.
 - **CI:** udlm `validate_registry` + `compat-check` ($id↔version coherence).
 
+### 10. Pins-current *(deterministic + semantic)*
+- Every pinned reference — SHA, branch name, tag, image ref, `$id`/`type_ref` URL, corpus `root_path` —
+  resolves AND points at current, merged reality. A pin to a review branch, a never-merged commit, or a
+  rewritten SHA is a HIGH finding even while the fetch still works (orphaned SHAs keep resolving on
+  borrowed time).
+- **Type specimens (one night, three instances):** an instance-data repo's CI pinned its spec
+  dependency at a never-merged branch commit (red pipeline, 1000+ schema failures the moment the
+  pin was bumped); a visualizer deployment pinned two different long-merged feature branches
+  (silently frozen data).
+- **CI:** `tools/sweep/check_pins.py` (this repo) — point it at any repo root; wire into each repo's
+  `cleanliness.yml`.
+- **Semantic residue:** "current" needs judgment — the pin may resolve to a live ref that is still the
+  wrong one.
+
+### 11. Cross-repo vocabulary parity *(deterministic)*
+- A rename ratified in the owning repo must not survive in sibling repos. The owner's guard protects
+  only the owner: `kind`→`edge_type` was fixed in udlm while still live in dcm prose and in a
+  downstream instance-data repo's validator, tools, and schema pin — four repos, one drift.
+- **CI:** `tools/sweep/vocab_parity.py` (this repo) — retired-term list swept across the sibling
+  repos' surfaces; wire into each consumer repo's `cleanliness.yml`.
+- Retired-term list lives in the script (one home); extend it in the same PR as any future rename.
+
+### 12. Human-readable — the Jordi criteria *(semantic)*
+- Every document a person will read passes the bar set in the Jordi review conversations: the
+  **audience is known** and it's written to them (senior engineers — don't restate what they know);
+  the **contract is up front** (what this is, what it settles, first paragraph); **references carry
+  their gist** (never a bare number or filename — say what the cited thing decided); **less is more**
+  (cut anything that doesn't move a decision); no internal/session shorthand an outsider can't decode.
+- Flow-tier docs must be readable start-to-finish by an engineer who did not write them.
+- **Mechanism:** agent sweep, ordered by the 21-UC surface first (below).
+
+---
+
+## Standing sweep parameters — audience and voice
+
+- **Audience: human engineers.** Every judgment call in the sweep asks "does this cost an engineer
+  time?" — not "is this formally perfect."
+- **Voice: software and data-model architect.** Documents speak as the architect explaining a
+  settled design to peers — declarative, grounded in the model, no marketing, no editorializing
+  ("genuinely", "honestly", "the caveat is real" are defects), no hedging on decided things.
+  Findings that flag voice drift cite the sentence, not the vibe.
+
+## Sweep ordering — engineer-time first
+
+Findings are reported **21-UC surface first**: the spec surface the September use cases require
+(enumerated in udlm `registry/UDLM-0.1-SCOPE.md`) outranks peripheral docs, because that is what
+engineering reads next. Severity within each tier: HIGH = an engineer will trip on it; MED = drift
+that will grow; LOW = polish.
+
 ---
 
 ## Per-repo gate inventory (keep this true)
@@ -86,7 +135,9 @@ the maintainer approves (the 2026-07-23 sweep is the reference run).
 | markdown links (`check_links.py`) | ✅ CI | ✅ CI | ✅ CI |
 | registry / contract validation | ✅ CI | ✅ CI | lint (`yamllint`/`ansible-lint`/Jinja parse) |
 | scheduled full-suite + issue-on-failure (`cleanliness.yml`) | ✅ | ✅ | ✅ |
-| semantic sweep (Q1–Q7 residues) | per cadence — this brief is the agent prompt |||
+| pins-current (`tools/sweep/check_pins.py`, Q10) | — | — | — (script lands here; wire per repo) |
+| vocab parity (`tools/sweep/vocab_parity.py`, Q11) | — | — | — (script lands here; wire per repo) |
+| semantic sweep (Q1–Q7, Q10–Q12 residues) | per cadence — this brief + `docs/runbook-overnight-sweep.md` are the agent prompt |||
 
 *A "—" is a known gap, not a pass. When a gate lands, flip the cell; when a new drift class appears, add the
 question — in this file only.*
