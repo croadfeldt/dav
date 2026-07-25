@@ -17,6 +17,13 @@
 # namespace subdirs so the run analyzes UCs from every included source.
 # Per-source root_path is honored at clone time so only UC content
 # (not the full repo tree) lands in the workspace.
+#
+# Provenance: multi-source mode writes corpus-manifest.yaml at the corpus
+# root — one row per configured source ({namespace, repo_url, branch,
+# head_sha|null, status: ok|failed}). A clone failure no longer just prints
+# to stderr and moves on; it lands as status:failed so the engine can embed
+# corpus_sources in run-summary.yaml and WARN on a partial corpus. The legacy
+# single-source fallback writes no manifest (the engine skips it gracefully).
 apiVersion: tekton.dev/v1
 kind: Task
 metadata:
@@ -113,6 +120,24 @@ spec:
         with open('/config/sources') as f:
             sources = yaml.safe_load(f) or []
 
+        # Corpus manifest (per source): the engine reads corpus-manifest.yaml
+        # at the corpus root, embeds it as run-summary.yaml.corpus_sources, and
+        # logs a prominent WARNING for any source with status != ok. This turns
+        # a silently-partial corpus (a source that failed to clone but the run
+        # continued against the rest) into a visible provenance record instead
+        # of an unexplained drop in UC count.
+        manifest_sources = []
+
+        def _head_sha(path):
+            try:
+                out = subprocess.run(
+                    ['git', 'rev-parse', 'HEAD'], cwd=path,
+                    check=True, capture_output=True, text=True,
+                )
+                return out.stdout.strip() or None
+            except Exception:
+                return None
+
         cloned = 0
         skipped_filter = 0
         for src in sources:
@@ -122,6 +147,10 @@ spec:
             root = (src.get('root_path') or '').strip('/')
             if not ns or not url:
                 print(f'[multi-corpus] skipping malformed source: {src}', flush=True)
+                manifest_sources.append({
+                    'namespace': ns, 'repo_url': url, 'branch': branch,
+                    'head_sha': None, 'status': 'failed',
+                })
                 continue
             if selected is not None and ns not in selected:
                 skipped_filter += 1
@@ -135,13 +164,22 @@ spec:
                 )
             except subprocess.CalledProcessError as e:
                 print(f'[multi-corpus] ERROR cloning {ns}: {e}', file=sys.stderr)
+                manifest_sources.append({
+                    'namespace': ns, 'repo_url': url, 'branch': branch,
+                    'head_sha': None, 'status': 'failed',
+                })
                 shutil.rmtree(tmp, ignore_errors=True)
                 continue
+            head_sha = _head_sha(tmp)
             src_dir = os.path.join(tmp, root) if root else tmp
             dst_dir = os.path.join(ws, ns)
             os.makedirs(dst_dir, exist_ok=True)
             if not os.path.isdir(src_dir):
                 print(f'[multi-corpus] WARN {ns}: root_path {root!r} not found in repo; skipping', file=sys.stderr)
+                manifest_sources.append({
+                    'namespace': ns, 'repo_url': url, 'branch': branch,
+                    'head_sha': head_sha, 'status': 'failed',
+                })
                 shutil.rmtree(tmp, ignore_errors=True)
                 continue
             for entry in os.listdir(src_dir):
@@ -161,7 +199,21 @@ spec:
             shutil.rmtree(tmp, ignore_errors=True)
             cloned += 1
             yaml_count = sum(1 for r, _, fs in os.walk(dst_dir) for f in fs if f.endswith(('.yaml', '.yml')))
+            manifest_sources.append({
+                'namespace': ns, 'repo_url': url, 'branch': branch,
+                'head_sha': head_sha, 'status': 'ok',
+            })
             print(f'[multi-corpus]   {ns}: {yaml_count} yaml file(s) staged', flush=True)
+
+        # Write the manifest at the corpus root (the engine's corpus-path).
+        # gather_corpus skips this filename so it is never mistaken for a UC.
+        manifest = {'sources': manifest_sources}
+        with open(os.path.join(ws, 'corpus-manifest.yaml'), 'w') as mf:
+            yaml.safe_dump(manifest, mf, sort_keys=False, default_flow_style=False)
+        failed_n = sum(1 for s in manifest_sources if s['status'] != 'ok')
+        if failed_n:
+            print(f'[multi-corpus] WARNING: {failed_n} source(s) FAILED — corpus is PARTIAL '
+                  '(recorded in corpus-manifest.yaml)', file=sys.stderr)
 
         print(f'[multi-corpus] complete: {cloned} source(s) cloned, {skipped_filter} skipped by filter', flush=True)
         if cloned == 0 and skipped_filter == 0:

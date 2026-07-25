@@ -64,7 +64,7 @@ from typing import Optional
 import yaml
 
 from dav.ai.agent import AgentConfig
-from dav.ai.client import EndpointConfig, InferenceClient
+from dav.ai.client import EndpointConfig, InferenceClient, InferenceError
 from dav.ai.mcp_tools import McpClient
 from dav.core.use_case_schema import UseCase, Analysis
 from dav.core.ensemble import merge_analyses
@@ -93,6 +93,17 @@ _DEFAULT_CACHE_PROMPT = {
     "reproduce": False,
     "explore": True,
 }
+# Fallback per-turn output budget when neither --max-tokens nor the
+# use_profile provides one. Kept at the historical run_corpus default.
+_DEFAULT_MAX_TOKENS = 4096
+
+# Assumed steady-state decode throughput (tok/s) on the reference stack
+# (dual R9700, Qwen3-32B Q8 observed ~20-26 tok/s). Used ONLY for the
+# advisory run-start warning that flags max_tokens/request-timeout math
+# that cannot work (a max_tokens budget the endpoint can't emit inside
+# the per-request timeout); it is never a limit.
+_ASSUMED_DECODE_TOK_PER_S = 20
+
 _DEFAULT_SAMPLER_PARAMS = {
     # Diagnosed 2026-04-26: some llama.cpp inference servers ship
     # --top-k 1 as a CLI default, making them greedy regardless of
@@ -138,8 +149,35 @@ def gather_corpus(corpus_path: Path) -> list[Path]:
         f for f in files
         if not f.name.endswith(".backup")
         and not f.name.startswith(".")
+        # The multi-corpus git-sync task drops a corpus-manifest.yaml at
+        # the corpus root (source provenance + clone status); it's run
+        # metadata, not a UC.
+        and f.name != "corpus-manifest.yaml"
     ]
     return sorted(files)
+
+
+def read_corpus_manifest(corpus_path: Path) -> Optional[dict]:
+    """Read corpus-manifest.yaml written by dav-git-sync-multi-corpus at the
+    corpus root, if present. Returns the parsed dict or None (legacy
+    single-source syncs and direct CLI runs have no manifest — that's fine).
+    Malformed manifests are logged and treated as absent; provenance
+    reporting must never block a run."""
+    if not corpus_path.is_dir():
+        return None
+    manifest_path = corpus_path / "corpus-manifest.yaml"
+    if not manifest_path.is_file():
+        return None
+    try:
+        with manifest_path.open("r") as f:
+            data = yaml.safe_load(f)
+    except Exception as e:
+        log.warning("corpus manifest %s unreadable (%s) — ignoring", manifest_path, e)
+        return None
+    if not isinstance(data, dict):
+        log.warning("corpus manifest %s is not a mapping — ignoring", manifest_path)
+        return None
+    return data
 
 def derive_run_id(corpus_files: list[Path], now_utc: Optional[datetime] = None) -> str:
     """Compute a run-id: <iso-timestamp>-<corpus-hash>."""
@@ -434,8 +472,19 @@ def write_run_summary(
     runner_total_seconds: float,
     effective_sampling: Optional[dict] = None,
     quarantined: Optional[list[dict]] = None,
+    phase: Optional[str] = None,
+    corpus_sources: Optional[list[dict]] = None,
 ) -> Path:
-    """Write the unified run-summary.yaml at the top of run_dir."""
+    """Write the unified run-summary.yaml at the top of run_dir.
+
+    phase: when set (the incremental per-UC rewrites pass "running"), a
+    `phase:` key is included so consumers can tell an in-flight snapshot
+    from a terminal summary. The final post-loop write omits it, keeping
+    the terminal schema exactly as before.
+    corpus_sources: per-source provenance from corpus-manifest.yaml
+    (multi-source syncs); omitted from the summary when absent (legacy
+    single-source runs).
+    """
     successful = [r for r in results if r.success]
     failed = [r for r in results if not r.success]
     total_samples = sum(r.sample_count for r in successful)
@@ -446,6 +495,8 @@ def write_run_summary(
     summary = {
         "run_id": run_id,
         "mode": mode,
+        **({"phase": phase} if phase else {}),
+        **({"corpus_sources": corpus_sources} if corpus_sources else {}),
         "started_at": runner_started_at,
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "runner_total_seconds": round(runner_total_seconds, 2),
@@ -557,6 +608,51 @@ def write_quarantine_report(run_dir: Path, quarantined: list[dict]) -> Path:
     return out
 
 
+def preflight_inference(
+    client: InferenceClient,
+    *,
+    budget_seconds: float = 90.0,
+) -> bool:
+    """Verify the inference endpoint answers BEFORE entering the UC loop.
+
+    Production incident: the endpoint was down at run start and every UC
+    'failed' in ~0.02s — 8 UCs burned before anyone noticed. A cheap
+    GET /models (client.list_models) with retries catches that up front.
+    Retries with exponential backoff (2s → 15s cap) until the endpoint
+    answers or budget_seconds is exhausted. Returns True when healthy,
+    False when the endpoint never answered — caller aborts the run.
+    """
+    deadline = time.monotonic() + budget_seconds
+    attempt = 0
+    delay = 2.0
+    while True:
+        attempt += 1
+        try:
+            models = client.list_models()
+            log.info(
+                "preflight: inference endpoint healthy (attempt %d, models: %s)",
+                attempt, models,
+            )
+            return True
+        except InferenceError as e:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log.error(
+                    "preflight: inference endpoint never answered within "
+                    "%.0fs (%d attempt(s)): %s",
+                    budget_seconds, attempt, e,
+                )
+                return False
+            sleep_s = min(delay, remaining)
+            log.warning(
+                "preflight: inference endpoint not ready (attempt %d): %s — "
+                "retrying in %.0fs",
+                attempt, e, sleep_s,
+            )
+            time.sleep(sleep_s)
+            delay = min(delay * 2, 15.0)
+
+
 def _cli():
     parser = argparse.ArgumentParser(
         description="Run DAV stage 2 across an entire UC corpus.",
@@ -644,7 +740,19 @@ def _cli():
         "--max-tool-calls", type=int, default=30,
     )
     parser.add_argument(
-        "--max-tokens", type=int, default=4096,
+        "--max-tokens", type=int, default=None,
+        help="Per-turn LLM output token budget. Default: None, which "
+             "resolves as use_profile['max_tokens'] if the DAV profile "
+             "provides one, else 4096. (The default used to BE 4096, which "
+             "made an explicit --max-tokens 4096 indistinguishable from "
+             "'not set' and silently shadowed the profile value.)",
+    )
+    parser.add_argument(
+        "--request-timeout-seconds", type=int, default=None,
+        help="Per-request HTTP timeout for inference calls (seconds). "
+             "Default: None → 900. Must satisfy "
+             "max_tokens / decode-throughput(tok/s) < this value, or long "
+             "generations die client-side; a run-start WARNING flags that.",
     )
     parser.add_argument(
         "--temperature", type=float, default=None,
@@ -913,20 +1021,41 @@ def _cli():
     top_p = args.top_p if args.top_p is not None else use_profile.get("top_p", sampler_defaults["top_p"])
     min_p = args.min_p if args.min_p is not None else use_profile.get("min_p", sampler_defaults["min_p"])
 
-    # max_tokens has a CLI default of 4096 so we can't distinguish "user
-    # didn't set it" from "user explicitly set 4096". Treat any non-default
-    # CLI value as override; otherwise let use_profile or default apply.
-    if args.max_tokens != 4096:
+    # max_tokens: explicit CLI > use_profile > default. The CLI default is
+    # None (not a value sentinel), so an explicit --max-tokens 4096 is a
+    # real override — the old `!= 4096` sentinel silently shadowed it.
+    if args.max_tokens is not None:
         max_tokens = args.max_tokens
     else:
-        max_tokens = use_profile.get("max_tokens", args.max_tokens)
+        max_tokens = use_profile.get("max_tokens", _DEFAULT_MAX_TOKENS)
+
+    # Per-request HTTP timeout: explicit CLI > EndpointConfig default (900).
+    request_timeout = (
+        args.request_timeout_seconds
+        if args.request_timeout_seconds is not None else 900
+    )
+    # Advisory timeout math (the OSAC 504s: max_tokens the endpoint could
+    # not emit inside the route/client timeout). Assumed throughput is the
+    # commented constant above, not a measurement of THIS endpoint.
+    est_worst_case_s = max_tokens / _ASSUMED_DECODE_TOK_PER_S
+    if est_worst_case_s > request_timeout:
+        log.warning(
+            "max_tokens=%d at an assumed ~%d tok/s is ~%.0fs of generation, "
+            "which exceeds the per-request timeout of %ds — a legitimately "
+            "long generation WILL die client-side. Lower --max-tokens or "
+            "raise --request-timeout-seconds.",
+            max_tokens, _ASSUMED_DECODE_TOK_PER_S,
+            est_worst_case_s, request_timeout,
+        )
 
     log.info(
         "corpus mode=%s temperature=%s cache_prompt=%s sample_count=%s "
-        "sample_concurrency=%d top_k=%s top_p=%s min_p=%s max_tokens=%s",
+        "sample_concurrency=%d top_k=%s top_p=%s min_p=%s max_tokens=%s "
+        "request_timeout=%ss",
         args.mode, temperature, cache_prompt,
         args.sample_count or _DEFAULT_SAMPLE_COUNT[args.mode],
         args.sample_concurrency, top_k, top_p, min_p, max_tokens,
+        request_timeout,
     )
 
     config = AgentConfig(
@@ -955,6 +1084,7 @@ def _cli():
         url=args.inference_endpoint,
         model=args.inference_model,
         api_key=inference_api_key,
+        timeout_seconds=request_timeout,
         chat_template_kwargs=chat_template_kwargs,
         cache_prompt=cache_prompt,
         top_k=top_k,
@@ -983,6 +1113,46 @@ def _cli():
         return InferenceClient(primary=primary)
     def _make_mcp():
         return McpClient(server_url=args.mcp_url)
+
+    # Run-start preflight: prove the endpoint answers BEFORE the UC loop.
+    # (Production incident: endpoint down at run start → every UC failed in
+    # ~0.02s and the whole corpus burned before anyone noticed.) Skipped for
+    # Anthropic endpoints — list_models targets the OpenAI-compatible
+    # GET /models with Bearer auth, which Anthropic rejects.
+    from dav.ai.client import _is_anthropic
+    if _is_anthropic(primary):
+        log.info("preflight: skipping /models check for Anthropic endpoint")
+    elif not preflight_inference(_make_inference()):
+        print(
+            f"ERROR: inference endpoint {args.inference_endpoint} did not "
+            "answer the preflight health check; aborting before the UC loop "
+            "so the corpus is not burned against a dead endpoint.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Corpus source provenance (multi-source syncs write corpus-manifest.yaml
+    # at the corpus root; legacy single-source runs have none — skip quietly).
+    corpus_manifest = read_corpus_manifest(args.corpus_path)
+    corpus_sources: Optional[list[dict]] = None
+    if corpus_manifest:
+        corpus_sources = corpus_manifest.get("sources") or None
+        failed_sources = [
+            s for s in (corpus_sources or []) if s.get("status") != "ok"
+        ]
+        if failed_sources:
+            log.warning("=" * 72)
+            log.warning(
+                "CORPUS INCOMPLETE: %d of %d configured corpus source(s) "
+                "FAILED to sync — this run covers a PARTIAL corpus:",
+                len(failed_sources), len(corpus_sources or []),
+            )
+            for s in failed_sources:
+                log.warning(
+                    "  failed source: namespace=%s repo=%s branch=%s",
+                    s.get("namespace"), s.get("repo_url"), s.get("branch"),
+                )
+            log.warning("=" * 72)
 
     # Run the corpus
     runner_started_at = datetime.now(timezone.utc).isoformat()
@@ -1034,10 +1204,30 @@ def _cli():
             inference_topology=args.inference_topology,
         )
 
+    def _write_summary_snapshot() -> None:
+        """Rewrite run-summary.yaml with running totals + phase: running after
+        every finished UC. A cancelled/OOM-killed run previously left NO
+        run-summary.yaml at all, and the console skips summary-less run dirs
+        — hours of finished analyses invisible. Same swallow-errors contract
+        as _write_progress: reporting must never disrupt the run."""
+        try:
+            write_run_summary(
+                run_dir=run_dir, run_id=run_id, mode=args.mode,
+                results=list(results), runner_started_at=runner_started_at,
+                runner_total_seconds=time.monotonic() - runner_started,
+                effective_sampling=effective_block,
+                quarantined=_quarantined,
+                phase="running",
+                corpus_sources=corpus_sources,
+            )
+        except Exception as e:
+            log.warning("incremental run-summary write failed: %s", e)
+
     def _record(result) -> bool:
         """Append + log one finished UC; returns True when halt-on-error fires.
         Called only from the main thread (serial loop or as_completed loop)."""
         results.append(result)
+        _write_summary_snapshot()
         if not result.success:
             log.warning(
                 "UC %s failed (%.2fs): %s",
@@ -1107,6 +1297,7 @@ def _cli():
         runner_total_seconds=runner_total,
         effective_sampling=effective_block,
         quarantined=_quarantined,
+        corpus_sources=corpus_sources,
     )
     log.info("run summary written: %s", summary_path)
 
