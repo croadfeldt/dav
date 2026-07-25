@@ -141,3 +141,19 @@ that will grow; LOW = polish.
 
 *A "—" is a known gap, not a pass. When a gate lands, flip the cell; when a new drift class appears, add the
 question — in this file only.*
+
+## Q13 — The cold reader (DOC-001, ruled core 2026-07-25)
+
+Every document in scope is held to the cold-reader test: hand its opening to a competent
+engineer who has never seen these repos — if they can repeat back what was decided and why it
+matters, it passes; if they need a second document first, it fails. Sweep mechanics: sample
+documents changed since the last sweep (ADRs and design notes always; READMEs and contexts on
+rotation), read each as the persona it targets, and file every failure as a doc defect with
+the sentence that lost the reader quoted. The standard is DOC-001 (udlm CONTRIBUTING.md rule
+#1): narrative prose inside existing formats, industry-named concepts before internal
+shorthand, references carrying their gist, jargon introduced not assumed. Two live precedents
+prove the test finds what gates cannot: reader questions about pin/upstream-chain behavior
+and about atomic-recompilation scope each exposed a doctrine ambiguity no deterministic gate
+could see — both became same-day patches. The interpretability probe campaign (ADR-004) is
+this question automated for type contexts; this sweep question covers the documents the
+probes do not reach.
