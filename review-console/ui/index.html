@@ -1039,6 +1039,20 @@
         .ss-uc-unassigned { font-size:8px; color:var(--text-faint); }
         /* the vertical set accordion is a drop target for UC drags */
         [data-set-row].ss-drop { box-shadow:inset 0 0 0 2px var(--accent); background:var(--accent-bg); }
+        /* sortable column header */
+        .ss-col-header { display:grid; grid-template-columns:24px 2fr 110px 110px 54px 110px auto;
+                         gap:0; padding:0 16px; border-bottom:2px solid var(--border);
+                         background:var(--bg-panel); position:sticky; top:0; z-index:2; }
+        .ss-col-header span { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.5px;
+                              color:var(--text-faint); padding:7px 4px; cursor:pointer; user-select:none;
+                              white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .ss-col-header span:hover { color:var(--text); }
+        .ss-col-header span.ss-sort-active { color:var(--accent); }
+        /* grid row matching header columns */
+        .ss-set-grid { display:grid; grid-template-columns:24px 2fr 110px 110px 54px 110px auto;
+                       gap:0; align-items:center; padding:8px 16px; }
+        .ss-set-grid > div { font-size:11px; padding:0 4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .ss-set-actions { display:flex; flex-wrap:wrap; gap:3px; justify-content:flex-end; }
       </style>
       <div class="ss-split">
         <!-- Left: static, filterable full Use Case list (drag source) -->
@@ -1128,6 +1142,7 @@
             <div class="rd-header-top">
               <div class="rd-panel-title" id="rdTitle">—</div>
               <div class="rd-header-actions">
+                <button class="btn ghost btn-sm" id="rdIngestPartialBtn" style="display:none;font-size:10px;" title="This analysis finished but its results were never ingested — load the partial results now">↓ Ingest partial results</button>
                 <button class="btn ghost btn-sm" id="rdDiagnoseBtn" style="display:none;font-size:10px;" title="Diagnose this analysis's failures and propose fixes (Improve tab)">🩺 Diagnose</button>
                 <button class="btn ghost btn-sm" id="rdViewResultsBtn" style="display:none;font-size:10px;">View Results →</button>
                 <button class="btn ghost btn-sm" id="rdReviewBtn" style="display:none;font-size:10px;" title="Generate the architecture review, enhancement plan and PRs in Roadmaps, scoped to this analysis's Scoping Set">Review this analysis →</button>
@@ -1411,6 +1426,8 @@
               Reviewing <strong id="rpScopeName">all use cases</strong>
               <div style="font-size:10px;color:var(--text-faint);margin-top:2px;">Set the Scoping Set in the masthead Scope selector ▸</div>
             </div>
+            <!-- Active review scope indicator: whole set vs a single UC (from a per-UC action). -->
+            <div id="rpScopeIndicator" style="font-size:11px;color:var(--text-dim);margin-top:4px;display:none;"></div>
             <!-- Retired run/UC scope picker — the Architecture roadmap now follows the
                  masthead Scoping Set (latest eval per UC). Hidden inputs kept so legacy
                  references resolve without error. -->
@@ -3685,7 +3702,9 @@ async function init() {
     ov.style.display = 'flex';
     return;
   }
-  try { await Promise.all([loadMe(), loadRunStatus()]); setApiStatus(true); }
+  // Boot dedupe: init() already fetched /api/me above — hand that value to loadMe so it
+  // wires up the account UI without a second identical request.
+  try { await Promise.all([loadMe(me), loadRunStatus()]); setApiStatus(true); }
   catch (e) { console.error(e); setApiStatus(false, e.message); }
   _loadUserSettings();   // #129: pull server-side prefs (theme/persona/view-mode/nav) + re-apply
   // Pre-load models + project model defaults so every default-aware override
@@ -3759,9 +3778,12 @@ window.addEventListener('focus', () => {
   if (Date.now() - _lastMeRefresh > 30000) { _lastMeRefresh = Date.now(); loadMe(); }
 });
 
-async function loadMe() {
+async function loadMe(prefetched) {
   _lastMeRefresh = Date.now();
-  try { me = await api('/api/me'); } catch { me = {reviewer:null,authenticated:false}; }
+  // A caller (boot) may pass an already-fetched /api/me payload to avoid a duplicate
+  // request; the focus-refresh / project-switch callers pass nothing and refetch.
+  if (prefetched !== undefined) me = prefetched;
+  else { try { me = await api('/api/me'); } catch { me = {reviewer:null,authenticated:false}; } }
   const chip = document.getElementById('acctChipLabel');
   const who = document.getElementById('acctMenuWho');
   if (me.authenticated && me.reviewer) {
@@ -5513,6 +5535,18 @@ async function loadRuns(opts) {
   }
 }
 
+// Evaluation model for a run — sourced from the trigger params (same field the
+// drawer Params dump renders, `inference-model`). Compact tail (strip the org/
+// path prefix); '' when unknown so the row degrades to no badge.
+function _runModelRaw(r) {
+  const p = r.params || {};
+  return p['inference-model'] || p['inference_model'] || '';
+}
+function _runModelLabel(r) {
+  const m = _runModelRaw(r);
+  return m ? String(m).split('/').pop() : '';
+}
+
 // Fingerprint of the salient display fields. If unchanged between renders,
 // the row's innerHTML doesn't need to be rebuilt at all.
 function _runItemFingerprint(r) {
@@ -5525,6 +5559,8 @@ function _runItemFingerprint(r) {
     r.archived ? 'a' : '',
     // #branch-targeting: re-render when the resolved ref/sha lands (sha fills in at ingest).
     r.spec_repo_branch, r.corpus_repo_branch, r.spec_repo_sha, r.corpus_repo_sha,
+    // run_id fills in at ingest → drives the model badge + Compare actions appearing.
+    r.run_id, _runModelLabel(r),
     _rdName === r.name ? '1' : '0',
   ].join('|');
 }
@@ -5552,11 +5588,16 @@ function _renderRunItemHtml(r) {
     const shaShort = _evalSha ? '@' + esc(String(_evalSha).slice(0, 7)) : '';
     refHtml = `<span title="Evaluated git ref (branch@sha)" style="font-size:10px;color:var(--text-dim);">⎇ ${esc(_evalBranch || '?')}${shaShort}</span>`;
   }
+  // Evaluation model badge — degrades to nothing when the param is absent.
+  const _modelLabel = _runModelLabel(r);
+  const modelHtml = _modelLabel
+    ? `<span title="Evaluation model — ${esc(_runModelRaw(r))}" style="font-size:10px;color:var(--text-dim);">⬡ ${esc(_modelLabel)}</span>`
+    : '';
   return `
     <input type="checkbox" class="run-sel-cb" onclick="event.stopPropagation()" onchange="toggleRunSelect('${r.name}', this.checked)" ${_selectedRuns.has(r.name) ? 'checked' : ''} title="Select for batch archive/delete" style="margin:3px 6px 0 0;width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;align-self:flex-start;cursor:pointer;" />
     <div class="rli-main" style="${r.archived ? 'opacity:0.55;' : ''}">
       <div class="rli-name">${esc(friendly)}${r.archived ? ' <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-faint);border:1px solid var(--border);padding:0 3px;border-radius:2px;">archived</span>' : ''}</div>
-      <div class="rli-sub">${scopeBits.join(' · ')}${countsHtml ? ' · ' + countsHtml : ''}${refHtml ? ' · ' + refHtml : ''}</div>
+      <div class="rli-sub">${scopeBits.join(' · ')}${countsHtml ? ' · ' + countsHtml : ''}${refHtml ? ' · ' + refHtml : ''}${modelHtml ? ' · ' + modelHtml : ''}</div>
       <div class="rli-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.6;">${esc(r.name||'')}</div>
     </div>
     <div class="rli-right">
@@ -5564,6 +5605,7 @@ function _renderRunItemHtml(r) {
       <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
       <div class="rli-actions">
         ${!['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase) ? `<button class="btn ghost btn-sm" title="Stop this analysis (cancel the pipeline)" onclick="event.stopPropagation();stopRunConfirm('${r.name}')">⏹ Stop</button>` : ''}
+        ${r.run_id ? `<button class="btn ghost btn-sm" title="Compare this analysis against another" onclick="event.stopPropagation();compareRunFromRow('${r.name}')">⇄ Compare…</button><button class="btn ghost btn-sm" title="Compare against the previous ingested analysis of the same Scoping Set" onclick="event.stopPropagation();compareRunVsPrev('${r.name}')">vs previous</button>` : ''}
         <button class="btn ghost btn-sm" title="Re-analyze with the same Scoping Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
         <button class="btn ghost btn-sm" title="${r.archived ? 'Unarchive' : 'Archive (hide from list)'}" onclick="event.stopPropagation();archiveRun('${r.name}',${r.archived ? 'false' : 'true'})">${r.archived ? 'Unarchive' : 'Archive'}</button>
         <button class="btn danger btn-sm" title="Delete completely — irreversible" onclick="event.stopPropagation();deleteRunConfirm('${r.name}')">Delete</button>
@@ -5720,7 +5762,8 @@ function _matchRunFilter(r){
   return (r.name||'').toLowerCase().includes(f)
       || (r.session_name||'').toLowerCase().includes(f)
       || (r.category||'').toLowerCase().includes(f)
-      || (r.phase||'').toLowerCase().includes(f);
+      || (r.phase||'').toLowerCase().includes(f)
+      || _runModelRaw(r).toLowerCase().includes(f);
 }
 document.getElementById('runFilter')?.addEventListener('input', function(){ _runFilter = this.value; renderRunsList(); });
 document.getElementById('runPhaseFilter')?.addEventListener('change', function(){ _runPhaseFilter = this.value; renderRunsList(); });
@@ -5757,6 +5800,11 @@ const RD_PROMPTS_COLLAPSED_CHARS = 600;
 // flash cells when their value changes between polls.
 let _rdLastGpuValues  = {};   // {gpu_id: {metric: value}}
 let _rdLastVllmValues = {};   // {key: value}
+// Consecutive null-poll counter per vLLM metric key. A backend that doesn't emit
+// vLLM stats (e.g. llama.cpp) reports null forever; after a few polls we collapse
+// those cells to one "not reported by this backend" note instead of a wall of '—'.
+let _rdVllmNullStreak = {};   // {key: count}
+const RD_VLLM_NULL_HIDE_AFTER = 5;
 let _rdGpuLastChange  = 0;    // epoch seconds when any GPU metric last changed
 let _rdVllmLastChange = 0;    // epoch seconds when any vLLM metric last changed
 let _rdFreshTimer     = null; // separate timer that updates the "Xs ago" label every second
@@ -5815,19 +5863,24 @@ async function rdRefreshPrompts() {
     const ls = await api(`/api/runs/${encodeURIComponent(_rdName)}/turns`).catch(() => ({}));
     const discovered = ls.files || [];
     for (const f of discovered) {
-      if (!_rdPromptsState.perFile[f]) _rdPromptsState.perFile[f] = {next_offset:0, records:[]};
+      if (!_rdPromptsState.perFile[f]) _rdPromptsState.perFile[f] = {next_offset:0, records:[], terminal:false};
     }
     _rdPromptsState.filesKnown = discovered.length ? discovered : _rdPromptsState.filesKnown;
-    // Poll each known file for delta
-    for (const f of _rdPromptsState.filesKnown) {
+    // Poll all non-terminal files' deltas in PARALLEL (was serial — one GET per file
+    // per 5s tick, ~150 serial round-trips late in a big run). A file is terminal once
+    // its sample loop emitted a 'summary'/'final' record; those never grow again, so we
+    // stop refetching them and the per-tick fan-out shrinks to only the live samples.
+    const activeFiles = _rdPromptsState.filesKnown.filter(f => !_rdPromptsState.perFile[f]?.terminal);
+    await Promise.all(activeFiles.map(async f => {
       const st = _rdPromptsState.perFile[f];
       const r = await api(`/api/runs/${encodeURIComponent(_rdName)}/turns?file=${encodeURIComponent(f)}&since=${st.next_offset}`).catch(() => null);
-      if (!r || !r.records) continue;
+      if (!r || !r.records) return;
       if (r.records.length) {
         st.records.push(...r.records.map(rec => ({...rec, _file: f})));
+        if (r.records.some(rec => rec.kind === 'summary' || rec.kind === 'final')) st.terminal = true;
       }
       st.next_offset = r.next_offset ?? st.next_offset;
-    }
+    }));
     rdRenderPrompts();
   } catch (e) {
     // silent
@@ -6051,24 +6104,34 @@ function _reanalyzeUC(uuid) {
   openNewRun(undefined, undefined, { handles: [], uuids: [uuid], managed: [uuid] },
     undefined, { selection_mode: 'selection' });
 }
-function setAuditFilter(f) { _auditFilter = f; _paintAnalysisAudit(); }
-async function _renderAnalysisAudit() {
-  const el = document.getElementById('rdRunBody');
-  if (!el || _rdName) return;   // only the default (no run open) state
+// _auditTargetId lets the audit paint into either the default Runs-view body
+// ('rdRunBody', shown when no run is open) OR an appended section inside a
+// selected terminal run's detail ('rdAuditBody'). setAuditFilter reuses it.
+let _auditTargetId = 'rdRunBody';
+function setAuditFilter(f) { _auditFilter = f; _paintAnalysisAudit(_auditTargetId); }
+async function _renderAnalysisAudit(targetId) {
+  targetId = targetId || 'rdRunBody';
+  _auditTargetId = targetId;
+  const isDefault = (targetId === 'rdRunBody');
+  const el = document.getElementById(targetId);
+  if (!el) return;
+  if (isDefault && _rdName) return;   // default (no run open) state only
   el.innerHTML = '<div class="rd-empty">loading analysis audit…</div>';
   let r;
   try { r = await api('/api/results/uc-latest'); }
   catch (e) { el.innerHTML = `<div class="rd-empty" style="color:var(--red)">${esc(e.message)}</div>`; return; }
-  if (_rdName) return;   // a run got opened while loading
+  if (isDefault && _rdName) return;   // a run got opened while loading
   _auditUCs = r.ucs || [];
   _auditMeta = { total: r.total || 0, evaluated: r.evaluated || 0, failed: r.failed || 0 };
   _auditNeedsEval = _auditUCs.filter(u => !u.evaluated || u.stale).map(u => u.uc_uuid);
-  _paintAnalysisAudit();
+  _paintAnalysisAudit(targetId);
 }
 let _auditMeta = { total: 0, evaluated: 0, failed: 0 };
-function _paintAnalysisAudit() {
-  const el = document.getElementById('rdRunBody');
-  if (!el || _rdName) return;
+function _paintAnalysisAudit(targetId) {
+  targetId = targetId || _auditTargetId || 'rdRunBody';
+  const isDefault = (targetId === 'rdRunBody');
+  const el = document.getElementById(targetId);
+  if (!el || (isDefault && _rdName)) return;
   const ucs = _auditUCs || [];
   const failedN = ucs.filter(u => u.failed).length;
   const staleN  = ucs.filter(u => u.stale).length;
@@ -6113,6 +6176,44 @@ function _paintAnalysisAudit() {
         <tbody>${rows || `<tr><td colspan="6" style="padding:12px;color:var(--text-faint);">${ucs.length ? 'No use cases match this filter.' : 'No use cases in this project.'}</td></tr>`}</tbody>
       </table>
     </div>`;
+}
+
+// Ingest a terminal-but-uningested run's partial results. The ingest endpoint is
+// keyed by the WORKSPACE run_id, which we don't have for an uningested run — the
+// turns endpoint correlates the PipelineRun name → its workspace run-dir, so we
+// resolve the run_id there, then POST the existing idempotent ingest.
+async function ingestPartialResults(name) {
+  const btn = document.getElementById('rdIngestPartialBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Ingesting…'; }
+  try {
+    const t = await api(`/api/runs/${encodeURIComponent(name)}/turns`);
+    const runId = t && t.run_id;
+    if (!runId) { toast('No workspace results found for this run yet', true); return; }
+    const resp = await api(`/api/analysis/ingest/${encodeURIComponent(runId)}`, { method: 'POST' });
+    toast(`Ingested ${resp.ingested_ucs || 0} UCs, ${resp.ingested_gaps || 0} gaps from partial results`);
+    await loadRuns();
+    try { await loadResults(); } catch (_) {}
+    selectRunResult(runId);
+  } catch (e) {
+    toast('Ingest failed: ' + e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↓ Ingest partial results'; }
+  }
+}
+
+// Append a per-UC analysis-audit section to the (terminal) run's detail body so a
+// finished/partial run shows exactly which UCs were evaluated + a one-click
+// re-analyze for the missing ones — the same audit that fronts the empty Runs view.
+function _ensureRunAuditSection() {
+  const body = document.getElementById('rdRunBody');
+  if (!body || document.getElementById('rdAuditSection')) return;
+  const sec = document.createElement('div');
+  sec.className = 'run-section';
+  sec.id = 'rdAuditSection';
+  sec.innerHTML = `<div class="run-section-title">UC analysis audit <span style="font-weight:400;color:var(--text-faint);font-size:10px;">— latest eval per use case; re-analyze what's missing</span></div>
+    <div id="rdAuditBody"><div class="empty" style="font-size:11px">loading…</div></div>`;
+  body.appendChild(sec);
+  _renderAnalysisAudit('rdAuditBody');
 }
 
 function selectRun(name) {
@@ -6195,7 +6296,7 @@ function selectRun(name) {
   rdSwitchTab('run');
 
   // Reset state
-  _rdLastGpuValues = {}; _rdLastVllmValues = {};
+  _rdLastGpuValues = {}; _rdLastVllmValues = {}; _rdVllmNullStreak = {};
   _rdGpuLastChange = 0;  _rdVllmLastChange = 0;
   _rdTokenBaseline = {gen: null, prompt: null};
   _rdSparklines    = null;
@@ -6213,10 +6314,24 @@ function selectRun(name) {
   const run = allRuns.find(r => r.name === name);
   updateRunChip(run?.session_name || name, run?.phase);
 
-  // Show "View Results" if results exist for this run
+  // Show "View Results" if results exist for this run. NB: `name` is the Tekton
+  // PipelineRun name, NOT the workspace analysis run_id — matching r.run_id===name
+  // never hit. Results rows carry run_name (the Tekton name) joined from run_sessions,
+  // so match on that; also accept the run's own ingested run_id (_r.run_id).
   const resultBtn = document.getElementById('rdViewResultsBtn');
-  const hasResult = allResults.find(r => r.run_id === name);
+  const hasResult = allResults.find(r => r.run_name === name || (_r && _r.run_id && r.run_id === _r.run_id));
   resultBtn.style.display = hasResult ? '' : 'none';
+
+  // Partial-results affordance: a run that reached a terminal phase but was never
+  // ingested (no run_id / no results row) offers a one-click ingest of whatever
+  // completed. Reuses the existing ingest endpoint (run name → workspace run_id
+  // via the turns correlation).
+  const ingestBtn = document.getElementById('rdIngestPartialBtn');
+  if (ingestBtn) {
+    const terminal = ['Succeeded','Failed','Cancelled','TimedOut'].includes(_r?.phase);
+    ingestBtn.style.display = (terminal && !hasResult) ? '' : 'none';
+    ingestBtn.onclick = () => ingestPartialResults(name);
+  }
 
   // Show "Diagnose" — available for any run (the diagnoser resolves the run
   // name to its workspace results dir; a clean run simply yields 0 proposals).
@@ -6704,6 +6819,10 @@ function renderRunDrawerDetail(d) {
   Object.entries(d.params || {}).forEach(([k,v]) => {
     pe.innerHTML += `<div class="kv-label">${esc(k)}</div><div class="kv-val" style="word-break:break-all">${esc(v)}</div>`;
   });
+
+  // Terminal run → append the per-UC analysis audit (built once). Shows a partial
+  // run's evaluated/missing UCs in situ, not only on the empty Runs view.
+  if (_terminal) _ensureRunAuditSection();
 }
 
 function _fmtN(v, digits) {
@@ -6841,9 +6960,23 @@ function renderRunDrawerMetrics(snap, opts) {
     // Bottom-right: total GPU energy used by the run (custom formatter).
     ['_gpu_energy_j',          'GPU energy',       'rdv-energy',   0, '', (j)=> (j==null ? '–' : _fmtEnergy(j))],
   ];
-  vllmEl.innerHTML = vKeys.map(([k,label,id,prec,unit,fmt]) => `
+  // Degradation: track consecutive null polls per key. Once a metric has been
+  // null for RD_VLLM_NULL_HIDE_AFTER polls running (a backend that never reports
+  // it) drop its cell; collapse all the dropped ones into a single note — mirrors
+  // how the sparklines already hide when there's nothing to plot (:978). Historical
+  // (completed-run) snapshots carry real values, so they don't trip this.
+  let _vllmHidden = 0;
+  const _visVKeys = vKeys.filter(([k]) => {
+    const val = v[k];
+    const isNull = (val === null || val === undefined || Number.isNaN(val));
+    _rdVllmNullStreak[k] = isNull ? (_rdVllmNullStreak[k] || 0) + 1 : 0;
+    if (_rdVllmNullStreak[k] >= RD_VLLM_NULL_HIDE_AFTER) { _vllmHidden++; return false; }
+    return true;
+  });
+  vllmEl.innerHTML = _visVKeys.map(([k,label,id,prec,unit,fmt]) => `
     <div class="vllm-cell"><div class="vllm-cell-label">${label}</div>
-      <div class="vllm-cell-value" id="${id}">${fmt ? fmt(v[k]) : _fmtN(v[k], prec)}${unit ? `<span class="vllm-cell-unit">${unit}</span>` : ''}</div></div>`).join('');
+      <div class="vllm-cell-value" id="${id}">${fmt ? fmt(v[k]) : _fmtN(v[k], prec)}${unit ? `<span class="vllm-cell-unit">${unit}</span>` : ''}</div></div>`).join('')
+    + (_vllmHidden ? `<div class="vllm-cell" style="opacity:0.65;"><div class="vllm-cell-label">—</div><div class="vllm-cell-value" style="font-size:10px;line-height:1.3;">${_vllmHidden} metric${_vllmHidden===1?'':'s'} not reported by this backend</div></div>` : '');
   let vllmChanged = false;
   vKeys.forEach(([k,_l,id]) => {
     const prev = _rdLastVllmValues[k];
@@ -7385,6 +7518,37 @@ async function submitNewRun() {
 
 // ══════════════════════════ RESULTS ══════════════════════════
 
+// ── Gap severity ordering (shared) ───────────────────────────────────────────
+// Canonical severity order matches the API's SEV_ORDER (critical → minor). Gaps
+// come back in API/emit order; every place that renders them sorts by this so the
+// worst gaps read first, and the run header shows a rollup ("2 critical · 5 major").
+const _SEV_ORDER = { critical: 0, major: 1, moderate: 2, advisory: 3, minor: 4 };
+function _gapSevLabel(g) {
+  const s = g && g.severity;
+  if (s && typeof s === 'object') return s.label || 'minor';
+  return s || 'minor';
+}
+function _sevRank(g) { return _SEV_ORDER[String(_gapSevLabel(g)).toLowerCase()] ?? 9; }
+function _sortGapsBySeverity(gaps) { return [...(gaps || [])].sort((a, b) => _sevRank(a) - _sevRank(b)); }
+
+// Fetch this run's ingested gaps and paint a compact severity rollup ("2 critical ·
+// 5 major") into the run header. Advisory: silent on failure (gaps may be un-ingested).
+async function _renderRunSevRollup(runId) {
+  const el = document.getElementById('runSevRollup');
+  if (!el || !runId) return;
+  let gaps = [];
+  try { gaps = (await api(`/api/analysis/gaps?run_id=${encodeURIComponent(runId)}&limit=2000`)).gaps || []; }
+  catch (_) { return; }
+  const counts = {};
+  gaps.forEach(g => { const s = String(_gapSevLabel(g)).toLowerCase(); counts[s] = (counts[s] || 0) + 1; });
+  const order = ['critical', 'major', 'moderate', 'advisory', 'minor'];
+  const parts = order.filter(s => counts[s]).map(s =>
+    `<span class="sev-label ${sevClass(s)}" style="font-size:9px;">${counts[s]} ${esc(s)}</span>`);
+  el.innerHTML = parts.length
+    ? `<span style="color:var(--text-faint);">gaps:</span> ${parts.join(' <span style="color:var(--border-bright);">·</span> ')}`
+    : '';
+}
+
 async function loadResults() {
   document.getElementById('resultList').innerHTML = '<div class="empty">loading…</div>';
   try {
@@ -7465,7 +7629,7 @@ function setScope(v) {
   // Refresh whichever scoped view is active + the freshness chip.
   if (_curView === 'results') _showScopedResults();
   else if (_curView === 'capmap') renderCapMap();
-  else if (_curView === 'review') { try { _rpUpdateScopeName(); _rpLoadCached(); } catch (_) {} }
+  else if (_curView === 'review') { try { _rpSetScopeReq('set'); _rpUpdateScopeName(); _rpLoadCached(); } catch (_) {} }
   else if (_curView === 'enhancement') { try { loadEnhancementWorkbench(); } catch (_) {} }
   else if (_curView === 'engineering') { try { _loadEngCapMap(); _loadRoadmapProjection(); } catch (_) {} }
   try { loadFreshness(); } catch (_) {}
@@ -7676,8 +7840,10 @@ function renderRunSummaryHeader(s) {
         <span style="color:var(--text-faint);">${esc(fmtTs(s.finished_at || s.started_at))}</span>
       </div>
     </div>
-    ${lineageRow}`;
+    ${lineageRow}
+    <div id="runSevRollup" style="font-size:11px;margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;"></div>`;
   header.style.display = '';
+  _renderRunSevRollup(s.run_id);
   // Clear the per-UC area to its empty state — header stays
   const bar = document.getElementById('analysisActionBar'); bar.innerHTML=''; bar.style.display='none';
   document.getElementById('analysisDetail').innerHTML =
@@ -7903,11 +8069,10 @@ function _exitCompareMode() {
   _clearAnalysis();
 }
 
-document.getElementById('cmpToggleBtn').addEventListener('click', () => {
-  if (cmpMode) { _exitCompareMode(); return; }
-  if (!activeRunResultId) return;
-  // Populate run B picker with all other result runs
+// Populate the run-B <select> with every other ingested result; label run A.
+function _populateCompareBSelect() {
   const sel = document.getElementById('cmpRunBSelect');
+  if (!sel) return;
   sel.innerHTML = '<option value="">— pick an analysis —</option>';
   allResults.forEach(r => {
     if (r.run_id === activeRunResultId) return;
@@ -7920,19 +8085,21 @@ document.getElementById('cmpToggleBtn').addEventListener('click', () => {
     sel.appendChild(opt);
   });
   const activeRun = allResults.find(r => r.run_id === activeRunResultId);
-  document.getElementById('cmpRunALabel').textContent = activeRun?.session_name || activeRunResultId;
-  document.getElementById('cmpRunALabel').title = activeRunResultId;
+  document.getElementById('cmpRunALabel').textContent = activeRun?.session_name || activeRunResultId || '—';
+  document.getElementById('cmpRunALabel').title = activeRunResultId || '';
+}
+
+// Open the compare picker for the current run A (activeRunResultId).
+function _openComparePicker() {
+  if (!activeRunResultId) { toast('Select an analysis first'); return; }
+  _populateCompareBSelect();
   document.getElementById('cmpPickerRow').style.display = 'flex';
-});
+}
 
-document.getElementById('cmpCancelBtn').addEventListener('click', () => {
-  document.getElementById('cmpPickerRow').style.display = 'none';
-  if (cmpMode) _exitCompareMode();
-});
-
-document.getElementById('cmpRunBtn').addEventListener('click', async () => {
-  const runB = document.getElementById('cmpRunBSelect').value;
-  if (!runB) return;
+// Run the A-vs-B comparison and enter compare mode. Shared by the picker Go
+// button and the one-click "vs previous" entry point.
+async function _runCompare(runB) {
+  if (!runB || !activeRunResultId) return;
   document.getElementById('cmpPickerRow').style.display = 'none';
   _enterCompareMode();
   document.getElementById('ucResultList').innerHTML = '<div class="empty">loading comparison…</div>';
@@ -7944,6 +8111,52 @@ document.getElementById('cmpRunBtn').addEventListener('click', async () => {
   } catch(e) {
     document.getElementById('ucResultList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
   }
+}
+
+// The previous INGESTED run of the same Scoping Set (by start time) — for "vs previous".
+function _prevIngestedRunOfSet(r) {
+  const t = Date.parse(r.started_at || r.created_at || '') || 0;
+  const cands = (allRuns || []).filter(x =>
+    x.name !== r.name && x.run_id &&
+    String(x.set_id ?? '') === String(r.set_id ?? '') &&
+    (Date.parse(x.started_at || x.created_at || '') || 0) < t);
+  cands.sort((a, b) =>
+    (Date.parse(b.started_at || b.created_at || '') || 0) - (Date.parse(a.started_at || a.created_at || '') || 0));
+  return cands[0] || null;
+}
+
+// Run-row entry point (a): make this run current (A), go to Results, open the picker.
+function compareRunFromRow(name) {
+  const r = (allRuns || []).find(x => x.name === name);
+  if (!r || !r.run_id) { toast('This analysis has no ingested results to compare yet', true); return; }
+  selectRunResult(r.run_id);
+  switchView('results');
+  setTimeout(_openComparePicker, 120);
+}
+
+// Run-row entry point (b): one-click compare vs the previous ingested run of the same set.
+function compareRunVsPrev(name) {
+  const r = (allRuns || []).find(x => x.name === name);
+  if (!r || !r.run_id) { toast('This analysis has no ingested results to compare yet', true); return; }
+  const prev = _prevIngestedRunOfSet(r);
+  if (!prev) { toast('No earlier ingested analysis of the same Scoping Set to compare against', true); return; }
+  selectRunResult(r.run_id);
+  switchView('results');
+  setTimeout(() => _runCompare(prev.run_id), 120);
+}
+
+document.getElementById('cmpToggleBtn').addEventListener('click', () => {
+  if (cmpMode) { _exitCompareMode(); return; }
+  _openComparePicker();
+});
+
+document.getElementById('cmpCancelBtn').addEventListener('click', () => {
+  document.getElementById('cmpPickerRow').style.display = 'none';
+  if (cmpMode) _exitCompareMode();
+});
+
+document.getElementById('cmpRunBtn').addEventListener('click', () => {
+  _runCompare(document.getElementById('cmpRunBSelect').value);
 });
 
 document.querySelectorAll('.cmp-filter-btn').forEach(btn => {
@@ -8130,7 +8343,7 @@ function _copyGapReport() {
   if (summary.notes) md += `\n**Assessment:**\n${summary.notes}\n`;
   if (gaps.length) {
     md += `\n### Gaps (${gaps.length})\n`;
-    gaps.forEach((g,i) => {
+    _sortGapsBySeverity(gaps).forEach((g,i) => {
       const sev = typeof g.severity==='object' ? g.severity.label : (g.severity||'unknown');
       md += `\n#### ${i+1}. [${sev.toUpperCase()}] ${g.description}\n`;
       if (g.rationale) md += `\n**Rationale:** ${g.rationale}\n`;
@@ -8211,7 +8424,7 @@ function renderAnalysis(data, ucUuid) {
   // Gaps
   if (gaps.length) {
     html += `<div class="detail-section"><div class="detail-section-title">Gaps identified (${gaps.length})</div>`;
-    gaps.forEach(g => {
+    _sortGapsBySeverity(gaps).forEach(g => {
       const sev     = typeof g.severity==='object' ? g.severity : {};
       const sevLabel= sev.label || (typeof g.severity==='string' ? g.severity : 'minor');
       const sevBand = sev.band ? ' · '+sev.band : '';
@@ -8348,7 +8561,7 @@ function renderExploreAnalysis(data, ucUuid) {
         ${sNotes ? `<div class="analysis-block-body">${esc(sNotes)}</div>` : ''}
       </div>`;
     if (sGaps.length) {
-      sGaps.forEach(g => {
+      _sortGapsBySeverity(sGaps).forEach(g => {
         const sev = typeof g.severity==='object' ? g.severity.label : (g.severity||'minor');
         html += `<div class="gap-card" style="margin-left:0">
           <div class="gap-card-header"><span class="sev-label ${sevClass(sev)}">${esc(sev)}</span></div>
@@ -11157,7 +11370,17 @@ function wzToAdvanced() {
 
 // ══════════════════════════ SETS ══════════════════════════
 
-async function loadSets() {
+// Boot dedupe: init() and the landing view (switchView('usecases')) both call loadSets
+// on boot, firing /api/sets twice. Share a single in-flight promise so concurrent callers
+// coalesce onto one request; the guard clears on completion so later explicit reloads
+// (after edits) still refetch.
+let _setsInflight = null;
+function loadSets() {
+  if (_setsInflight) return _setsInflight;
+  _setsInflight = _loadSetsImpl().finally(() => { _setsInflight = null; });
+  return _setsInflight;
+}
+async function _loadSetsImpl() {
   // In the merged UC/Scoping Sets view, "loadSets" populates the left-rail filter.
   // It's also called by openNewRun → _getDefaultSet() to find the project default.
   const rail = document.getElementById('setFilterRail');
@@ -11636,6 +11859,33 @@ async function _ssDropAddUC(setId, uc, label) {
   renderScopingSetsBoard();
 }
 
+// ── Sortable column state ────────────────────────────────────────────────────
+let _ssSortKey = 'name';
+let _ssSortDir = 'asc';
+
+function _ssSortSets(sets) {
+  const k = _ssSortKey, d = _ssSortDir === 'asc' ? 1 : -1;
+  return sets.slice().sort((a, b) => {
+    let av = a[k], bv = b[k];
+    if (k === 'member_count') return d * ((av || 0) - (bv || 0));
+    if (av == null) av = '';
+    if (bv == null) bv = '';
+    return d * String(av).localeCompare(String(bv));
+  });
+}
+
+function _ssToggleSort(key) {
+  if (_ssSortKey === key) _ssSortDir = _ssSortDir === 'asc' ? 'desc' : 'asc';
+  else { _ssSortKey = key; _ssSortDir = 'asc'; }
+  _renderSetMgmtInto('scopingSetsList');
+  _ssWireSetDrops();
+}
+
+function _ssSortIndicator(key) {
+  if (_ssSortKey !== key) return '';
+  return _ssSortDir === 'asc' ? ' ▲' : ' ▼';
+}
+
 function _renderSetMgmtInto(elId) {
   const el = document.getElementById(elId);
   if (!el) return;
@@ -11643,40 +11893,56 @@ function _renderSetMgmtInto(elId) {
     el.innerHTML = '<div class="empty" style="padding:24px;">No Scoping Sets yet. Use + New Scoping Set to create one.</div>';
     return;
   }
-  let h = '';
-  allSets.filter(s => s.id !== ALL_SET_ID).forEach(s => {
+  const cols = [
+    { key: 'name',         label: 'Name' },
+    { key: 'created_at',   label: 'Created' },
+    { key: 'updated_at',   label: 'Modified' },
+    { key: 'member_count', label: 'Count' },
+    { key: 'created_by',   label: 'Created by' },
+  ];
+  let h = '<div class="ss-col-header">';
+  h += '<span></span>';
+  cols.forEach(c => {
+    const active = _ssSortKey === c.key ? ' ss-sort-active' : '';
+    h += `<span class="${active}" onclick="_ssToggleSort('${c.key}')" title="Sort by ${c.label}">${c.label}${_ssSortIndicator(c.key)}</span>`;
+  });
+  h += '<span style="text-align:right;">Actions</span></div>';
+
+  const sorted = _ssSortSets(allSets.filter(s => s.id !== ALL_SET_ID));
+  sorted.forEach(s => {
     const defBadge = s.is_default
-      ? '<span style="font-size:9px;color:var(--accent);border:1px solid var(--accent-soft);padding:1px 5px;border-radius:2px;margin-left:8px;">DEFAULT</span>'
+      ? ' <span style="font-size:8px;color:var(--accent);border:1px solid var(--accent-soft);padding:0 4px;border-radius:2px;">DEF</span>'
       : '';
     const defBtn = s.is_default
       ? `<button class="btn ghost btn-sm" title="Clear default" onclick="clearDefaultSet(${s.id}).then(_refreshSetMgmt)">Clear default</button>`
       : `<button class="btn ghost btn-sm" title="Mark as project default" onclick="setDefaultSet(${s.id}).then(_refreshSetMgmt)">★ Default</button>`;
     h += `<div data-set-row="${s.id}" style="border-top:1px solid var(--border);">
-      <div style="display:flex;align-items:center;gap:8px;padding:10px 16px;">
-        <button class="btn ghost btn-icon" title="Show / hide members" onclick="_toggleSetMembers(${s.id}, this)" style="min-width:18px;padding:2px 6px;">▶</button>
-        <div style="flex:1;min-width:0;">
-          <div style="font-size:13px;font-weight:500;">${esc(s.name)}${defBadge}</div>
-          <div style="font-size:11px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
-            ${esc(s.description || '—')} · ${s.member_count} UC${s.member_count !== 1 ? 's' : ''}
-          </div>
-          ${(s.created_at || s.updated_at) ? `<div style="font-size:9px;color:var(--text-faint);margin-top:2px;" title="${esc((s.created_by ? 'created by ' + s.created_by + ' · ' : '') + (s.created_at ? new Date(s.created_at).toLocaleString() : '') + (s.updated_at ? ' · updated ' + new Date(s.updated_at).toLocaleString() : ''))}">
-            ${s.created_at ? 'created ' + esc(fmtTs(s.created_at)) : ''}${s.updated_at ? ' · updated ' + esc(fmtTs(s.updated_at)) : ''}
-          </div>` : ''}
+      <div class="ss-set-grid">
+        <div><button class="btn ghost btn-icon" title="Show / hide members" onclick="_toggleSetMembers(${s.id}, this)" style="min-width:18px;padding:2px 4px;">▶</button></div>
+        <div style="min-width:0;">
+          <div style="font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.name)}${defBadge}</div>
+          <div style="font-size:10px;color:var(--text-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(s.description || '')}</div>
         </div>
-        <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${attrJson(s.name)})">▶ Analyze</button>
-        ${defBtn}
-        <button class="btn ghost btn-sm" onclick="openSetModal(${s.id})">Edit</button>
-        <button class="btn ghost btn-sm" onclick="openPromoteModal(${s.id}, ${attrJson(s.name)})">↑ Promote</button>
-        <div style="position:relative;display:inline-block;">
-          <button class="btn ghost btn-sm" onclick="toggleExportSetMenu(${s.id}, event)">↓ Export</button>
-          <div id="exportSetMenu-${s.id}" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:140px;">
-            <button class="dropdown-item" onclick="exportSet(${s.id},'tar.gz')">tar.gz (gzip)</button>
-            <button class="dropdown-item" onclick="exportSet(${s.id},'zip')">zip</button>
-            <button class="dropdown-item" onclick="exportSet(${s.id},'tar')">tar (uncompressed)</button>
+        <div style="color:var(--text-faint);" title="${esc(s.created_at ? new Date(s.created_at).toLocaleString() : '')}">${s.created_at ? esc(fmtTs(s.created_at)) : '—'}</div>
+        <div style="color:var(--text-faint);" title="${esc(s.updated_at ? new Date(s.updated_at).toLocaleString() : '')}">${s.updated_at ? esc(fmtTs(s.updated_at)) : '—'}</div>
+        <div style="text-align:center;font-family:var(--mono,monospace);">${s.member_count}</div>
+        <div style="color:var(--text-faint);" title="${esc(s.created_by || '')}">${esc(s.created_by || '—')}</div>
+        <div class="ss-set-actions">
+          <button class="btn primary btn-sm" onclick="runSet(${s.id}, ${attrJson(s.name)})">▶ Analyze</button>
+          ${defBtn}
+          <button class="btn ghost btn-sm" onclick="openSetModal(${s.id})">Edit</button>
+          <button class="btn ghost btn-sm" onclick="openPromoteModal(${s.id}, ${attrJson(s.name)})">↑ Promote</button>
+          <div style="position:relative;display:inline-block;">
+            <button class="btn ghost btn-sm" onclick="toggleExportSetMenu(${s.id}, event)">↓ Export</button>
+            <div id="exportSetMenu-${s.id}" style="display:none;position:absolute;right:0;top:100%;margin-top:4px;background:var(--bg-panel);border:1px solid var(--border-bright);border-radius:2px;z-index:50;min-width:140px;">
+              <button class="dropdown-item" onclick="exportSet(${s.id},'tar.gz')">tar.gz (gzip)</button>
+              <button class="dropdown-item" onclick="exportSet(${s.id},'zip')">zip</button>
+              <button class="dropdown-item" onclick="exportSet(${s.id},'tar')">tar (uncompressed)</button>
+            </div>
           </div>
+          <button class="btn ghost btn-sm" onclick="openAddMember(${s.id})" title="Add a UC to this Scoping Set">+ UC</button>
+          <button class="btn danger btn-sm" onclick="deleteSet(${s.id}, this)">×</button>
         </div>
-        <button class="btn ghost btn-sm" onclick="openAddMember(${s.id})" title="Add a UC to this Scoping Set">+ UC</button>
-        <button class="btn danger btn-sm" onclick="deleteSet(${s.id}, this)">×</button>
       </div>
       <div id="setMembers-${s.id}" style="display:none;padding:0 0 10px 50px;"></div>
     </div>`;
@@ -12498,7 +12764,14 @@ function _ensureRunChipPoll() {
   // tick is the sole re-armer.
   const _activeNames = () => new Set((allRuns || []).filter(_runIsActive).map(r => r.name));
   const tick = async () => {
-    try { await loadRuns({ silent: true }); } catch {}   // refreshes allRuns + _renderRunChipLive
+    // Hygiene: skip our own loadRuns when (a) the page is hidden — nothing to paint,
+    // no reason to hammer /api/runs from a background tab — or (b) the Runs-view poller
+    // (_startRunsListPoll) is already refreshing allRuns, which would double the request.
+    const runsPollActive = !!_runsListPollTimer
+      && document.getElementById('view-runs')?.classList.contains('active');
+    if (document.visibilityState === 'visible' && !runsPollActive) {
+      try { await loadRuns({ silent: true }); } catch {}   // refreshes allRuns + _renderRunChipLive
+    }
     const nowActive = _activeNames();
     // #178: when a run that WAS active is no longer active, it just finished → its evaluations were
     // ingested, so the masthead Coverage pill's ingested/total is stale. Refresh it on that edge
@@ -13522,6 +13795,9 @@ function openReviewPane(scope, ucUuid, startAt = 'review') {
 
   // Pre-populate the Review & Plan tab
   _reviewCtx = { runId, ucUuid: ucUuid || null };
+  // Honor the requested scope: a per-UC action (scope='uc') must generate a UC-scoped
+  // review, not silently fall back to the whole set (the retired hardcode did the latter).
+  try { _rpSetScopeReq(scope, ucUuid); } catch (_) {}
   switchView('review');
 
   // Give the tab a moment to render, then set up
@@ -13639,17 +13915,50 @@ async function _rpPopulateUCs(runId) {
   } catch(e) { sel.innerHTML = `<option value="">(${esc(e.message)})</option>`; }
 }
 
+// Requested review scope. Default = the masthead Scoping Set (whole-set review).
+// openReviewPane('uc', <uuid>, …) — the per-UC "Arch Review"/"Enhancements" actions —
+// switches this to a UC scope so those clicks stop silently reviewing the whole set.
+let _rpScopeReq = { scope: 'set', ucUuid: null };
+function _rpSetScopeReq(scope, ucUuid) {
+  _rpScopeReq = (scope === 'uc' && ucUuid) ? { scope: 'uc', ucUuid } : { scope: 'set', ucUuid: null };
+  try { _rpRenderScopeIndicator(); } catch (_) {}
+}
 function _rpGetContext() {
-  // The Architecture roadmap is scoped by the masthead Scoping Set (the run/UC picker is
-  // retired). `setId` is the masthead scope ('' = all, '__unassigned__', or a set id);
-  // `runId` is a synthetic `set:<id>` token so the cache/generation API keys it like a run.
+  // UC scope (requested from a per-UC action): key the cache/generation on the REAL
+  // analysis run_id + uc_uuid — the arch-review/enhancements API scopes to that UC.
+  if (_rpScopeReq.scope === 'uc' && _rpScopeReq.ucUuid) {
+    return { runId: activeRunResultId || null, scope: 'uc',
+             ucUuid: _rpScopeReq.ucUuid, setId: _activeScope || '' };
+  }
+  // Set scope (default): the Architecture roadmap follows the masthead Scoping Set (the
+  // run/UC picker is retired). `setId` is the masthead scope ('' = all, '__unassigned__',
+  // or a set id); `runId` is a synthetic `set:<id>` token so the API keys it like a run.
   const setId  = _activeScope || '';
-  const scope  = 'set';
   const runId  = 'set:' + (setId || '__all__');
   // Model is NOT chosen here — arch-review uses the Config "Default Arch Review
   // model" (model_defaults key='arch-review'); the API falls back to it when the
   // request carries no model. Single source of truth, set in the Config view.
-  return { runId, scope, ucUuid: null, setId };
+  return { runId, scope: 'set', ucUuid: null, setId };
+}
+// Small "Scope: UC <handle>" / "Scope: set <name>" indicator in the Arch Review pane,
+// with a one-click reset back to the whole-set review when UC-scoped.
+function _rpRenderScopeIndicator() {
+  const el = document.getElementById('rpScopeIndicator');
+  if (!el) return;
+  if (_rpScopeReq.scope === 'uc' && _rpScopeReq.ucUuid) {
+    const uc = (activeRunSummary?.ucs || []).find(u => u.uc_uuid === _rpScopeReq.ucUuid);
+    const label = uc?.uc_handle || (_rpScopeReq.ucUuid.slice(0, 8) + '…');
+    el.innerHTML = `Scope: <strong>UC ${esc(label)}</strong> `
+      + `<a href="javascript:void(0)" onclick="_rpSetScopeReq('set');_rpLoadCached();" style="color:var(--accent);font-size:10px;">× review whole set</a>`;
+    el.style.display = '';
+  } else {
+    let name = 'all use cases';
+    const v = _activeScope || '';
+    if (v === '__unassigned__') name = 'unassigned use cases';
+    else if (v) { const s = (allSets || []).find(x => String(x.id) === String(v)); name = s ? s.name : `Set ${v}`; }
+    el.innerHTML = `Scope: <strong>set — ${esc(name)}</strong>`;
+    el.style.display = '';
+  }
 }
 // Reflect the active masthead scope name in the Architecture controls panel.
 function _rpUpdateScopeName() {
@@ -13660,6 +13969,7 @@ function _rpUpdateScopeName() {
   if (v === '__unassigned__') name = 'unassigned use cases';
   else if (v) { const s = (allSets || []).find(x => String(x.id) === String(v)); name = s ? s.name : `Set ${v}`; }
   el.textContent = name;
+  try { _rpRenderScopeIndicator(); } catch (_) {}
 }
 
 document.getElementById('rpRunSel')?.addEventListener('change', function() {

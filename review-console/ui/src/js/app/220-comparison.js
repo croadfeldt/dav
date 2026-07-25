@@ -25,11 +25,10 @@ function _exitCompareMode() {
   _clearAnalysis();
 }
 
-document.getElementById('cmpToggleBtn').addEventListener('click', () => {
-  if (cmpMode) { _exitCompareMode(); return; }
-  if (!activeRunResultId) return;
-  // Populate run B picker with all other result runs
+// Populate the run-B <select> with every other ingested result; label run A.
+function _populateCompareBSelect() {
   const sel = document.getElementById('cmpRunBSelect');
+  if (!sel) return;
   sel.innerHTML = '<option value="">— pick an analysis —</option>';
   allResults.forEach(r => {
     if (r.run_id === activeRunResultId) return;
@@ -42,19 +41,21 @@ document.getElementById('cmpToggleBtn').addEventListener('click', () => {
     sel.appendChild(opt);
   });
   const activeRun = allResults.find(r => r.run_id === activeRunResultId);
-  document.getElementById('cmpRunALabel').textContent = activeRun?.session_name || activeRunResultId;
-  document.getElementById('cmpRunALabel').title = activeRunResultId;
+  document.getElementById('cmpRunALabel').textContent = activeRun?.session_name || activeRunResultId || '—';
+  document.getElementById('cmpRunALabel').title = activeRunResultId || '';
+}
+
+// Open the compare picker for the current run A (activeRunResultId).
+function _openComparePicker() {
+  if (!activeRunResultId) { toast('Select an analysis first'); return; }
+  _populateCompareBSelect();
   document.getElementById('cmpPickerRow').style.display = 'flex';
-});
+}
 
-document.getElementById('cmpCancelBtn').addEventListener('click', () => {
-  document.getElementById('cmpPickerRow').style.display = 'none';
-  if (cmpMode) _exitCompareMode();
-});
-
-document.getElementById('cmpRunBtn').addEventListener('click', async () => {
-  const runB = document.getElementById('cmpRunBSelect').value;
-  if (!runB) return;
+// Run the A-vs-B comparison and enter compare mode. Shared by the picker Go
+// button and the one-click "vs previous" entry point.
+async function _runCompare(runB) {
+  if (!runB || !activeRunResultId) return;
   document.getElementById('cmpPickerRow').style.display = 'none';
   _enterCompareMode();
   document.getElementById('ucResultList').innerHTML = '<div class="empty">loading comparison…</div>';
@@ -66,6 +67,52 @@ document.getElementById('cmpRunBtn').addEventListener('click', async () => {
   } catch(e) {
     document.getElementById('ucResultList').innerHTML = `<div class="empty" style="color:var(--red)">${esc(e.message)}</div>`;
   }
+}
+
+// The previous INGESTED run of the same Scoping Set (by start time) — for "vs previous".
+function _prevIngestedRunOfSet(r) {
+  const t = Date.parse(r.started_at || r.created_at || '') || 0;
+  const cands = (allRuns || []).filter(x =>
+    x.name !== r.name && x.run_id &&
+    String(x.set_id ?? '') === String(r.set_id ?? '') &&
+    (Date.parse(x.started_at || x.created_at || '') || 0) < t);
+  cands.sort((a, b) =>
+    (Date.parse(b.started_at || b.created_at || '') || 0) - (Date.parse(a.started_at || a.created_at || '') || 0));
+  return cands[0] || null;
+}
+
+// Run-row entry point (a): make this run current (A), go to Results, open the picker.
+function compareRunFromRow(name) {
+  const r = (allRuns || []).find(x => x.name === name);
+  if (!r || !r.run_id) { toast('This analysis has no ingested results to compare yet', true); return; }
+  selectRunResult(r.run_id);
+  switchView('results');
+  setTimeout(_openComparePicker, 120);
+}
+
+// Run-row entry point (b): one-click compare vs the previous ingested run of the same set.
+function compareRunVsPrev(name) {
+  const r = (allRuns || []).find(x => x.name === name);
+  if (!r || !r.run_id) { toast('This analysis has no ingested results to compare yet', true); return; }
+  const prev = _prevIngestedRunOfSet(r);
+  if (!prev) { toast('No earlier ingested analysis of the same Scoping Set to compare against', true); return; }
+  selectRunResult(r.run_id);
+  switchView('results');
+  setTimeout(() => _runCompare(prev.run_id), 120);
+}
+
+document.getElementById('cmpToggleBtn').addEventListener('click', () => {
+  if (cmpMode) { _exitCompareMode(); return; }
+  _openComparePicker();
+});
+
+document.getElementById('cmpCancelBtn').addEventListener('click', () => {
+  document.getElementById('cmpPickerRow').style.display = 'none';
+  if (cmpMode) _exitCompareMode();
+});
+
+document.getElementById('cmpRunBtn').addEventListener('click', () => {
+  _runCompare(document.getElementById('cmpRunBSelect').value);
 });
 
 document.querySelectorAll('.cmp-filter-btn').forEach(btn => {
@@ -252,7 +299,7 @@ function _copyGapReport() {
   if (summary.notes) md += `\n**Assessment:**\n${summary.notes}\n`;
   if (gaps.length) {
     md += `\n### Gaps (${gaps.length})\n`;
-    gaps.forEach((g,i) => {
+    _sortGapsBySeverity(gaps).forEach((g,i) => {
       const sev = typeof g.severity==='object' ? g.severity.label : (g.severity||'unknown');
       md += `\n#### ${i+1}. [${sev.toUpperCase()}] ${g.description}\n`;
       if (g.rationale) md += `\n**Rationale:** ${g.rationale}\n`;
@@ -333,7 +380,7 @@ function renderAnalysis(data, ucUuid) {
   // Gaps
   if (gaps.length) {
     html += `<div class="detail-section"><div class="detail-section-title">Gaps identified (${gaps.length})</div>`;
-    gaps.forEach(g => {
+    _sortGapsBySeverity(gaps).forEach(g => {
       const sev     = typeof g.severity==='object' ? g.severity : {};
       const sevLabel= sev.label || (typeof g.severity==='string' ? g.severity : 'minor');
       const sevBand = sev.band ? ' · '+sev.band : '';
@@ -470,7 +517,7 @@ function renderExploreAnalysis(data, ucUuid) {
         ${sNotes ? `<div class="analysis-block-body">${esc(sNotes)}</div>` : ''}
       </div>`;
     if (sGaps.length) {
-      sGaps.forEach(g => {
+      _sortGapsBySeverity(sGaps).forEach(g => {
         const sev = typeof g.severity==='object' ? g.severity.label : (g.severity||'minor');
         html += `<div class="gap-card" style="margin-left:0">
           <div class="gap-card-header"><span class="sev-label ${sevClass(sev)}">${esc(sev)}</span></div>

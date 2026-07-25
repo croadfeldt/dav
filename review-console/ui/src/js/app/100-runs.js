@@ -49,6 +49,18 @@ async function loadRuns(opts) {
   }
 }
 
+// Evaluation model for a run — sourced from the trigger params (same field the
+// drawer Params dump renders, `inference-model`). Compact tail (strip the org/
+// path prefix); '' when unknown so the row degrades to no badge.
+function _runModelRaw(r) {
+  const p = r.params || {};
+  return p['inference-model'] || p['inference_model'] || '';
+}
+function _runModelLabel(r) {
+  const m = _runModelRaw(r);
+  return m ? String(m).split('/').pop() : '';
+}
+
 // Fingerprint of the salient display fields. If unchanged between renders,
 // the row's innerHTML doesn't need to be rebuilt at all.
 function _runItemFingerprint(r) {
@@ -61,6 +73,8 @@ function _runItemFingerprint(r) {
     r.archived ? 'a' : '',
     // #branch-targeting: re-render when the resolved ref/sha lands (sha fills in at ingest).
     r.spec_repo_branch, r.corpus_repo_branch, r.spec_repo_sha, r.corpus_repo_sha,
+    // run_id fills in at ingest → drives the model badge + Compare actions appearing.
+    r.run_id, _runModelLabel(r),
     _rdName === r.name ? '1' : '0',
   ].join('|');
 }
@@ -88,11 +102,16 @@ function _renderRunItemHtml(r) {
     const shaShort = _evalSha ? '@' + esc(String(_evalSha).slice(0, 7)) : '';
     refHtml = `<span title="Evaluated git ref (branch@sha)" style="font-size:10px;color:var(--text-dim);">⎇ ${esc(_evalBranch || '?')}${shaShort}</span>`;
   }
+  // Evaluation model badge — degrades to nothing when the param is absent.
+  const _modelLabel = _runModelLabel(r);
+  const modelHtml = _modelLabel
+    ? `<span title="Evaluation model — ${esc(_runModelRaw(r))}" style="font-size:10px;color:var(--text-dim);">⬡ ${esc(_modelLabel)}</span>`
+    : '';
   return `
     <input type="checkbox" class="run-sel-cb" onclick="event.stopPropagation()" onchange="toggleRunSelect('${r.name}', this.checked)" ${_selectedRuns.has(r.name) ? 'checked' : ''} title="Select for batch archive/delete" style="margin:3px 6px 0 0;width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;align-self:flex-start;cursor:pointer;" />
     <div class="rli-main" style="${r.archived ? 'opacity:0.55;' : ''}">
       <div class="rli-name">${esc(friendly)}${r.archived ? ' <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-faint);border:1px solid var(--border);padding:0 3px;border-radius:2px;">archived</span>' : ''}</div>
-      <div class="rli-sub">${scopeBits.join(' · ')}${countsHtml ? ' · ' + countsHtml : ''}${refHtml ? ' · ' + refHtml : ''}</div>
+      <div class="rli-sub">${scopeBits.join(' · ')}${countsHtml ? ' · ' + countsHtml : ''}${refHtml ? ' · ' + refHtml : ''}${modelHtml ? ' · ' + modelHtml : ''}</div>
       <div class="rli-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.6;">${esc(r.name||'')}</div>
     </div>
     <div class="rli-right">
@@ -100,6 +119,7 @@ function _renderRunItemHtml(r) {
       <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
       <div class="rli-actions">
         ${!['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase) ? `<button class="btn ghost btn-sm" title="Stop this analysis (cancel the pipeline)" onclick="event.stopPropagation();stopRunConfirm('${r.name}')">⏹ Stop</button>` : ''}
+        ${r.run_id ? `<button class="btn ghost btn-sm" title="Compare this analysis against another" onclick="event.stopPropagation();compareRunFromRow('${r.name}')">⇄ Compare…</button><button class="btn ghost btn-sm" title="Compare against the previous ingested analysis of the same Scoping Set" onclick="event.stopPropagation();compareRunVsPrev('${r.name}')">vs previous</button>` : ''}
         <button class="btn ghost btn-sm" title="Re-analyze with the same Scoping Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
         <button class="btn ghost btn-sm" title="${r.archived ? 'Unarchive' : 'Archive (hide from list)'}" onclick="event.stopPropagation();archiveRun('${r.name}',${r.archived ? 'false' : 'true'})">${r.archived ? 'Unarchive' : 'Archive'}</button>
         <button class="btn danger btn-sm" title="Delete completely — irreversible" onclick="event.stopPropagation();deleteRunConfirm('${r.name}')">Delete</button>
@@ -256,7 +276,8 @@ function _matchRunFilter(r){
   return (r.name||'').toLowerCase().includes(f)
       || (r.session_name||'').toLowerCase().includes(f)
       || (r.category||'').toLowerCase().includes(f)
-      || (r.phase||'').toLowerCase().includes(f);
+      || (r.phase||'').toLowerCase().includes(f)
+      || _runModelRaw(r).toLowerCase().includes(f);
 }
 document.getElementById('runFilter')?.addEventListener('input', function(){ _runFilter = this.value; renderRunsList(); });
 document.getElementById('runPhaseFilter')?.addEventListener('change', function(){ _runPhaseFilter = this.value; renderRunsList(); });
@@ -293,6 +314,11 @@ const RD_PROMPTS_COLLAPSED_CHARS = 600;
 // flash cells when their value changes between polls.
 let _rdLastGpuValues  = {};   // {gpu_id: {metric: value}}
 let _rdLastVllmValues = {};   // {key: value}
+// Consecutive null-poll counter per vLLM metric key. A backend that doesn't emit
+// vLLM stats (e.g. llama.cpp) reports null forever; after a few polls we collapse
+// those cells to one "not reported by this backend" note instead of a wall of '—'.
+let _rdVllmNullStreak = {};   // {key: count}
+const RD_VLLM_NULL_HIDE_AFTER = 5;
 let _rdGpuLastChange  = 0;    // epoch seconds when any GPU metric last changed
 let _rdVllmLastChange = 0;    // epoch seconds when any vLLM metric last changed
 let _rdFreshTimer     = null; // separate timer that updates the "Xs ago" label every second
@@ -351,19 +377,24 @@ async function rdRefreshPrompts() {
     const ls = await api(`/api/runs/${encodeURIComponent(_rdName)}/turns`).catch(() => ({}));
     const discovered = ls.files || [];
     for (const f of discovered) {
-      if (!_rdPromptsState.perFile[f]) _rdPromptsState.perFile[f] = {next_offset:0, records:[]};
+      if (!_rdPromptsState.perFile[f]) _rdPromptsState.perFile[f] = {next_offset:0, records:[], terminal:false};
     }
     _rdPromptsState.filesKnown = discovered.length ? discovered : _rdPromptsState.filesKnown;
-    // Poll each known file for delta
-    for (const f of _rdPromptsState.filesKnown) {
+    // Poll all non-terminal files' deltas in PARALLEL (was serial — one GET per file
+    // per 5s tick, ~150 serial round-trips late in a big run). A file is terminal once
+    // its sample loop emitted a 'summary'/'final' record; those never grow again, so we
+    // stop refetching them and the per-tick fan-out shrinks to only the live samples.
+    const activeFiles = _rdPromptsState.filesKnown.filter(f => !_rdPromptsState.perFile[f]?.terminal);
+    await Promise.all(activeFiles.map(async f => {
       const st = _rdPromptsState.perFile[f];
       const r = await api(`/api/runs/${encodeURIComponent(_rdName)}/turns?file=${encodeURIComponent(f)}&since=${st.next_offset}`).catch(() => null);
-      if (!r || !r.records) continue;
+      if (!r || !r.records) return;
       if (r.records.length) {
         st.records.push(...r.records.map(rec => ({...rec, _file: f})));
+        if (r.records.some(rec => rec.kind === 'summary' || rec.kind === 'final')) st.terminal = true;
       }
       st.next_offset = r.next_offset ?? st.next_offset;
-    }
+    }));
     rdRenderPrompts();
   } catch (e) {
     // silent
@@ -587,24 +618,34 @@ function _reanalyzeUC(uuid) {
   openNewRun(undefined, undefined, { handles: [], uuids: [uuid], managed: [uuid] },
     undefined, { selection_mode: 'selection' });
 }
-function setAuditFilter(f) { _auditFilter = f; _paintAnalysisAudit(); }
-async function _renderAnalysisAudit() {
-  const el = document.getElementById('rdRunBody');
-  if (!el || _rdName) return;   // only the default (no run open) state
+// _auditTargetId lets the audit paint into either the default Runs-view body
+// ('rdRunBody', shown when no run is open) OR an appended section inside a
+// selected terminal run's detail ('rdAuditBody'). setAuditFilter reuses it.
+let _auditTargetId = 'rdRunBody';
+function setAuditFilter(f) { _auditFilter = f; _paintAnalysisAudit(_auditTargetId); }
+async function _renderAnalysisAudit(targetId) {
+  targetId = targetId || 'rdRunBody';
+  _auditTargetId = targetId;
+  const isDefault = (targetId === 'rdRunBody');
+  const el = document.getElementById(targetId);
+  if (!el) return;
+  if (isDefault && _rdName) return;   // default (no run open) state only
   el.innerHTML = '<div class="rd-empty">loading analysis audit…</div>';
   let r;
   try { r = await api('/api/results/uc-latest'); }
   catch (e) { el.innerHTML = `<div class="rd-empty" style="color:var(--red)">${esc(e.message)}</div>`; return; }
-  if (_rdName) return;   // a run got opened while loading
+  if (isDefault && _rdName) return;   // a run got opened while loading
   _auditUCs = r.ucs || [];
   _auditMeta = { total: r.total || 0, evaluated: r.evaluated || 0, failed: r.failed || 0 };
   _auditNeedsEval = _auditUCs.filter(u => !u.evaluated || u.stale).map(u => u.uc_uuid);
-  _paintAnalysisAudit();
+  _paintAnalysisAudit(targetId);
 }
 let _auditMeta = { total: 0, evaluated: 0, failed: 0 };
-function _paintAnalysisAudit() {
-  const el = document.getElementById('rdRunBody');
-  if (!el || _rdName) return;
+function _paintAnalysisAudit(targetId) {
+  targetId = targetId || _auditTargetId || 'rdRunBody';
+  const isDefault = (targetId === 'rdRunBody');
+  const el = document.getElementById(targetId);
+  if (!el || (isDefault && _rdName)) return;
   const ucs = _auditUCs || [];
   const failedN = ucs.filter(u => u.failed).length;
   const staleN  = ucs.filter(u => u.stale).length;
@@ -649,6 +690,44 @@ function _paintAnalysisAudit() {
         <tbody>${rows || `<tr><td colspan="6" style="padding:12px;color:var(--text-faint);">${ucs.length ? 'No use cases match this filter.' : 'No use cases in this project.'}</td></tr>`}</tbody>
       </table>
     </div>`;
+}
+
+// Ingest a terminal-but-uningested run's partial results. The ingest endpoint is
+// keyed by the WORKSPACE run_id, which we don't have for an uningested run — the
+// turns endpoint correlates the PipelineRun name → its workspace run-dir, so we
+// resolve the run_id there, then POST the existing idempotent ingest.
+async function ingestPartialResults(name) {
+  const btn = document.getElementById('rdIngestPartialBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Ingesting…'; }
+  try {
+    const t = await api(`/api/runs/${encodeURIComponent(name)}/turns`);
+    const runId = t && t.run_id;
+    if (!runId) { toast('No workspace results found for this run yet', true); return; }
+    const resp = await api(`/api/analysis/ingest/${encodeURIComponent(runId)}`, { method: 'POST' });
+    toast(`Ingested ${resp.ingested_ucs || 0} UCs, ${resp.ingested_gaps || 0} gaps from partial results`);
+    await loadRuns();
+    try { await loadResults(); } catch (_) {}
+    selectRunResult(runId);
+  } catch (e) {
+    toast('Ingest failed: ' + e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↓ Ingest partial results'; }
+  }
+}
+
+// Append a per-UC analysis-audit section to the (terminal) run's detail body so a
+// finished/partial run shows exactly which UCs were evaluated + a one-click
+// re-analyze for the missing ones — the same audit that fronts the empty Runs view.
+function _ensureRunAuditSection() {
+  const body = document.getElementById('rdRunBody');
+  if (!body || document.getElementById('rdAuditSection')) return;
+  const sec = document.createElement('div');
+  sec.className = 'run-section';
+  sec.id = 'rdAuditSection';
+  sec.innerHTML = `<div class="run-section-title">UC analysis audit <span style="font-weight:400;color:var(--text-faint);font-size:10px;">— latest eval per use case; re-analyze what's missing</span></div>
+    <div id="rdAuditBody"><div class="empty" style="font-size:11px">loading…</div></div>`;
+  body.appendChild(sec);
+  _renderAnalysisAudit('rdAuditBody');
 }
 
 function selectRun(name) {
@@ -731,7 +810,7 @@ function selectRun(name) {
   rdSwitchTab('run');
 
   // Reset state
-  _rdLastGpuValues = {}; _rdLastVllmValues = {};
+  _rdLastGpuValues = {}; _rdLastVllmValues = {}; _rdVllmNullStreak = {};
   _rdGpuLastChange = 0;  _rdVllmLastChange = 0;
   _rdTokenBaseline = {gen: null, prompt: null};
   _rdSparklines    = null;
@@ -749,10 +828,24 @@ function selectRun(name) {
   const run = allRuns.find(r => r.name === name);
   updateRunChip(run?.session_name || name, run?.phase);
 
-  // Show "View Results" if results exist for this run
+  // Show "View Results" if results exist for this run. NB: `name` is the Tekton
+  // PipelineRun name, NOT the workspace analysis run_id — matching r.run_id===name
+  // never hit. Results rows carry run_name (the Tekton name) joined from run_sessions,
+  // so match on that; also accept the run's own ingested run_id (_r.run_id).
   const resultBtn = document.getElementById('rdViewResultsBtn');
-  const hasResult = allResults.find(r => r.run_id === name);
+  const hasResult = allResults.find(r => r.run_name === name || (_r && _r.run_id && r.run_id === _r.run_id));
   resultBtn.style.display = hasResult ? '' : 'none';
+
+  // Partial-results affordance: a run that reached a terminal phase but was never
+  // ingested (no run_id / no results row) offers a one-click ingest of whatever
+  // completed. Reuses the existing ingest endpoint (run name → workspace run_id
+  // via the turns correlation).
+  const ingestBtn = document.getElementById('rdIngestPartialBtn');
+  if (ingestBtn) {
+    const terminal = ['Succeeded','Failed','Cancelled','TimedOut'].includes(_r?.phase);
+    ingestBtn.style.display = (terminal && !hasResult) ? '' : 'none';
+    ingestBtn.onclick = () => ingestPartialResults(name);
+  }
 
   // Show "Diagnose" — available for any run (the diagnoser resolves the run
   // name to its workspace results dir; a clean run simply yields 0 proposals).
@@ -1240,6 +1333,10 @@ function renderRunDrawerDetail(d) {
   Object.entries(d.params || {}).forEach(([k,v]) => {
     pe.innerHTML += `<div class="kv-label">${esc(k)}</div><div class="kv-val" style="word-break:break-all">${esc(v)}</div>`;
   });
+
+  // Terminal run → append the per-UC analysis audit (built once). Shows a partial
+  // run's evaluated/missing UCs in situ, not only on the empty Runs view.
+  if (_terminal) _ensureRunAuditSection();
 }
 
 function _fmtN(v, digits) {
@@ -1377,9 +1474,23 @@ function renderRunDrawerMetrics(snap, opts) {
     // Bottom-right: total GPU energy used by the run (custom formatter).
     ['_gpu_energy_j',          'GPU energy',       'rdv-energy',   0, '', (j)=> (j==null ? '–' : _fmtEnergy(j))],
   ];
-  vllmEl.innerHTML = vKeys.map(([k,label,id,prec,unit,fmt]) => `
+  // Degradation: track consecutive null polls per key. Once a metric has been
+  // null for RD_VLLM_NULL_HIDE_AFTER polls running (a backend that never reports
+  // it) drop its cell; collapse all the dropped ones into a single note — mirrors
+  // how the sparklines already hide when there's nothing to plot (:978). Historical
+  // (completed-run) snapshots carry real values, so they don't trip this.
+  let _vllmHidden = 0;
+  const _visVKeys = vKeys.filter(([k]) => {
+    const val = v[k];
+    const isNull = (val === null || val === undefined || Number.isNaN(val));
+    _rdVllmNullStreak[k] = isNull ? (_rdVllmNullStreak[k] || 0) + 1 : 0;
+    if (_rdVllmNullStreak[k] >= RD_VLLM_NULL_HIDE_AFTER) { _vllmHidden++; return false; }
+    return true;
+  });
+  vllmEl.innerHTML = _visVKeys.map(([k,label,id,prec,unit,fmt]) => `
     <div class="vllm-cell"><div class="vllm-cell-label">${label}</div>
-      <div class="vllm-cell-value" id="${id}">${fmt ? fmt(v[k]) : _fmtN(v[k], prec)}${unit ? `<span class="vllm-cell-unit">${unit}</span>` : ''}</div></div>`).join('');
+      <div class="vllm-cell-value" id="${id}">${fmt ? fmt(v[k]) : _fmtN(v[k], prec)}${unit ? `<span class="vllm-cell-unit">${unit}</span>` : ''}</div></div>`).join('')
+    + (_vllmHidden ? `<div class="vllm-cell" style="opacity:0.65;"><div class="vllm-cell-label">—</div><div class="vllm-cell-value" style="font-size:10px;line-height:1.3;">${_vllmHidden} metric${_vllmHidden===1?'':'s'} not reported by this backend</div></div>` : '');
   let vllmChanged = false;
   vKeys.forEach(([k,_l,id]) => {
     const prev = _rdLastVllmValues[k];
