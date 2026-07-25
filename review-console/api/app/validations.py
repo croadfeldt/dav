@@ -171,6 +171,7 @@ def _mk_pipelinerun(
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
+    request_timeout_seconds: Optional[int] = None,
     stage2_context: Optional[str] = None,
     uc_count: Optional[int] = None,
     time_allowed_seconds: Optional[int] = None,
@@ -200,6 +201,11 @@ def _mk_pipelinerun(
         # A/B experiments to test a candidate max_tokens in isolation — no
         # profile or deploy-var mutation, so production + spamllm are untouched.
         params.append({"name": "max-tokens", "value": str(max_tokens)})
+    if request_timeout_seconds is not None:
+        # Per-request inference HTTP timeout. Param name must stay exactly
+        # `request-timeout-seconds` — the engine PR adds the task-side param.
+        params.append({"name": "request-timeout-seconds",
+                       "value": str(request_timeout_seconds)})
     if corpus_subpath:
         params.append({"name": "corpus-uc-subpath", "value": corpus_subpath})
     if corpus_repo_url:
@@ -310,6 +316,7 @@ def trigger_run(
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
+    request_timeout_seconds: Optional[int] = None,
     stage2_context: Optional[str] = None,
     uc_count: Optional[int] = None,
     time_allowed_seconds: Optional[int] = None,
@@ -346,6 +353,7 @@ def trigger_run(
         stage2_two_pass=stage2_two_pass,
         max_tokens=max_tokens,
         grounding_nudge=grounding_nudge,
+        request_timeout_seconds=request_timeout_seconds,
         stage2_context=stage2_context,
         uc_count=uc_count,
         time_allowed_seconds=time_allowed_seconds,

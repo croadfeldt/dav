@@ -1610,6 +1610,17 @@ class RunTriggerIn(BaseModel):
     # so operators can A/B without an engine rebuild — added 2026-05-29 for
     # the Qwen3.6-27B MTP investigation.
     stage2_two_pass: Optional[str] = None
+    # Per-run stage-2 output budget override (Tekton max-tokens param; engine
+    # default = dav_stage2_max_tokens). validations.trigger_run already
+    # forwards it — this exposes it on the public trigger, bounded to the
+    # engine's sane window.
+    max_tokens: Optional[int] = Field(None, ge=256, le=32768)
+    # Per-run grounding-nudge toggle (forwarded as Tekton grounding-nudge
+    # "true"/"false"; None = engine default).
+    grounding_nudge: Optional[bool] = None
+    # Per-request inference HTTP timeout, forwarded as Tekton param
+    # request-timeout-seconds (task-side param lands with the engine PR).
+    request_timeout_seconds: Optional[int] = Field(None, ge=1)
     # Legacy params kept for backward compat with self-test UI
     branch: Optional[str] = None
     commit_sha: Optional[str] = None
@@ -3710,6 +3721,10 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             capabilities_json=capabilities_json,
             use_profile_json=use_profile_json,
             stage2_two_pass=payload.stage2_two_pass,
+            max_tokens=payload.max_tokens,
+            grounding_nudge=(None if payload.grounding_nudge is None
+                             else ("true" if payload.grounding_nudge else "false")),
+            request_timeout_seconds=payload.request_timeout_seconds,
             stage2_context=_stage2_ctx,
             uc_count=_trig_uc_count,
             # Explicit "time allowed" from the modal, else the data-driven
