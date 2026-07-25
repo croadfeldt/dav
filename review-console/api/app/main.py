@@ -69,6 +69,7 @@ from . import local_auth
 from . import crypto
 from . import diagnose as _diagnose
 from . import experiment_eval as _expeval
+from . import run_selection as _run_selection
 
 log = logging.getLogger("dav-review-api")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper())
@@ -3572,6 +3573,45 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                 400, "no active project for this run; set the X-DAV-Project "
                 "header (or a default project) so the run can be attributed")
         await _require_priv_conn(conn, request, rbac.P_PROJECT_RUNS_EXECUTE, _trigpid)
+    # Server-side scope enforcement. set_id / selection_mode were stored as
+    # run_sessions lineage ONLY — the engine is scoped exclusively by
+    # uc_handles / uc_uuids / managed_uc_uuids, which the UI resolves
+    # client-side. An API caller sending {"selection_mode":"set","set_id":N}
+    # with no UC lists therefore got a SILENT full-corpus run (repro:
+    # dav-stage2-console-853521 — set_id=29, executed all 420 corpus UCs).
+    # Resolve the set here exactly like the UI does; refuse a declared
+    # narrowed scope that would otherwise fall through to the full corpus.
+    _has_selection = bool(payload.uc_handles or payload.uc_uuids
+                          or payload.managed_uc_uuids)
+    _sel_action = _run_selection.selection_action(
+        payload.selection_mode, payload.set_id,
+        is_all_set=(payload.set_id is not None and _is_all_set(payload.set_id)),
+        has_explicit_selection=_has_selection)
+    if _sel_action == _run_selection.RESOLVE_SET:
+        _sel_sid = _real_set_id(payload.set_id)
+        async with pool.acquire() as conn:
+            if not await conn.fetchval(
+                    "SELECT 1 FROM use_case_sets WHERE id=$1", _sel_sid):
+                raise HTTPException(404, f"set {_sel_sid} not found")
+            _sel_rows = await conn.fetch(
+                "SELECT uc_uuid, uc_source, uc_handle FROM use_case_set_members "
+                "WHERE set_id=$1 ORDER BY added_at", _sel_sid)
+        _flt = _run_selection.member_filter([dict(r) for r in _sel_rows])
+        if not any(_flt.values()):
+            raise HTTPException(
+                400, f"set {_sel_sid} has no members; a set-scoped run would "
+                     "otherwise execute the full corpus. Add UCs to the set, "
+                     "or drop set_id/selection_mode for a full-corpus run.")
+        payload.uc_handles       = _flt["uc_handles"] or None
+        payload.uc_uuids         = _flt["uc_uuids"] or None
+        payload.managed_uc_uuids = _flt["managed_uc_uuids"] or None
+    elif _sel_action == _run_selection.REJECT:
+        raise HTTPException(
+            400, f"selection_mode={payload.selection_mode!r} declares a "
+                 "narrowed scope but carries no uc_handles/uc_uuids/"
+                 "managed_uc_uuids and no resolvable set_id; refusing to "
+                 "silently run the full corpus. Use selection_mode='corpus' "
+                 "(or set_id='__all__') for a full-corpus run.")
     params = _resolve_run_params(payload)
     # Per-(model, use) override system (DAV migration 014). Resolve
     # capabilities + use_profile from DB by inference_model. use_key
