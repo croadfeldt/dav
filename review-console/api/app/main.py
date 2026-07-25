@@ -308,7 +308,7 @@ async def _analysis_ingest_loop():
                             result = await _ingest_run_analyses(rid, conn)
                         log.info(
                             "ingest loop: %s — ucs=%s gaps=%s",
-                            rid, result.get("ucs_ingested"), result.get("gaps_ingested"),
+                            rid, result.get("ingested_ucs"), result.get("ingested_gaps"),
                         )
                     except Exception as e:
                         log.warning("ingest loop: %s failed (%s); will retry next pass", rid, e)
@@ -3365,6 +3365,11 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
         r["inference_model"]    = p.get("inference-model")    or tp.get("inference_model")
         r["inference_endpoint"] = p.get("inference-endpoint") or tp.get("inference_endpoint")
         r["mode"] = p.get("mode") or (s.get("mode") if s else None) or tp.get("mode")
+        # Ingestion state at a glance: "ingested" (analysis rows in DB),
+        # "pending" (run finished successfully but the 5-min ingest loop hasn't
+        # landed it yet), null (in-flight / failed — nothing to ingest).
+        r["ingest_status"] = ("ingested" if r["run_id"]
+                              else ("pending" if r.get("phase") == "Succeeded" else None))
         if s:
             r["session_name"] = s.get("name") or None
             r["category"] = s.get("category")
