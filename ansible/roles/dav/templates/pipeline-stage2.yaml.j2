@@ -147,6 +147,17 @@ spec:
     - name: grounding-nudge
       type: string
       default: "0"
+    # Per-run inference constraints. Empty = use the run-corpus task defaults
+    # (max-tokens {{ dav_stage2_max_tokens | default(10240) }}, request timeout 900s).
+    # The console (RunTriggerIn) sets these only when the caller overrides them;
+    # the Pipeline MUST declare + forward them or Tekton rejects the PipelineRun
+    # as carrying an undeclared param.
+    - name: max-tokens
+      type: string
+      default: ""
+    - name: request-timeout-seconds
+      type: string
+      default: ""
 
   workspaces:
     - name: shared-data
@@ -307,6 +318,10 @@ spec:
           value: $(params.stage2-two-pass)
         - name: grounding-nudge
           value: $(params.grounding-nudge)
+        - name: max-tokens
+          value: $(params.max-tokens)
+        - name: request-timeout-seconds
+          value: $(params.request-timeout-seconds)
 
   # Per-run source isolation (task #52): spec/ and corpus/ are cloned under
   # <pipelineRun-name>/ so concurrent A/B arms never collide on the shared
