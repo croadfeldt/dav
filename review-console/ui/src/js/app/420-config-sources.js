@@ -395,7 +395,14 @@ function _ensureRunChipPoll() {
   // tick is the sole re-armer.
   const _activeNames = () => new Set((allRuns || []).filter(_runIsActive).map(r => r.name));
   const tick = async () => {
-    try { await loadRuns({ silent: true }); } catch {}   // refreshes allRuns + _renderRunChipLive
+    // Hygiene: skip our own loadRuns when (a) the page is hidden — nothing to paint,
+    // no reason to hammer /api/runs from a background tab — or (b) the Runs-view poller
+    // (_startRunsListPoll) is already refreshing allRuns, which would double the request.
+    const runsPollActive = !!_runsListPollTimer
+      && document.getElementById('view-runs')?.classList.contains('active');
+    if (document.visibilityState === 'visible' && !runsPollActive) {
+      try { await loadRuns({ silent: true }); } catch {}   // refreshes allRuns + _renderRunChipLive
+    }
     const nowActive = _activeNames();
     // #178: when a run that WAS active is no longer active, it just finished → its evaluations were
     // ingested, so the masthead Coverage pill's ingested/total is stale. Refresh it on that edge
@@ -1419,6 +1426,9 @@ function openReviewPane(scope, ucUuid, startAt = 'review') {
 
   // Pre-populate the Review & Plan tab
   _reviewCtx = { runId, ucUuid: ucUuid || null };
+  // Honor the requested scope: a per-UC action (scope='uc') must generate a UC-scoped
+  // review, not silently fall back to the whole set (the retired hardcode did the latter).
+  try { _rpSetScopeReq(scope, ucUuid); } catch (_) {}
   switchView('review');
 
   // Give the tab a moment to render, then set up

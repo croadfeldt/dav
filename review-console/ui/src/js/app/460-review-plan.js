@@ -86,17 +86,50 @@ async function _rpPopulateUCs(runId) {
   } catch(e) { sel.innerHTML = `<option value="">(${esc(e.message)})</option>`; }
 }
 
+// Requested review scope. Default = the masthead Scoping Set (whole-set review).
+// openReviewPane('uc', <uuid>, …) — the per-UC "Arch Review"/"Enhancements" actions —
+// switches this to a UC scope so those clicks stop silently reviewing the whole set.
+let _rpScopeReq = { scope: 'set', ucUuid: null };
+function _rpSetScopeReq(scope, ucUuid) {
+  _rpScopeReq = (scope === 'uc' && ucUuid) ? { scope: 'uc', ucUuid } : { scope: 'set', ucUuid: null };
+  try { _rpRenderScopeIndicator(); } catch (_) {}
+}
 function _rpGetContext() {
-  // The Architecture roadmap is scoped by the masthead Scoping Set (the run/UC picker is
-  // retired). `setId` is the masthead scope ('' = all, '__unassigned__', or a set id);
-  // `runId` is a synthetic `set:<id>` token so the cache/generation API keys it like a run.
+  // UC scope (requested from a per-UC action): key the cache/generation on the REAL
+  // analysis run_id + uc_uuid — the arch-review/enhancements API scopes to that UC.
+  if (_rpScopeReq.scope === 'uc' && _rpScopeReq.ucUuid) {
+    return { runId: activeRunResultId || null, scope: 'uc',
+             ucUuid: _rpScopeReq.ucUuid, setId: _activeScope || '' };
+  }
+  // Set scope (default): the Architecture roadmap follows the masthead Scoping Set (the
+  // run/UC picker is retired). `setId` is the masthead scope ('' = all, '__unassigned__',
+  // or a set id); `runId` is a synthetic `set:<id>` token so the API keys it like a run.
   const setId  = _activeScope || '';
-  const scope  = 'set';
   const runId  = 'set:' + (setId || '__all__');
   // Model is NOT chosen here — arch-review uses the Config "Default Arch Review
   // model" (model_defaults key='arch-review'); the API falls back to it when the
   // request carries no model. Single source of truth, set in the Config view.
-  return { runId, scope, ucUuid: null, setId };
+  return { runId, scope: 'set', ucUuid: null, setId };
+}
+// Small "Scope: UC <handle>" / "Scope: set <name>" indicator in the Arch Review pane,
+// with a one-click reset back to the whole-set review when UC-scoped.
+function _rpRenderScopeIndicator() {
+  const el = document.getElementById('rpScopeIndicator');
+  if (!el) return;
+  if (_rpScopeReq.scope === 'uc' && _rpScopeReq.ucUuid) {
+    const uc = (activeRunSummary?.ucs || []).find(u => u.uc_uuid === _rpScopeReq.ucUuid);
+    const label = uc?.uc_handle || (_rpScopeReq.ucUuid.slice(0, 8) + '…');
+    el.innerHTML = `Scope: <strong>UC ${esc(label)}</strong> `
+      + `<a href="javascript:void(0)" onclick="_rpSetScopeReq('set');_rpLoadCached();" style="color:var(--accent);font-size:10px;">× review whole set</a>`;
+    el.style.display = '';
+  } else {
+    let name = 'all use cases';
+    const v = _activeScope || '';
+    if (v === '__unassigned__') name = 'unassigned use cases';
+    else if (v) { const s = (allSets || []).find(x => String(x.id) === String(v)); name = s ? s.name : `Set ${v}`; }
+    el.innerHTML = `Scope: <strong>set — ${esc(name)}</strong>`;
+    el.style.display = '';
+  }
 }
 // Reflect the active masthead scope name in the Architecture controls panel.
 function _rpUpdateScopeName() {
@@ -107,6 +140,7 @@ function _rpUpdateScopeName() {
   if (v === '__unassigned__') name = 'unassigned use cases';
   else if (v) { const s = (allSets || []).find(x => String(x.id) === String(v)); name = s ? s.name : `Set ${v}`; }
   el.textContent = name;
+  try { _rpRenderScopeIndicator(); } catch (_) {}
 }
 
 document.getElementById('rpRunSel')?.addEventListener('change', function() {

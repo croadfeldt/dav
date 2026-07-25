@@ -1,6 +1,16 @@
 // ══════════════════════════ SETS ══════════════════════════
 
-async function loadSets() {
+// Boot dedupe: init() and the landing view (switchView('usecases')) both call loadSets
+// on boot, firing /api/sets twice. Share a single in-flight promise so concurrent callers
+// coalesce onto one request; the guard clears on completion so later explicit reloads
+// (after edits) still refetch.
+let _setsInflight = null;
+function loadSets() {
+  if (_setsInflight) return _setsInflight;
+  _setsInflight = _loadSetsImpl().finally(() => { _setsInflight = null; });
+  return _setsInflight;
+}
+async function _loadSetsImpl() {
   // In the merged UC/Scoping Sets view, "loadSets" populates the left-rail filter.
   // It's also called by openNewRun → _getDefaultSet() to find the project default.
   const rail = document.getElementById('setFilterRail');

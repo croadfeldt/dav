@@ -485,7 +485,9 @@ async function init() {
     ov.style.display = 'flex';
     return;
   }
-  try { await Promise.all([loadMe(), loadRunStatus()]); setApiStatus(true); }
+  // Boot dedupe: init() already fetched /api/me above — hand that value to loadMe so it
+  // wires up the account UI without a second identical request.
+  try { await Promise.all([loadMe(me), loadRunStatus()]); setApiStatus(true); }
   catch (e) { console.error(e); setApiStatus(false, e.message); }
   _loadUserSettings();   // #129: pull server-side prefs (theme/persona/view-mode/nav) + re-apply
   // Pre-load models + project model defaults so every default-aware override
@@ -559,9 +561,12 @@ window.addEventListener('focus', () => {
   if (Date.now() - _lastMeRefresh > 30000) { _lastMeRefresh = Date.now(); loadMe(); }
 });
 
-async function loadMe() {
+async function loadMe(prefetched) {
   _lastMeRefresh = Date.now();
-  try { me = await api('/api/me'); } catch { me = {reviewer:null,authenticated:false}; }
+  // A caller (boot) may pass an already-fetched /api/me payload to avoid a duplicate
+  // request; the focus-refresh / project-switch callers pass nothing and refetch.
+  if (prefetched !== undefined) me = prefetched;
+  else { try { me = await api('/api/me'); } catch { me = {reviewer:null,authenticated:false}; } }
   const chip = document.getElementById('acctChipLabel');
   const who = document.getElementById('acctMenuWho');
   if (me.authenticated && me.reviewer) {

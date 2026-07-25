@@ -1,5 +1,36 @@
 // ══════════════════════════ RESULTS ══════════════════════════
 
+// ── Gap severity ordering (shared) ───────────────────────────────────────────
+// Canonical severity order matches the API's SEV_ORDER (critical → minor). Gaps
+// come back in API/emit order; every place that renders them sorts by this so the
+// worst gaps read first, and the run header shows a rollup ("2 critical · 5 major").
+const _SEV_ORDER = { critical: 0, major: 1, moderate: 2, advisory: 3, minor: 4 };
+function _gapSevLabel(g) {
+  const s = g && g.severity;
+  if (s && typeof s === 'object') return s.label || 'minor';
+  return s || 'minor';
+}
+function _sevRank(g) { return _SEV_ORDER[String(_gapSevLabel(g)).toLowerCase()] ?? 9; }
+function _sortGapsBySeverity(gaps) { return [...(gaps || [])].sort((a, b) => _sevRank(a) - _sevRank(b)); }
+
+// Fetch this run's ingested gaps and paint a compact severity rollup ("2 critical ·
+// 5 major") into the run header. Advisory: silent on failure (gaps may be un-ingested).
+async function _renderRunSevRollup(runId) {
+  const el = document.getElementById('runSevRollup');
+  if (!el || !runId) return;
+  let gaps = [];
+  try { gaps = (await api(`/api/analysis/gaps?run_id=${encodeURIComponent(runId)}&limit=2000`)).gaps || []; }
+  catch (_) { return; }
+  const counts = {};
+  gaps.forEach(g => { const s = String(_gapSevLabel(g)).toLowerCase(); counts[s] = (counts[s] || 0) + 1; });
+  const order = ['critical', 'major', 'moderate', 'advisory', 'minor'];
+  const parts = order.filter(s => counts[s]).map(s =>
+    `<span class="sev-label ${sevClass(s)}" style="font-size:9px;">${counts[s]} ${esc(s)}</span>`);
+  el.innerHTML = parts.length
+    ? `<span style="color:var(--text-faint);">gaps:</span> ${parts.join(' <span style="color:var(--border-bright);">·</span> ')}`
+    : '';
+}
+
 async function loadResults() {
   document.getElementById('resultList').innerHTML = '<div class="empty">loading…</div>';
   try {
@@ -80,7 +111,7 @@ function setScope(v) {
   // Refresh whichever scoped view is active + the freshness chip.
   if (_curView === 'results') _showScopedResults();
   else if (_curView === 'capmap') renderCapMap();
-  else if (_curView === 'review') { try { _rpUpdateScopeName(); _rpLoadCached(); } catch (_) {} }
+  else if (_curView === 'review') { try { _rpSetScopeReq('set'); _rpUpdateScopeName(); _rpLoadCached(); } catch (_) {} }
   else if (_curView === 'enhancement') { try { loadEnhancementWorkbench(); } catch (_) {} }
   else if (_curView === 'engineering') { try { _loadEngCapMap(); _loadRoadmapProjection(); } catch (_) {} }
   try { loadFreshness(); } catch (_) {}
@@ -291,8 +322,10 @@ function renderRunSummaryHeader(s) {
         <span style="color:var(--text-faint);">${esc(fmtTs(s.finished_at || s.started_at))}</span>
       </div>
     </div>
-    ${lineageRow}`;
+    ${lineageRow}
+    <div id="runSevRollup" style="font-size:11px;margin-top:6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;"></div>`;
   header.style.display = '';
+  _renderRunSevRollup(s.run_id);
   // Clear the per-UC area to its empty state — header stays
   const bar = document.getElementById('analysisActionBar'); bar.innerHTML=''; bar.style.display='none';
   document.getElementById('analysisDetail').innerHTML =
