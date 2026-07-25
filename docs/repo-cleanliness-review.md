@@ -157,3 +157,18 @@ and about atomic-recompilation scope each exposed a doctrine ambiguity no determ
 could see — both became same-day patches. The interpretability probe campaign (ADR-004) is
 this question automated for type contexts; this sweep question covers the documents the
 probes do not reach.
+
+## Q14 — Derivability (ruled core 2026-07-25)
+
+For every stored or declared value surface the sweep touches — outputs, spec fields, generated
+tables, manifests — ask two questions in order: **is the value derivable** from other model
+records (instances, relationships, provenance, declared structure)? And if so, **is it
+required to store it here** — is this a declared binding surface with its derivation named, or
+a drift-prone duplicate? The compute-never-store precedents (derived shape, nature,
+portability) and the Automation.Job run-history finding (instance facts projected onto a
+definition) are the calibration cases. The mechanical half runs in udlm CI (DRV-001:
+history-shaped outputs must classify DERIVED-with-source or OBSERVED, or move to the instance
+type); this sweep question covers what the pattern cannot judge — intent counts versus
+observations, relationship-derivable spec fields, and any new storage that smells like a
+cached query. A finding names the value, its derivation source, and the recommended
+disposition (derive · reclassify · relocate to instance · justify as binding surface).
