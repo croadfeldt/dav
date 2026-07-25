@@ -8274,6 +8274,20 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             await conn.execute(
                 "UPDATE analysis_runs SET failed = COALESCE(failed,0) + $2 WHERE run_id=$1",
                 run_id, _dropped)
+        # Wave 0: stamp the session's UC counts now that they're authoritative.
+        # They were never written (the finalizer defers them), so
+        # _est_per_uc_seconds' `uc_succeeded > 0` filter never matched and the
+        # per-UC ETA stayed the 30-min env constant — which now sizes the
+        # auto-cancel budget. Mirrors the analysis_runs tallies (incl. dropped).
+        if run_name_for_analysis:
+            await conn.execute(
+                "UPDATE run_sessions SET uc_total=$2, uc_succeeded=$3, uc_failed=$4 "
+                "WHERE run_name=$1",
+                run_name_for_analysis,
+                summary.get("total_ucs", 0),
+                summary.get("successful", 0),
+                (summary.get("failed", 0) or 0) + _dropped,
+            )
         if _dup_uuids:
             log.warning(
                 "ingest %s: skipped %d duplicate uc_uuid row(s) in run-summary "
