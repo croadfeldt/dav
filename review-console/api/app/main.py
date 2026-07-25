@@ -308,7 +308,7 @@ async def _analysis_ingest_loop():
                             result = await _ingest_run_analyses(rid, conn)
                         log.info(
                             "ingest loop: %s — ucs=%s gaps=%s",
-                            rid, result.get("ucs_ingested"), result.get("gaps_ingested"),
+                            rid, result.get("ingested_ucs"), result.get("ingested_gaps"),
                         )
                     except Exception as e:
                         log.warning("ingest loop: %s failed (%s); will retry next pass", rid, e)
@@ -1610,6 +1610,17 @@ class RunTriggerIn(BaseModel):
     # so operators can A/B without an engine rebuild — added 2026-05-29 for
     # the Qwen3.6-27B MTP investigation.
     stage2_two_pass: Optional[str] = None
+    # Per-run stage-2 output budget override (Tekton max-tokens param; engine
+    # default = dav_stage2_max_tokens). validations.trigger_run already
+    # forwards it — this exposes it on the public trigger, bounded to the
+    # engine's sane window.
+    max_tokens: Optional[int] = Field(None, ge=256, le=32768)
+    # Per-run grounding-nudge toggle (forwarded as Tekton grounding-nudge
+    # "true"/"false"; None = engine default).
+    grounding_nudge: Optional[bool] = None
+    # Per-request inference HTTP timeout, forwarded as Tekton param
+    # request-timeout-seconds (task-side param lands with the engine PR).
+    request_timeout_seconds: Optional[int] = Field(None, ge=1)
     # Legacy params kept for backward compat with self-test UI
     branch: Optional[str] = None
     commit_sha: Optional[str] = None
@@ -3315,6 +3326,7 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
                 rows = await conn.fetch(
                     "SELECT run_name, name, description, category, tags, "
                     "gpu_energy_joules, total_gen_tokens, total_prompt_tokens, "
+                    "mode, trigger_payload, "
                     # Resolve the set's CURRENT name by joining use_case_sets on set_id — so a set
                     # rename reflects everywhere. The stored set_name is a provenance fallback only
                     # (covers a deleted set [FK is ON DELETE SET NULL] + the synthetic "All Use Cases"
@@ -3343,6 +3355,21 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
         ar = runid_by_name.get(r.get("name")) or {}
         r["run_id"] = ar.get("run_id")   # null until analysis is ingested
         s = sessions_by_name.get(r.get("name"))
+        # Field lift (Wave 0): consumers were reading `status` / `inference_model`
+        # as None because the row only carries `phase` + kebab-case Tekton params.
+        # Surface them top-level in snake_case: PipelineRun params (the resolved
+        # values) win; run_sessions.trigger_payload is the fallback for pruned runs.
+        p = r.get("params") or {}
+        tp = (_parse_jsonb(s["trigger_payload"]) or {}) if (s and s.get("trigger_payload")) else {}
+        r["status"] = r.get("phase")
+        r["inference_model"]    = p.get("inference-model")    or tp.get("inference_model")
+        r["inference_endpoint"] = p.get("inference-endpoint") or tp.get("inference_endpoint")
+        r["mode"] = p.get("mode") or (s.get("mode") if s else None) or tp.get("mode")
+        # Ingestion state at a glance: "ingested" (analysis rows in DB),
+        # "pending" (run finished successfully but the 5-min ingest loop hasn't
+        # landed it yet), null (in-flight / failed — nothing to ingest).
+        r["ingest_status"] = ("ingested" if r["run_id"]
+                              else ("pending" if r.get("phase") == "Succeeded" else None))
         if s:
             r["session_name"] = s.get("name") or None
             r["category"] = s.get("category")
@@ -3699,6 +3726,10 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             capabilities_json=capabilities_json,
             use_profile_json=use_profile_json,
             stage2_two_pass=payload.stage2_two_pass,
+            max_tokens=payload.max_tokens,
+            grounding_nudge=(None if payload.grounding_nudge is None
+                             else ("true" if payload.grounding_nudge else "false")),
+            request_timeout_seconds=payload.request_timeout_seconds,
             stage2_context=_stage2_ctx,
             uc_count=_trig_uc_count,
             # Explicit "time allowed" from the modal, else the data-driven
@@ -4449,6 +4480,7 @@ async def list_results(request: Request):
 # Static sub-paths must be declared before the /{run_id} catch-all.
 @app.get("/api/results/compare")
 async def compare_results(
+    request: Request,
     a: str = Query(..., description="first run_id (baseline)"),
     b: str = Query(..., description="second run_id (the newer run)"),
 ):
@@ -4459,6 +4491,12 @@ async def compare_results(
     """
     if not _results.is_available():
         raise HTTPException(503, "workspace PVC not mounted")
+    # #186 follow-up: this was the one run_id-addressed read the sweep missed —
+    # unauthenticated + unscoped, so any caller could diff ANY two projects'
+    # runs. Same sovereignty guard as get_result, applied to BOTH run ids.
+    async with pool.acquire() as _c:
+        await _require_run_in_project(_c, request, a, allow_uningested=True)
+        await _require_run_in_project(_c, request, b, allow_uningested=True)
     try:
         return _results.compare_runs(a, b)
     except FileNotFoundError as e:
@@ -8241,6 +8279,20 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             await conn.execute(
                 "UPDATE analysis_runs SET failed = COALESCE(failed,0) + $2 WHERE run_id=$1",
                 run_id, _dropped)
+        # Wave 0: stamp the session's UC counts now that they're authoritative.
+        # They were never written (the finalizer defers them), so
+        # _est_per_uc_seconds' `uc_succeeded > 0` filter never matched and the
+        # per-UC ETA stayed the 30-min env constant — which now sizes the
+        # auto-cancel budget. Mirrors the analysis_runs tallies (incl. dropped).
+        if run_name_for_analysis:
+            await conn.execute(
+                "UPDATE run_sessions SET uc_total=$2, uc_succeeded=$3, uc_failed=$4 "
+                "WHERE run_name=$1",
+                run_name_for_analysis,
+                summary.get("total_ucs", 0),
+                summary.get("successful", 0),
+                (summary.get("failed", 0) or 0) + _dropped,
+            )
         if _dup_uuids:
             log.warning(
                 "ingest %s: skipped %d duplicate uc_uuid row(s) in run-summary "

@@ -18,6 +18,7 @@ Wiring (main.py), 4 hooks — see the integration note:
              return _canonical_identity(pat_email)
   4. the three /api/tokens endpoints (mint / list / revoke)
 """
+import asyncio
 import time
 import hashlib
 import secrets
@@ -30,6 +31,26 @@ TOKEN_PREFIX = "dav_pat_"
 
 # token_hash -> (email, expires_epoch)  ; expires_epoch == 0.0 means "never"
 _cache: dict[str, tuple[str, float]] = {}
+
+# last_used_at stamping (schema_control.sql has the column; it was never
+# written). Throttled to <=1 UPDATE/hour per token via this in-memory map and
+# fired as a background task — resolve() stays SYNC and never blocks auth.
+_pool = None                                  # set by load_cache() at boot
+_last_touch: dict[str, float] = {}            # token_hash -> last stamp epoch
+_TOUCH_INTERVAL_SEC = 3600.0
+
+
+async def _touch_last_used(token_hash: str) -> None:
+    """Best-effort UPDATE of api_tokens.last_used_at. Fire-and-forget."""
+    if _pool is None:
+        return
+    try:
+        async with _pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE api_tokens SET last_used_at=now() WHERE token_hash=$1",
+                token_hash)
+    except Exception as e:  # never let usage-stamping surface into auth
+        log.debug("api_tokens: last_used_at stamp failed: %s", e)
 
 
 def _hash(token: str) -> str:
@@ -54,19 +75,29 @@ def resolve(authorization_header: str) -> Optional[str]:
     tok = parts[1].strip()
     if not tok.startswith(TOKEN_PREFIX):
         return None
-    ent = _cache.get(_hash(tok))
+    h = _hash(tok)
+    ent = _cache.get(h)
     if not ent:
         return None
     email, exp = ent
-    if exp and exp < time.time():
+    now = time.time()
+    if exp and exp < now:
         return None
+    # Throttled usage stamp: at most one background UPDATE per token per hour.
+    if now - _last_touch.get(h, 0.0) >= _TOUCH_INTERVAL_SEC:
+        _last_touch[h] = now
+        try:
+            asyncio.get_running_loop().create_task(_touch_last_used(h))
+        except RuntimeError:            # no running loop (sync/test context)
+            _last_touch.pop(h, None)    # don't burn the hour slot on a no-op
     return email
 
 
 async def load_cache(pool) -> int:
     """(Re)load the active-token cache from the DB. Call at boot + after any
     mint/revoke. Returns the number of active tokens cached."""
-    global _cache
+    global _cache, _pool
+    _pool = pool   # keep for the fire-and-forget last_used_at stamp
     new: dict[str, tuple[str, float]] = {}
     try:
         async with pool.acquire() as conn:
