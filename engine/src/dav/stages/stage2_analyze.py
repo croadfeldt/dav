@@ -129,6 +129,11 @@ _DEFAULT_SAMPLER_PARAMS = {
     "reproduce":    {"top_k": 1, "top_p": None, "min_p": None},
 }
 
+# Fallback per-turn output budget when neither --max-tokens nor the
+# use_profile provides one. Kept at this CLI's historical default (6144;
+# run_corpus's is 4096 — the two CLIs have always differed here).
+_DEFAULT_MAX_TOKENS = 6144
+
 def derive_seed_from_uuid(uc_uuid: str) -> int:
     """Derive a stable seed from a UC uuid for reproduce mode.
 
@@ -329,7 +334,13 @@ def _cli():
     parser.add_argument("--min-p", type=float, default=None,
                         help="Override mode-default min-p. Defaults: "
                              "verification=0.05, explore=0.05, reproduce=unset.")
-    parser.add_argument("--max-tokens", type=int, default=6144)
+    parser.add_argument("--max-tokens", type=int, default=None,
+                        help="Per-turn LLM output token budget. Default: "
+                             "None, which resolves as "
+                             "use_profile['max_tokens'] if the DAV profile "
+                             "provides one, else 6144. (The old default of "
+                             "6144 doubled as a can't-tell-if-set sentinel "
+                             "and silently shadowed the profile value.)")
     parser.add_argument("--no-guided-json", action="store_true",
                         help="Disable vLLM guided_json decoding (for endpoints that don't support it)")
     parser.add_argument("--log-level", default="INFO")
@@ -477,12 +488,14 @@ def _cli():
     top_p = args.top_p if args.top_p is not None else use_profile.get("top_p", sampler_defaults["top_p"])
     min_p = args.min_p if args.min_p is not None else use_profile.get("min_p", sampler_defaults["min_p"])
 
-    # max_tokens has a CLI default of 6144 here. Same disambiguation
-    # rule as run_corpus.py: any non-default CLI value wins.
-    if args.max_tokens != 6144:
+    # max_tokens: explicit CLI > use_profile > default (6144, this CLI's
+    # historical fallback). The CLI default is None, so an explicit
+    # --max-tokens 6144 is a real override — the old value-sentinel
+    # (`!= 6144`, drifted from run_corpus's `!= 4096`) silently shadowed it.
+    if args.max_tokens is not None:
         max_tokens = args.max_tokens
     else:
-        max_tokens = use_profile.get("max_tokens", args.max_tokens)
+        max_tokens = use_profile.get("max_tokens", _DEFAULT_MAX_TOKENS)
 
     log.info(
         "stage2 mode=%s sample_count=%d sample_concurrency=%d temperature=%s "
