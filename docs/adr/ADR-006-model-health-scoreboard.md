@@ -31,6 +31,12 @@ The scoreboard is an instrument, not a gate: no metric fails CI by itself (stale
 generated file does). Thresholds live where decisions live — the 1.0 scope lock cites the
 scoreboard; the scoreboard does not enforce the lock.
 
+The scoreboard is also attestation evidence. After the full gate suite passes, CI emits the
+scoreboard plus the registry ref as an uncommitted, signable artifact (`model_health.py
+--attest`, uploaded per run) — evidence by construction, because the emission step is
+unreachable on a failed suite. The attestation pipeline consumes it as the model-validation
+subject's input; signing and anchoring are that pipeline's acts, not the scoreboard's.
+
 ## Consequences
 
 - "Is the model getting stronger?" becomes a diff between two refs of one file, readable by an
