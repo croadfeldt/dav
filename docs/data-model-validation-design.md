@@ -91,6 +91,50 @@ a wrong enum quarantines the run.
 V0 is unblocked now (PRs in flight); V1–V2 are console+pipeline work with no GPU dependency;
 V3–V4 are GPU-gated (qwen3-32b restart is an operator action).
 
+## The hammer program (ADR-001)
+
+Layers 1–3 define who validates; the hammer program defines *what gets attacked*. Six hammers
+cover the model's surfaces, each finding a class of defect the others cannot:
+
+| # | Surface | Method | Finds | Status |
+|---|---------|--------|-------|--------|
+| H1 | Definitions | Deep mutation fuzzing — every node path in every spec, mutated against its local subschema | Over-permissiveness at depth | deterministic, in build |
+| H2 | Contracts & composition | Adversarial + legal catalog-item generation against the composition validator | Non-discriminating composition rules; zero-output (unbindable) types | deterministic, in build |
+| H3 | Resources | Real-estate payload replay against pinned spec versions | Fields the world needs that the model lacks | deterministic, estate-side |
+| H4 | Providers | Provider-contract cross-check against registry and standards register | Contract drift, dangling claims | deterministic, in build |
+| H5 | Portability | Provider-swap diff over the class system's portable surface (Base/Type-scoped elements unchanged, Provider elements swapped) | Portability claims that don't survive a swap | gated on class-realization pilot |
+| H6 | Expressibility | Generated stress UCs over the full coverage matrix (47 types × six capability axes), scored by Layers 2–3 | Under-expressiveness at scale | GPU-gated |
+
+Three failure spaces, all covered: H1/H2 find what the model wrongly *accepts*, H3/H6 find what
+the world needs that the model *lacks*, H4/H5 find where types and providers *disagree*. The
+architecture-era corpus only ever probed the second.
+
+## The six program extensions (ADRs 002–007)
+
+The hammers attack what we authored; these extensions validate against what we didn't:
+
+- **External corpora as expressibility inputs (ADR-002)** — public intent corpora (TOSCA
+  templates, Kubernetes manifests, Terraform modules, architecture-model libraries) fed through
+  Layer 2. The universality claim, tested against the universe rather than our imagination;
+  findings arrive with real-world provenance.
+- **The must-reject family (ADR-003)** — a seventh UC family with inverted success semantics:
+  the system must *refuse* the intent (cross-tenant reference, sovereignty export, inline
+  credential, undeclared-output binding, unauthorized provider, projection leak). The only
+  validation of the policy/sovereignty spine that exists.
+- **Interpretability probes (ADR-004)** — author an instance from a type's plain-English
+  context alone, validate against the spec, sample N times. Divergence means the human contract
+  and the machine contract disagree — the defect that wastes engineers' time.
+- **Brownfield round-trip (ADR-005)** — observed estate records → re-derived intent →
+  re-realization → typed-output compare. The rehydration promise tested against a real,
+  unplanned environment; also the managed-vs-unmanaged axis made measurable.
+- **Model-health scoreboard (ADR-006)** — discrimination density, output adequacy, strictness,
+  context/UC/consumer coverage, computed per registry ref and tracked over time
+  (udlm `registry/MODEL-HEALTH.md`). Validation becomes a trend with a graph; 1.0 readiness
+  becomes a threshold instead of a feeling.
+- **Consumer conformance surface (udlm ADR-044)** — consumers declare their read surface in
+  `registry/consumers/`; the registry gates on it. A breaking change fails in registry CI
+  naming the consumers it breaks, instead of failing later in their runtimes.
+
 ## Non-goals
 
 - DAV does not build or realize — dcm-at-home owns execution; DAV owns expressibility and gaps.
