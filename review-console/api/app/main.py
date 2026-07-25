@@ -3315,6 +3315,7 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
                 rows = await conn.fetch(
                     "SELECT run_name, name, description, category, tags, "
                     "gpu_energy_joules, total_gen_tokens, total_prompt_tokens, "
+                    "mode, trigger_payload, "
                     # Resolve the set's CURRENT name by joining use_case_sets on set_id — so a set
                     # rename reflects everywhere. The stored set_name is a provenance fallback only
                     # (covers a deleted set [FK is ON DELETE SET NULL] + the synthetic "All Use Cases"
@@ -3343,6 +3344,16 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
         ar = runid_by_name.get(r.get("name")) or {}
         r["run_id"] = ar.get("run_id")   # null until analysis is ingested
         s = sessions_by_name.get(r.get("name"))
+        # Field lift (Wave 0): consumers were reading `status` / `inference_model`
+        # as None because the row only carries `phase` + kebab-case Tekton params.
+        # Surface them top-level in snake_case: PipelineRun params (the resolved
+        # values) win; run_sessions.trigger_payload is the fallback for pruned runs.
+        p = r.get("params") or {}
+        tp = (_parse_jsonb(s["trigger_payload"]) or {}) if (s and s.get("trigger_payload")) else {}
+        r["status"] = r.get("phase")
+        r["inference_model"]    = p.get("inference-model")    or tp.get("inference_model")
+        r["inference_endpoint"] = p.get("inference-endpoint") or tp.get("inference_endpoint")
+        r["mode"] = p.get("mode") or (s.get("mode") if s else None) or tp.get("mode")
         if s:
             r["session_name"] = s.get("name") or None
             r["category"] = s.get("category")
