@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 import requests
@@ -24,6 +25,26 @@ log = logging.getLogger(__name__)
 
 class InferenceError(Exception):
     pass
+
+# Retry policy for transient inference failures (production incident
+# 2026-07: a 503 window at run start turned every request into an
+# immediate InferenceError and burned the whole corpus loop in seconds).
+# Classification:
+#   retryable — 429, any 5xx, connection errors, connect timeouts
+#               (the endpoint is down/overloaded but may recover)
+#   fatal     — other 4xx (the request itself is wrong; retrying can't
+#               help), read timeouts (the server already consumed a full
+#               timeout_seconds budget; retrying doubles the damage)
+# Exponential backoff 2s → 4s → 8s → 16s → give up (30s cap keeps any
+# single sleep bounded); ~5 attempts and ≤ ~2 min total added latency.
+_RETRY_MAX_ATTEMPTS = 5
+_RETRY_BACKOFF_INITIAL_S = 2.0
+_RETRY_BACKOFF_CAP_S = 30.0
+_RETRY_TOTAL_BUDGET_S = 120.0
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    return status_code == 429 or status_code >= 500
 
 @dataclass
 class EndpointConfig:
@@ -534,16 +555,56 @@ class InferenceClient:
             ]
             log.debug("%s outgoing messages: %s", endpoint.label, summary)
 
-        try:
-            r = requests.post(url, headers=headers, json=body,
-                              timeout=endpoint.timeout_seconds)
-        except requests.RequestException as e:
-            raise InferenceError(f"request to {endpoint.label} failed: {e}") from e
+        # Retry loop for transient failures (see _RETRY_* constants above).
+        # Fatal errors raise InferenceError immediately, which preserves the
+        # fallback-endpoint behavior in chat(): the fallback is tried only
+        # after the primary's retries are exhausted (or a fatal error).
+        attempt = 0
+        backoff = _RETRY_BACKOFF_INITIAL_S
+        retry_started = time.monotonic()
+        while True:
+            attempt += 1
+            retryable = False
+            r = None
+            try:
+                r = requests.post(url, headers=headers, json=body,
+                                  timeout=endpoint.timeout_seconds)
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.ConnectTimeout) as e:
+                # Endpoint unreachable / connect timed out — transient.
+                retryable = True
+                err = f"request to {endpoint.label} failed: {e}"
+                cause = e
+            except requests.RequestException as e:
+                # Read timeouts and everything else: fatal. A read timeout
+                # means the server already burned timeout_seconds on this
+                # request; retrying would double the damage.
+                raise InferenceError(f"request to {endpoint.label} failed: {e}") from e
+            else:
+                if r.status_code == 200:
+                    break
+                err = f"{endpoint.label} returned {r.status_code}: {r.text[:500]}"
+                cause = None
+                retryable = _is_retryable_status(r.status_code)
+                if not retryable:
+                    # Other 4xx — the request itself is wrong; retrying can't help.
+                    raise InferenceError(err)
 
-        if r.status_code != 200:
-            raise InferenceError(
-                f"{endpoint.label} returned {r.status_code}: {r.text[:500]}"
+            elapsed = time.monotonic() - retry_started
+            if (attempt >= _RETRY_MAX_ATTEMPTS
+                    or elapsed + backoff > _RETRY_TOTAL_BUDGET_S):
+                final = (f"{err} (giving up after {attempt} attempt(s), "
+                         f"{elapsed:.0f}s)")
+                if cause is not None:
+                    raise InferenceError(final) from cause
+                raise InferenceError(final)
+            log.warning(
+                "transient inference error from %s (attempt %d/%d): %s — "
+                "retrying in %.0fs",
+                endpoint.label, attempt, _RETRY_MAX_ATTEMPTS, err, backoff,
             )
+            time.sleep(backoff)
+            backoff = min(backoff * 2, _RETRY_BACKOFF_CAP_S)
 
         try:
             data = r.json()
