@@ -4460,6 +4460,7 @@ async def list_results(request: Request):
 # Static sub-paths must be declared before the /{run_id} catch-all.
 @app.get("/api/results/compare")
 async def compare_results(
+    request: Request,
     a: str = Query(..., description="first run_id (baseline)"),
     b: str = Query(..., description="second run_id (the newer run)"),
 ):
@@ -4470,6 +4471,12 @@ async def compare_results(
     """
     if not _results.is_available():
         raise HTTPException(503, "workspace PVC not mounted")
+    # #186 follow-up: this was the one run_id-addressed read the sweep missed —
+    # unauthenticated + unscoped, so any caller could diff ANY two projects'
+    # runs. Same sovereignty guard as get_result, applied to BOTH run ids.
+    async with pool.acquire() as _c:
+        await _require_run_in_project(_c, request, a, allow_uningested=True)
+        await _require_run_in_project(_c, request, b, allow_uningested=True)
     try:
         return _results.compare_runs(a, b)
     except FileNotFoundError as e:
