@@ -47,17 +47,20 @@ inference_primary_context_length: 32768
 # On the homelab AMD R9700 stack (~20-26 tok/s, 600s route timeout) the
 # honest ceiling is ~10,800 tokens (600s x 18 tok/s worst case). A
 # legitimate verbose analysis tops out around ~9,000 tokens (the UC #6
-# greenfield case), so 10240 covers real analyses with headroom while
-# keeping any single generation under the route timeout. 10240 covered real
-# analyses, but the self-improvement scan kept flagging output_truncation on
-# analyses that legitimately ran longer. Raised to 16384 IN LOCK-STEP with the
-# qwen3-32b-public route timeout going 600s -> 1200s (llm-serving commit
-# 4cd15a5): at ~20 tok/s the engine's 900s client timeout now caps a single
-# generation near ~18K tokens, so 16384 stays safe.
-# APPLY ORDER: raise the route timeout FIRST, or generations >~12K tokens 504
-# again. (Does not fix genuinely degenerate over-generation — that needs better
-# stop conditions, tracked separately.)
-dav_stage2_max_tokens: 16384
+# infrastructure/prod/greenfield case), so 10240 covers real analyses with
+# headroom while keeping any single generation under the route timeout.
+#
+# Set to 10240 — the 504-safe ceiling from the OSAC incident (2026-05-29/30,
+# runs 092466/098818): with 16384 on the slow AMD stack, degenerate
+# over-generations ran past the 600s route timeout and 504'd. The governing
+# constraint is max_tokens / throughput(tok/s) < route_timeout(s); at ~20
+# tok/s worst-case 18, 10240 stays under 600s with margin. A 16384 ceiling is
+# ONLY safe if the route timeout is raised to ~1200s FIRST (llm-serving commit
+# 4cd15a5) — and even then it invites the same degenerate over-generation the
+# 504 exposed, so we hold the conservative ceiling here.
+# (Does not fix genuinely degenerate over-generation — that needs better stop
+# conditions, tracked separately.)
+dav_stage2_max_tokens: 10240
 
 # --- Inference Tier 2 (in-cluster vLLM fallback) — OPT-IN ---
 # These vars only take effect when the playbook is invoked with

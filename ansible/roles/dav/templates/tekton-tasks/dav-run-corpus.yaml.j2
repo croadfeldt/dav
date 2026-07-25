@@ -204,26 +204,39 @@ spec:
 
     - name: max-tokens
       type: string
-      # Per-turn LLM output budget. Now a deployment variable
-      # (dav_stage2_max_tokens) because the safe ceiling is
-      # throughput-dependent — see group_vars/all/vars.yaml for the
-      # full rationale.
+      # Per-turn LLM output budget. A deployment variable
+      # (dav_stage2_max_tokens, default 10240) because the safe ceiling
+      # is throughput-dependent — see group_vars/all/vars.yaml for the
+      # full 504-math rationale (OSAC 2026-05-29/30, runs 092466/098818:
+      # max_tokens/throughput must stay under the route timeout).
       #
-      # History: iterated 6144 → 8192 → 16384 on 2026-05-28 because
-      # UC #6 (infrastructure/prod/greenfield) emits a ~9000-token,
-      # 33,907-char analysis that 8192 chopped mid-component. But on
-      # the slow AMD stack 16384 let degenerate over-generations run
-      # past the 600s route timeout → 504 (OSAC 2026-05-29/30, runs
-      # 092466/098818). The budget must satisfy
-      # max_tokens/throughput < route_timeout; the default below
-      # (10240) covers UC #6 with margin while staying under 600s at
-      # this stack's ~20 tok/s.
+      # Empty string = don't forward the flag; the engine then resolves
+      # use_profile['max_tokens'] → its own default. Non-empty values are
+      # explicit overrides and win over the profile (engine-side
+      # resolution: CLI > use_profile > default — the old != sentinel
+      # that shadowed profile values is gone).
       default: "{{ dav_stage2_max_tokens }}"
+
+    - name: request-timeout-seconds
+      type: string
+      description: |
+        Per-request HTTP timeout (seconds) for the engine's inference
+        calls. Empty = engine default (900). Must satisfy
+        max-tokens / decode-throughput(tok/s) < this value or long
+        generations die client-side; the engine logs a run-start
+        WARNING when the math cannot work.
+      default: ""
 
     - name: cache-prompt
       type: string
-      description: "true | false — enable llama.cpp KV cache reuse"
-      default: "false"
+      description: |
+        Tri-state: "" (default) = engine per-mode default
+        (verification/explore=on, reproduce=off); "true" forwards
+        --cache-prompt (force on); "false" forwards --no-cache-prompt
+        (force off). Previously "false" forwarded nothing, silently
+        falling through to the mode default — an explicit off was a
+        no-op.
+      default: ""
 
     - name: log-level
       type: string
@@ -343,8 +356,21 @@ spec:
         if [ "$(params.halt-on-error)" = "true" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --halt-on-error"
         fi
+        # cache-prompt is tri-state. "true"/"false" forward the matching
+        # flag; empty falls through to the engine's per-mode default. An
+        # explicit "false" used to be a silent no-op — it forwarded nothing.
         if [ "$(params.cache-prompt)" = "true" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --cache-prompt"
+        elif [ "$(params.cache-prompt)" = "false" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --no-cache-prompt"
+        fi
+        # max-tokens / request-timeout: forward only when set so the
+        # engine's "flag absent = use_profile → default" resolution fires.
+        if [ -n "$(params.max-tokens)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --max-tokens $(params.max-tokens)"
+        fi
+        if [ -n "$(params.request-timeout-seconds)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --request-timeout-seconds $(params.request-timeout-seconds)"
         fi
         if [ -n "$(params.consumer-profile-path)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --consumer-profile $(params.consumer-profile-path)"
@@ -395,7 +421,6 @@ spec:
           --mcp-url "$(params.mcp-url)" \
           --mode "$(params.mode)" \
           --max-tool-calls "$(params.max-tool-calls)" \
-          --max-tokens "$(params.max-tokens)" \
           --no-enable-thinking \
           --log-level "$(params.log-level)" \
           $OPTIONAL_ARGS
