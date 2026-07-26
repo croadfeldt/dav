@@ -3313,6 +3313,40 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
     except Exception as e:
         log.exception("list runs failed")
         raise HTTPException(500, f"list failed: {e}")
+    # Tekton is the source of truth for LIVE runs only — it GCs PipelineRuns on its
+    # own schedule, and when it does, an ingested analysis disappears from this list
+    # even though every result row is still in Postgres. Measured on this install:
+    # 84 distinct ingested run names vs 42 still visible, i.e. half the analysis
+    # history unreachable, which quietly breaks run-over-run comparison (the whole
+    # point of keeping baselines). Union the DB's ingested runs back in; Tekton wins
+    # for any run it still knows about, so live status/phase is never overwritten.
+    _tekton_names = {r.get("name") for r in runs if r.get("name")}
+    try:
+        async with pool.acquire() as _hc:
+            hist = await _hc.fetch(
+                "SELECT DISTINCT ON (run_name) run_name, started_at, finished_at "
+                "FROM analysis_runs WHERE run_name IS NOT NULL "
+                "ORDER BY run_name, ingested_at DESC")
+        for h in hist:
+            if h["run_name"] in _tekton_names:
+                continue
+            runs.append({
+                "name": h["run_name"],
+                # It ingested, so it completed successfully — Tekton just no longer
+                # has the object to say so.
+                "phase": "Succeeded",
+                "started_at": h["started_at"].isoformat() if h["started_at"] else None,
+                "completed_at": h["finished_at"].isoformat() if h["finished_at"] else None,
+                "params": {},
+                # Lets the UI mark these as reconstructed-from-DB: pipeline logs and
+                # a re-run of the exact PipelineRun are no longer available.
+                "historical": True,
+            })
+        runs.sort(key=lambda r: (r.get("started_at") or ""), reverse=True)
+        runs = runs[:limit]
+    except Exception as e:
+        log.warning("list_runs: historical (GC'd) run union failed: %s", e)
+
     # Bulk-fetch session rows by run_name; the table is small (one row per run)
     names = [r.get("name") for r in runs if r.get("name")]
     sessions_by_name: dict[str, dict] = {}
@@ -3342,7 +3376,8 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
                 )
                 rid_rows = await conn.fetch(
                     "SELECT DISTINCT ON (run_name) run_name, run_id, "
-                    "total_ucs, successful, failed, quarantined FROM analysis_runs "
+                    "total_ucs, successful, failed, quarantined, project_id, mode "
+                    "FROM analysis_runs "
                     "WHERE run_name = ANY($1::text[]) ORDER BY run_name, ingested_at DESC",
                     names,
                 )
@@ -3402,7 +3437,11 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
             r["corpus_repo_sha"]    = s.get("corpus_repo_sha")
             r["spec_repo_sha"]      = s.get("spec_repo_sha")
         else:
-            r["project_id"] = None
+            # No session row (never triggered through the console, or the session
+            # was pruned). The ingested analysis still knows the project — use it,
+            # otherwise the run falls back to "orphan" and only ever shows under
+            # the default project.
+            r["project_id"] = ar.get("project_id")
             r["uc_total"]     = ar.get("total_ucs")
             r["uc_succeeded"] = ar.get("successful")
             r["uc_failed"]    = ar.get("failed")
