@@ -112,6 +112,44 @@ class Verdict(str, Enum):
     PARTIALLY_SUPPORTED = "partially_supported"
     NOT_SUPPORTED = "not_supported"
 
+class SuccessSemantics(str, Enum):
+    """What counts as success for a use case.
+
+    `realize` (the default, and every UC before this existed) — the system
+    succeeds by carrying the intent out.
+
+    `refuse` — the system succeeds only by REFUSING the intent, and the refusal
+    contract (typed / actionable / non-leaking / auditable) is itself the scored
+    surface. Whole corpus families work this way: `must-reject/*` (cross-tenant
+    references, sovereignty egress, inline credentials…) and the `-refused`
+    class-versioning cases. Without this distinction the verdict question
+    "does the architecture support this use case?" is ambiguous for them, and an
+    engine that reads "cannot realize" as a gap scores them exactly backwards —
+    reporting an architecture's correct refusal as a missing capability.
+    """
+    REALIZE = "realize"
+    REFUSE = "refuse"
+
+# Corpus signals that mark a UC as refusal-semantics when the author hasn't set
+# `success_semantics` explicitly. Kept deliberately narrow — these are unambiguous
+# naming conventions, not heuristics over prose.
+_REFUSE_HANDLE_PREFIXES = ("must-reject/",)
+_REFUSE_HANDLE_SUFFIXES = ("-refused",)
+_REFUSE_TAGS = {"must-reject", "refusal-contract"}
+
+def infer_success_semantics(handle: str, tags: list[str] | None = None) -> str:
+    """Derive success semantics from corpus naming when not stated explicitly.
+
+    Explicit `success_semantics` on the UC always wins; this is the fallback so
+    the existing corpus is interpreted correctly without an upstream reauthor.
+    """
+    h = (handle or "").strip().lower()
+    if h.startswith(_REFUSE_HANDLE_PREFIXES) or h.endswith(_REFUSE_HANDLE_SUFFIXES):
+        return SuccessSemantics.REFUSE.value
+    if {(t or "").strip().lower() for t in (tags or [])} & _REFUSE_TAGS:
+        return SuccessSemantics.REFUSE.value
+    return SuccessSemantics.REALIZE.value
+
 # --- Scoring tables (spec 05 §6.2, §6.3) ---
 # Default scores are at band midpoints per the decision.
 
@@ -581,6 +619,24 @@ class UseCase:
     # rank UCs by priority.score (descending = build first). None = unranked;
     # such UCs sort last in any priority-ordered view.
     priority: PriorityDescriptor | None = None
+    # What counts as success for this UC — "realize" (default) or "refuse".
+    # Empty means "not stated by the author": `effective_success_semantics`
+    # then infers it from corpus naming (must-reject/*, *-refused, tags), so the
+    # existing corpus reads correctly without an upstream reauthor. Authors can
+    # set it explicitly and that always wins.
+    success_semantics: str = ""
+
+    @property
+    def effective_success_semantics(self) -> str:
+        """Explicit `success_semantics` if the author set one, else inferred."""
+        explicit = (self.success_semantics or "").strip().lower()
+        if explicit in (SuccessSemantics.REALIZE.value, SuccessSemantics.REFUSE.value):
+            return explicit
+        return infer_success_semantics(self.handle, self.tags)
+
+    @property
+    def is_refusal_case(self) -> bool:
+        return self.effective_success_semantics == SuccessSemantics.REFUSE.value
 
     @classmethod
     def new(cls, handle: str, scenario: Scenario, generated_by: GeneratedBy,
@@ -645,6 +701,7 @@ class UseCase:
             metadata=metadata,
             spec_namespaces=data.get("spec_namespaces") or [],
             priority=priority,
+            success_semantics=(data.get("success_semantics") or "").strip().lower(),
         )
 
 # --- Analysis schema (stage 2 output with descriptor-form severity/confidence) ---
