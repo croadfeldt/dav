@@ -112,7 +112,8 @@ When you have gathered enough information, emit a final analysis as a single JSO
       "spec_refs_consulted": ["<what I looked at>"],
       "spec_refs_missing": ["<doc-handle/section-title>"],
       "recommendation": "<what the spec should say>",
-      "confidence": "high|medium|low"
+      "confidence": "high|medium|low",
+      "capability_id": "<OPTIONAL — the catalog capability this gap concerns; omit if none applies>"
     }}
   ],
   "summary": {{
@@ -130,6 +131,7 @@ Rules for the final output:
 - spec_refs_missing entries must use "doc-handle" or "doc-handle/section-title" format — not prose.
 - severity and confidence use DIFFERENT vocabularies. severity is the 5-word scale (critical|major|moderate|minor|advisory); confidence is EXACTLY high, medium, or low — never a severity word. "moderate" is not a confidence value.
 - capabilities_invoked[].depends_on is OPTIONAL: list ids of OTHER capabilities (preferably ones also in this capabilities_invoked list) that this capability requires to function. Use [] if none or unsure — do not guess. This surfaces foundational building blocks; only assert a dependency the spec actually implies.
+- gaps_identified[].capability_id is OPTIONAL: when a gap is about a specific capability, tag it with that capability's catalog id so the gap can be tracked across runs. If the run supplies an allowed capability set (below), the value MUST be one of those ids; if none fits, OMIT the field rather than inventing an id.
 """
 
 def build_stage2_system_prompt(consumer_profile=None) -> str:
@@ -149,6 +151,21 @@ def build_stage2_system_prompt(consumer_profile=None) -> str:
         provider_types_pipe="|".join(consumer_profile.provider_types),
         policy_modes_pipe="|".join(consumer_profile.policy_modes),
     )
+    # Wave-1 (gap identity): when the run supplies the consumer's catalog capability
+    # keys, render them as the allowed set for gaps_identified[].capability_id. The
+    # guided-JSON schema already hard-constrains the field to this enum; listing the
+    # ids here lets the model REASON about which one a gap concerns before decoding
+    # (so the forced choice is a correct choice), and to omit the tag when none fits.
+    known_caps = list(getattr(consumer_profile, "known_capability_ids", None) or [])
+    if known_caps:
+        prompt += (
+            "\n\n## Gap capability tagging (this run)\n"
+            "This run supplies a capability catalog. When a gap in `gaps_identified` "
+            "concerns one of these capabilities, set its `capability_id` to the exact id "
+            "so the gap is tracked across runs; if a gap maps to none of them, omit the "
+            "field (do not invent an id). Allowed capability ids:\n"
+            + ", ".join(known_caps)
+        )
     # M12 follow-up: per-run spec source focus hint. The DAV_SPEC_NAMESPACES_FILTER
     # env var is set by the Tekton run-corpus task when the operator picked
     # a subset of spec sources in the New Run modal. The MCP still serves

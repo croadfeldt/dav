@@ -66,7 +66,7 @@ def _comp(id_: str, conf: str = "high", role: str = "x", rat: str = "y") -> Comp
     )
 
 def _gap(desc: str, sev: str = "major", conf: str = "medium",
-         rat: str = "r", rec: str = "rec") -> GapIdentified:
+         rat: str = "r", rec: str = "rec", capability_id: str = "") -> GapIdentified:
     return GapIdentified(
         description=desc,
         severity=normalize_severity(sev),
@@ -75,6 +75,7 @@ def _gap(desc: str, sev: str = "major", conf: str = "medium",
         recommendation=rec,
         spec_refs_consulted=[],
         spec_refs_missing=None,
+        capability_id=capability_id,
     )
 
 def _analysis(uuid: str = "uc-test-001", verdict: str = "supported",
@@ -312,6 +313,48 @@ def test_merge_gap_only_in_one_sample():
     assert_eq(merged.sample_annotations.gap_consensus[canon_key], "1/3",
               "low-consensus gap annotated")
 
+def test_merge_gaps_by_capability_id_over_title_churn():
+    """Wave-1 gap identity: two samples tag the SAME catalog capability but with
+    totally different titles/descriptions (the ±5 title churn). Keyed on capability_id
+    they merge into one gap; the merged gap carries the capability_id."""
+    g1 = _gap("Tenant boundary not enforced on modify", sev="major", conf="high",
+              capability_id="tenant_isolation")
+    g2 = _gap("Cross-tenant leakage during rehydration", sev="critical", conf="medium",
+              capability_id="tenant_isolation")  # different words, same capability
+    samples = [
+        _analysis(verdict="partially_supported", gaps=[g1]),
+        _analysis(verdict="partially_supported", gaps=[g2]),
+    ]
+    merged = merge_analyses(samples)
+    assert_eq(len(merged.gaps_identified), 1, "gaps with same capability_id merge")
+    assert_eq(merged.gaps_identified[0].capability_id, "tenant_isolation",
+              "merged gap keeps the capability_id")
+    assert_eq(merged.gaps_identified[0].severity.label, "critical",
+              "merged severity is highest across the capability's samples")
+    assert_eq(merged.sample_annotations.gap_consensus["cap:tenant_isolation"], "2/2",
+              "capability-keyed gap consensus")
+
+def test_merge_gaps_distinct_capability_ids_stay_separate():
+    """Same wording, different capability_id → two distinct gaps (identity is the id,
+    not the prose)."""
+    g1 = _gap("Policy not evaluated", capability_id="policy_eval")
+    g2 = _gap("Policy not evaluated", capability_id="policy_convergence")
+    merged = merge_analyses([
+        _analysis(verdict="partially_supported", gaps=[g1]),
+        _analysis(verdict="partially_supported", gaps=[g2]),
+    ])
+    assert_eq(len(merged.gaps_identified), 2, "distinct capability_ids are distinct gaps")
+
+def test_merge_gaps_untagged_fall_back_to_title():
+    """A gap with no capability_id keeps the canonical-title merge (unchanged behavior),
+    even alongside tagged gaps."""
+    merged = merge_analyses([
+        _analysis(verdict="partially_supported", gaps=[_gap("Missing audit trail")]),
+        _analysis(verdict="partially_supported", gaps=[_gap("missing_audit_trail")]),
+    ])
+    assert_eq(len(merged.gaps_identified), 1, "untagged gaps still dedupe by canonical title")
+    assert_eq(merged.gaps_identified[0].capability_id, "", "untagged gap has empty capability_id")
+
 # --- Component dedup ---
 
 def test_merge_components_canonicalizes_ids():
@@ -528,6 +571,9 @@ def main():
         test_merge_tied_verdict_doesnt_raise_low_confidence,
         test_merge_gaps_canonicalizes_descriptions,
         test_merge_gap_only_in_one_sample,
+        test_merge_gaps_by_capability_id_over_title_churn,
+        test_merge_gaps_distinct_capability_ids_stay_separate,
+        test_merge_gaps_untagged_fall_back_to_title,
         test_merge_components_canonicalizes_ids,
         test_merge_components_consensus_uses_first_seen_id,
         test_merge_per_sample_records,

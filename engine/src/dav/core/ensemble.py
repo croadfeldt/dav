@@ -308,7 +308,14 @@ def _consolidate_gaps(
     groups: dict[str, list[GapIdentified]] = {}
     for analysis in samples:
         for gap in analysis.gaps_identified or []:
-            key = canonicalize(gap.title) if gap.title else canonicalize(gap.description[:80])
+            # Wave-1 (gap identity): prefer the stable catalog capability_id as the merge
+            # key when the model tagged it — a catalog-anchored id doesn't churn between
+            # samples the way a 3-7-word title does. Fall back to the canonical title/desc
+            # for untagged gaps (unchanged behavior).
+            _cap = (getattr(gap, "capability_id", "") or "").strip().lower()
+            key = (f"cap:{_cap}" if _cap
+                   else (canonicalize(gap.title) if gap.title
+                         else canonicalize(gap.description[:80])))
             if not key:
                 continue
             groups.setdefault(key, []).append(gap)
@@ -338,6 +345,7 @@ def _consolidate_gaps(
             recommendation=first.recommendation,
             spec_refs_consulted=list(first.spec_refs_consulted),
             spec_refs_missing=all_missing,
+            capability_id=getattr(first, "capability_id", ""),
         ))
         consensus[key] = f"{len(items)}/{n_samples}"
     return merged, consensus
