@@ -103,6 +103,11 @@ spec:
     - name: uc-uuids
       type: string
       default: ""
+    # ADR-009 gap identity: project catalog capability ids for guided-JSON
+    # enum-constraint of gaps[].capability_id. Empty = unconstrained.
+    - name: known-capability-ids
+      type: string
+      default: ""
     # Managed-UC test eval: fetch UC YAML from the console API instead
     # of requiring the UC to be in the corpus repo. Used pre-promotion.
     - name: managed-uc-uuids
@@ -292,6 +297,8 @@ spec:
           value: $(params.uc-handles)
         - name: uc-uuids
           value: $(params.uc-uuids)
+        - name: known-capability-ids
+          value: $(params.known-capability-ids)
         - name: managed-uc-uuids
           value: $(params.managed-uc-uuids)
         - name: console-api-url

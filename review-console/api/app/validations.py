@@ -168,6 +168,7 @@ def _mk_pipelinerun(
     use_key: Optional[str] = None,
     capabilities_json: Optional[str] = None,
     use_profile_json: Optional[str] = None,
+    known_capability_ids: Optional[list[str]] = None,
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
@@ -246,6 +247,11 @@ def _mk_pipelinerun(
         params.append({"name": "capabilities-json", "value": capabilities_json})
     if use_profile_json:
         params.append({"name": "use-profile-json", "value": use_profile_json})
+    if known_capability_ids:
+        # ADR-009 gap identity: the active project's catalog capability ids, so the
+        # engine enum-constrains gaps[].capability_id for stable cross-run identity.
+        params.append({"name": "known-capability-ids",
+                       "value": ",".join(known_capability_ids)})
     if stage2_two_pass is not None:
         params.append({"name": "stage2-two-pass", "value": stage2_two_pass})
     if grounding_nudge is not None:
@@ -313,6 +319,7 @@ def trigger_run(
     use_key: Optional[str] = None,
     capabilities_json: Optional[str] = None,
     use_profile_json: Optional[str] = None,
+    known_capability_ids: Optional[list[str]] = None,
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
@@ -350,6 +357,7 @@ def trigger_run(
         use_key=use_key,
         capabilities_json=capabilities_json,
         use_profile_json=use_profile_json,
+        known_capability_ids=known_capability_ids,
         stage2_two_pass=stage2_two_pass,
         max_tokens=max_tokens,
         grounding_nudge=grounding_nudge,
