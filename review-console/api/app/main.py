@@ -40,6 +40,7 @@ from .uc_priority import (
 from . import capability_density as _capability_density
 from . import capability_graph as _capability_graph
 from . import capability_catalog as _capability_catalog
+from . import capability_matrix_import as _capability_matrix_import
 from . import assessment_ingest as _assessment_ingest
 from . import api_tokens
 from . import maturity_seed as _maturity_seed
@@ -8942,6 +8943,44 @@ async def capabilities_resolve_uc(request: Request, family: str = Query("dcm")):
     await require_priv(request, rbac.P_PLATFORM_ADMIN)
     async with pool.acquire() as conn:
         return await _capability_catalog.resolve_uc_capabilities(conn, family=family)
+
+
+@app.post("/api/capabilities/import-matrix")
+async def capabilities_import_matrix(request: Request):
+    """Import the DCM Foundational Capabilities Matrix into capability_catalog.
+
+    Gap identity (ADR-009) keys a gap to the catalog capability it concerns, but an
+    empty catalog leaves every gap on the per-analysis GAP-NNN fallback. This loads
+    the already-curated vocabulary (337 ids) from the matrix document.
+
+    **Dry-run by default** — reports what WOULD change and writes nothing. Pass
+    {"apply": true} to commit. Entries land status='confirmed',
+    created_via='matrix-import', so they never masquerade as assessment-OBSERVED
+    evidence, and rows that came from assessments are never modified.
+
+    Body: {"text": "<markdown>"} or {"path": "<file on the api pod>"}, plus
+    optional {"apply": bool}.
+    """
+    await require_priv(request, rbac.P_PLATFORM_ADMIN)
+    body = await request.json() if await request.body() else {}
+    text = body.get("text")
+    path = body.get("path")
+    if not text and not path:
+        raise HTTPException(400, "provide 'text' (matrix markdown) or 'path'")
+    try:
+        rows = (_capability_matrix_import.parse_matrix(text) if text
+                else _capability_matrix_import.load_matrix(path))
+    except FileNotFoundError as e:
+        raise HTTPException(400, str(e))
+    if not rows:
+        raise HTTPException(400, "no capability rows parsed — is this the capabilities matrix?")
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        return await _capability_matrix_import.import_matrix(
+            conn, rows, pid,
+            apply=bool(body.get("apply")),
+            actor=(get_user(request) or {}).get("email") or "matrix-import",
+        )
 
 
 @app.post("/api/capabilities/reseed")
