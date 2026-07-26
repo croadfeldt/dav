@@ -60,6 +60,7 @@ from dav.core.use_case_schema import (
     SeverityDescriptor, ConfidenceDescriptor,
     Verdict, normalize_confidence, normalize_severity,
 )
+from dav.core.verdict_rules import derive_verdict
 
 # --- Canonicalization (extracted for reuse; mirrors compare.py's logic) ---
 # We keep this aligned with compare.py's _canonicalize. If compare.py's
@@ -308,7 +309,14 @@ def _consolidate_gaps(
     groups: dict[str, list[GapIdentified]] = {}
     for analysis in samples:
         for gap in analysis.gaps_identified or []:
-            key = canonicalize(gap.title) if gap.title else canonicalize(gap.description[:80])
+            # Wave-1 (gap identity): prefer the stable catalog capability_id as the merge
+            # key when the model tagged it — a catalog-anchored id doesn't churn between
+            # samples the way a 3-7-word title does. Fall back to the canonical title/desc
+            # for untagged gaps (unchanged behavior).
+            _cap = (getattr(gap, "capability_id", "") or "").strip().lower()
+            key = (f"cap:{_cap}" if _cap
+                   else (canonicalize(gap.title) if gap.title
+                         else canonicalize(gap.description[:80])))
             if not key:
                 continue
             groups.setdefault(key, []).append(gap)
@@ -338,6 +346,7 @@ def _consolidate_gaps(
             recommendation=first.recommendation,
             spec_refs_consulted=list(first.spec_refs_consulted),
             spec_refs_missing=all_missing,
+            capability_id=getattr(first, "capability_id", ""),
         ))
         consensus[key] = f"{len(items)}/{n_samples}"
     return merged, consensus
@@ -507,13 +516,14 @@ def merge_analyses(
         gap_consensus=gap_consensus,
     )
 
-    # --- Verdict gate: downgrade supported→partially_supported on major/critical gaps ---
-    _BLOCKING_SEVERITIES = {"major", "critical"}
-    _verdict_gated = False
-    if (merged_verdict == Verdict.SUPPORTED.value and
-            any(g.severity.label in _BLOCKING_SEVERITIES for g in gaps_merged)):
-        merged_verdict = Verdict.PARTIALLY_SUPPORTED.value
-        _verdict_gated = True
+    # --- Verdict derivation (ADR-010): the LLM asserts; DAV derives the reported
+    #     verdict from the evidence via ordered, downgrade-only rules. GATE-001 is
+    #     the original gate (supported→partially_supported on a major/critical gap);
+    #     the rule engine is the extension point for further rules. _applied_rules
+    #     records what fired so the note can name it and both values are preserved.
+    _asserted_verdict = merged_verdict
+    merged_verdict, _applied_rules = derive_verdict(merged_verdict, gaps_merged)
+    _verdict_gated = bool(_applied_rules)
 
     # --- Build summary ---
     # Notes: use the representative sample's LLM-generated notes as the base,
@@ -545,7 +555,9 @@ def merge_analyses(
         notes = f"{base_notes} {provenance}"
 
     if _verdict_gated:
-        notes += " Verdict downgraded from supported: major/critical gap(s) present."
+        _steps = "; ".join(f"{r['from']}→{r['to']} ({r['rule']}: {r['why']})"
+                           for r in _applied_rules)
+        notes += (f" Verdict derived from asserted '{_asserted_verdict}': {_steps}.")
 
     summary = AnalysisSummary(
         verdict=merged_verdict,

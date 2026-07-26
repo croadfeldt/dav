@@ -201,12 +201,14 @@ def extract_signal(analysis: dict) -> AnalysisSignal:
             severity = (sev_raw.get("label") or "").strip().lower()
         else:
             severity = (sev_raw or "").strip().lower()
-        # Use canonicalized description as the gap's semantic fingerprint.
-        # Two gaps with the same severity and the same architectural claim
-        # (even if worded differently) fingerprint as the same gap.
-        desc_canon = _canonicalize(gap.get("description") or "")
-        if severity and desc_canon:
-            fp = (severity, desc_canon)
+        # Wave-1 (gap identity): when the gap carries a catalog capability_id, fingerprint
+        # on (severity, cap:<id>) — a STABLE cross-run identity that doesn't move when the
+        # model rewords the description. Untagged gaps keep the canonical-description
+        # fingerprint (unchanged behavior), so mixed old/new analyses still compare.
+        cap_id = (gap.get("capability_id") or "").strip().lower()
+        semantic = f"cap:{cap_id}" if cap_id else _canonicalize(gap.get("description") or "")
+        if severity and semantic:
+            fp = (severity, semantic)
             sig.gap_fingerprints.add(fp)
             sig.gap_originals[fp] = gap
 

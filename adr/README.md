@@ -14,6 +14,8 @@ Decisions that shape DAV's architecture. Each ADR is immutable once accepted (ch
 | 006 | [Consolidate code_repo_configs into managed_repos](006-consolidate-code-repos-into-managed-repos.md) | Accepted |
 | 007 | [Per-Role Path Overrides + Corpus Projection Parity](007-per-role-paths-and-corpus-parity.md) | Accepted |
 | 008 | [Bulk UC Creation from Text + UC Editor Wizard](008-bulk-uc-from-text-and-uc-editor-wizard.md) | Accepted |
+| 009 | [Catalog-Anchored Gap Identity](009-catalog-anchored-gap-identity.md) | Accepted |
+| 010 | [Rule-Based Verdict Derivation](010-rule-based-verdict-derivation.md) | Accepted |
 
 ## Authoring
 

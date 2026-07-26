@@ -831,6 +831,16 @@ def _cli():
              "like any other UC. Requires --console-api-url.",
     )
     parser.add_argument(
+        "--known-capability-ids", type=str, default=None,
+        help="Comma-separated catalog capability ids (the consumer's "
+             "capability_catalog cap_keys). When set, gaps_identified[].capability_id "
+             "is enum-constrained to these in guided-JSON and the allowed set is "
+             "rendered into the prompt, so gaps are tagged to a real catalog "
+             "capability for stable cross-run identity (ADR-009). Omitted/empty = "
+             "unconstrained free string (existing behavior). Injected by the console "
+             "trigger from the active project's catalog.",
+    )
+    parser.add_argument(
         "--console-api-url", type=str, default=None,
         help="Base URL of the DAV review console API (e.g. "
              "http://dav-review-api.dav.svc.cluster.local:8000). Required "
@@ -851,6 +861,17 @@ def _cli():
     consumer_profile = load_profile(
         path=args.consumer_profile, fall_back_to_generic=True,
     )
+    # ADR-009 gap identity: overlay the console-supplied catalog capability ids onto
+    # the profile so guided-JSON enum-constrains gaps[].capability_id + the prompt lists
+    # them. Deduped, order-preserving; empty/absent = unconstrained (existing behavior).
+    _known_caps = [c.strip() for c in (args.known_capability_ids or "").split(",") if c.strip()]
+    if _known_caps:
+        _seen: set[str] = set()
+        consumer_profile.known_capability_ids = [
+            c for c in _known_caps if not (c in _seen or _seen.add(c))
+        ]
+        log.info("gap-identity: %d catalog capability id(s) supplied for guided-JSON",
+                 len(consumer_profile.known_capability_ids))
     set_default_profile(consumer_profile)
     log.info(
         "consumer profile: %s (%s)",

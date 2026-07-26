@@ -259,6 +259,16 @@ spec:
         uc-handles but matches on UUID. Combined with uc-handles via OR.
       default: ""
 
+    - name: known-capability-ids
+      type: string
+      description: |
+        Optional comma-separated catalog capability ids (the project's
+        capability_catalog cap_keys). When set, the engine enum-constrains
+        gaps_identified[].capability_id to these in guided-JSON and lists them
+        in the prompt, giving gaps a stable cross-run identity (ADR-009).
+        Empty = unconstrained free string (existing behavior).
+      default: ""
+
     - name: managed-uc-uuids
       type: string
       description: |
@@ -380,6 +390,9 @@ spec:
         fi
         if [ -n "$(params.uc-uuids)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --uc-uuids $(params.uc-uuids)"
+        fi
+        if [ -n "$(params.known-capability-ids)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --known-capability-ids $(params.known-capability-ids)"
         fi
         if [ -n "$(params.managed-uc-uuids)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --managed-uc-uuids $(params.managed-uc-uuids) --console-api-url $(params.console-api-url)"

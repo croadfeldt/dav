@@ -650,7 +650,13 @@ CREATE TABLE uc_gaps (
     ingested_at timestamp with time zone DEFAULT now() NOT NULL,
     recommendation text,
     rationale text,
-    namespace text
+    namespace text,
+    -- Wave-1 gap identity (ADR-009): the catalog capability this gap concerns.
+    -- catalog_capability_id links to capability_catalog(id) when the emitted
+    -- capability_id matched; normalization_status mirrors assessment_findings.
+    catalog_capability_id bigint,
+    normalization_status text DEFAULT 'unmapped'::text NOT NULL,
+    CONSTRAINT chk_uc_gaps_norm CHECK (normalization_status IN ('normalized','proposed-taxonomy-gap','unmapped'))
 );
 
 CREATE SEQUENCE uc_gaps_id_seq

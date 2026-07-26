@@ -818,6 +818,12 @@ class GapIdentified:
     spec_refs_consulted: list[str]
     spec_refs_missing: list[str] = field(default_factory=list)
     title: str = ""
+    # Wave-1 (gap identity): the catalog capability this gap concerns. Optional and
+    # empty by default (backward compatible with every existing analysis file + any
+    # run whose profile carries no catalog). When present it's a STABLE cross-run key —
+    # the console normalizes it against `capability_catalog`, and both the ensemble
+    # merge and the cross-run comparator prefer it over the churny canonical-title match.
+    capability_id: str = ""
 
     def __post_init__(self):
         # Accept shorthand strings at construction time, same as from_dict does.
@@ -830,7 +836,7 @@ class GapIdentified:
             self.spec_refs_missing = []
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "title": self.title,
             "description": self.description,
             "severity": self.severity.to_dict(),
@@ -840,6 +846,11 @@ class GapIdentified:
             "spec_refs_consulted": list(self.spec_refs_consulted),
             "spec_refs_missing": list(self.spec_refs_missing),
         }
+        # Only emit when set, so existing golden files / snapshots stay byte-identical
+        # for the no-catalog path.
+        if self.capability_id:
+            d["capability_id"] = self.capability_id
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GapIdentified":
@@ -857,6 +868,7 @@ class GapIdentified:
             spec_refs_consulted=list(data.get("spec_refs_consulted", [])),
             spec_refs_missing=spec_refs_missing,
             title=data.get("title", ""),
+            capability_id=(data.get("capability_id") or "").strip(),
         )
 
 @dataclass
@@ -1278,6 +1290,17 @@ def build_analysis_json_schema(consumer_profile=None) -> dict[str, Any]:
                         "spec_refs_missing": {"type": "array", "items": {"type": "string"}},
                         "recommendation": {"type": "string"},
                         "confidence": {"enum": [c.value for c in Confidence]},
+                        # Wave-1 (gap identity): OPTIONAL catalog capability this gap
+                        # concerns. When the profile carries catalog keys they enum-
+                        # constrain the value (guided-JSON masks decode to a real id);
+                        # with no catalog it's a free string. Not in `required` so a
+                        # gap that maps to no catalog capability can omit it (the
+                        # console then flags it as a taxonomy-gap back-fill candidate).
+                        "capability_id": (
+                            {"enum": list(consumer_profile.known_capability_ids)}
+                            if getattr(consumer_profile, "known_capability_ids", None)
+                            else {"type": "string"}
+                        ),
                     },
                 },
             },
