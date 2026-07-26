@@ -355,6 +355,18 @@ def test_merge_gaps_untagged_fall_back_to_title():
     assert_eq(len(merged.gaps_identified), 1, "untagged gaps still dedupe by canonical title")
     assert_eq(merged.gaps_identified[0].capability_id, "", "untagged gap has empty capability_id")
 
+def test_merge_verdict_derivation_gates_and_notes():
+    """ADR-010: a unanimous `supported` with a major gap is derived down to partial
+    by GATE-001, and the merge note records the asserted→derived derivation."""
+    g = _gap("Atomic onboarding gap", sev="major")
+    merged = merge_analyses([
+        _analysis(verdict="supported", gaps=[g]),
+        _analysis(verdict="supported", gaps=[g]),
+    ])
+    assert_eq(merged.summary.verdict, "partially_supported", "supported+major → partial")
+    assert_true("GATE-001" in merged.summary.notes, "note names the rule that fired")
+    assert_true("supported" in merged.summary.notes, "note records the asserted verdict")
+
 # --- Component dedup ---
 
 def test_merge_components_canonicalizes_ids():
@@ -574,6 +586,7 @@ def main():
         test_merge_gaps_by_capability_id_over_title_churn,
         test_merge_gaps_distinct_capability_ids_stay_separate,
         test_merge_gaps_untagged_fall_back_to_title,
+        test_merge_verdict_derivation_gates_and_notes,
         test_merge_components_canonicalizes_ids,
         test_merge_components_consensus_uses_first_seen_id,
         test_merge_per_sample_records,

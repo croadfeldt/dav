@@ -15,6 +15,7 @@ Decisions that shape DAV's architecture. Each ADR is immutable once accepted (ch
 | 007 | [Per-Role Path Overrides + Corpus Projection Parity](007-per-role-paths-and-corpus-parity.md) | Accepted |
 | 008 | [Bulk UC Creation from Text + UC Editor Wizard](008-bulk-uc-from-text-and-uc-editor-wizard.md) | Accepted |
 | 009 | [Catalog-Anchored Gap Identity](009-catalog-anchored-gap-identity.md) | Accepted |
+| 010 | [Rule-Based Verdict Derivation](010-rule-based-verdict-derivation.md) | Accepted |
 
 ## Authoring
 
