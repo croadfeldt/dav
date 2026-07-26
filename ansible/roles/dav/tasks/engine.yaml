@@ -97,11 +97,23 @@
   with_fileglob:
     - "{{ role_path }}/templates/tekton-tasks/*.j2"
 
+# Optional extension point: drop plain (non-Jinja) Task YAMLs in
+# roles/dav/files/tekton-tasks/ and they get applied alongside the rendered ones.
+# git does not track empty directories, so on a fresh clone this path does not
+# exist and an unguarded copy fails the whole deploy ("Could not find or access
+# 'tekton-tasks/'") — the directory only survives in a working checkout that
+# happens to have it. Guard so a clean clone deploys.
+- name: Check for non-templated Tekton task definitions
+  ansible.builtin.stat:
+    path: "{{ role_path }}/files/tekton-tasks"
+  register: dav_nontemplated_tekton_tasks
+
 - name: Copy non-templated Tekton task definitions
   ansible.builtin.copy:
     src: "tekton-tasks/"
     dest: "/tmp/dav-tekton-tasks/"
     mode: "0644"
+  when: dav_nontemplated_tekton_tasks.stat.exists | default(false)
 
 - name: Apply all Tekton Task definitions
   ansible.builtin.shell:
