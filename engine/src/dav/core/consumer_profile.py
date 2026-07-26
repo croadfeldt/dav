@@ -83,6 +83,15 @@ class ConsumerProfile:
     provider_types: list[str] = field(default_factory=list)
     policy_modes: list[str] = field(default_factory=list)
 
+    # Wave-1 (gap identity): the consumer's catalog capability keys. UNLIKE the nine
+    # vocabularies above this is OPTIONAL and validation-neutral — when non-empty it
+    # enum-constrains the gap `capability_id` field in guided-JSON (so a gap is tagged to
+    # a real catalog capability instead of a churny free-text title) and is rendered into
+    # the prompt as the allowed set. Empty (the default / no catalog wired) = no change:
+    # the field stays a free string and the model may omit it. Sourced from the console's
+    # per-project `capability_catalog` and injected at run start (see run_corpus).
+    known_capability_ids: list[str] = field(default_factory=list)
+
     # Optional architectural-context strings substituted into the system prompt.
     # Example for DCM:
     #   abstractions_summary: "Data, Provider, Policy"
