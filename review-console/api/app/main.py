@@ -3341,7 +3341,7 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
                 )
                 rid_rows = await conn.fetch(
                     "SELECT DISTINCT ON (run_name) run_name, run_id, "
-                    "total_ucs, successful, failed FROM analysis_runs "
+                    "total_ucs, successful, failed, quarantined FROM analysis_runs "
                     "WHERE run_name = ANY($1::text[]) ORDER BY run_name, ingested_at DESC",
                     names,
                 )
@@ -3354,6 +3354,11 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
     for r in runs:
         ar = runid_by_name.get(r.get("name")) or {}
         r["run_id"] = ar.get("run_id")   # null until analysis is ingested
+        # UCs the engine dropped before the analyze pass (load / profile-validation
+        # failure). Surfaced so a run that silently analyzed less than the operator
+        # asked for is visible in the list instead of only in run_summary.json.
+        # None (not 0) for runs ingested before this was recorded.
+        r["quarantined"] = ar.get("quarantined")
         s = sessions_by_name.get(r.get("name"))
         # Field lift (Wave 0): consumers were reading `status` / `inference_model`
         # as None because the row only carries `phase` + kebab-case Tekton params.
@@ -7988,8 +7993,9 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
         await conn.execute(
             """INSERT INTO analysis_runs
                (run_id, run_name, mode, started_at, finished_at, total_ucs,
-                successful, failed, total_samples, project_id)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
+                successful, failed, total_samples, project_id,
+                quarantined, quarantined_ucs)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)""",
             run_id,
             run_name_for_analysis,
             summary.get("mode"),
@@ -8000,6 +8006,12 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
             summary.get("failed", 0),
             summary.get("total_samples", 0),
             _ar_pid,
+            # The engine drops UCs that fail to load or fail profile validation
+            # BEFORE the analyze pass and records them in the run summary. Persist
+            # both so the run list can warn instead of silently under-reporting
+            # coverage. `.get` with no default -> NULL for runs that predate this.
+            summary.get("quarantined"),
+            json.dumps(summary.get("quarantined_ucs")) if summary.get("quarantined_ucs") else None,
         )
 
         # Step 1b: resolve the project's spec/corpus repo HEAD SHAs ONCE per ingest, for the eval
