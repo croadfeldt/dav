@@ -216,6 +216,48 @@ def build_stage2_system_prompt(consumer_profile=None) -> str:
         )
     return prompt
 
+def _refusal_contract_block(use_case: UseCase) -> str:
+    """Inverted-success contract for refusal-semantics UCs; empty for normal ones.
+
+    Whole corpus families (`must-reject/*`, the `-refused` class-versioning cases)
+    succeed ONLY if the system refuses. Without this block the closing question
+    "does the architecture support this use case?" is ambiguous for them, and the
+    model can report an architecture's correct refusal as a missing capability —
+    scoring the case exactly backwards. Stating the contract makes the scored
+    surface the refusal's QUALITY, which is what the author's success_criteria
+    already describe.
+    """
+    if not getattr(use_case, "is_refusal_case", False):
+        return ""
+    return """
+!! SUCCESS SEMANTICS: REFUSE !!
+This use case succeeds ONLY IF THE SYSTEM REFUSES the intent above. Realizing the
+intent is the FAILURE outcome, not the success outcome. The scored surface is the
+QUALITY OF THE REFUSAL, judged against the success criteria — typically that it is:
+  - typed        (a machine-matchable error of the right class, not a generic failure)
+  - actionable   (names the legitimate remediation path)
+  - non-leaking  (discloses nothing about the protected resource beyond its existence being forbidden)
+  - auditable    (a refusal record exists with the relevant identities and the deciding policy)
+  - whole        (the entire intent is refused — never silently repaired or partially accepted)
+
+Apply the verdict vocabulary accordingly:
+  - "supported"           = the architecture specifies a refusal meeting the success criteria
+  - "partially_supported" = it refuses, but the refusal contract is incomplete (e.g. untyped,
+                            unaudited, leaks detail, or permits partial acceptance)
+  - "not_supported"       = the architecture would ALLOW the intent, or is silent on refusing it
+
+Gaps must describe what is missing FROM THE REFUSAL CONTRACT. Do NOT report the
+system's inability to carry out the intent as a gap — that inability is the
+correct behavior this use case is testing for.
+"""
+
+def _stage2_task_line(use_case: UseCase, fw: str) -> str:
+    """Closing task sentence, matched to the use case's success semantics."""
+    if getattr(use_case, "is_refusal_case", False):
+        return (f"analyze whether {fw} correctly REFUSES this intent, and whether the "
+                f"refusal contract meets the success criteria (see SUCCESS SEMANTICS above).")
+    return f"analyze whether {fw} supports this use case."
+
 def build_stage2_user_prompt(use_case: UseCase, consumer_profile=None) -> str:
     """Build the user-turn prompt with the use case to analyze.
 
@@ -258,10 +300,10 @@ EXPECTED DOMAIN INTERACTIONS:
 {chr(10).join(f'  - {di.domain}: {di.interaction}' for di in s.expected_domain_interactions) if s.expected_domain_interactions else '  (none stated by author — discover from spec)'}
 
 TAGS: {', '.join(use_case.tags) if use_case.tags else '(none)'}
-
+{_refusal_contract_block(use_case)}
 ---
 
-Your task: analyze whether {fw} supports this use case. Use the available
+Your task: {_stage2_task_line(use_case, fw)} Use the available
 tools to retrieve spec content. When you've gathered enough, emit the
 final JSON analysis as specified in the system prompt.
 """
