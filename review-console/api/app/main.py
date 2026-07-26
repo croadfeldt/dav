@@ -3700,6 +3700,20 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             "WHERE project_id=$1 AND stage='stage2-analysis' AND applied=true", _trigpid)
         if _s2 and _s2.strip():
             _stage2_ctx = _s2.strip()
+    # ADR-009 gap identity: hand the engine the project's confirmed catalog capability
+    # keys so guided-JSON enum-constrains gaps[].capability_id (stable cross-run gap
+    # identity). Gated on having ≥1 confirmed capability — an empty/tiny catalog gains
+    # nothing and would just constrain the model, so we send nothing and the engine
+    # keeps the free-string path. Best-effort: never block a run on catalog lookup.
+    _known_cap_ids = None
+    try:
+        async with pool.acquire() as conn:
+            _cap_rows = await conn.fetch(
+                "SELECT cap_key FROM capability_catalog "
+                "WHERE project_id=$1 AND status='confirmed' ORDER BY cap_key", _trigpid)
+        _known_cap_ids = [r["cap_key"] for r in _cap_rows] or None
+    except Exception as e:
+        log.info("trigger: capability-catalog lookup failed (%s); gaps stay untagged", e)
     try:
         result = await asyncio.to_thread(validations.trigger_run,
             triggered_by=reviewer,
@@ -3725,6 +3739,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             use_key=use_key,
             capabilities_json=capabilities_json,
             use_profile_json=use_profile_json,
+            known_capability_ids=_known_cap_ids,
             stage2_two_pass=payload.stage2_two_pass,
             max_tokens=payload.max_tokens,
             grounding_nudge=(None if payload.grounding_nudge is None
@@ -7991,6 +8006,18 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
         # fingerprint (a repo change then makes the cache stale). Best-effort, guarded.
         _run_repo_shas = await _resolve_project_repo_shas(conn, _ar_pid)
 
+        # ADR-009 gap identity: load the project's capability catalog ONCE per ingest, keyed by
+        # normalized cap_key, so each emitted gap capability_id resolves to a catalog row (or is
+        # flagged as a taxonomy-gap back-fill candidate). Empty catalog → every tagged gap is a
+        # proposed-taxonomy-gap; untagged gaps stay 'unmapped' (legacy behavior).
+        _catalog_by_key: dict[str, int] = {}
+        try:
+            for _cc in await conn.fetch(
+                    "SELECT id, cap_key FROM capability_catalog WHERE project_id=$1", _ar_pid):
+                _catalog_by_key[(_cc["cap_key"] or "").strip().lower()] = _cc["id"]
+        except Exception as e:
+            log.info("ingest: capability-catalog load failed (%s); gaps stay unmapped", e)
+
         # #branch-targeting: roll the cloned HEAD SHAs up to the run so the run row,
         # results, and the decision/roadmap pipeline can show "evaluated against
         # <branch>@<sha>". Keys are "<role>:<namespace>"; take the first of each role.
@@ -8184,8 +8211,21 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 sev = gap.get("severity")
                 if isinstance(sev, dict):
                     sev = sev.get("label")
-                # Engine schema has no gap_id/title fields; auto-generate them.
-                gap_id = gap.get("gap_id") or f"GAP-{gap_idx:03d}"
+                # ADR-009 gap identity: a gap tagged with a catalog capability_id gets a STABLE
+                # cross-run gap_id (the cap_key itself) instead of the churny per-analysis
+                # GAP-NNN. Resolve the emitted key against the project catalog: matched →
+                # normalized + catalog_capability_id; tagged-but-unmatched → recorded and flagged
+                # as a taxonomy-gap back-fill candidate (never dropped); untagged → GAP-NNN
+                # fallback + 'unmapped' (legacy behavior, no cross-run identity available).
+                _emitted_cap = (gap.get("capability_id") or "").strip()
+                _cap_norm = _emitted_cap.lower()
+                catalog_capability_id = _catalog_by_key.get(_cap_norm)
+                if _emitted_cap:
+                    gap_id = _emitted_cap
+                    normalization_status = "normalized" if catalog_capability_id is not None else "proposed-taxonomy-gap"
+                else:
+                    gap_id = gap.get("gap_id") or f"GAP-{gap_idx:03d}"
+                    normalization_status = "unmapped"
                 desc = gap.get("description") or ""
                 title = gap.get("title") or (desc[:80] + ("…" if len(desc) > 80 else ""))
                 # Derive namespace from any spec_refs the engine emitted on
@@ -8199,13 +8239,13 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                     """INSERT INTO uc_gaps
                        (analysis_id, run_id, uc_uuid, gap_id, title,
                         description, severity, recommendation, rationale,
-                        namespace)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)""",
+                        namespace, catalog_capability_id, normalization_status)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)""",
                     analysis_id, run_id, uc_uuid,
                     gap_id, title, desc, sev,
                     gap.get("recommendation"),
                     gap.get("rationale"),
-                    namespace,
+                    namespace, catalog_capability_id, normalization_status,
                 )
                 ingested_gaps += 1
 
@@ -11440,11 +11480,14 @@ async def query_gaps(
         rows = await conn.fetch(
             f"""SELECT g.id, g.run_id, g.uc_uuid, g.gap_id, g.title,
                        g.description, g.severity, g.ingested_at,
+                       g.catalog_capability_id, g.normalization_status,
+                       cc.cap_key AS capability_key,
                        ua.verdict, ua.uc_handle,
                        ar.started_at AS run_started_at
                 FROM uc_gaps g
                 JOIN uc_analyses ua ON ua.id = g.analysis_id
                 JOIN analysis_runs ar ON ar.run_id = g.run_id
+                LEFT JOIN capability_catalog cc ON cc.id = g.catalog_capability_id
                 {where}
                 ORDER BY g.ingested_at DESC
                 LIMIT ${len(args)+1}""",
