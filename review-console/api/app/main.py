@@ -8979,7 +8979,7 @@ async def capabilities_import_matrix(request: Request):
         return await _capability_matrix_import.import_matrix(
             conn, rows, pid,
             apply=bool(body.get("apply")),
-            actor=(get_user(request) or {}).get("email") or "matrix-import",
+            actor=get_user(request) or "matrix-import",   # get_user returns a str, not a dict
         )
 
 
