@@ -160,9 +160,13 @@ spec:
     - name: max-tokens
       type: string
       default: ""
+    # Defaults to the site value, NOT "" — the Pipeline forwards its own default to
+    # the task, so an empty default here silently SHADOWS the task's
+    # dav_stage2_request_timeout_seconds and every run falls back to the engine's
+    # 900s regardless of what the task says. Keep the two in step.
     - name: request-timeout-seconds
       type: string
-      default: ""
+      default: "{{ dav_stage2_request_timeout_seconds }}"
 
   workspaces:
     - name: shared-data
