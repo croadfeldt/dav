@@ -225,7 +225,11 @@ spec:
         max-tokens / decode-throughput(tok/s) < this value or long
         generations die client-side; the engine logs a run-start
         WARNING when the math cannot work.
-      default: ""
+        Site default comes from dav_stage2_request_timeout_seconds, which
+        should be set from the SLOWEST backend this install actually serves
+        (and must stay under the inference route's own timeout, or the route
+        cuts the request first and the engine's value never applies).
+      default: "{{ dav_stage2_request_timeout_seconds }}"
 
     - name: cache-prompt
       type: string
