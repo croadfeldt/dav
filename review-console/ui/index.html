@@ -5560,7 +5560,7 @@ function _runItemFingerprint(r) {
     // #branch-targeting: re-render when the resolved ref/sha lands (sha fills in at ingest).
     r.spec_repo_branch, r.corpus_repo_branch, r.spec_repo_sha, r.corpus_repo_sha,
     // run_id fills in at ingest → drives the model badge + Compare actions appearing.
-    r.run_id, _runModelLabel(r), r.quarantined,
+    r.run_id, _runModelLabel(r), r.quarantined, r.historical,
     _rdName === r.name ? '1' : '0',
   ].join('|');
 }
@@ -5597,6 +5597,12 @@ function _renderRunItemHtml(r) {
   // failed profile validation, e.g. an off-vocabulary dimension value). Without this
   // the run reports a clean result while having silently analyzed less than asked.
   // Only rendered when > 0; null (run predates recording) shows nothing.
+  // Reconstructed from the DB because Tekton GC'd the PipelineRun: results are
+  // intact and comparable, but pipeline logs and an exact re-run are gone. Say so
+  // rather than showing it as an ordinary run whose Logs button will disappoint.
+  const histHtml = r.historical
+    ? `<span title="Reconstructed from stored results — Tekton has garbage-collected this PipelineRun, so pipeline logs are no longer available" style="font-size:10px;color:var(--text-faint);">🗄 archived run</span>`
+    : '';
   const _quar = Number(r.quarantined || 0);
   const quarHtml = _quar > 0
     ? `<span title="${_quar} use case${_quar === 1 ? '' : 's'} excluded before analysis (failed to load or failed profile validation) — this run covered less than its scope" style="font-size:10px;color:var(--warn,#d08770);">⚠ ${_quar} quarantined</span>`
@@ -5605,7 +5611,7 @@ function _renderRunItemHtml(r) {
     <input type="checkbox" class="run-sel-cb" onclick="event.stopPropagation()" onchange="toggleRunSelect('${r.name}', this.checked)" ${_selectedRuns.has(r.name) ? 'checked' : ''} title="Select for batch archive/delete" style="margin:3px 6px 0 0;width:auto;height:auto;accent-color:var(--accent);flex-shrink:0;align-self:flex-start;cursor:pointer;" />
     <div class="rli-main" style="${r.archived ? 'opacity:0.55;' : ''}">
       <div class="rli-name">${esc(friendly)}${r.archived ? ' <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.08em;color:var(--text-faint);border:1px solid var(--border);padding:0 3px;border-radius:2px;">archived</span>' : ''}</div>
-      <div class="rli-sub">${scopeBits.join(' · ')}${countsHtml ? ' · ' + countsHtml : ''}${refHtml ? ' · ' + refHtml : ''}${modelHtml ? ' · ' + modelHtml : ''}${quarHtml ? ' · ' + quarHtml : ''}</div>
+      <div class="rli-sub">${scopeBits.join(' · ')}${countsHtml ? ' · ' + countsHtml : ''}${refHtml ? ' · ' + refHtml : ''}${modelHtml ? ' · ' + modelHtml : ''}${quarHtml ? ' · ' + quarHtml : ''}${histHtml ? ' · ' + histHtml : ''}</div>
       <div class="rli-sub" style="font-family:var(--mono,monospace);font-size:10px;opacity:0.6;">${esc(r.name||'')}</div>
     </div>
     <div class="rli-right">
