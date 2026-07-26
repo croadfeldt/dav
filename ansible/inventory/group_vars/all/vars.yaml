@@ -62,6 +62,16 @@ inference_primary_context_length: 32768
 # conditions, tracked separately.)
 dav_stage2_max_tokens: 10240
 
+# Per-request inference timeout (seconds) for stage-2 calls. The engine's built-in
+# default is 900, which is sized for a fast backend; this install also serves a
+# 235B on llama.cpp at ~3 tok/s per concurrent stream, where 900s buys only ~3k
+# generated tokens and long analyses die mid-generation (measured: ~1-in-8 UC
+# attrition on the 2026-07-25 A/B). Sized to the SLOWEST backend served here.
+#
+# Hard ceiling: the r9700-llm route times out at 1800s, so a larger value here
+# cannot take effect — the route cuts the request first. 1700 leaves headroom.
+dav_stage2_request_timeout_seconds: 1700
+
 # --- Inference Tier 2 (in-cluster vLLM fallback) — OPT-IN ---
 # These vars only take effect when the playbook is invoked with
 # --tags vllm. By default, the in-cluster vLLM is NOT deployed.
