@@ -3632,6 +3632,19 @@ def _resolve_run_params(payload: "RunTriggerIn") -> dict:
     return resolved
 
 
+def _unknown_namespaces(requested, registered) -> list[str]:
+    """Requested namespace filters that match no registered repo namespace.
+
+    A typo or a stale name here used to produce a SILENTLY empty corpus
+    ("0 source(s) cloned, N skipped by filter") that only surfaced as an engine
+    error three stages later — friction inventory item 5. Matching is exact and
+    case-sensitive on purpose: namespaces are identifiers, and a fuzzy match
+    would hide exactly the class of mistake this rejects.
+    """
+    reg = set(registered or [])
+    return sorted({n for n in (requested or []) if n not in reg})
+
+
 @app.post("/api/runs")
 async def trigger_run(payload: RunTriggerIn, request: Request):
     """Trigger a new DAV pipeline run."""
@@ -3662,6 +3675,27 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                 400, "no active project for this run; set the X-DAV-Project "
                 "header (or a default project) so the run can be attributed")
         await _require_priv_conn(conn, request, rbac.P_PROJECT_RUNS_EXECUTE, _trigpid)
+    # Preflight (friction item 5): reject unknown namespace filters NOW, with the
+    # registered options in the error, instead of launching a run that clones
+    # nothing. Validated against all registered repo namespaces per role; until
+    # the registry epic lands (run-source-resolution-design.md) a namespace
+    # registered outside the MCP source project can still pass here and be
+    # filtered at sync — this check removes the typo class, not that one.
+    if payload.corpus_namespaces or payload.spec_namespaces:
+        async with pool.acquire() as conn:
+            _repo_rows = await conn.fetch("SELECT namespace, roles FROM managed_repos")
+        _by_role = {"corpus": {r["namespace"] for r in _repo_rows if "corpus" in (r["roles"] or [])},
+                    "spec": {r["namespace"] for r in _repo_rows if "spec" in (r["roles"] or [])}}
+        _bad_c = _unknown_namespaces(payload.corpus_namespaces, _by_role["corpus"])
+        _bad_s = _unknown_namespaces(payload.spec_namespaces, _by_role["spec"])
+        if _bad_c or _bad_s:
+            _parts = []
+            if _bad_c:
+                _parts.append(f"unknown corpus namespace(s) {_bad_c}; registered: {sorted(_by_role['corpus'])}")
+            if _bad_s:
+                _parts.append(f"unknown spec namespace(s) {_bad_s}; registered: {sorted(_by_role['spec'])}")
+            raise HTTPException(400, "; ".join(_parts))
+
     # Server-side scope enforcement. set_id / selection_mode were stored as
     # run_sessions lineage ONLY — the engine is scoped exclusively by
     # uc_handles / uc_uuids / managed_uc_uuids, which the UI resolves
@@ -3776,6 +3810,18 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
         _known_cap_ids = [r["cap_key"] for r in _cap_rows] or None
     except Exception as e:
         log.info("trigger: capability-catalog lookup failed (%s); gaps stay untagged", e)
+    # Preflight (friction item 6b): an empty catalog makes gap id-tagging
+    # SILENTLY structurally zero — the run looks like it found nothing
+    # identifiable when it was never given a vocabulary. Observed on the first
+    # fixture pass: id-recall 0.00 while substance detection was working. Warn
+    # loudly in the response and the log rather than letting the operator
+    # discover it from a scored run.
+    _warnings: list[str] = []
+    if not _known_cap_ids:
+        _warnings.append(
+            "capability catalog has no confirmed entries for this project — gaps will be "
+            "untagged and id-level gap identity/dedup will not work; seed the catalog first")
+        log.warning("trigger preflight: %s", _warnings[-1])
     try:
         result = await asyncio.to_thread(validations.trigger_run,
             triggered_by=reviewer,
@@ -3904,7 +3950,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
     except Exception as e:
         log.warning("run_sessions insert failed for %s: %s", result.get("name"), e)
 
-    return {"ok": True, "run": result, "resolved_params": params}
+    return {"ok": True, "run": result, "resolved_params": params, "warnings": _warnings}
 
 
 @app.get("/api/runs/{name}/rerun-config")
