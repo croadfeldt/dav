@@ -460,10 +460,27 @@ async def snapshot() -> dict:
         "ttft_p95_seconds":     _scalarize((raw["vllm_time_to_first_token"].get("data") or {}).get("result", [])),
     }
 
+    # Which engine(s) Prometheus is actually scraping. Without this the UI cannot
+    # tell "0 tokens because idle" from "0 tokens because nothing is scraping this
+    # backend" — the exact confusion that hid gpt-oss-120b having no ServiceMonitor
+    # while it served a full analysis run.
+    #
+    # `count(...) > 0` returns an empty vector (not 0) when the series is absent,
+    # so _scalarize yields None; bool(None) is the False we want.
+    engine = {
+        "vllm":     bool(_scalarize((raw["engine_vllm_up"].get("data") or {}).get("result", []))),
+        "llamacpp": bool(_scalarize((raw["engine_llamacpp_up"].get("data") or {}).get("result", []))),
+    }
+    # Names are normalized llamacpp->vllm by ServiceMonitor relabeling on most of
+    # the fleet, so `vllm: true` does NOT prove a vLLM server; it means the
+    # vllm-named series exist. Only `llamacpp: true` is unambiguous.
+    engine["any"] = engine["vllm"] or engine["llamacpp"]
+
     return {
         "available": True,
         "as_of": time.time(),
         "gpus": gpus,
         "vllm": vllm,
+        "engine": engine,
         "errors": errors,
     }
