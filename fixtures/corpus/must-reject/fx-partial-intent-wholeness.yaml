@@ -16,8 +16,8 @@ scenario:
   - No partial application occurs
   dimensions:
     lifecycle_phase: new_request
-    resource_complexity: multi_resource
-    policy_complexity: single_domain_constraint
+    resource_complexity: composite_service
+    policy_complexity: single_validation
     provider_landscape: single_eligible
     governance_context: standard_governance
     failure_mode: policy_violation
