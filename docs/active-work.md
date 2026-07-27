@@ -1,5 +1,24 @@
 # DAV — active work (session checkpoint 2026-06-13)
 
+## 🔬 PROPOSED 2026-07-27 — derived verdicts: stop asking the model to judge
+**Why:** the verdict is the least reproducible thing stage 2 emits, and everything
+downstream keys on it. Two gpt-oss runs with identical weights/sampler/prompts —
+differing only in whether 3 expert layers ran on CPU or GPU — disagreed on **4 of 6
+verdicts**. Meanwhile Qwen3-32B returns `partially_supported` for every must-reject UC
+while producing *substantively correct, UC-specific gaps*: it retrieves and analyses
+fine, it just won't commit to a judgment.
+- Proposal: pass 2 emits **per-criterion evidence** (ADR-003's typed/actionable/
+  non-leaking/auditable/whole), each with a **mandatory `spec_ref` for `satisfied: true`**;
+  the engine **derives** the verdict via `derive_verdict`, and the ensemble votes
+  per criterion rather than per verdict.
+- Buys, in order: **consistency** (code-derived = deterministic given evidence),
+  **a cheaper model becomes viable** (32B is 2.5× faster and already finds the evidence),
+  **auditability** (a reviewer can disagree with one criterion, not the whole call).
+- Design: **`docs/derived-verdicts-design.md`**. Not built. Validation is the six
+  must-reject UCs with explicit fail conditions (`unknown` rate > 40% = the hedge
+  relocated and the proposal fails on its own terms).
+
+
 ## ✅ SHIPPED 2026-06-24 — sovereignty: project-scope all analysis reads (roadmaps leak)
 **Why:** the Roadmaps domain (Arch Review · Enhancement · Cap Map · Roadmap) showed **another
 project's** data — the cross-project run IDOR the security review flagged P1. Build #354.
