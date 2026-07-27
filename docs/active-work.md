@@ -14,8 +14,18 @@ fine, it just won't commit to a judgment.
 - Buys, in order: **consistency** (code-derived = deterministic given evidence),
   **a cheaper model becomes viable** (32B is 2.5× faster and already finds the evidence),
   **auditability** (a reviewer can disagree with one criterion, not the whole call).
-- Design: **`docs/derived-verdicts-design.md`**. Not built. Validation is the six
-  must-reject UCs with explicit fail conditions (`unknown` rate > 40% = the hedge
+- **Amended 2026-07-27 — the ensemble is the bigger problem.** gpt-oss at n=3 returned
+  **6× `partially_supported`** (20 gaps, all 6 UCs) where n=1 gave 5 `supported` + 1
+  partial (4 gaps, 2 UCs). `_consolidate_gaps` merges by **union**, `derive_verdict`
+  is downgrade-only and consumes the **unfiltered** union, and `gap_consensus` is
+  computed but neither used for filtering nor persisted. So **verdicts weaken
+  monotonically as N grows** — a 1-of-3 gap counts as much as a 3-of-3 one. That is
+  what collapsed the model distinction, not the models.
+- Design therefore adds **quorum merging** (⌈N/2⌉) with sub-quorum findings kept as
+  `candidate` (visible, non-verdict-affecting) and a column to persist consensus.
+- Design: **`docs/derived-verdicts-design.md`**. Not built. Decisive acceptance test
+  is **verdict invariance under sample count** (n=1 = n=3 = n=5) — exactly what
+  today's design fails. Fail conditions explicit (`unknown` rate > 40% = the hedge
   relocated and the proposal fails on its own terms).
 
 

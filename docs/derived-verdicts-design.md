@@ -5,7 +5,8 @@ per-criterion evidence instead, and the engine derive the verdict from that evid
 in code. Settles two things at once: why verdicts are not reproducible run-to-run,
 and whether a cheaper model can serve stage 2. Builds on ADR-003 (must-reject family —
 a refusal is only correct if it is typed, actionable, non-leaking, auditable and whole),
-`derive_verdict` (downgrade-only rules, already shipped), the catalog-anchored
+`derive_verdict` (downgrade-only rules, already shipped — and, as of the ensemble
+finding below, the place the bias lives), the catalog-anchored
 `capability_id` on gaps (Wave 1 — stable cross-run gap identity), and dav#63
 (success semantics: a must-reject UC succeeds only when the system refuses).
 Not built. Written to be tested against the six must-reject UCs._
@@ -16,7 +17,9 @@ Measured 2026-07-27, all post-dav#74 (before that, `extra_body.guided_json` neve
 reached any server, so every earlier result was taken through a harness that
 enforced nothing — see below).
 
-| model | completes | verdicts | wall, 6 UCs |
+At `sample_count: 1` — see the next section for why that qualifier matters:
+
+| model | completes | verdicts (n=1) | wall, 6 UCs |
 |---|---|---|---|
 | Qwen3-32B FP8 | 6/6 | **6× `partially_supported`** — every UC, every time | 376 s |
 | gpt-oss-120b | 6/6 | mixes `supported` / `partially_supported` | 947 s |
@@ -54,6 +57,45 @@ ensemble that exists to absorb it. Verification's contract is N≥3 and I was no
 honouring it. But the deeper point stands: **the verdict is the least stable
 thing the model emits, and it is the thing we build on.**
 
+## The ensemble makes verdicts monotonically worse (found 2026-07-27)
+
+This was found while validating the above and it changes the proposal, so it goes
+before it.
+
+Running gpt-oss on the same six UCs at `sample_count: 3` instead of 1:
+
+| run | verdicts | gaps | UCs with ≥1 gap |
+|---|---|---|---|
+| gpt-oss n=1 | 5 `supported` + 1 partial | 4 | 2 of 6 |
+| **gpt-oss n=3** | **6 × `partially_supported`** | **20** | **6 of 6** |
+
+That is the 32B's exact signature — the thing I had been calling "the 32B hedges,
+gpt-oss discriminates". The mechanism is in `ensemble.py`:
+
+- `_consolidate_gaps` merges gaps by **union** — a gap found by *any* one sample
+  enters the merged set (line 493).
+- `gap_consensus` is computed there and recorded on the merged Analysis (line 516).
+- `derive_verdict(merged_verdict, gaps_merged)` then consumes the **unfiltered
+  union** (line 525). A 1-of-3 gap weighs exactly as much as a 3-of-3 gap.
+- `gap_consensus` is **not persisted** — `uc_analyses` carries only `sample_count`,
+  so nothing downstream can tell the two apart either.
+
+Because P(at least one sample finds a gap) rises with N, and the derivation is
+downgrade-only, **the verdict weakens monotonically as sample count grows**. Push
+N high enough and everything is `partially_supported` regardless of the spec or
+the model. The ensemble exists to raise confidence; as built it accumulates
+low-agreement noise as findings.
+
+Two consequences:
+
+**The n=1 model comparison was measuring the wrong thing.** Whether the models
+are distinguishable *at all* once the ensemble is in play is a separate question
+from which model is better, and the second cannot be answered before the first.
+
+**Consensus filtering is load-bearing in this proposal, not a refinement.** If
+per-criterion answers merge by union the way gaps do, derived verdicts inherit
+the same decay and this design buys nothing. That is the amendment below.
+
 ## The proposal
 
 Stage 2 pass 2 stops emitting `verdict`. It emits, per criterion:
@@ -78,10 +120,17 @@ Rules that make it work:
   post-hoc downgrade pass into the primary mechanism. For a must-reject UC:
   all five `true` → `supported`; any `false` → `not_supported`; otherwise
   `partially_supported`.
-- **The ensemble votes per criterion, not per verdict.** `_consolidate_gaps`
-  already merges gaps by catalog id with highest-severity / lowest-confidence
-  wins; criteria get the same treatment, and the verdict is derived *after* the
-  merge, from merged evidence.
+- **The ensemble votes per criterion, not per verdict** — and votes *by
+  quorum*, not by union. A criterion's merged answer is the majority across
+  samples; a tie resolves to `unknown`, never to `false`.
+- **Only quorum-backed evidence reaches the derivation.** A gap or a `false`
+  criterion enters `derive_verdict` only when at least ⌈N/2⌉ samples agree on it.
+  Sub-quorum findings are **kept and labelled `candidate`** — they stay visible
+  for roadmap and catalog work, they just do not silently move a verdict. This is
+  the direct fix for the monotonic decay above.
+- **Persist the consensus.** `gap_consensus` is computed and thrown away today.
+  It needs a column so a 1-of-3 finding is distinguishable from a 3-of-3 one in
+  the UI, the roadmap, and any later comparison.
 
 ## What this buys, in the order it matters
 
@@ -127,17 +176,21 @@ without evidence is how the original holistic-verdict design went wrong.
 The six must-reject UCs, which now have trustworthy baselines. Success is not
 "the 32B agrees with gpt-oss" — it is:
 
-1. **Per-criterion agreement** between the 32B and gpt-oss ≥ the current
+1. **Verdict invariance under sample count.** The derived verdict at n=1, n=3 and
+   n=5 must agree for the same UC and spec. This is the decisive test — it is
+   exactly what today's design fails, and no other result matters if this one
+   does not hold.
+2. **Per-criterion agreement** between the 32B and gpt-oss ≥ the current
    per-verdict agreement. If the models agree on evidence but not on holistic
    verdicts, the decomposition is doing its job.
-2. **`reproduce` mode gives byte-identical criteria across two passes.** Greedy,
+3. **`reproduce` mode gives byte-identical criteria across two passes.** Greedy,
    seed from UC uuid, prompt cache off.
-3. **`unknown` rate under 40%** for the 32B. Above that, the hedge relocated and
+4. **`unknown` rate under 40%** for the 32B. Above that, the hedge relocated and
    this proposal fails on its own terms.
-4. **Wall clock within 2× of the current 32B run** (376 s). Beyond that the cost
+5. **Wall clock within 2× of the current 32B run** (376 s). Beyond that the cost
    argument collapses and gpt-oss single-model is the better answer.
 
-Fail any of 1–3 and the honest conclusion is that gpt-oss-120b does the judging
+Fail any of 1–4 and the honest conclusion is that gpt-oss-120b does the judging
 and the 32B stays a pass-1 explorer — which is what dav#73 (per-stage routing)
 already supports.
 
