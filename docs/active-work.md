@@ -1,5 +1,14 @@
 # DAV — active work (session checkpoint 2026-06-13)
 
+## 🌱 SEED 2026-07-27 — persona-perspective analysis (Chris)
+**Why:** the generic lens returned `supported` on an EMPTY Auditable section — an
+auditor-framed pass cannot make that miss. Every fixture hole maps to a persona. One design
+rule decided up front: **quorum within a lens, union across lenses, findings tagged by source
+persona** — otherwise #80's quorum mutes exactly the persona-unique findings that are the
+point. Personas come from the model side (UC `actor.persona` + flow-doc persona index), not
+invented in DAV. First experiment: auditor-lens battery vs the known FIX-AUDIT-001 miss.
+Doc: **`docs/persona-perspective-analysis.md`**. Sequenced after scope P2/P3 + claim battery.
+
 ## 🔬 PLAN 2026-07-27 — scope as a first-class artifact (friction items 4–7)
 **Why:** Chris: plan the scope changes first. Centerpiece = a **corpus_index** table (one row
 per UC per namespace, dimension-validated at index time, SHA-stamped) so scope and quarantine
