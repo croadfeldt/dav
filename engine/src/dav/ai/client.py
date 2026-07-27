@@ -548,8 +548,22 @@ class InferenceClient:
             # off than today.
             body["parallel_tool_calls"] = False
         if guided_json_schema:
-            # vLLM-specific extension, ignored by vanilla OpenAI endpoints
-            body["extra_body"] = {"guided_json": guided_json_schema}
+            # `extra_body` is an OpenAI *client-library* concept — the Python SDK
+            # lifts its contents into the top level of the request. We build the
+            # request body by hand, so sending a literal "extra_body" key put the
+            # schema somewhere no server reads. Both vLLM and llama.cpp accepted
+            # the request and returned unconstrained prose, which means structured
+            # output has been inert on every backend — including the "re-emit once
+            # with guided schema" recovery path, which was re-asking with no
+            # constraint at all.
+            #
+            # response_format/json_schema is the OpenAI-standard form and is
+            # honored by both backends we serve (verified live against vLLM and
+            # llama.cpp; see test_structured_output.py for the exact shapes).
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "dav_analysis", "schema": guided_json_schema},
+            }
         if seed is not None:
             body["seed"] = seed
         # Per-request sampler params. Diagnosed bug 2026-04-26: relying on
