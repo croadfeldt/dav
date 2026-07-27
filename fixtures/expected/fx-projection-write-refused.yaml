@@ -1,0 +1,11 @@
+uc: must-reject/fx-projection-write-refused
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-NONLEAK-001
+  why: 10-refusal-contract.md §3 Non-leaking is an empty section. No rule forbids echoing the protected
+    resource's attributes or the redacted field names, so a refusal could disclose exactly what
+    the projection exists to hide.
+must_not_report:
+- capability_id: FIX-TYPED-001
+  why: PROJECTION_READONLY is defined and 20-tenancy.md states projections are read-only. The refusal
+    trigger is specified.

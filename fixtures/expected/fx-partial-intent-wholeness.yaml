@@ -1,0 +1,9 @@
+uc: must-reject/fx-partial-intent-wholeness
+expected_verdict: not_supported
+expected_gaps:
+- capability_id: FIX-WHOLE-001
+  why: '10-refusal-contract.md §5 does not merely omit wholeness — it CONTRADICTS it, mandating
+    best-effort partial application. This is the one seeded hole that is a wrong rule rather than
+    a missing one, so the correct verdict is not_supported, not partially_supported: the spec actively
+    specifies the wrong behaviour.'
+must_not_report: []

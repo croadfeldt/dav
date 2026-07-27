@@ -1,0 +1,7 @@
+uc: must-realize/fx-binding-declared-realize
+expected_verdict: supported
+expected_gaps: []
+must_not_report:
+- capability_id: FIX-BIND-001
+  why: CONTROL. 60-bindings.md specifies the declaration requirement, the BINDING_UNDECLARED code,
+    remediation, and that validation precedes realization.

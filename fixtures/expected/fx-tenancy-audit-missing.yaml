@@ -1,0 +1,14 @@
+uc: must-reject/fx-tenancy-audit-missing
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-AUDIT-001
+  why: 10-refusal-contract.md §4 Auditable is an empty section. Nothing in the spec requires a refusal
+    record, names its fields, or says where it is written — so a conforming implementation could
+    refuse silently and be unauditable.
+must_not_report:
+- capability_id: FIX-TYPED-001
+  why: '§1 Typed is complete: closed reason_code set, TENANCY_DENIED explicitly distinguished from
+    NOT_FOUND. Flagging typing here is a false positive.'
+- capability_id: FIX-ACTIONABLE-001
+  why: '§2 Actionable is complete: remediation names the grant mechanism, and 20-tenancy.md defines
+    grants. Flagging actionability here is a false positive.'
