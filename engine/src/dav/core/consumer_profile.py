@@ -401,8 +401,9 @@ def apply_dimension_vocabulary(profile: ConsumerProfile, path) -> tuple[Consumer
     Why this exists: the engine carried a PRIVATE copy of these lists while the
     corpus grew legitimate new values (day2_operations, single_with_deps,
     internal_audit, ...). Any UC using one was silently quarantined — measured at
-    ~86% of the corpus (model-side sweep 2026-07-28, finding F1, rated a release
-    blocker by two independent sweeps). Reading the published file removes the
+    85% of the UDLM corpus (62/73; DCM 15%, combined 24%) — model-side sweep
+    finding F1, rated a release blocker by two independent sweeps. Reading the
+    published file removes the
     fork rather than re-creating a second copy that can drift again.
 
     Returns (profile, report) where report is per-dimension counts, so the caller

@@ -895,8 +895,8 @@ def _cli():
     # The engine used to carry a private copy of the six dimension lists while the
     # corpus grew legitimate new values (day2_operations, single_with_deps,
     # internal_audit, ...). Every UC using one was silently quarantined — measured
-    # at ~86% of the corpus (model-side sweep 2026-07-28 finding F1; two
-    # independent sweeps rated it a release blocker). Reading the published,
+    # at 85% of the UDLM corpus (62/73; 24% combined with DCM) — finding F1; two
+    # independent sweeps rated it a release blocker. Reading the published,
     # CI-gated file removes the fork instead of forking it again.
     _vocab_path = find_dimension_vocabulary(args.corpus_path, args.consumer_content_path)
     if _vocab_path is not None:
@@ -916,7 +916,7 @@ def _cli():
         log.warning(
             "dimension vocabulary: no %s found under the corpus or spec content — "
             "falling back to the engine's built-in list, which is the fork that "
-            "silently quarantined ~86%% of the corpus. Verify the corpus repo "
+            "silently quarantined 85%% of the UDLM corpus. Verify the corpus repo "
             "publishes it.", DIMENSION_VOCABULARY_FILENAME)
 
     set_default_profile(consumer_profile)
