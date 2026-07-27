@@ -20,7 +20,9 @@ are fixture-local and must never collide with the real catalog.
 |---|---|---|
 | `FIX-AUDIT-001` | `10-refusal-contract.md` §4 | §4 *Auditable* is an empty section. Nothing requires a refusal record, names its fields, or says where it is written — a conforming implementation could refuse silently. **Claim: a refusal contract that cannot be audited is incomplete.** |
 | `FIX-NONLEAK-001` | `10-refusal-contract.md` §3 | §3 *Non-leaking* is empty. No rule forbids echoing the protected resource's attributes, so a refusal could disclose exactly what a masked projection exists to hide. **Claim: a refusal that may leak the protected thing defeats the control.** |
-| `FIX-WHOLE-001` | `10-refusal-contract.md` §5 | §5 does not omit wholeness — it **contradicts** it, mandating best-effort partial application. **Claim: silently realizing a subset the consumer never asked for is wrong, not a convenience.** |
+| `FIX-PARTIAL-WARN-001` | `10-refusal-contract.md` §5 | The partial-fulfilment *behaviour* is specified and correct; the *surfacing* is not. `partial_failures` is a field, not a signal — a consumer can miss it and believe their intent was fully satisfied. **Claim: an intent that could not be fully satisfied must be surfaced as a warning naming what was refused, why, and how to resolve it.** |
+| `FIX-DEPS-001` | `10-refusal-contract.md` §5 | Silent on dependent members: nothing stops realizing B when its hard dependency A was just refused, producing a resource pointing at nothing. **Claim: a broken dependency is a FAILURE, not a warning — hence `not_supported`, unlike the independent-member case.** |
+| `FIX-ATOMIC-001` | `10-refusal-contract.md` §5 | No way for a consumer to declare all-or-nothing semantics. Best-effort is the correct *default*; the gap is the absence of an opt-in. **Claim: a consumer whose requirement is transactional must be able to say so.** |
 | `FIX-NONPERSIST-001` | `30-credentials.md` | "Handling of a rejected body" is empty. The refusal is specified; non-retention of the transmitted secret is not. **Claim: refusing an inline secret while logging it is not a refusal in any useful sense.** |
 | `FIX-QUOTA-001` | `50-quota.md` | "Enforcement point" is empty. Allocation and `QUOTA_EXCEEDED` exist, but not *where* consumption is checked and committed. **Claim: without a defined enforcement point, concurrent intents can both pass a check only one has headroom for.** |
 
@@ -38,14 +40,27 @@ measure reads as thoroughness.
 | `FIX-PROV-001` | `40-providers.md` | Eligibility is a superset test; tie-break is preference order then lexical, so selection is a total, reproducible function. |
 | `FIX-BIND-001` | `60-bindings.md` | Declaration requirement, `BINDING_UNDECLARED`, remediation, and validation-before-realization are all stated. |
 
-## The one deliberate asymmetry
+## The deliberate asymmetry (Chris's ruling, 2026-07-27)
 
-`FIX-WHOLE-001` expects **`not_supported`**, every other gap expects
-`partially_supported`. The distinction is intentional and worth disagreeing with if
-you disagree: §5 specifies the *wrong* behaviour rather than omitting a required one.
-A spec that is silent can be completed; a spec that mandates the opposite has to be
-changed. If DAV cannot tell those apart, the roadmap it produces will treat "write
-this section" and "reverse this decision" as the same size of work.
+`FIX-DEPS-001` expects **`not_supported`**; every other gap expects
+`partially_supported`. The line is **failure vs warning**:
+
+- partial fulfilment of **independent** members is *correct behaviour* — it needs a
+  warning, not a refusal (`FIX-PARTIAL-WARN-001`)
+- partial fulfilment that **breaks a dependency** is a *failure* — the platform has
+  created state that cannot function (`FIX-DEPS-001`)
+
+If DAV cannot tell those apart, the roadmap it produces will treat "surface this
+better" and "stop producing broken state" as the same size of work.
+
+**I had this wrong first.** I originally seeded best-effort partial application
+itself as the defect, expecting `not_supported`. Chris ruled otherwise: realizing
+the valid subset and refusing the violating member IS the system working as
+expected — which matches Kubernetes and Terraform, where a declarative control
+plane converges what it can. That correction is why `FIX-WHOLE-001` is now a
+CONTROL. It also surfaced the more interesting distinction: this is the
+**intent-requirement** side of the platform, where prior work has all been the
+operational side.
 
 ## Coverage against ADR-003
 

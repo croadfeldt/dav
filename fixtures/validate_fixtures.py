@@ -83,14 +83,14 @@ def main() -> int:
         for role, key in (("expected_gaps", "gap"), ("must_not_report", "control")):
             for item in (d.get(role) or []):
                 cid = item["capability_id"]
-                prior = seen_ids.get(cid)
-                # A control in one UC and a seeded gap in another is a contradiction:
-                # the scorer would count the same id as both a hit and a false positive.
-                if prior and prior != key:
-                    problems.append(
-                        f"{cid} is a {prior} in one UC and a {key} in another — "
-                        f"ground truth contradicts itself")
-                seen_ids[cid] = key
+                # An id may legitimately be a seeded gap in one UC and a control in
+                # another: scoring is per-UC, and "the spec covers this HERE" is a
+                # different claim from "the spec is missing this THERE". Originally
+                # flagged as a contradiction; that was too strict and would have
+                # forced the ground truth to be wrong to satisfy the checker.
+                seen_ids.setdefault(cid, key)
+                if key == "gap":
+                    seen_ids[cid] = "gap"
 
     for h in sorted(handles - expected_handles):
         problems.append(f"UC {h} has no expected/ file — it would be scored as absent")

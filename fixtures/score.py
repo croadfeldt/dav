@@ -71,6 +71,13 @@ def fetch_from_db(run_id: str, pod: str, ns: str, schema: str) -> list[dict]:
 
 
 def score(expected: dict, rows: list[dict]) -> dict:
+    # Every seeded hole across the whole fixture. The spec is synthetic and small,
+    # so a gap seeded for one UC is genuinely visible from another — reporting it
+    # there is a TRUE observation that happens to be off-topic, not a false
+    # positive. Counting it as noise would penalise DAV for being right.
+    all_seeded = {g["capability_id"]
+                  for e in expected.values() for g in (e.get("expected_gaps") or [])}
+
     by_uc: dict[str, dict] = {}
     for r in rows:
         u = by_uc.setdefault(r["uc_handle"], {"verdict": r["verdict"], "gaps": []})
@@ -111,15 +118,21 @@ def score(expected: dict, rows: list[dict]) -> dict:
         missed = want - seen_ids
         forbidden_hits = forbid & seen_ids
         other = seen_ids - want - forbid
+        # Split: a seeded hole from elsewhere is off-topic-but-true (neutral);
+        # anything else invented is a false positive.
+        off_topic = other & all_seeded
+        invented = other - all_seeded
 
         tp += len(hits)
         fn += len(missed)
-        fp += len(forbidden_hits) + len(other) + len(untagged)
+        fp += len(forbidden_hits) + len(invented) + len(untagged)
 
         vtxt = got["verdict"] if v_ok else f"{got['verdict']} (want {exp['expected_verdict']})"
         detail.append((handle, vtxt,
                        sorted(hits), sorted(missed),
-                       sorted(forbidden_hits) + sorted(other) + [f"untagged:{t}" for t in untagged]))
+                       sorted(forbidden_hits) + sorted(invented)
+                       + [f"untagged:{t}" for t in untagged]
+                       + [f"off-topic-ok:{c}" for c in sorted(off_topic)]))
 
     precision = tp / (tp + fp) if (tp + fp) else 1.0
     recall = tp / (tp + fn) if (tp + fn) else 1.0

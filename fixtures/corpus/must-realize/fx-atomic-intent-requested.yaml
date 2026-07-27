@@ -1,0 +1,38 @@
+uuid: uc-fx00000010
+handle: must-realize/fx-atomic-intent-requested
+version: 1.0.0
+scenario:
+  description: 'A consumer needs all-or-nothing semantics: four resources that are only useful together,
+    where a three-of-four outcome is worse than nothing. Success is REALIZATION of a consumer-declared
+    atomic intent — or, if any member would be refused, refusal of the whole. The platform''s default
+    is best-effort partial fulfilment, which is the right default; the question is whether a consumer
+    whose requirement is transactional can express that at all.'
+  actor:
+    persona: application-team-member
+    profile: standard
+  intent: Declare a multi-resource intent that must be applied atomically, all members or none
+  success_criteria:
+  - The consumer can declare atomic semantics on the intent
+  - With atomic declared and all members valid, all are realized
+  - With atomic declared and any member invalid, none is realized
+  - The default when atomicity is not declared remains best-effort partial fulfilment
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: composite_service
+    policy_complexity: single_validation
+    provider_landscape: single_eligible
+    governance_context: standard_governance
+    failure_mode: happy_path
+  profile: standard
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-27T00:00:00.000000+00:00'
+success_semantics: realize
+tags:
+- fixture
+- must-realize
+- partial-fulfilment
+- atomicity

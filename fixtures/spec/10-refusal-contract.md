@@ -35,9 +35,23 @@ mechanism will be granted.
 
 <!-- seeded hole: FIX-AUDIT-001 -->
 
-## 5. Wholeness  (PARTIAL — permits partial application)
+## 5. Partial fulfilment  (BEHAVIOUR SPECIFIED — surfacing is NOT)
 
 Where an intent declares several resources and only some violate policy, Halyard
-applies the valid subset on a best-effort basis and reports the refused members in
-`partial_failures`. This keeps large intents from being blocked by a single bad
-member.
+realizes the valid subset and refuses the violating members, reporting them in
+`partial_failures`.
+
+Refusing only the offending member is **correct**. The policy violation is scoped
+to that member; blocking the rest would deny work that breaks no rule.
+
+### Surfacing the partial outcome
+
+<!-- seeded hole: FIX-PARTIAL-WARN-001 -->
+
+### Dependent members
+
+<!-- seeded hole: FIX-DEPS-001 -->
+
+### Requesting all-or-nothing
+
+<!-- seeded hole: FIX-ATOMIC-001 -->
