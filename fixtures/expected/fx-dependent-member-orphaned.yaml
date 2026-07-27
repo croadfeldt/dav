@@ -12,3 +12,7 @@ must_not_report:
   why: CONTROL here. The surfacing gap is real but belongs to the INDEPENDENT-member case. Reporting
     it against a broken dependency conflates a warning-class concern with a correctness failure
     — precisely the distinction this UC exists to test.
+- capability_id: FIX-ATOMIC-001
+  why: 'CONTROL (claim 2, UDLM/DCM session): purely operational chain; the natures are distinct
+    by design, so a request-atomicity gap here is a false positive. Claim-2 positive maps to FIX-ATOMIC-001
+    on fx-atomic-intent-requested.'

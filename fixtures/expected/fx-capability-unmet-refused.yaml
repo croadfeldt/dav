@@ -8,3 +8,7 @@ must_not_report:
     positive.
 - capability_id: FIX-TYPED-001
   why: CONTROL. Fully covered by the closed code set.
+- capability_id: FIX-WHOLE-001
+  why: 'REGRESSION CHECK (analyzer prior): first fixture pass invented a whole-intent refusal gap
+    here. Declarative convergence is ruled correct; a whole-intent report on this control means
+    the transaction-semantics prior is back.'

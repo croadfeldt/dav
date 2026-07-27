@@ -1,0 +1,14 @@
+uc: must-reject/fx-refused-chain-root-surfaced
+expected_verdict: not_supported
+expected_gaps:
+- capability_id: FIX-DEPS-001
+  why: 'The spec is silent on dependent members, so the chain may be left half-realized.
+    Same hole as fx-dependent-member-orphaned, legitimately visible from this UC too.'
+- capability_id: FIX-ROOTCAUSE-001
+  why: 'CLAIM TEST (UDLM/DCM session, claim 1): nothing in the spec requires the surfaced
+    refusal to name the ROOT unsatisfied dependency or the cascade chain. A conforming
+    implementation could report only "app failed", leaving the consumer to rediscover the
+    PVC by hand. not_supported verdict follows from FIX-DEPS-001 (broken-dependency class).'
+must_not_report:
+- capability_id: FIX-TYPED-001
+  why: 'CONTROL. The refusal typing itself (reason codes) is completely specified.'

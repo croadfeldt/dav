@@ -52,6 +52,14 @@ to that member; blocking the rest would deny work that breaks no rule.
 
 <!-- seeded hole: FIX-DEPS-001 -->
 
+### Naming the root cause
+
+<!-- seeded hole: FIX-ROOTCAUSE-001 -->
+
+### Dependency natures
+
+<!-- seeded hole: FIX-DEP-NATURE-001 -->
+
 ### Requesting all-or-nothing
 
 <!-- seeded hole: FIX-ATOMIC-001 -->

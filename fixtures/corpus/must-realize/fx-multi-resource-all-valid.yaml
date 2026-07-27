@@ -1,0 +1,38 @@
+uuid: uc-fx00000011
+handle: must-realize/fx-multi-resource-all-valid
+version: 1.0.0
+scenario:
+  description: 'A consumer declares four resources, all of which satisfy policy. Success is
+    REALIZATION of all four. This is the clean control for the partial-fulfilment surfacing
+    claim (requested by the UDLM/DCM session): with nothing refused there is no partial
+    outcome, so an analysis must NOT report the partial-outcome-warning gap here, and must
+    not report the absence of whole-intent semantics as a defect — best-effort application
+    simply has nothing to partially apply.'
+  actor:
+    persona: application-team-member
+    profile: standard
+  intent: Realize a four-resource intent in which every member satisfies policy
+  success_criteria:
+  - All four resources are realized
+  - No warning is emitted, because nothing was refused
+  - The request log records a fully-satisfied intent
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: composite_service
+    policy_complexity: single_validation
+    provider_landscape: single_eligible
+    governance_context: standard_governance
+    failure_mode: happy_path
+  profile: standard
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-27T00:00:00.000000+00:00'
+success_semantics: realize
+tags:
+- fixture
+- must-realize
+- partial-fulfilment
+- control

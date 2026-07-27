@@ -1,0 +1,15 @@
+uc: must-realize/fx-multi-resource-all-valid
+expected_verdict: supported
+expected_gaps: []
+must_not_report:
+- capability_id: FIX-PARTIAL-WARN-001
+  why: 'CONTROL requested by the UDLM/DCM session for their claim test: a fully-satisfiable intent
+    produces no partial outcome, so reporting the surfacing gap here is an invented requirement,
+    not conservatism. This is the "does the analysis invent surfacing requirements that are not
+    there" half of their question.'
+- capability_id: FIX-WHOLE-001
+  why: CONTROL. Nothing is refused, so whole-intent semantics are moot; flagging their absence here
+    would repeat the transaction-semantics assumption Chris overruled.
+- capability_id: FIX-ROOTCAUSE-001
+  why: 'CONTROL (claim 1): a fully-satisfiable intent has no refused chain and therefore no root
+    to surface; reporting a root-cause-surfacing gap here is an invented requirement.'
