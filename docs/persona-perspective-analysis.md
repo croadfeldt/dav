@@ -1,10 +1,14 @@
-# Persona-perspective analysis — design seed
+# Persona-perspective analysis — REQUIREMENT
 
-_Seed, 2026-07-27, Chris: "at some point we should add perspectives for the prompts — as a
-software engineer building this architecture I need to ensure it …; as an SRE using the platform
-I need to ensure I can …; as an application owner, my team can …; as an auditor, I can see and
-validate …". Not scheduled; captured now because tonight's data already contains the proof case
-and because thinking it through surfaced one design rule that must be decided before any build._
+_Ruled 2026-07-27. Chris, first: "we should add perspectives for the prompts — as a software
+engineer building this architecture I need to ensure it …; as an SRE using the platform I need
+to ensure I can …; as an application owner, my team can …; as an auditor, I can see and
+validate …". Then, upgrading it: **"We are currently just looking at the architectural
+validation from the architect's perspective. We must look at ALL the perspectives."**
+
+That second sentence reframes the product: today's output is not "the analysis" — it is ONE
+lens's analysis presented as if it were the whole. A verdict without a stated perspective is
+mislabeled, and the miss below is what that mislabeling costs._
 
 ## Why this works (evidence, not theory)
 
@@ -24,7 +28,16 @@ maps cleanly onto a persona whose framing would have made it salient:
 
 Persona framing is the same move as derived-verdicts (#79): decompose one broad judgment into
 narrow questions the model is actually good at. There it was contract criteria; here it is
-stakeholder objectives.
+stakeholder objectives — and the two meet: ADR-003's refusal-contract elements are already
+implicit persona demands (typed → integrator, actionable → application owner, non-leaking →
+security, auditable → auditor, whole → consumer). The contract was multi-perspective from the
+start; only the prompt is single-lens.
+
+**Consequence for verdicts:** a spec area can be `supported` for the engineer and
+`not_supported` for the auditor — the empty Auditable section IS that case. Under this
+requirement a verdict is persona-qualified, and the roll-up ("supported for 4 of 5
+perspectives; the auditor's gap is X") replaces today's single unqualified verdict. The
+console's ruled persona-lens UX renders exactly this.
 
 ## The one design rule this forces (decide before build)
 
@@ -64,8 +77,25 @@ against the generic pass:
 Gate and instrument: the prompt-optimization loop (task #24) — persona prompts are prompt
 changes and merge on battery numbers like any other.
 
+## Acceptance test (the fixture already is one)
+
+Every seeded hole has a responsible lens (table above). The requirement is met when the
+full-lens battery recalls the holes the single lens demonstrably misses, with the controls
+still clean per lens. The single-lens baseline is on record: FIX-AUDIT-001 missed, verdict
+`supported` on an empty section.
+
+## What DAV needs from the model side
+
+The canonical persona set with per-persona objectives ("as an X I need to ensure …") as a
+**published, machine-consumable artifact** — the flow docs already maintain a persona index, so
+this is publication, not invention. Consumption mirrors the dimension vocabulary exactly:
+published file, CI-gated, DAV reads it, no private copy (a private persona list is the same
+fork with a different name). Request going to the model session.
+
 ## Sequencing
 
-After: the scope epic P2/P3, the claim battery, and the convergence-grounding prompt fix (the
-current #24 candidate). This seed exists so the design rule and the proof case are not
-rediscovered from scratch when it comes up.
+The in-flight queue holds (measurement programme → deploy → claim battery), then the auditor
+lens is the FIRST experiment through the prompt loop (#24) — it has the known miss to beat.
+Full multi-lens analysis (per-persona pass, union-across-lenses merge, persona-qualified
+verdicts) is the epic that follows, designed against #79's criteria decomposition rather than
+bolted beside it.
