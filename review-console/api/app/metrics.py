@@ -125,22 +125,40 @@ _SNAPSHOT_QUERIES: dict[str, str] = {
     "gpu_edge_temp_c":          "gpu_edge_temperature",
     "gpu_junction_temp_c":      "gpu_junction_temperature",
     "gpu_memory_temp_c":        "gpu_memory_temperature",
-    # vLLM aggregates (sum across replicas / GPUs)
-    "vllm_running_requests":    "sum(vllm:num_requests_running)",
-    "vllm_waiting_requests":    "sum(vllm:num_requests_waiting)",
+    # Inference-engine aggregates. DAV serves two engines — vLLM and llama.cpp —
+    # and they publish entirely different metric names. These queries were
+    # vllm-only, so every token/throughput/queue panel went blank whenever a
+    # llama.cpp model was serving (the 235B and gpt-oss-120b both are); the GPU
+    # rows above kept working because they come from the AMD exporter, which is
+    # engine-independent.
+    #
+    # PromQL `or` picks whichever series exists, so no backend detection is
+    # needed and a mixed fleet reports both. Same idiom already used below for
+    # vLLM's own gauge rename. Response keys keep the vllm_ prefix: they are the
+    # UI's contract, and renaming them breaks the panels this is fixing.
+    "vllm_running_requests":    "sum(vllm:num_requests_running or llamacpp:requests_processing)",
+    "vllm_waiting_requests":    "sum(vllm:num_requests_waiting or llamacpp:requests_deferred)",
     # KV-cache utilization. vLLM renamed this gauge `gpu_cache_usage_perc` →
     # `kv_cache_usage_perc`; PromQL `or` prefers the new name and falls back to
     # the old so we read whichever the running vLLM exposes (otherwise the panel
     # shows a constant 0% — the metric simply wasn't there under the old name).
     "vllm_kv_cache_pct":        "avg(vllm:kv_cache_usage_perc or vllm:gpu_cache_usage_perc) * 100",
-    "vllm_gen_tps":             "sum(rate(vllm:generation_tokens_total[1m]))",
-    "vllm_prompt_tps":          "sum(rate(vllm:prompt_tokens_total[1m]))",
+    "vllm_gen_tps":             "sum(rate(vllm:generation_tokens_total[1m]) or rate(llamacpp:tokens_predicted_total[1m]))",
+    "vllm_prompt_tps":          "sum(rate(vllm:prompt_tokens_total[1m]) or rate(llamacpp:prompt_tokens_total[1m]))",
     # Cumulative counters since vLLM process start. Useful as both an
     # absolute total and (via UI-side baseline subtraction) a "tokens
     # this session" running stat.
-    "vllm_gen_tokens_total":    "sum(vllm:generation_tokens_total)",
-    "vllm_prompt_tokens_total": "sum(vllm:prompt_tokens_total)",
+    "vllm_gen_tokens_total":    "sum(vllm:generation_tokens_total or llamacpp:tokens_predicted_total)",
+    "vllm_prompt_tokens_total": "sum(vllm:prompt_tokens_total or llamacpp:prompt_tokens_total)",
+    # llama.cpp exposes no TTFT histogram and no KV-cache utilisation gauge, so
+    # these stay vllm-only and simply report null under llama.cpp. That is honest:
+    # better a blank panel than a plausible number derived from a different thing.
     "vllm_time_to_first_token": "histogram_quantile(0.95, sum by(le)(rate(vllm:time_to_first_token_seconds_bucket[5m])))",
+    # Which engine is actually serving — 1 if any vllm:/llamacpp: series is being
+    # scraped. Lets the UI label the panel instead of leaving the operator to guess
+    # whether a blank means "idle" or "metric not published by this backend".
+    "engine_vllm_up":           "count(vllm:num_requests_running) > 0",
+    "engine_llamacpp_up":       "count(llamacpp:requests_processing) > 0",
 }
 
 
@@ -197,8 +215,10 @@ async def range_aggregates(started_at_iso: str, completed_at_iso: str) -> dict:
         "gpu_peak_power":  f"max_over_time(gpu_average_package_power[{range_str}]{off_clause})",
         "gpu_avg_gfx":     f"avg_over_time(gpu_gfx_activity[{range_str}]{off_clause})",
         # increase() returns total counter delta over the window
-        "prompt_tokens":   f"sum(increase(vllm:prompt_tokens_total[{range_str}]{off_clause}))",
-        "gen_tokens":      f"sum(increase(vllm:generation_tokens_total[{range_str}]{off_clause}))",
+        # Engine-agnostic (see _SNAPSHOT_QUERIES): a llama.cpp-served run otherwise
+        # finalizes with 0 tokens recorded, permanently, in run_sessions.
+        "prompt_tokens":   f"sum(increase(vllm:prompt_tokens_total[{range_str}]{off_clause}) or increase(llamacpp:prompt_tokens_total[{range_str}]{off_clause}))",
+        "gen_tokens":      f"sum(increase(vllm:generation_tokens_total[{range_str}]{off_clause}) or increase(llamacpp:tokens_predicted_total[{range_str}]{off_clause}))",
     }
     out: dict = {"available": True, "window_seconds": window, "queries": qs}
     results = await asyncio.gather(*[query(q) for q in qs.values()])
@@ -323,10 +343,12 @@ _TIMESERIES_QUERIES: list[tuple[str, str]] = [
     # GPU tiles (labels align by gpu_id so the division is per-GPU).
     ("gpu_vram_pct",      "100 * gpu_used_vram / gpu_total_vram"),
     ("gpu_temp",          "gpu_edge_temperature"),
-    ("vllm_gen_tps",      "sum(rate(vllm:generation_tokens_total[1m]))"),
-    ("vllm_prompt_tps",   "sum(rate(vllm:prompt_tokens_total[1m]))"),
-    ("vllm_running",      "sum(vllm:num_requests_running)"),
-    ("vllm_waiting",      "sum(vllm:num_requests_waiting)"),
+    # Engine-agnostic, same reasoning as _SNAPSHOT_QUERIES: these drive the
+    # sparklines in the run window, which were flat-empty for every llama.cpp run.
+    ("vllm_gen_tps",      "sum(rate(vllm:generation_tokens_total[1m]) or rate(llamacpp:tokens_predicted_total[1m]))"),
+    ("vllm_prompt_tps",   "sum(rate(vllm:prompt_tokens_total[1m]) or rate(llamacpp:prompt_tokens_total[1m]))"),
+    ("vllm_running",      "sum(vllm:num_requests_running or llamacpp:requests_processing)"),
+    ("vllm_waiting",      "sum(vllm:num_requests_waiting or llamacpp:requests_deferred)"),
     ("vllm_kv_pct",       "avg(vllm:kv_cache_usage_perc or vllm:gpu_cache_usage_perc) * 100"),
     ("vllm_ttft_p95",     "histogram_quantile(0.95, sum by(le)(rate(vllm:time_to_first_token_seconds_bucket[5m])))"),
 ]
