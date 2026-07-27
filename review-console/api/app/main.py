@@ -540,8 +540,8 @@ _last_corpus_sync: dict = {"at": None, "result": None}
 
 
 async def _clone_corpus_repo(repo_url: str, branch: str, pat: str,
-                             root_path: str, namespace: str) -> tuple[list, Optional[str]]:
-    """Shallow-clone a corpus repo and return (entries, error). Each entry is
+                             root_path: str, namespace: str) -> tuple[list, Optional[str], Optional[str]]:
+    """Shallow-clone a corpus repo and return (entries, head_sha, error). Each entry is
     {path: '<namespace>/<rel>', content}, <rel> relative to the corpus role's
     root_path — mirroring the engine's <namespace>/ staging. A branch starting
     with '-' is rejected (git arg-injection); git stderr is never echoed (PAT)."""
@@ -564,23 +564,28 @@ async def _clone_corpus_repo(repo_url: str, branch: str, pat: str,
                 capture_output=True, text=True, timeout=180,
                 env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never"})
             if r.returncode != 0:
-                return None, f"clone failed for {repo_url} (branch {branch!r})"
+                return None, None, f"clone failed for {repo_url} (branch {branch!r})"
+            # HEAD sha stamps every index row: staleness stays visible instead of
+            # silently corrected (scope-plan ruling: sync-refresh + marker).
+            rp = subprocess.run(["git", "-C", tmp, "rev-parse", "HEAD"],
+                                capture_output=True, text=True, timeout=30)
+            head_sha = rp.stdout.strip() if rp.returncode == 0 else None
             base = Path(tmp)
             if root_path:
                 base = base / root_path
             if not base.exists():
-                return [], None   # root_path absent in this repo → no corpus files
+                return [], head_sha, None   # root_path absent in this repo → no corpus files
             out = []
             for e in walk_corpus(base, CORPUS_INCLUDE, CORPUS_EXCLUDE):
                 out.append({"path": f"{namespace}/{e['path']}", "content": e["content"]})
-            return out, None
+            return out, head_sha, None
         except Exception as ex:
-            return None, f"clone error for {repo_url}: {type(ex).__name__}"
+            return None, None, f"clone error for {repo_url}: {type(ex).__name__}"
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
-    entries, err = await asyncio.to_thread(_run)
-    return (entries or []), err
+    entries, head_sha, err = await asyncio.to_thread(_run)
+    return (entries or []), head_sha, err
 
 
 async def sync_corpus_files(conn: asyncpg.Connection, reason: str = "manual") -> dict:
@@ -597,6 +602,7 @@ async def sync_corpus_files(conn: asyncpg.Connection, reason: str = "manual") ->
         return {"ok": False, "reason": "no corpus repos registered", "repos": []}
     sync_start = await conn.fetchval("SELECT now()")
     seen_total, all_ok, per_repo = 0, True, []
+    _indexable: list = []   # (namespace, entries, repo_sha) for the corpus index
     for r in rows:
         ns = (r["namespace"] or "").strip("/") or "corpus"
         repo = {"root_path": r["root_path"], "metadata": _repos._parse_jsonb(r["metadata"])}
@@ -607,7 +613,7 @@ async def sync_corpus_files(conn: asyncpg.Connection, reason: str = "manual") ->
                 pat = crypto.decrypt(r["github_pat_encrypted"]) or ""
         except Exception:
             pat = ""
-        entries, err = await _clone_corpus_repo(
+        entries, repo_sha, err = await _clone_corpus_repo(
             r["repo_url"], r["repo_branch"] or "main", pat, root, ns)
         if err:
             all_ok = False
@@ -618,6 +624,7 @@ async def sync_corpus_files(conn: asyncpg.Connection, reason: str = "manual") ->
             await _upsert_file(conn, e["path"], e["content"])
         seen_total += len(entries)
         per_repo.append({"namespace": ns, "files": len(entries)})
+        _indexable.append((ns, entries, repo_sha))
     pruned, swept = 0, False
     if seen_total > 0 and all_ok:
         res = await conn.execute("DELETE FROM files WHERE last_seen_at < $1", sync_start)
@@ -629,10 +636,49 @@ async def sync_corpus_files(conn: asyncpg.Connection, reason: str = "manual") ->
     elif not all_ok:
         log.warning("corpus sync (%s): a repo clone failed — skipping sweep "
                     "(upsert-only) to avoid wiping the cache", reason)
+    # ── Corpus index (P1, scope-first-class-plan): same pass, parsed + validated.
+    # The vocabulary is single-sourced and byte-identical across repos, so the
+    # first hit anywhere in the sweep serves every namespace (the fixture repo
+    # deliberately publishes none and relies on this).
+    from app import corpus_index as _cidx
+    _all_entries = [e for _, ents, _sha in _indexable for e in ents]
+    _vocab = _cidx.load_vocabulary(_all_entries)
+    _index_stats = {"ucs": 0, "invalid": 0, "non_uc": 0,
+                    "vocabulary_found": _vocab is not None}
+    for ns, ents, _sha in _indexable:
+        _rows, _st = _cidx.build_index_rows(ns, ents, _vocab, _sha)
+        for k in ("ucs", "invalid", "non_uc"):
+            _index_stats[k] += _st[k]
+        for row in _rows:
+            await conn.execute(
+                """INSERT INTO corpus_index
+                   (namespace, path, uc_uuid, handle, family, success_semantics,
+                    dimensions, valid, invalid_reason, repo_sha, indexed_at)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10, now())
+                   ON CONFLICT (namespace, path) DO UPDATE SET
+                     uc_uuid=EXCLUDED.uc_uuid, handle=EXCLUDED.handle,
+                     family=EXCLUDED.family, success_semantics=EXCLUDED.success_semantics,
+                     dimensions=EXCLUDED.dimensions, valid=EXCLUDED.valid,
+                     invalid_reason=EXCLUDED.invalid_reason, repo_sha=EXCLUDED.repo_sha,
+                     indexed_at=now()""",
+                row["namespace"], row["path"], row["uc_uuid"], row["handle"],
+                row["family"], row["success_semantics"], json.dumps(row["dimensions"]),
+                row["valid"], row["invalid_reason"], row["repo_sha"])
+    if swept:
+        # Same guard as the files sweep: rows only vanish when every repo cloned.
+        await conn.execute("DELETE FROM corpus_index WHERE indexed_at < $1", sync_start)
+    if not _index_stats["vocabulary_found"]:
+        log.warning("corpus index: no %s found in any synced repo — dimension "
+                    "validation skipped (valid=NULL, unvalidated not passing)",
+                    _cidx.VOCABULARY_FILENAME)
+    log.info("corpus index (%s): %d UCs (%d invalid, %d non-UC files skipped-and-counted)",
+             reason, _index_stats["ucs"], _index_stats["invalid"], _index_stats["non_uc"])
+
     log.info("corpus sync (%s): %d files / %d repos, pruned %d (swept=%s)",
              reason, seen_total, len(rows), pruned, swept)
     result = {"ok": True, "reason": reason, "files_seen": seen_total,
-              "pruned": pruned, "swept": swept, "repos": per_repo}
+              "pruned": pruned, "swept": swept, "repos": per_repo,
+              "index": _index_stats}
     _last_corpus_sync["at"] = time.time()
     _last_corpus_sync["result"] = result
     return result
@@ -7535,6 +7581,50 @@ async def corpus_resync(request: Request):
     await require_role(request, "admin")
     async with pool.acquire() as conn:
         return await sync_corpus_files(conn, reason="manual")
+
+
+@app.get("/api/corpus/index")
+async def corpus_index_summary(request: Request,
+                               namespaces: Optional[str] = Query(None)):
+    """Pre-launch scope: what WOULD a run over these namespaces analyze?
+
+    Read-only rollup of corpus_index — total/valid/invalid per namespace with
+    per-UC quarantine predictions, plus repo_sha + indexed_at as the staleness
+    marker (ruling: surface staleness, never block on it). This is the query
+    the P3 preflight panel renders before the operator launches anything.
+    """
+    get_user(request)
+    ns_filter = [n.strip() for n in (namespaces or "").split(",") if n.strip()]
+    async with pool.acquire() as conn:
+        where, args = "", []
+        if ns_filter:
+            where, args = "WHERE namespace = ANY($1::text[])", [ns_filter]
+        rows = await conn.fetch(
+            f"""SELECT namespace, handle, uc_uuid, family, success_semantics,
+                       valid, invalid_reason, repo_sha, indexed_at
+                FROM corpus_index {where} ORDER BY namespace, handle""", *args)
+    by_ns: dict = {}
+    invalid = []
+    unvalidated = 0
+    for r in rows:
+        ns = by_ns.setdefault(r["namespace"], {
+            "ucs": 0, "valid": 0, "invalid": 0, "unvalidated": 0,
+            "repo_sha": r["repo_sha"],
+            "indexed_at": r["indexed_at"].isoformat() if r["indexed_at"] else None})
+        ns["ucs"] += 1
+        if r["valid"] is True:
+            ns["valid"] += 1
+        elif r["valid"] is False:
+            ns["invalid"] += 1
+            invalid.append({"namespace": r["namespace"], "handle": r["handle"],
+                            "uc_uuid": r["uc_uuid"], "reason": r["invalid_reason"]})
+        else:
+            ns["unvalidated"] += 1
+            unvalidated += 1
+    return {"total_ucs": len(rows),
+            "predicted_quarantine": invalid,       # complete list, no silent cap
+            "unvalidated": unvalidated,
+            "by_namespace": by_ns}
 
 
 @app.get("/api/corpus/sync-status")
