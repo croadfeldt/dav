@@ -6,8 +6,9 @@ call, a DB workaround and two catalog seedings — and still produced three "why
 moments. Seven friction points, each anchored to a real incident from the 2026-07-27 session:
 shared source plane · hidden projection step · one-row-one-root · undeclared corpus-mode scope ·
 unvalidated namespace filters · bootstrap traps (agent-only visibility, empty catalog) · no
-catalog seeding path. Doc: **`docs/corpus-scope-friction.md`** — problem statement + direction
-sketches; groups into two epics (run-scoped source resolution; scope as a first-class pre-run
+catalog seeding path. Doc: **`docs/corpus-scope-friction.md`** — **items 1–3 RULED by Chris 2026-07-27: the DB is
+the source of truth; ConfigMap projection + the MCP's ConfigMap feed + the single-source-project
+constraint are to be retired** (design note before build). Remaining items grouped into two epics (run-scoped source resolution; scope as a first-class pre-run
 artifact) aligned with tenancy Phase 3 + sweep K4.
 
 

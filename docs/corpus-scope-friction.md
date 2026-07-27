@@ -105,6 +105,30 @@ columns included).
 the catalog could sync from it the way the vocabulary now syncs, #83-style, instead of being
 hand-fed).
 
+## RULED (Chris, 2026-07-27): the DB is the source of truth
+
+"The ConfigMap is not the correct source of truth for the operational details of DAV — that
+should come from the DB. Same goes for the MCP server." This settles the direction for items
+1–3; they are no longer sketches. Concretely:
+
+- **Runs resolve sources at trigger time from the registry.** The API already holds
+  `managed_repos` and already resolves per-run parameters; the resolved source list (repo, ref,
+  role paths, namespaces) rides into the PipelineRun instead of being read from a projected
+  ConfigMap. Side benefit: the resolved ref can be pinned per run (repo@sha), which is the
+  provenance stamping the run records already want.
+- **dav-docs-mcp reads the registry from the DB** (directly or via the API), refreshing without
+  a rollout-restart. Repo edits become visible on the next refresh, not the next projection +
+  restart cycle.
+- **The projection endpoint and `DAV_MCP_SOURCE_PROJECT_SLUG` are retired.** With per-run and
+  per-refresh resolution there is no shared projected plane, so the single-source-project
+  constraint — the thing that forced the fixture repo to be DB-moved into project 20 — goes
+  away, and project isolation becomes real rather than filter-deep. This is also the
+  prerequisite tenancy Phase 3 (per-project MCP) was waiting on.
+
+Migration note: the ConfigMaps may remain briefly as a read-only cache for rollback, but nothing
+should treat them as authoritative from here on. A design note (trigger-time resolution shape,
+MCP refresh contract, deprecation order) comes before build.
+
 ## The shape of the fix
 
 Items 1–3 are one epic (source resolution belongs to the run, not to a global projection);
