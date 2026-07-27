@@ -1235,6 +1235,20 @@ function renderRunDrawerDetail(d) {
   document.getElementById('rdSub').innerHTML = timeBits;
   // Row 3 — scope / estimate
   const hs = [];
+  // Which model produced this analysis — first-class in the header, not buried
+  // in the Params dump. Chris: "I would like to see what model we are using for
+  // the analysis." Verdicts are meaningless without it (the same corpus scored
+  // by qwen3-32b and gpt-oss-120b are different measurements), and the fixture
+  // work runs on a different model than the platform default, so guessing from
+  // context is exactly what this removes. Topology rides the tooltip.
+  {
+    const _mdl = _runModelLabel(d) || ((s && s.trigger_payload && (s.trigger_payload.inference_model || '')) || '');
+    if (_mdl) {
+      const _topo = (d.params || {})['inference-topology'] || '';
+      hs.push(`<span class="rd-hstat" title="${esc(_topo ? 'topology: ' + _topo : 'evaluation model')}">` +
+        `<span class="l" style="text-transform:none">model</span><b>${esc(_mdl)}</b></span>`);
+    }
+  }
   if (ucCount != null) {
     // Outcome split from the ingested analysis — a partial failure (e.g. 31/32)
     // must read as exactly that, not as a blanket "Failed".
