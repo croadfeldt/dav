@@ -132,13 +132,13 @@ function _renderRunItemHtml(r) {
     <div class="rli-right">
       ${phaseHtml(r.phase)}<br>
       <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
-      <div class="rli-actions">
+    </div>
+    <div class="rli-actions">
         ${!['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase) ? `<button class="btn ghost btn-sm" title="Stop this analysis (cancel the pipeline)" onclick="event.stopPropagation();stopRunConfirm('${r.name}')">⏹ Stop</button>` : ''}
         ${r.run_id ? `<button class="btn ghost btn-sm" title="Compare this analysis against another" onclick="event.stopPropagation();compareRunFromRow('${r.name}')">⇄ Compare…</button><button class="btn ghost btn-sm" title="Compare against the previous ingested analysis of the same Scoping Set" onclick="event.stopPropagation();compareRunVsPrev('${r.name}')">vs previous</button>` : ''}
         <button class="btn ghost btn-sm" title="Re-analyze with the same Scoping Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
         <button class="btn ghost btn-sm" title="${r.archived ? 'Unarchive' : 'Archive (hide from list)'}" onclick="event.stopPropagation();archiveRun('${r.name}',${r.archived ? 'false' : 'true'})">${r.archived ? 'Unarchive' : 'Archive'}</button>
         <button class="btn danger btn-sm" title="Delete completely — irreversible" onclick="event.stopPropagation();deleteRunConfirm('${r.name}')">Delete</button>
-      </div>
     </div>`;
 }
 

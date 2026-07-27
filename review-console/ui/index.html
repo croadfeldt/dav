@@ -767,7 +767,7 @@
   /* Run list rows (replacing old table) */
   .run-list-item {
     position:relative;
-    display:flex; align-items:center; gap:8px;
+    display:flex; flex-wrap:wrap; align-items:center; gap:8px;
     padding:9px 14px; font-size:12px; color:var(--text-dim);
     cursor:pointer; border-left:3px solid transparent;
     border-bottom:1px solid var(--border); transition:background .1s;
@@ -780,6 +780,16 @@
     box-shadow:-6px 0 8px -4px var(--bg-raised);
   }
   .run-list-item:hover .rli-actions, .run-list-item.active .rli-actions { display:flex; }
+  /* On the SELECTED row the actions are persistent, so the hover-style overlay
+     would sit on top of the very stats the user selected the run to watch
+     (observed: it covered the live counts and truncated to "E…" instead of
+     wrapping). Selected row: actions become their own full-width wrapped line
+     BELOW the content — covering nothing. Hover on non-selected rows keeps the
+     compact transient overlay. */
+  .run-list-item.active .rli-actions {
+    position:static; width:100%; flex-wrap:wrap; justify-content:flex-end;
+    margin-top:4px; padding:0; background:transparent; box-shadow:none;
+  }
   .run-list-item:hover { background:var(--accent-bg); }
   .run-list-item.active { background:var(--accent-bg); border-left-color:var(--accent); }
   .run-list-item .rli-main { flex:1; min-width:0; }
@@ -5618,13 +5628,13 @@ function _renderRunItemHtml(r) {
     <div class="rli-right">
       ${phaseHtml(r.phase)}<br>
       <span style="color:var(--text-faint)">${esc(fmtDuration(r.started_at||r.created_at, r.completed_at))}</span>
-      <div class="rli-actions">
+    </div>
+    <div class="rli-actions">
         ${!['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase) ? `<button class="btn ghost btn-sm" title="Stop this analysis (cancel the pipeline)" onclick="event.stopPropagation();stopRunConfirm('${r.name}')">⏹ Stop</button>` : ''}
         ${r.run_id ? `<button class="btn ghost btn-sm" title="Compare this analysis against another" onclick="event.stopPropagation();compareRunFromRow('${r.name}')">⇄ Compare…</button><button class="btn ghost btn-sm" title="Compare against the previous ingested analysis of the same Scoping Set" onclick="event.stopPropagation();compareRunVsPrev('${r.name}')">vs previous</button>` : ''}
         <button class="btn ghost btn-sm" title="Re-analyze with the same Scoping Set + settings" onclick="event.stopPropagation();rerunRun('${r.name}')">↻ Rerun</button>
         <button class="btn ghost btn-sm" title="${r.archived ? 'Unarchive' : 'Archive (hide from list)'}" onclick="event.stopPropagation();archiveRun('${r.name}',${r.archived ? 'false' : 'true'})">${r.archived ? 'Unarchive' : 'Archive'}</button>
         <button class="btn danger btn-sm" title="Delete completely — irreversible" onclick="event.stopPropagation();deleteRunConfirm('${r.name}')">Delete</button>
-      </div>
     </div>`;
 }
 
