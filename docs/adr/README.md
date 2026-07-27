@@ -15,3 +15,11 @@ model contains. All records are Proposed until ratified by engineering review.
 
 Cross-repo: udlm ADR-044 (consumer conformance surface — consumers declare what they read, the
 registry gates on it) is part of this program and lives with the registry it binds.
+
+- **ADR-007 — Structured output enforced at the wire.** `response_format`, never `extra_body`; wire shapes verified, mutation-tested.
+- **ADR-008 — Quorum-gated ensemble.** Sub-quorum gaps visible but non-voting; consensus persisted; verdict invariance under N.
+- **ADR-009 — Reproduce mode owns determinism.** Concurrency clamped to 1; batch-composition nondeterminism measured and closed.
+- **ADR-010 — Corpus-published vocabularies.** Read, never copied; loud fallback; aliases recorded not applied.
+- **ADR-011 — Multi-perspective analysis.** Lens set per UC; quorum within a lens, union across, tier preserved; persona-qualified verdicts.
+- **ADR-012 — Scope before launch.** The corpus index: validated, SHA-stamped, quarantine predicted not post-mortem.
+- **ADR-013 — The validator validated.** Seeded ground truth + frontier ceiling + human rule; fixture must be able to fail.
