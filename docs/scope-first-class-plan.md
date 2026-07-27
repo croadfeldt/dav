@@ -49,25 +49,25 @@ of the five; can run in parallel with P3/P4.
 Bootstrap item 6a (agent-created project invisible to humans) is a one-liner policy question,
 not a PR of its own: ⚖ below.
 
-## ⚖ Decision points (need rulings before the affected PR)
+## ⚖ Decision points — ALL RULED (Chris, 2026-07-27): recommendations accepted as written
 
-1. **Index freshness (P1):** refresh on repo-sync only, or also on-demand at trigger when the
+1. **RULED — sync-refresh + staleness marker.** Original question: refresh on repo-sync only, or also on-demand at trigger when the
    registered SHA differs from the indexed SHA? *Recommend: sync-refresh + a staleness marker in
    the preflight response ("index is N commits behind"), not a blocking re-index at trigger —
    trigger stays fast, staleness stays visible.*
-2. **Predicted quarantine (P2/P3): warn or block?** *Recommend: warn in the modal, never block —
+2. **RULED — warn; block only at 0-of-N.** Original question: warn or block? *Recommend: warn in the modal, never block —
    the operator may be launching precisely to exercise the quarantine path (the fixture suite
    does). A "0 of N UCs would run" preflight result should block, since the run is certainly
    pointless.*
-3. **Scope snapshot semantics (P2):** store the resolved UC list at trigger (a snapshot that can
+3. **RULED — snapshot at trigger + reconcile at sync.** Original question: store the resolved UC list at trigger (a snapshot that can
    drift from what the engine sees if the repo moves between trigger and clone), or re-resolve at
    sync and reconcile? *Recommend: snapshot at trigger + the engine's actual list recorded at
    sync; a diff between them is provenance signal (the corpus moved mid-launch), same spirit as
    the SHA pinning in #87.*
-4. **6a policy:** when a PAT/agent creates a project, auto-grant the PAT's owning human
+4. **RULED — auto-grant the PAT's owning human project-admin at creation.** Original question: when a PAT/agent creates a project, auto-grant the PAT's owning human
    project-admin? *Recommend: yes — one INSERT at creation; removes the invisible-project trap
    without a new surface.*
-5. **Sequencing against the source-plane epic (#87):** P1's sweep currently hangs off the
+5. **RULED (by default, unobjected) — SHA-keyed independence.** Original question: P1's sweep currently hangs off the
    projection-triggered sync. *Recommend: build P1 against the current sync now, with the index
    keyed by namespace+SHA so it is indifferent to WHO triggers indexing — when #87 replaces the
    projection, the index's producer moves without the schema changing. The two epics stay
