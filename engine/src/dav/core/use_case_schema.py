@@ -882,6 +882,36 @@ class GapIdentified:
     # merge and the cross-run comparator prefer it over the churny canonical-title match.
     capability_id: str = ""
 
+    # Ensemble agreement for this gap, as "k/n" (k samples of n found it). Empty
+    # for single-sample analyses, where the notion does not apply.
+    #
+    # This exists because the merge used to compute agreement, attach it to the
+    # Analysis, and then derive the verdict from the UNFILTERED union anyway — a
+    # 1-of-3 gap weighed exactly as much as a 3-of-3 one. Since P(some sample
+    # finds a gap) rises with N and verdict derivation is downgrade-only, verdicts
+    # got monotonically worse the more samples you took. Measured: gpt-oss on the
+    # same six must-reject UCs went 4 gaps / 5 `supported` at n=1 to 20 gaps /
+    # 0 `supported` at n=3, purely from union growth.
+    consensus: str = ""
+
+    @property
+    def quorum_backed(self) -> bool:
+        """True when a majority of samples agreed this gap is real.
+
+        Sub-quorum gaps are KEPT — they are often a real finding the other
+        samples missed, and they are exactly the input the capability catalog
+        needs — but they must not silently move a verdict.
+        """
+        if not self.consensus:
+            return True          # single-sample: nothing to disagree with
+        try:
+            k, n = (int(x) for x in self.consensus.split("/", 1))
+        except (ValueError, TypeError):
+            return True          # unparseable: fail open, never silently drop
+        if n <= 0:
+            return True
+        return k * 2 >= n        # majority, ties count as agreement
+
     def __post_init__(self):
         # Accept shorthand strings at construction time, same as from_dict does.
         if not isinstance(self.severity, SeverityDescriptor):
