@@ -8316,13 +8316,17 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                     """INSERT INTO uc_gaps
                        (analysis_id, run_id, uc_uuid, gap_id, title,
                         description, severity, recommendation, rationale,
-                        namespace, catalog_capability_id, normalization_status)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)""",
+                        namespace, catalog_capability_id, normalization_status,
+                        consensus)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)""",
                     analysis_id, run_id, uc_uuid,
                     gap_id, title, desc, sev,
                     gap.get("recommendation"),
                     gap.get("rationale"),
                     namespace, catalog_capability_id, normalization_status,
+                    # Ensemble agreement ("k/n"). None for single-sample runs,
+                    # where there is nothing to disagree with — NOT low agreement.
+                    (gap.get("consensus") or None),
                 )
                 ingested_gaps += 1
 
