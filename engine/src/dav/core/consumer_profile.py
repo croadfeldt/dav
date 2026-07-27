@@ -359,6 +359,81 @@ def set_default_profile(profile: ConsumerProfile) -> None:
         )
     _DEFAULT_PROFILE = profile
 
+# --- Dimension vocabulary: single-sourced from the corpus, not forked here -----
+
+DIMENSION_VOCABULARY_FILENAME = "DIMENSION-VOCABULARY.yaml"
+
+# scenario.dimensions.<key> -> the ConsumerProfile field that holds its legal values.
+_VOCAB_FIELD = {
+    "lifecycle_phase": "lifecycle_phases",
+    "resource_complexity": "resource_complexities",
+    "policy_complexity": "policy_complexities",
+    "provider_landscape": "provider_landscapes",
+    "governance_context": "governance_contexts",
+    "failure_mode": "failure_modes",
+}
+
+
+def find_dimension_vocabulary(*roots) -> "pathlib.Path | None":
+    """Locate DIMENSION-VOCABULARY.yaml under any of `roots` (recursively).
+
+    The model repos publish it at use-cases/ (udlm) and dav/use-cases/ (dcm),
+    byte-identical, and gate every UC against it in CI.
+    """
+    import pathlib as _pl
+    for root in roots:
+        if not root:
+            continue
+        rp = _pl.Path(root)
+        if not rp.exists():
+            continue
+        if rp.is_file() and rp.name == DIMENSION_VOCABULARY_FILENAME:
+            return rp
+        hit = next(iter(sorted(rp.rglob(DIMENSION_VOCABULARY_FILENAME))), None)
+        if hit is not None:
+            return hit
+    return None
+
+
+def apply_dimension_vocabulary(profile: ConsumerProfile, path) -> tuple[ConsumerProfile, dict]:
+    """Return `profile` with its six dimension lists replaced by the vocabulary file.
+
+    Why this exists: the engine carried a PRIVATE copy of these lists while the
+    corpus grew legitimate new values (day2_operations, single_with_deps,
+    internal_audit, ...). Any UC using one was silently quarantined — measured at
+    ~86% of the corpus (model-side sweep 2026-07-28, finding F1, rated a release
+    blocker by two independent sweeps). Reading the published file removes the
+    fork rather than re-creating a second copy that can drift again.
+
+    Returns (profile, report) where report is per-dimension counts, so the caller
+    can log what changed instead of applying it invisibly.
+    """
+    import dataclasses as _dc
+    import pathlib as _pl
+    import yaml as _yaml
+
+    doc = _yaml.safe_load(_pl.Path(path).read_text()) or {}
+    dims = doc.get("dimensions") or {}
+    updates, report = {}, {"path": str(path), "version": doc.get("version"), "dimensions": {}}
+    for key, field_name in _VOCAB_FIELD.items():
+        values = dims.get(key)
+        if not values:
+            continue
+        before = set(getattr(profile, field_name, []) or [])
+        after = set(values)
+        updates[field_name] = list(values)
+        report["dimensions"][key] = {
+            "count": len(values),
+            "added": sorted(after - before),     # the values that were being quarantined
+            "removed": sorted(before - after),   # engine-only values the corpus retired
+        }
+    # folded_aliases lets a transition accept retired spellings; the corpus is
+    # already folded, so this is recorded but NOT applied — accepting both
+    # spellings is how one concept silently becomes two categories.
+    report["folded_aliases"] = doc.get("folded_aliases") or {}
+    return (_dc.replace(profile, **updates) if updates else profile), report
+
+
 def get_default_profile() -> ConsumerProfile:
     """Return the module-level default profile.
 

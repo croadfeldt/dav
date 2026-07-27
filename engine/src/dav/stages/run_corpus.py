@@ -868,7 +868,13 @@ def _cli():
     )
 
     # Load consumer profile
-    from dav.core.consumer_profile import load_profile, set_default_profile
+    from dav.core.consumer_profile import (
+        DIMENSION_VOCABULARY_FILENAME,
+        apply_dimension_vocabulary,
+        find_dimension_vocabulary,
+        load_profile,
+        set_default_profile,
+    )
     consumer_profile = load_profile(
         path=args.consumer_profile, fall_back_to_generic=True,
     )
@@ -883,6 +889,36 @@ def _cli():
         ]
         log.info("gap-identity: %d catalog capability id(s) supplied for guided-JSON",
                  len(consumer_profile.known_capability_ids))
+    # Reconcile the dimension vocabulary against the corpus's published file
+    # BEFORE the profile is installed and anything is validated against it.
+    #
+    # The engine used to carry a private copy of the six dimension lists while the
+    # corpus grew legitimate new values (day2_operations, single_with_deps,
+    # internal_audit, ...). Every UC using one was silently quarantined — measured
+    # at ~86% of the corpus (model-side sweep 2026-07-28 finding F1; two
+    # independent sweeps rated it a release blocker). Reading the published,
+    # CI-gated file removes the fork instead of forking it again.
+    _vocab_path = find_dimension_vocabulary(args.corpus_path, args.consumer_content_path)
+    if _vocab_path is not None:
+        consumer_profile, _vreport = apply_dimension_vocabulary(consumer_profile, _vocab_path)
+        _added = {k: v["added"] for k, v in _vreport["dimensions"].items() if v["added"]}
+        log.info("dimension vocabulary: adopted %s (version %s)",
+                 _vocab_path, _vreport.get("version"))
+        if _added:
+            # These are exactly the values that were being quarantined.
+            log.info("dimension vocabulary: %d value(s) the engine did not previously accept: %s",
+                     sum(len(v) for v in _added.values()), _added)
+        _removed = {k: v["removed"] for k, v in _vreport["dimensions"].items() if v["removed"]}
+        if _removed:
+            log.warning("dimension vocabulary: engine-only value(s) NOT in the published file "
+                        "(a UC using one will now quarantine): %s", _removed)
+    else:
+        log.warning(
+            "dimension vocabulary: no %s found under the corpus or spec content — "
+            "falling back to the engine's built-in list, which is the fork that "
+            "silently quarantined ~86%% of the corpus. Verify the corpus repo "
+            "publishes it.", DIMENSION_VOCABULARY_FILENAME)
+
     set_default_profile(consumer_profile)
     log.info(
         "consumer profile: %s (%s)",
