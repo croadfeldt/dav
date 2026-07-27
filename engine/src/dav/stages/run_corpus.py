@@ -1116,6 +1116,15 @@ def _cli():
             est_worst_case_s, request_timeout,
         )
 
+    # Same clamp as uc_concurrency below, same mechanism: concurrent samples
+    # share inference batches, and batch composition perturbs greedy decoding.
+    # One in-flight request at a time is part of what "reproduce" means.
+    if args.mode == "reproduce" and (args.sample_concurrency or 1) != 1:
+        log.warning("reproduce mode: sample_concurrency=%s CLAMPED to 1 "
+                    "(reproducibility requires a single in-flight request)",
+                    args.sample_concurrency)
+        args.sample_concurrency = 1
+
     log.info(
         "corpus mode=%s temperature=%s cache_prompt=%s sample_count=%s "
         "sample_concurrency=%d top_k=%s top_p=%s min_p=%s max_tokens=%s "
@@ -1334,6 +1343,23 @@ def _cli():
         return False
 
     uc_concurrency = max(1, int(getattr(args, "uc_concurrency", 1) or 1))
+    # Reproduce mode's contract is byte-identical reruns, and concurrency breaks
+    # it OUTSIDE this process: concurrent UCs share the inference server's
+    # batches, and batch composition changes floating-point reduction order,
+    # flipping argmax at ties even under strict greedy decoding. Measured
+    # 2026-07-27 on identical fixture corpora: two reproduce passes at
+    # uc_concurrency=2 produced 12 and 18 gaps with ZERO overlap; at
+    # uc_concurrency=1, two passes produced 15 gaps IDENTICAL in both. So the
+    # clamp is the guarantee — a caller's concurrency request cannot be honored
+    # without silently voiding the mode they asked for.
+    if args.mode == "reproduce" and uc_concurrency != 1:
+        log.warning(
+            "reproduce mode: uc_concurrency=%d requested but CLAMPED to 1 — "
+            "concurrent UCs share inference batches, which perturbs greedy "
+            "decoding and voids reproducibility (measured: zero gap overlap "
+            "between two conc-2 reproduce passes; identical at conc 1)",
+            uc_concurrency)
+        uc_concurrency = 1
     _write_progress(current_index=0, current_uc_path=None, phase="running")
     if uc_concurrency == 1:
         # Serial path — semantics identical to the original loop.
