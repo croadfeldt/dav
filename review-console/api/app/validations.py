@@ -159,6 +159,8 @@ def _mk_pipelinerun(
     spec_repo_url: Optional[str] = None,
     spec_repo_branch: Optional[str] = None,
     inference_model: Optional[str] = None,
+    pass1_inference_endpoint: Optional[str] = None,
+    pass1_inference_model: Optional[str] = None,
     halt_on_error: bool = False,
     uc_handles: Optional[list[str]] = None,
     uc_uuids: Optional[list[str]] = None,
@@ -219,6 +221,15 @@ def _mk_pipelinerun(
         params.append({"name": "consumer-spec-repo-branch", "value": spec_repo_branch})
     if inference_model:
         params.append({"name": "inference-model", "value": inference_model})
+    # Per-stage routing is all-or-nothing: sending only one half would leave the
+    # engine to error out mid-run, so refuse to build the PipelineRun at all.
+    if pass1_inference_endpoint or pass1_inference_model:
+        if not (pass1_inference_endpoint and pass1_inference_model):
+            raise ValueError(
+                "per-stage routing needs both pass1_inference_endpoint and "
+                "pass1_inference_model, or neither")
+        params.append({"name": "pass1-inference-endpoint", "value": pass1_inference_endpoint})
+        params.append({"name": "pass1-inference-model", "value": pass1_inference_model})
     if halt_on_error:
         params.append({"name": "halt-on-error", "value": "true"})
     if uc_handles:
@@ -310,6 +321,8 @@ def trigger_run(
     spec_repo_url: Optional[str] = None,
     spec_repo_branch: Optional[str] = None,
     inference_model: Optional[str] = None,
+    pass1_inference_endpoint: Optional[str] = None,
+    pass1_inference_model: Optional[str] = None,
     halt_on_error: bool = False,
     uc_handles: Optional[list[str]] = None,
     uc_uuids: Optional[list[str]] = None,
@@ -348,6 +361,8 @@ def trigger_run(
         spec_repo_url=spec_repo_url,
         spec_repo_branch=spec_repo_branch,
         inference_model=inference_model,
+        pass1_inference_endpoint=pass1_inference_endpoint,
+        pass1_inference_model=pass1_inference_model,
         halt_on_error=halt_on_error,
         uc_handles=uc_handles,
         uc_uuids=uc_uuids,

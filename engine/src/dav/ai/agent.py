@@ -199,6 +199,18 @@ class Stage2Agent:
     like tool-call trace, token counts).
     """
 
+    def _client(self) -> InferenceClient:
+        """The backend for the current phase.
+
+        Pass 1 uses `inference_pass1` when one was supplied; everything else
+        (pass 2, single-pass mode, retries) uses the primary. Selection is by the
+        `_pass_label` the two-pass driver already sets, so there is exactly one
+        source of truth for which phase is running.
+        """
+        if getattr(self, "_pass_label", None) == "pass1" and self.inference_pass1 is not None:
+            return self.inference_pass1
+        return self.inference
+
     def __init__(
         self,
         inference: InferenceClient,
@@ -207,8 +219,19 @@ class Stage2Agent:
         consumer_profile=None,
         consumer_content_path=None,
         turns_log_path: "Path | None" = None,
+        inference_pass1: InferenceClient | None = None,
     ):
         self.inference = inference
+        # Optional second backend used ONLY for the two-pass explore phase.
+        # Pass 1 retrieves and summarises spec (many MCP turns, ~60% of a UC's
+        # wall-clock) and rewards RECALL; pass 2 delivers the grounded verdict and
+        # rewards PRECISION. Measured 2026-07-26 on the must-reject family: the 32B
+        # returned partially_supported for all 6 UCs across 3 samples (27 gaps,
+        # enumerating rather than adjudicating) while the 235B discriminated
+        # 3 supported / 1 partial — at ~25x the wall-clock. Routing the cheap,
+        # high-volume phase to the fast model and keeping judgment on the strong one
+        # is the point. None = single-model behaviour, byte-identical to before.
+        self.inference_pass1 = inference_pass1
         self.mcp = mcp
         self.config = config or AgentConfig()
         # ConsumerProfile parameterizes prompts and JSON schema.
@@ -604,7 +627,7 @@ class Stage2Agent:
             if _memo is not None:
                 messages.append(_memo)
             try:
-                response = self.inference.chat(
+                response = self._client().chat(
                     messages=messages,
                     tools=tools_arg,
                     temperature=self.config.temperature,
@@ -637,7 +660,7 @@ class Stage2Agent:
                         )
                         self._context_overflow_retry_count += 1
                         try:
-                            response = self.inference.chat(
+                            response = self._client().chat(
                                 messages=messages,
                                 tools=None,
                                 temperature=self.config.temperature,
@@ -899,7 +922,7 @@ class Stage2Agent:
                             "change your findings — only fix the format."
                         ),
                     ))
-                    retry = self.inference.chat(
+                    retry = self._client().chat(
                         messages=messages,
                         tools=None,
                         temperature=self.config.temperature,

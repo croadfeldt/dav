@@ -180,6 +180,7 @@ def run_samples(
     consumer_profile=None,
     consumer_content_path=None,
     turns_log_path: "Path | None" = None,
+    pass1_inference_factory: "Callable[[], InferenceClient] | None" = None,
 ) -> list[Analysis]:
     """Run N stage-2 samples and return them as a list, in seed order.
 
@@ -219,6 +220,10 @@ def run_samples(
 
     # Shared inference client (thread-safe). McpClient is per-sample.
     inference = inference_factory()
+    # Optional pass-1 backend, shared the same way. `factory() or None` so a
+    # factory that returns None (routing not configured) collapses to
+    # single-model behaviour rather than constructing a dead client.
+    inference_pass1 = pass1_inference_factory() if pass1_inference_factory else None
 
     def _run_one(seed: int) -> Analysis:
         mcp = mcp_factory()
@@ -241,6 +246,7 @@ def run_samples(
             consumer_profile=consumer_profile,
             consumer_content_path=consumer_content_path,
             turns_log_path=per_sample,
+            inference_pass1=inference_pass1,
         )
         agent._sample_seed = seed
         log.info("starting sample with seed=%d", seed)

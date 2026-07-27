@@ -303,6 +303,7 @@ def run_one_uc(
     run_dir: Path,
     inference_factory,
     mcp_factory,
+    pass1_inference_factory=None,
     config: AgentConfig,
     mode: str,
     consumer_profile,
@@ -366,6 +367,7 @@ def run_one_uc(
     # Run samples
     try:
         samples = run_samples(
+            pass1_inference_factory=pass1_inference_factory,
             use_case=use_case,
             inference_factory=inference_factory,
             mcp_factory=mcp_factory,
@@ -675,6 +677,15 @@ def _cli():
         "--inference-model", type=str, required=True,
         help="Model name to send to the endpoint.",
     )
+    parser.add_argument(
+        "--pass1-inference-endpoint", type=str, default=None,
+        help="OPTIONAL separate OpenAI-compatible endpoint for the two-pass EXPLORE "
+             "phase (pass 1). Pass 1 is retrieval + summarisation over many MCP turns "
+             "and rewards recall; pass 2 is the grounded verdict and rewards precision. "
+             "Unset = one model for both (unchanged behaviour).")
+    parser.add_argument(
+        "--pass1-inference-model", type=str, default=None,
+        help="Model name for --pass1-inference-endpoint. Required when that is set.")
     parser.add_argument(
         "--inference-api-key-env", type=str, default=None,
         help="Name of the env var holding the inference API key for external "
@@ -1130,8 +1141,28 @@ def _cli():
             effective_block["use_key"], effective_block["sent"],
             effective_block["capabilities"],
         )
+    # Optional pass-1 backend. Inherits sampling/capability config from the primary
+    # so only the destination differs — otherwise a routing change would silently
+    # become a sampling change too, and any quality delta would be unattributable.
+    pass1_primary = None
+    if args.pass1_inference_endpoint:
+        if not args.pass1_inference_model:
+            parser.error("--pass1-inference-model is required with --pass1-inference-endpoint")
+        pass1_primary = dataclasses.replace(
+            primary,
+            url=args.pass1_inference_endpoint,
+            model=args.pass1_inference_model,
+            label="pass1",
+        )
+        log.info("per-stage routing: pass1 -> %s (%s) | pass2 -> %s (%s)",
+                 args.pass1_inference_model, args.pass1_inference_endpoint,
+                 args.inference_model, args.inference_endpoint)
+
     def _make_inference():
         return InferenceClient(primary=primary)
+
+    def _make_pass1_inference():
+        return InferenceClient(primary=pass1_primary) if pass1_primary else None
     def _make_mcp():
         return McpClient(server_url=args.mcp_url)
 
@@ -1215,6 +1246,7 @@ def _cli():
             uc_path=uc_path,
             run_dir=run_dir,
             inference_factory=_make_inference,
+            pass1_inference_factory=_make_pass1_inference,
             mcp_factory=_make_mcp,
             config=config,
             mode=args.mode,
