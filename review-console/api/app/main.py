@@ -1572,6 +1572,10 @@ class RunTriggerIn(BaseModel):
     spec_repo_branch: Optional[str] = None
     inference_endpoint: Optional[str] = None
     inference_model: Optional[str] = None
+    # Optional per-stage routing: pass 1 (explore/enumerate) runs on this model,
+    # pass 2 (the verdict) stays on inference_model. Both or neither.
+    pass1_inference_endpoint: Optional[str] = None
+    pass1_inference_model: Optional[str] = None
     halt_on_error: bool = False
     # Optional UC selection — when set, engine processes ONLY these UCs from
     # within corpus_subpath (siblings are skipped). Used by Sets runs and
@@ -3632,6 +3636,13 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
     reviewer = get_user(request)
     if payload.category and payload.category not in RUN_CATEGORIES:
         raise HTTPException(400, f"invalid category; must be one of {RUN_CATEGORIES}")
+    # Per-stage routing is all-or-nothing. validations.trigger_run enforces this
+    # too, but it runs in a worker thread where the ValueError would surface as a
+    # 500; reject here so the caller gets a usable 400.
+    if bool(payload.pass1_inference_endpoint) != bool(payload.pass1_inference_model):
+        raise HTTPException(
+            400, "per-stage routing needs both pass1_inference_endpoint and "
+                 "pass1_inference_model, or neither")
     async with pool.acquire() as conn:
         _trigpid = await _active_project_id(request, conn)
         # No-silent-orphan guard: a run with no resolvable project lands in
@@ -3766,6 +3777,8 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             commit_sha=payload.commit_sha,
             inference_endpoint=params["inference_endpoint"],
             inference_model=params["inference_model"],
+            pass1_inference_endpoint=payload.pass1_inference_endpoint,
+            pass1_inference_model=payload.pass1_inference_model,
             mode=payload.mode,
             sample_count=payload.sample_count,
             sample_concurrency=_trig_sample_conc,

@@ -108,6 +108,30 @@ spec:
       description: Model name served at the endpoint
       default: "{{ inference_primary_model }}"
 
+    # Per-stage model routing. The two-pass agent does two different jobs:
+    # pass 1 explores and enumerates findings (recall), pass 2 renders the
+    # verdict (precision). Measured on the must-reject set the models fail in
+    # opposite directions — the 32B enumerates fine but hedges every verdict to
+    # partially_supported, while the 235B discriminates but is ~25x slower and
+    # does not always finish. Routing pass 1 to the fast model buys the strong
+    # model's discrimination without paying its cost on exploration.
+    #
+    # Leave BOTH empty to keep the single-model path exactly as it was: the
+    # engine only splits when it is handed a pass-1 endpoint.
+    - name: pass1-inference-endpoint
+      type: string
+      description: |
+        Optional inference base URL used for pass 1 (explore/enumerate) only.
+        Empty (default) = run both passes on inference-endpoint.
+      default: ""
+
+    - name: pass1-inference-model
+      type: string
+      description: |
+        Model served at pass1-inference-endpoint. Required when that is set;
+        the engine refuses the run if one is given without the other.
+      default: ""
+
     - name: inference-topology
       type: string
       description: |
@@ -348,6 +372,13 @@ spec:
         echo "  Mode:           $(params.mode)"
         echo "  Inference:      $(params.inference-endpoint)"
         echo "  Model:          $(params.inference-model)"
+        if [ -n "$(params.pass1-inference-endpoint)" ]; then
+          # Log the split explicitly: a run whose verdicts silently came from
+          # the cheap model looks identical in the output, so provenance has to
+          # be visible in the log as well as in AnalysisMetadata.
+          echo "  Pass-1 model:   $(params.pass1-inference-model) @ $(params.pass1-inference-endpoint)"
+          echo "  Pass-2 model:   $(params.inference-model) (verdict)"
+        fi
         echo "  MCP:            $(params.mcp-url)"
         echo ""
 
@@ -400,6 +431,11 @@ spec:
         fi
         if [ -n "$(params.managed-uc-uuids)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --managed-uc-uuids $(params.managed-uc-uuids) --console-api-url $(params.console-api-url)"
+        fi
+        # Both flags or neither — the engine errors on a half-configured split
+        # rather than quietly running pass 1 on the pass-2 model.
+        if [ -n "$(params.pass1-inference-endpoint)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --pass1-inference-endpoint $(params.pass1-inference-endpoint) --pass1-inference-model $(params.pass1-inference-model)"
         fi
 
         # Note: --no-enable-thinking is the recommended default for

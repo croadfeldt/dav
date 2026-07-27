@@ -124,6 +124,16 @@ spec:
     - name: inference-model
       type: string
       default: "{{ inference_primary_model }}"
+    # Optional per-stage routing: pass 1 (explore) on a fast model, pass 2
+    # (verdict) on inference-model. Empty default is load-bearing — a pipeline
+    # param default is not a fallback, it is a value that gets passed, so these
+    # must stay empty for the Task's "unset = single model" branch to fire.
+    - name: pass1-inference-endpoint
+      type: string
+      default: ""
+    - name: pass1-inference-model
+      type: string
+      default: ""
     - name: inference-topology
       type: string
       default: "{{ inference_topology | default('') }}"
@@ -311,6 +321,10 @@ spec:
           value: $(params.inference-endpoint)
         - name: inference-model
           value: $(params.inference-model)
+        - name: pass1-inference-endpoint
+          value: $(params.pass1-inference-endpoint)
+        - name: pass1-inference-model
+          value: $(params.pass1-inference-model)
         - name: inference-topology
           value: $(params.inference-topology)
         - name: mcp-url
