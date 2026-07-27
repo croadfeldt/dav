@@ -347,6 +347,10 @@ def _consolidate_gaps(
             spec_refs_consulted=list(first.spec_refs_consulted),
             spec_refs_missing=all_missing,
             capability_id=getattr(first, "capability_id", ""),
+            # Carried on the gap itself, not only in the side-channel dict, so
+            # every consumer (verdict derivation, ingest, UI) can tell a 1-of-3
+            # finding from a 3-of-3 one.
+            consensus=f"{len(items)}/{n_samples}",
         ))
         consensus[key] = f"{len(items)}/{n_samples}"
     return merged, consensus
@@ -522,7 +526,14 @@ def merge_analyses(
     #     the rule engine is the extension point for further rules. _applied_rules
     #     records what fired so the note can name it and both values are preserved.
     _asserted_verdict = merged_verdict
-    merged_verdict, _applied_rules = derive_verdict(merged_verdict, gaps_merged)
+    # Derive from quorum-backed gaps ONLY. gaps_merged is a UNION across samples,
+    # so feeding it whole to a downgrade-only derivation made the verdict a
+    # function of sample count: more samples -> more union members -> weaker
+    # verdict, until everything is partially_supported regardless of the spec.
+    # Sub-quorum gaps stay in gaps_merged (visible, ingested, available to the
+    # roadmap) — they just do not vote.
+    _voting_gaps = [g for g in gaps_merged if getattr(g, "quorum_backed", True)]
+    merged_verdict, _applied_rules = derive_verdict(merged_verdict, _voting_gaps)
     _verdict_gated = bool(_applied_rules)
 
     # --- Build summary ---
