@@ -118,6 +118,25 @@ async function runRole(role) {
     ck('zero/absent scope does not blank the denominator',
        _scopeFn({ uc_scope_total: 0, uc_total: 9 }) === 9);
     ck('missing run object is safe', _scopeFn(null) === 0 && _scopeFn(undefined) === 0);
+    // Partial-ingest window: analysis_runs.total_ucs is written per ingest BATCH,
+    // so a finished 6-UC run whose results land in pieces momentarily reports
+    // uc_total=3 with uc_succeeded=3. Dividing by uc_total renders "3/3 done" —
+    // reads as "complete, 3 use cases", hiding that 3 are still unlanded.
+    ck('partial ingest does not fake a complete run',
+       _scopeFn({ uc_scope_total: 6, uc_total: 3, uc_succeeded: 3 }) === 6,
+       'got ' + _scopeFn({ uc_scope_total: 6, uc_total: 3, uc_succeeded: 3 }));
+    // The helper was never the bug — the CALL SITE was, and a helper-only test
+    // passes with the fix reverted (verified by mutation). Rendering the drawer
+    // needs DOM that only exists when it is open, so guard the call site in the
+    // built bundle instead: the terminal "done" stat must not interpolate the
+    // raw ingested count.
+    const _bundle = html;
+    const _doneStat = (_bundle.match(/class="l">done<\/span>[\s\S]{0,220}?<\/b>/) || [''])[0];
+    ck('terminal "done" stat exists in the bundle', _doneStat.length > 0);
+    ck('terminal "done" stat does not divide by the ingested count',
+       _doneStat.length > 0 && !/\$\{s\.uc_total\}/.test(_doneStat)
+         && /doneDenom/.test(_doneStat),
+       _doneStat.slice(0, 150));
   }
   // UI lean slice 1: personas removed as a navigation mechanism. There is ONE stable rail
   // for everyone — every domain the user is PERMITTED to see (RBAC), in canonical order, no

@@ -1255,7 +1255,14 @@ function renderRunDrawerDetail(d) {
     if (estTotal) hs.push(`<span class="rd-hstat"><span class="l">est total</span><b>~${esc(_fmtDurShort(estTotal))}</b></span>`);
   }
   if (_terminal && s && s.uc_total != null) {
-    hs.push(`<span class="rd-hstat"><span class="l">done</span><b style="color:${(s.uc_failed||0)>0?'var(--accent)':'var(--green)'}">${s.uc_succeeded ?? '?'}/${s.uc_total}</b>${(s.uc_failed||0)>0?` <span style="color:var(--red)">${s.uc_failed} fail</span>`:''}</span>`);
+    // Declared scope, not the ingested count. analysis_runs.total_ucs is written
+    // per ingest BATCH, so a run whose results land in pieces briefly reports the
+    // batch size as the run total: a finished 6-UC run read "3/3 done" — which
+    // says "complete, 3 use cases" rather than "3 of 6 ingested so far". Same bug
+    // #75 fixed for the pill and header; this site was missed because it only
+    // renders for terminal runs, and the partial-ingest window is short.
+    const doneDenom = _runScopeTotal(s) || s.uc_total;
+    hs.push(`<span class="rd-hstat"><span class="l">done</span><b style="color:${(s.uc_failed||0)>0?'var(--accent)':'var(--green)'}">${s.uc_succeeded ?? '?'}/${doneDenom}</b>${(s.uc_failed||0)>0?` <span style="color:var(--red)">${s.uc_failed} fail</span>`:''}</span>`);
   }
   if (s && s.set_name) hs.push(`<span class="rd-hstat"><span class="l">set</span><b style="cursor:pointer;color:var(--accent)" onclick="switchView('usecases');setTimeout(()=>selectSet(${s.set_id}),100)">⊞ ${esc(s.set_name)}</b></span>`);
   else if (s && s.selection_mode) { const _ml={set:'Set',selection:'Selection',individual:'Individual UC',corpus:'Full corpus'}; hs.push(`<span class="rd-hstat"><span class="l">scope</span><b>${esc(_ml[s.selection_mode]||s.selection_mode)}</b></span>`); }
