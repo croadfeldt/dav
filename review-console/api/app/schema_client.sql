@@ -506,6 +506,7 @@ CREATE TABLE run_sessions (
     total_prompt_tokens bigint,
     total_gen_tokens bigint,
     uc_total integer,
+    uc_scope_total integer,
     uc_succeeded integer,
     uc_failed integer,
     finalized_at timestamp with time zone,

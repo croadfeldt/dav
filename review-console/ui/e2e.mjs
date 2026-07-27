@@ -102,6 +102,23 @@ async function runRole(role) {
   const ck = (name, cond, detail = '') => checks.push([cond ? 'PASS' : 'FAIL', `[${role}] ${name}`, detail]);
 
   ck('no uncaught errors at boot', errors.length === 0, errors.slice(0, 4).join('  |  '));
+  // Live-progress denominator (#uc-scope). uc_total counts INGESTED results, so
+  // mid-run it equals the number finished — the masthead pill and run header both
+  // read "4/4 UC ✓4" on a 6-UC run that was only half done, while the log-derived
+  // panel correctly said "3 / 6". _runScopeTotal must prefer the scope declared at
+  // trigger, and must still fall back for runs that predate migration t007.
+  const _scopeFn = dom.window._runScopeTotal;
+  ck('_runScopeTotal exists', typeof _scopeFn === 'function');
+  if (typeof _scopeFn === 'function') {
+    ck('live run divides by DECLARED scope, not ingested count',
+       _scopeFn({ uc_scope_total: 6, uc_total: 4, uc_succeeded: 4 }) === 6,
+       'got ' + _scopeFn({ uc_scope_total: 6, uc_total: 4, uc_succeeded: 4 }));
+    ck('falls back to uc_total when scope unrecorded (pre-t007)',
+       _scopeFn({ uc_scope_total: null, uc_total: 32 }) === 32);
+    ck('zero/absent scope does not blank the denominator',
+       _scopeFn({ uc_scope_total: 0, uc_total: 9 }) === 9);
+    ck('missing run object is safe', _scopeFn(null) === 0 && _scopeFn(undefined) === 0);
+  }
   // UI lean slice 1: personas removed as a navigation mechanism. There is ONE stable rail
   // for everyone — every domain the user is PERMITTED to see (RBAC), in canonical order, no
   // per-role reshuffling. The persona switcher is gone; visibility is gated by privilege.

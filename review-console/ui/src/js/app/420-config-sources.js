@@ -316,6 +316,23 @@ document.addEventListener('click', (e) => {
 function _runIsActive(r) {
   return r && !r.archived && !['Succeeded','Failed','Cancelled','TimedOut'].includes(r.phase);
 }
+// Denominator for "<done> of <total> use cases".
+//
+// uc_total counts INGESTED results, so while a run is in flight it equals the
+// number finished — dividing by it made every live run read "N/N done". A 6-UC
+// run showed "4/4 UC ✓4" at its halfway point, indistinguishable from a
+// finished run, while the log-derived progress panel correctly read
+// "3 / 6 · 50% done" (observed on dav-stage2-console-114714).
+//
+// uc_scope_total is the scope declared at trigger and never moves. It is NULL
+// for full-corpus runs and for any run created before migration t007, hence the
+// fallback — which is only ever wrong in the way the old behaviour always was.
+function _runScopeTotal(r) {
+  if (!r) return 0;
+  return (typeof r.uc_scope_total === 'number' && r.uc_scope_total > 0)
+    ? r.uc_scope_total
+    : (r.uc_total || 0);
+}
 function _fmtEta(ms) {
   if (!ms || !isFinite(ms) || ms < 0) return '';
   const s = Math.round(ms / 1000);
@@ -340,7 +357,7 @@ function _renderRunChipLive() {
   }
   if (lbl) lbl.textContent = 'Analysis';      // label stays "Analysis"; the dot pulses + stats lead with "# active"
   let ucs = 0, succ = 0, fail = 0;
-  active.forEach(r => { ucs += (r.uc_total || 0); succ += (r.uc_succeeded || 0); fail += (r.uc_failed || 0); });
+  active.forEach(r => { ucs += _runScopeTotal(r); succ += (r.uc_succeeded || 0); fail += (r.uc_failed || 0); });
   const done = succ + fail;
   // "<N> active · <done>/<total> UC · ✓ ok ✗ failed".
   nm.textContent = `${active.length} active · ${done}/${ucs} UC · ✓${succ} ✗${fail}`;
@@ -357,7 +374,7 @@ function _renderRunChipPopover() {
   pop.innerHTML =
     `<div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);margin-bottom:5px;">Running (${active.length}) — click to open</div>`
     + active.map(r => {
-        const t = r.uc_total || 0, s = r.uc_succeeded || 0, f = r.uc_failed || 0;
+        const t = _runScopeTotal(r), s = r.uc_succeeded || 0, f = r.uc_failed || 0;
         return `<div class="rcc-pop-run" data-run="${esc(r.name)}" style="display:flex;flex-direction:column;gap:3px;padding:5px 4px;border-radius:3px;cursor:pointer;">
           <div style="display:flex;justify-content:space-between;gap:10px;"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:190px;">${esc(r.session_name || r.name)}</span><span style="color:var(--text-faint);">${s + f}/${t}</span></div>
           <div class="uc-progress-bar" style="margin:0;"><span class="seg-success" style="width:${t ? s / t * 100 : 0}%"></span><span class="seg-failed" style="width:${t ? f / t * 100 : 0}%"></span></div>

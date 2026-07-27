@@ -90,7 +90,8 @@ function _renderRunItemHtml(r) {
   let countsHtml = '';
   if (typeof r.uc_total === 'number') {
     const okColor = (r.uc_failed || 0) > 0 ? 'var(--accent)' : 'var(--green)';
-    countsHtml = `<span style="font-size:10px;color:${okColor};">${r.uc_succeeded}/${r.uc_total} ok</span>` +
+    const rowDenom = _runScopeTotal(r);   // declared scope; falls back to uc_total
+    countsHtml = `<span style="font-size:10px;color:${okColor};">${r.uc_succeeded}/${rowDenom} ok</span>` +
       ((r.uc_failed || 0) > 0 ? ` <span style="font-size:10px;color:var(--red);">${r.uc_failed} fail</span>` : '');
   }
   // #branch-targeting: evaluated git ref provenance — "⎇ branch@sha7" (spec ref preferred,
@@ -1195,7 +1196,11 @@ function renderRunDrawerDetail(d) {
   const _start = d.started_at || d.created_at;
   const _startMs = _start ? Date.parse(_start) : null;
   const _terminal = ['Succeeded','Failed','Cancelled','TimedOut'].includes(d.phase);
-  const ucCount = (d.progress && d.progress.total_ucs) || d.uc_total || (s && s.uc_total) || null;
+  // Denominator preference: live log-derived total > scope declared at trigger >
+  // ingested total. The last one counts what has FINISHED, so using it mid-run
+  // makes the header read "4/4 ok" on a 6-UC run — see _runScopeTotal.
+  const ucCount = (d.progress && d.progress.total_ucs) || d.uc_scope_total
+    || (s && s.uc_scope_total) || d.uc_total || (s && s.uc_total) || null;
   const p = d.progress || {};
   // Sample count (ensemble iterations per UC) — for the turn-record "iteration
   // X of N" labels. From the run's param, else the mode default.
@@ -1236,7 +1241,7 @@ function renderRunDrawerDetail(d) {
     if (typeof d.uc_succeeded === 'number' && typeof d.uc_total === 'number') {
       const failed = d.uc_failed || 0;
       hs.push(`<span class="rd-hstat"><span class="l" style="text-transform:none">UCs</span>` +
-        `<b style="color:${failed > 0 ? 'var(--accent)' : 'var(--green)'}">${d.uc_succeeded}/${d.uc_total} ok</b>` +
+        `<b style="color:${failed > 0 ? 'var(--accent)' : 'var(--green)'}">${d.uc_succeeded}/${ucCount} ok</b>` +
         (failed > 0 ? ` <b style="color:var(--red)">${failed} fail</b>` : '') + `</span>`);
     } else {
       hs.push(`<span class="rd-hstat"><span class="l" style="text-transform:none">UCs</span><b>${ucCount}</b></span>`);

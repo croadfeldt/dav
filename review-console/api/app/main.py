@@ -3373,7 +3373,7 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
                     "set_id, set_name, "
                     "(SELECT name FROM use_case_sets WHERE id = run_sessions.set_id) AS set_live_name, "
                     "selection_mode, "
-                    "uc_total, uc_succeeded, uc_failed, archived, project_id, "
+                    "uc_total, uc_succeeded, uc_failed, uc_scope_total, archived, project_id, "
                     "corpus_repo_branch, spec_repo_branch, corpus_repo_sha, spec_repo_sha "
                     "FROM run_sessions WHERE run_name = ANY($1::text[])",
                     names,
@@ -3433,6 +3433,11 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
             r["uc_total"]      = s.get("uc_total")     if s.get("uc_total")     is not None else ar.get("total_ucs")
             r["uc_succeeded"]  = s.get("uc_succeeded") if s.get("uc_succeeded") is not None else ar.get("successful")
             r["uc_failed"]     = s.get("uc_failed")    if s.get("uc_failed")    is not None else ar.get("failed")
+            # Declared scope, recorded at trigger (t007). uc_total counts what has
+            # been INGESTED, so mid-run it equals the number finished — dividing by
+            # it made every live run read "N/N done". NULL for pre-t007 runs and
+            # full-corpus runs; consumers fall back to uc_total.
+            r["uc_scope_total"] = s.get("uc_scope_total")
             r["archived"]      = bool(s.get("archived"))
             r["project_id"]    = s.get("project_id")
             # #branch-targeting: evaluated git ref provenance for results + decisions.
@@ -3449,6 +3454,7 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
             r["uc_total"]     = ar.get("total_ucs")
             r["uc_succeeded"] = ar.get("successful")
             r["uc_failed"]    = ar.get("failed")
+            r["uc_scope_total"] = None   # no session row = no recorded scope
     if not show_archived:
         runs = [r for r in runs if not r.get("archived")]
     # Scope to the active project. A sessioned run shows under its project; an
@@ -3862,10 +3868,11 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                     baseline_gen_tokens, baseline_prompt_tokens,
                     set_id, set_name, selection_mode, uc_state_snapshot,
                     spec_namespaces, corpus_namespaces, project_id,
-                    trigger_payload, corpus_repo_branch, spec_repo_branch)
+                    trigger_payload, corpus_repo_branch, spec_repo_branch,
+                    uc_scope_total)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9,
                            $10, $11, $12, $13::jsonb, $14, $15, $16,
-                           $17::jsonb, $18, $19)""",
+                           $17::jsonb, $18, $19, $20)""",
                 result["name"], payload.name, payload.description,
                 payload.category or "ad-hoc", payload.tags or [],
                 payload.mode, reviewer,
@@ -3888,6 +3895,11 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
                 # Evaluated branch (resolved override → registry default); the HEAD
                 # SHA is filled in at ingest once the repos are actually cloned.
                 params.get("corpus_repo_branch"), params.get("spec_repo_branch"),
+                # Declared scope, so live progress has a denominator that does not
+                # move with the numerator. Already computed above for the timeout
+                # ETA; 0 means "full corpus / unknown", which stores as NULL so
+                # consumers fall back to uc_total instead of dividing by zero.
+                (_trig_uc_count or None),
             )
     except Exception as e:
         log.warning("run_sessions insert failed for %s: %s", result.get("name"), e)

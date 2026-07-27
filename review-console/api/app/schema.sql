@@ -182,6 +182,7 @@ CREATE TABLE IF NOT EXISTS run_sessions (
   baseline_gen_tokens   DOUBLE PRECISION,
   baseline_prompt_tokens DOUBLE PRECISION,
   uc_total              INTEGER,
+  uc_scope_total        INTEGER,
   uc_succeeded          INTEGER,
   uc_failed             INTEGER,
   finalized_at          TIMESTAMPTZ        -- when stats were computed
