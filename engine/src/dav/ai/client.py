@@ -254,6 +254,12 @@ class ChatResponse:
     finish_reason: str
     usage: dict[str, int]                      # {prompt_tokens, completion_tokens, ...}
     endpoint_used: str                         # which endpoint served the response
+    # Chain-of-thought from reasoning models (gpt-oss harmony, Qwen thinking, ...).
+    # Previously parsed and discarded, which made "the model reasoned instead of
+    # answering" indistinguishable from "the model returned nothing" one layer up.
+    # Carrying it is what lets the client widen the budget and retry instead of
+    # failing the use case.
+    reasoning_content: str = ""
 
 def _is_anthropic(endpoint: "EndpointConfig") -> bool:
     """Route to the native Anthropic Messages API (for prompt caching + the
@@ -276,10 +282,35 @@ class InferenceClient:
         resp = client.chat(messages=[...], tools=[...], temperature=0.0)
     """
 
+    # Multiplier applied to max_tokens once an endpoint is observed to reason.
+    # A reasoning model spends its budget on reasoning_content BEFORE emitting
+    # content, so a budget sized for the answer alone yields an empty answer.
+    REASONING_HEADROOM = 4
+    # Never ask a reasoning model for less than this. The agent narrows max_tokens
+    # as context fills; below this floor a reasoning model cannot finish thinking
+    # AND still emit an analysis, so the turn is wasted no matter how good it is.
+    REASONING_MIN_TOKENS = 2048
+
     def __init__(self, primary: EndpointConfig,
                  fallback: EndpointConfig | None = None):
         self.primary = primary
         self.fallback = fallback
+        # Set the first time an endpoint returns reasoning_content. Detected rather
+        # than configured: whether a model reasons is a property of the model and
+        # its chat template, not something an operator should have to declare, and
+        # getting it wrong silently costs whole use cases.
+        self._reasoning_observed = False
+
+
+    def _reasoning_budget(self, max_tokens: int) -> int:
+        """Widen a token budget for an endpoint known to emit reasoning_content.
+
+        No-op until reasoning has actually been observed, so non-reasoning models
+        (and the sampling recorded in run provenance) are completely unaffected.
+        """
+        if not self._reasoning_observed:
+            return max_tokens
+        return max(self.REASONING_MIN_TOKENS, max_tokens * self.REASONING_HEADROOM)
 
     def chat(
         self,
@@ -293,10 +324,33 @@ class InferenceClient:
         if _is_anthropic(self.primary):
             return self._chat_anthropic(self.primary, messages, tools,
                                         temperature, max_tokens, seed)
+        # Once we know this endpoint reasons, pre-emptively widen the budget so the
+        # answer is not starved by the thinking that precedes it.
+        effective_max_tokens = self._reasoning_budget(max_tokens)
         body = self._build_body(self.primary, messages, tools, temperature,
-                                 max_tokens, guided_json_schema, seed)
+                                 effective_max_tokens, guided_json_schema, seed)
         try:
-            return self._post(self.primary, body)
+            resp = self._post(self.primary, body)
+            # Empty content + reasoning + no tool calls = the model thought until it
+            # ran out of room. Retry ONCE with a widened budget rather than handing
+            # the agent an empty response it can only fail on. Bounded: the retry
+            # flips _reasoning_observed first, so the second attempt already carries
+            # headroom and cannot recurse.
+            if (not resp.content and not resp.tool_calls
+                    and getattr(resp, "reasoning_content", "")
+                    and not self._reasoning_observed):
+                self._reasoning_observed = True
+                widened = self._reasoning_budget(max_tokens)
+                log.warning(
+                    "%s: reasoning model detected — retrying once with "
+                    "max_tokens %d -> %d",
+                    self.primary.label, effective_max_tokens, widened,
+                )
+                retry_body = self._build_body(self.primary, messages, tools,
+                                              temperature, widened,
+                                              guided_json_schema, seed)
+                resp = self._post(self.primary, retry_body)
+            return resp
         except InferenceError as e:
             if self.fallback is None:
                 raise
@@ -639,6 +693,7 @@ class InferenceClient:
             )
 
         return ChatResponse(
+            reasoning_content=reasoning,
             content=content,
             tool_calls=tool_calls,
             finish_reason=choices[0].get("finish_reason", ""),
