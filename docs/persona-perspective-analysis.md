@@ -51,6 +51,28 @@ Rule: **quorum applies within a lens (same persona, repeated samples); findings 
 lenses by union, tagged with their source persona.** Cross-lens agreement is signal to display
 ("3 personas independently flagged this"), never a gate.
 
+**Tier-aware union (model-side addition, adopted):** `PERSONAS.yaml` carries a `tier` on every
+persona — operational | governance | oversight — and the union must preserve it. A gap in the
+oversight tier is different in kind from an operational one (an exec-attestation gap is not an
+SRE-cascade gap), so a report can say "clean operationally; the governance tier surfaces X"
+instead of flattening tiers into one pile.
+
+## The model-side structure this consumes (udlm #276 / dcm #97)
+
+- **`PERSONAS.yaml`** — 20 canonical personas with `tier`, `framing`, `objectives` (the
+  per-lens analysis targets) + `folded_aliases`. Byte-identical in both repos, PER-001/PER-002
+  gated, with a coverage signal: a persona exercised by no UC is named, because a persona is
+  only real if a UC views from it.
+- **`scenario.perspectives`** on every UC — the lens set for a UC is
+  **`{actor.persona} ∪ perspectives`**. Both corpora are backfilled (90 + 506 UCs); coverage
+  gaps were closed with 8 NEW UCs (cloud-operator, solution-architect, integrator, and an
+  oversight trio) rather than by force-attaching lenses to unrelated scenarios.
+- **The derivation mapping** (signal → perspective) lives in the model-side handoff and is the
+  shared contract for seeding `perspectives` on DAV's own fixtures — same mapping, then
+  hand-tune, so a DAV fixture and a model UC get their lenses the same way and nothing forks.
+  Known under-attachments to hand-add on fixtures: cloud-operator, the oversight trio,
+  integrator.
+
 ## Where personas come from
 
 Not invented in DAV. The UC schema already carries `actor.persona`; the model side's flow docs
