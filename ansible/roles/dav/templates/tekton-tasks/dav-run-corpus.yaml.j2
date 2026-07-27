@@ -110,11 +110,14 @@ spec:
 
     # Per-stage model routing. The two-pass agent does two different jobs:
     # pass 1 explores and enumerates findings (recall), pass 2 renders the
-    # verdict (precision). Measured on the must-reject set the models fail in
-    # opposite directions — the 32B enumerates fine but hedges every verdict to
-    # partially_supported, while the 235B discriminates but is ~25x slower and
-    # does not always finish. Routing pass 1 to the fast model buys the strong
-    # model's discrimination without paying its cost on exploration.
+    # verdict (precision) — so the passes can be served by different models.
+    #
+    # Rationale caveat (2026-07-27): the measurement that motivated this — "the
+    # 32B hedges every verdict, the larger models discriminate" — was taken at
+    # sample_count 1, before the ensemble quorum fix (#80). Two identical n=1
+    # runs later disagreed on 4 of 6 verdicts, and at n=3 the distinction did
+    # not survive. Routing stays available and off by default; its justification
+    # awaits post-quorum baselines (docs/derived-verdicts-design.md).
     #
     # Leave BOTH empty to keep the single-model path exactly as it was: the
     # engine only splits when it is handed a pass-1 endpoint.
