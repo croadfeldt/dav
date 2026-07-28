@@ -7748,9 +7748,20 @@ async def fixture_scores_list(request: Request, limit: int = Query(30, le=200)):
         rows = await conn.fetch(
             """SELECT run_id, run_name, model, sample_count, engine_commit,
                       precision_score, recall, verdict_accuracy,
-                      tp, fp, fn, verdict_ok, verdict_total, source, scored_at
+                      tp, fp, fn, verdict_ok, verdict_total, detail, source, scored_at
                FROM fixture_scores ORDER BY scored_at DESC LIMIT $1""", limit)
-    return {"scores": [dict(r) | {"scored_at": r["scored_at"].isoformat()} for r in rows]}
+    # detail is JSONB; asyncpg returns it as a JSON string — decode so the
+    # Calibration tab's per-UC drill-down gets a list, not a quoted blob.
+    out = []
+    for r in rows:
+        d = dict(r) | {"scored_at": r["scored_at"].isoformat()}
+        if isinstance(d.get("detail"), str):
+            try:
+                d["detail"] = json.loads(d["detail"])
+            except Exception:
+                pass
+        out.append(d)
+    return {"scores": out}
 
 
 @app.get("/api/corpus/sync-status")
