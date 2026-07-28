@@ -76,6 +76,34 @@
   ansible.builtin.debug:
     msg: "Engine build: {{ engine_build_result.stdout | default('completed') }}"
 
+# Merged is not deployed. This asserts the artifact a consumer reads — the
+# commit the RUNNING image will stamp into every analysis — against the tree
+# this playbook deployed from. A mismatch fails the play loudly instead of
+# leaving a stale engine serving behind a green deploy (which happened, and
+# cost a voided benchmark).
+- name: Assert the built image reports the deployed commit
+  ansible.builtin.shell:
+    cmd: >-
+      oc run dav-verify-commit-{{ 999999 | random }} -n {{ dav_namespace }}
+      --rm -i --restart=Never
+      --image=image-registry.openshift-image-registry.svc:5000/{{ dav_namespace }}/dav-engine:latest
+      --command -- python3 -c
+      'from dav.core.version import engine_commit_string; print("COMMIT=" + engine_commit_string())'
+  register: engine_commit_probe
+  retries: 3
+  delay: 10
+  until: "'COMMIT=' in engine_commit_probe.stdout"
+
+- name: Fail if the running engine is not the deployed tree
+  ansible.builtin.assert:
+    that:
+      - "('COMMIT=' + dav_repo_commit) in engine_commit_probe.stdout"
+    fail_msg: >-
+      Deployed image reports {{ engine_commit_probe.stdout | regex_search('COMMIT=[0-9a-f]*') }}
+      but this playbook deployed from {{ dav_repo_commit }} — the build did not
+      take, or the image did not roll. Do not trust runs until this matches.
+    success_msg: "engine image == deployed tree ({{ dav_repo_commit[:12] }})"
+
 - name: Clean up engine build context
   ansible.builtin.file:
     path: /tmp/dav-engine-build

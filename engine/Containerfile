@@ -31,6 +31,12 @@ COPY pyproject.toml .
 COPY src/ ./src/
 RUN pip install --no-cache-dir -e .
 
+# Bake the commit where version.py's upward walk finds it (/engine is an
+# ancestor of src/dav/core/version.py). Built images carry no .git, so without
+# this every analysis stamped engine_commit="" and the deploy had no way to
+# prove the running engine is the merged code.
+RUN printf '%s' "${DAV_REPO_COMMIT}" > /engine/BUILD_COMMIT
+
 # dav is importable as a package (and pip install -e also sets the
 # right paths), but we also set PYTHONPATH explicitly for any scripts
 # that expect bare module imports.
