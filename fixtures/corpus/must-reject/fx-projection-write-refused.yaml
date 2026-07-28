@@ -22,6 +22,8 @@ scenario:
     governance_context: standard_governance
     failure_mode: policy_violation
   profile: standard
+  perspectives:
+  - security-officer
 generated_by:
   mode: authoring
   source: human-authored

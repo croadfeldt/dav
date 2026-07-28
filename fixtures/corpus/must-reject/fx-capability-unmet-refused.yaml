@@ -22,6 +22,8 @@ scenario:
     governance_context: standard_governance
     failure_mode: provider_failure
   profile: standard
+  perspectives:
+  - platform-engineer
 generated_by:
   mode: authoring
   source: human-authored

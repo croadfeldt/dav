@@ -278,6 +278,26 @@ system's inability to carry out the intent as a gap — that inability is the
 correct behavior this use case is testing for.
 """
 
+def build_lens_block(persona: dict) -> str:
+    """Per-lens pass-2 framing (ADR-011 multi-lens). Built from the corpus-
+    published persona entry (framing + objectives) — single-source, never a
+    DAV-authored copy. Carries the anti-costume guard the auditor-lens
+    experiment measured: without it a lens flags its concern everywhere
+    (untagged noise doubled); with it, controls stayed clean.
+    """
+    objectives = "\n".join(f"  - {o}" for o in (persona.get("objectives") or []))
+    return f"""
+
+## ANALYSIS LENS — {persona.get('id')} ({persona.get('tier','')})
+For THIS pass, analyze as {persona.get('framing','this stakeholder')}.
+Your objectives — the demands a conforming spec must satisfy for you:
+{objectives}
+Weight findings by these objectives. Do not invent demands where the spec
+demonstrably covers them — cite the covering section instead; a lens that
+flags its concern everywhere is noise wearing a costume.
+"""
+
+
 def _criterion_anchor_block(use_case: UseCase) -> str:
     """E4 scope anchor — env-gated A/B lever (same shape as the grounding nudge).
 

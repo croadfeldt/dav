@@ -50,7 +50,12 @@ def main() -> int:
     problems: list[str] = []
     handles: set[str] = set()
 
-    uc_files = sorted((HERE / "corpus").rglob("*.yaml"))
+    # Corpus-published artifacts (personas, dimension vocabulary) live beside
+    # the UCs by design; the engine reads them at run start and its gather
+    # skips them the same way.
+    _ARTIFACTS = {"PERSONAS.yaml", "DIMENSION-VOCABULARY.yaml", "corpus-manifest.yaml"}
+    uc_files = sorted(f for f in (HERE / "corpus").rglob("*.yaml")
+                      if f.name not in _ARTIFACTS)
     if not uc_files:
         return _fail(["no UC files under corpus/"])
 

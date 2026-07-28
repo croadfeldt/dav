@@ -330,6 +330,13 @@ spec:
         placement-scatter fix). Default off; battery-gated.
       default: ""
 
+    - name: multi-lens
+      type: string
+      description: |
+        "true" enables ADR-011 multi-lens analysis (shared pass-1, per-lens
+        pass-2, union across lenses). Default off; battery-gated.
+      default: ""
+
     - name: managed-uc-uuids
       type: string
       description: |
@@ -474,6 +481,9 @@ spec:
         fi
         if [ "$(params.derived-verdicts)" = "true" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --derived-verdicts"
+        fi
+        if [ "$(params.multi-lens)" = "true" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --multi-lens"
         fi
         if [ -n "$(params.managed-uc-uuids)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --managed-uc-uuids $(params.managed-uc-uuids) --console-api-url $(params.console-api-url)"

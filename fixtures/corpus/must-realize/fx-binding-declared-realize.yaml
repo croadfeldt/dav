@@ -21,6 +21,8 @@ scenario:
     governance_context: standard_governance
     failure_mode: happy_path
   profile: standard
+  perspectives:
+  - platform-engineer
 generated_by:
   mode: authoring
   source: human-authored
