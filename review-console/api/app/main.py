@@ -3916,9 +3916,17 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             use_profile_json=use_profile_json,
             known_capability_ids=_known_cap_ids,
             capability_catalog_b64=_cap_catalog_b64,
-            tag_untagged_gaps=payload.tag_untagged_gaps,
+            # Convergence ruling (Chris, 2026-07-28): results must be informative
+            # and converge a solution in minimal time. The measured balanced stack
+            # (E1 tagger + E3 advisory split + E4 criterion anchor: P .75/R .60 vs
+            # baseline .154/.60, all sub-quorum material still visible as advisory)
+            # is therefore the DEFAULT path for triggered runs; a payload may still
+            # send explicit false to disable per-run.
+            tag_untagged_gaps=(payload.tag_untagged_gaps
+                               if payload.tag_untagged_gaps is not None else True),
             derived_verdicts=payload.derived_verdicts,
-            criterion_anchor=payload.criterion_anchor,
+            criterion_anchor=(payload.criterion_anchor
+                              if payload.criterion_anchor is not None else True),
             stage2_two_pass=payload.stage2_two_pass,
             max_tokens=payload.max_tokens,
             grounding_nudge=(None if payload.grounding_nudge is None

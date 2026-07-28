@@ -302,6 +302,9 @@ Report a gap ONLY if it blocks one of these numbered criteria for THIS use
 case, and name the blocked criterion number in the gap's rationale. A real
 spec concern that blocks none of them belongs to a different use case —
 omit it here rather than padding this analysis.
+Before claiming a criterion is unmet, check whether the spec covers it: if it
+does, cite the covering section in your analysis INSTEAD of reporting a gap —
+a wrong deficiency claim costs the reader more than a confirmed coverage.
 """
 
 
