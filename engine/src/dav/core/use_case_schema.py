@@ -872,6 +872,64 @@ class PolicyModeRequired:
             confidence=normalize_confidence(data.get("confidence", "medium")),
         )
 
+# ── Derived verdicts (derived-verdicts-design.md) ────────────────────────────
+# ADR-003's refusal contract as fixed criterion ids. Fixed ids are the point:
+# the ensemble votes per criterion id, so cross-sample agreement never depends
+# on free-text gap identity (measured failure: three samples described the same
+# broken-chain finding three ways — nothing reached quorum, nothing voted).
+REFUSAL_CRITERIA: tuple[str, ...] = (
+    "typed", "actionable", "non_leaking", "auditable", "whole")
+
+CRITERION_ANSWERS = ("true", "false", "unknown")
+
+
+@dataclass
+class CriterionAnswer:
+    """One per-criterion evidence answer (derived-verdicts-design.md).
+
+    `satisfied` is a string tri-state, not a bool: "unknown" ("the spec does
+    not say") is a first-class answer distinct from "false" ("the spec says
+    something inadequate") — they drive different roadmap actions.
+    """
+    id: str
+    satisfied: str = "unknown"          # true | false | unknown
+    spec_ref: str = ""
+    capability_id: str = ""
+    note: str = ""
+    consensus: str = ""                 # "k/n" votes for the winning answer (ensemble)
+
+    def normalized(self) -> "CriterionAnswer":
+        """Apply the citation rule: `satisfied: true` REQUIRES a spec_ref —
+        no citation, no yes. This is the main defence against relocating the
+        model's hedge into the sub-answers; an uncited "true" coerces to
+        "unknown" rather than counting as support."""
+        sat = (self.satisfied or "unknown").strip().lower()
+        if sat not in CRITERION_ANSWERS:
+            sat = "unknown"
+        if sat == "true" and not (self.spec_ref or "").strip():
+            log.warning("criterion %s: satisfied=true without spec_ref — coerced to unknown", self.id)
+            sat = "unknown"
+        if sat == self.satisfied:
+            return self
+        return CriterionAnswer(id=self.id, satisfied=sat, spec_ref=self.spec_ref,
+                               capability_id=self.capability_id, note=self.note,
+                               consensus=self.consensus)
+
+    def to_dict(self) -> dict[str, Any]:
+        out = {"id": self.id, "satisfied": self.satisfied}
+        if self.spec_ref: out["spec_ref"] = self.spec_ref
+        if self.capability_id: out["capability_id"] = self.capability_id
+        if self.note: out["note"] = self.note
+        if self.consensus: out["consensus"] = self.consensus
+        return out
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "CriterionAnswer":
+        return cls(id=d.get("id", ""), satisfied=d.get("satisfied", "unknown"),
+                   spec_ref=d.get("spec_ref", ""), capability_id=d.get("capability_id", ""),
+                   note=d.get("note", ""), consensus=d.get("consensus", ""))
+
+
 @dataclass
 class GapIdentified:
     description: str
@@ -1210,6 +1268,9 @@ class Analysis:
     tool_call_trace: list[ToolCall] = field(default_factory=list)
     sample_annotations: SampleAnnotations | None = None
     assertion_result: AssertionResult | None = None
+    # Derived verdicts: per-criterion evidence (empty unless the derived-verdicts
+    # flag asked for it and the UC has refuse success-semantics).
+    criteria: list[CriterionAnswer] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -1230,6 +1291,8 @@ class Analysis:
                 self.assertion_result.to_dict() if self.assertion_result else None
             ),
         }
+        if self.criteria:
+            out["criteria"] = [c.to_dict() for c in self.criteria]
         return out
 
     @classmethod
@@ -1264,6 +1327,7 @@ class Analysis:
             tool_call_trace=[ToolCall.from_dict(x) for x in data.get("tool_call_trace", [])],
             sample_annotations=sample_ann,
             assertion_result=assertion,
+            criteria=[CriterionAnswer.from_dict(x) for x in data.get("criteria", [])],
         )
 
 # --- JSON Schema for LLM guided decoding ---
@@ -1277,7 +1341,7 @@ class Analysis:
 # for new code; the module-level ANALYSIS_JSON_SCHEMA constant remains as a
 # backward-compat lazy property that uses the default profile.
 
-def build_analysis_json_schema(consumer_profile=None) -> dict[str, Any]:
+def build_analysis_json_schema(consumer_profile=None, *, include_criteria: bool = False) -> dict[str, Any]:
     """Build the JSON schema vLLM uses for guided_json output.
 
     The provider_types_involved.type and policy_modes_required.mode enums
@@ -1288,6 +1352,29 @@ def build_analysis_json_schema(consumer_profile=None) -> dict[str, Any]:
     if consumer_profile is None:
         from dav.core.consumer_profile import get_default_profile
         consumer_profile = get_default_profile()
+    criteria_schema = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "required": ["id", "satisfied"],
+            "additionalProperties": False,
+            "properties": {
+                "id": {"type": "string", "enum": list(REFUSAL_CRITERIA)},
+                "satisfied": {"type": "string", "enum": list(CRITERION_ANSWERS)},
+                "spec_ref": {"type": "string"},
+                "capability_id": {"type": "string"},
+                "note": {"type": "string"},
+            },
+        },
+    }
+    schema = _build_analysis_json_schema_base(consumer_profile)
+    if include_criteria:
+        schema["properties"]["criteria"] = criteria_schema
+        schema["required"] = [*schema["required"], "criteria"]
+    return schema
+
+
+def _build_analysis_json_schema_base(consumer_profile) -> dict[str, Any]:
     return {
         "type": "object",
         "required": [

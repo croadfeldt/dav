@@ -83,3 +83,42 @@ def derive_verdict(asserted: str, gaps: list) -> tuple[str, list[dict]]:
             applied.append({"rule": rule_id, "from": verdict, "to": target, "why": why})
             verdict = target
     return verdict, applied
+
+
+# ── Criteria-derived verdicts (derived-verdicts-design.md) ───────────────────
+# The model stops pronouncing the verdict; the engine derives it from the
+# per-criterion evidence vector. Rationale, measured: with the broken-chain
+# anchor DELIVERED in-prompt, 0 of 6 ensemble samples on the chain UCs emitted
+# not_supported — the model reports the evidence but structurally will not say
+# the harsh verdict. So stop asking it to.
+
+def derive_verdict_from_criteria(criteria: list) -> tuple[str, dict]:
+    """Derive a verdict from a refusal-contract criterion vector.
+
+    all true → supported; any false → not_supported; else partially_supported.
+
+    Returns (verdict, evidence) where evidence carries the per-answer counts +
+    ids so the verdict presents WITH its basis, never instead of it (the
+    false-confidence guard: a verdict derived from five citations must be
+    distinguishable from one derived from five unknowns).
+    """
+    from .use_case_schema import Verdict
+
+    answers = {"true": [], "false": [], "unknown": []}
+    for c in criteria or []:
+        n = c.normalized() if hasattr(c, "normalized") else c
+        sat = getattr(n, "satisfied", "unknown")
+        answers.setdefault(sat if sat in answers else "unknown",
+                           answers["unknown"]).append(getattr(n, "id", "?"))
+    if answers["false"]:
+        verdict = Verdict.NOT_SUPPORTED.value
+    elif answers["true"] and not answers["unknown"]:
+        verdict = Verdict.SUPPORTED.value
+    else:
+        # unknowns present (or an empty vector): partial — "the spec does not
+        # say" can never derive full support, and never manufactures failure.
+        verdict = Verdict.PARTIALLY_SUPPORTED.value
+    evidence = {"mechanism": "criteria",
+                "true": sorted(answers["true"]), "false": sorted(answers["false"]),
+                "unknown": sorted(answers["unknown"])}
+    return verdict, evidence

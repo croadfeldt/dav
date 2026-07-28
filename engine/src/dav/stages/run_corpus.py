@@ -850,6 +850,14 @@ def _cli():
              "Tekton params and shell — no separator to fight.",
     )
     parser.add_argument(
+        "--derived-verdicts", action="store_true", default=False,
+        help="Derived verdicts (derived-verdicts-design.md): on refuse-semantics "
+             "UCs the model emits a per-criterion evidence vector and the engine "
+             "derives the verdict (all-true=supported, any-false=not_supported, "
+             "else partial; ensemble votes per criterion id). Default off; "
+             "battery-gated.",
+    )
+    parser.add_argument(
         "--tag-untagged-gaps", action="store_true", default=False,
         help="E1: after each sample, classify untagged gaps onto the catalog "
              "with a cheap enum-constrained call (see dav.ai.gap_tagger). "
@@ -1196,6 +1204,7 @@ def _cli():
         sample_count=args.sample_count or _DEFAULT_SAMPLE_COUNT[args.mode],
         sample_concurrency=args.sample_concurrency,
         tag_untagged=args.tag_untagged_gaps,
+        derived_verdicts=args.derived_verdicts,
     )
 
     chat_template_kwargs = {"enable_thinking": False} if args.no_enable_thinking else None

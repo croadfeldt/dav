@@ -34,7 +34,7 @@ from dav.core.use_case_schema import (
     UseCase, Analysis, AnalysisMetadata, AnalysisSummary,
     ComponentRequired, DataModelTouched, CapabilityInvoked,
     ProviderTypeInvolved, PolicyModeRequired, GapIdentified,
-    ToolCall, build_analysis_json_schema,
+    CriterionAnswer, ToolCall, build_analysis_json_schema,
 )
 from .client import (
     InferenceClient, ChatMessage, InferenceError,
@@ -194,6 +194,10 @@ class AgentConfig:
     # dav.ai.gap_tagger). Default OFF until the fixture battery proves the
     # delta — every quality change ships measured, not assumed.
     tag_untagged: bool = False
+    # Derived verdicts (derived-verdicts-design.md): on refuse-semantics UCs the
+    # model emits a per-criterion evidence vector (ADR-003's five elements) and
+    # the ENGINE derives the verdict from it. Default OFF; battery-gated.
+    derived_verdicts: bool = False
 
 class Stage2Agent:
     """
@@ -202,6 +206,13 @@ class Stage2Agent:
     Constructed once per use case; not reusable (holds per-run state
     like tool-call trace, token counts).
     """
+
+    def _wants_criteria(self, use_case) -> bool:
+        """Derived-verdicts scope: flag on AND the UC succeeds by refusing.
+        must-realize UCs keep the current path — the design deliberately does
+        not invent a realize-side criterion set without evidence."""
+        return bool(self.config.derived_verdicts
+                    and use_case.effective_success_semantics() == "refuse")
 
     def _client(self) -> InferenceClient:
         """The backend for the current phase.
@@ -555,7 +566,9 @@ class Stage2Agent:
                 f"each handle's prefix before calling. For `search_docs`, "
                 f"prefer in-scope results and ignore the rest."
             )
-        user_prompt = self._user_prompt_override or build_stage2_user_prompt(use_case, self.consumer_profile)
+        user_prompt = self._user_prompt_override or build_stage2_user_prompt(
+            use_case, self.consumer_profile,
+            emit_criteria=self._wants_criteria(use_case))
         messages: list[ChatMessage] = [
             ChatMessage(role="system",  content=sys_prompt),
             ChatMessage(role="user",    content=user_prompt),
@@ -574,7 +587,9 @@ class Stage2Agent:
         # Tool-use loop
         for turn in range(self.config.max_tool_calls + 1):
             at_budget = (turn == self.config.max_tool_calls)
-            guided = build_analysis_json_schema(self.consumer_profile) if (
+            guided = build_analysis_json_schema(
+                self.consumer_profile,
+                include_criteria=self._wants_criteria(use_case)) if (
                 self.config.use_guided_json and at_budget
             ) else None
             # On the budget-hit turn, remove tools from the request so the
@@ -932,7 +947,8 @@ class Stage2Agent:
                         temperature=self.config.temperature,
                         max_tokens=requested_max,
                         guided_json_schema=build_analysis_json_schema(
-                            self.consumer_profile),
+                            self.consumer_profile,
+                            include_criteria=self._wants_criteria(use_case)),
                         seed=self._sample_seed if self._sample_seed is not None
                              else self.config.seed,
                     )
@@ -1003,6 +1019,7 @@ class Stage2Agent:
                 )
             self._user_prompt_override = build_pass2_user_prompt(
                 use_case, findings_str, self.consumer_profile,
+                emit_criteria=self._wants_criteria(use_case),
             )
             self._emit_findings_only = False
             return self.analyze(use_case)
@@ -1212,6 +1229,10 @@ class Stage2Agent:
                 gaps_identified=[_from_dict(GapIdentified, x) for x in data.get("gaps_identified", [])],
                 summary=_from_dict(AnalysisSummary, data["summary"]),
                 tool_call_trace=self._tool_trace,
+                # normalized() enforces the citation rule at the boundary:
+                # satisfied=true without a spec_ref coerces to unknown.
+                criteria=[CriterionAnswer.from_dict(x).normalized()
+                          for x in data.get("criteria", [])],
             )
         except (KeyError, TypeError) as e:
             raise AgentError(f"final analysis missing required fields: {e}") from e
