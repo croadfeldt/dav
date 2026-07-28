@@ -15,6 +15,7 @@ analyses so baselines know which prompt produced them.
 from __future__ import annotations
 
 import logging
+import os
 
 from dav.core.use_case_schema import UseCase
 
@@ -175,7 +176,6 @@ def build_stage2_system_prompt(consumer_profile=None) -> str:
     # a subset of spec sources in the New Run modal. The MCP still serves
     # every spec namespace; this is a soft instruction so the LLM prefers
     # grounding against the selected sources.
-    import os
     ns_filter = (os.environ.get("DAV_SPEC_NAMESPACES_FILTER") or "").strip()
     if ns_filter:
         namespaces = [n.strip() for n in ns_filter.split(",") if n.strip()]
@@ -278,6 +278,33 @@ system's inability to carry out the intent as a gap — that inability is the
 correct behavior this use case is testing for.
 """
 
+def _criterion_anchor_block(use_case: UseCase) -> str:
+    """E4 scope anchor — env-gated A/B lever (same shape as the grounding nudge).
+
+    The measured recall frontier (E1×E3 battery, 2026-07-28) is PLACEMENT
+    SCATTER: the same real concern is salient from many UCs and gets reported
+    stochastically at each, so it reaches quorum nowhere (observed: one seeded
+    hole at 1/3 consensus on four different UCs). The deterministic anchor a UC
+    already carries is its success_criteria — the author's declared scored
+    surface. Anchoring gap reporting to it converges placement: a concern that
+    blocks none of THIS UC's criteria belongs to another UC and is omitted
+    here, where it would only ever be sub-quorum noise.
+    """
+    if (os.environ.get("DAV_CRITERION_ANCHOR") or "").strip().lower() not in ("1", "true", "yes", "on"):
+        return ""
+    crits = "\n".join(f"  {i}. {c}" for i, c in enumerate(use_case.scenario.success_criteria, 1))
+    return f"""
+
+## Scope anchor (this run)
+This use case's scored surface is EXACTLY its success criteria:
+{crits}
+Report a gap ONLY if it blocks one of these numbered criteria for THIS use
+case, and name the blocked criterion number in the gap's rationale. A real
+spec concern that blocks none of them belongs to a different use case —
+omit it here rather than padding this analysis.
+"""
+
+
 def _stage2_task_line(use_case: UseCase, fw: str) -> str:
     """Closing task sentence, matched to the use case's success semantics."""
     if getattr(use_case, "is_refusal_case", False):
@@ -328,7 +355,7 @@ EXPECTED DOMAIN INTERACTIONS:
 {chr(10).join(f'  - {di.domain}: {di.interaction}' for di in s.expected_domain_interactions) if s.expected_domain_interactions else '  (none stated by author — discover from spec)'}
 
 TAGS: {', '.join(use_case.tags) if use_case.tags else '(none)'}
-{_refusal_contract_block(use_case, emit_criteria)}
+{_refusal_contract_block(use_case, emit_criteria)}{_criterion_anchor_block(use_case)}
 ---
 
 Your task: {_stage2_task_line(use_case, fw)} Use the available

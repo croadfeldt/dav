@@ -323,6 +323,13 @@ spec:
         (derived-verdicts-design.md). Default off; battery-gated.
       default: ""
 
+    - name: criterion-anchor
+      type: string
+      description: |
+        "true" anchors gap reporting to the UC's own success criteria (E4
+        placement-scatter fix). Default off; battery-gated.
+      default: ""
+
     - name: managed-uc-uuids
       type: string
       description: |
@@ -376,6 +383,10 @@ spec:
         # engine rebuild.
         - name: DAV_STAGE2_CONTEXT
           value: "$(params.stage2-context)"
+        # E4 criterion anchor: scope gap reporting to the UC's success criteria
+        # (placement-scatter fix; A/B lever, same shape as grounding-nudge).
+        - name: DAV_CRITERION_ANCHOR
+          value: "$(params.criterion-anchor)"
         # Where the engine reads its ServiceAccount projected token to
         # authenticate to the console API (Bearer) when fetching managed UCs.
         # The kubelet mints + auto-rotates this token (audience {{ dav_api_token_audience | default('dav-api') }},

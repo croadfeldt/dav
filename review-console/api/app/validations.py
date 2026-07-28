@@ -174,6 +174,7 @@ def _mk_pipelinerun(
     capability_catalog_b64: Optional[str] = None,
     tag_untagged_gaps: Optional[bool] = None,
     derived_verdicts: Optional[bool] = None,
+    criterion_anchor: Optional[bool] = None,
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
@@ -277,6 +278,8 @@ def _mk_pipelinerun(
         params.append({"name": "tag-untagged-gaps", "value": "true"})
     if derived_verdicts:
         params.append({"name": "derived-verdicts", "value": "true"})
+    if criterion_anchor:
+        params.append({"name": "criterion-anchor", "value": "true"})
     if stage2_two_pass is not None:
         params.append({"name": "stage2-two-pass", "value": stage2_two_pass})
     if grounding_nudge is not None:
@@ -350,6 +353,7 @@ def trigger_run(
     capability_catalog_b64: Optional[str] = None,
     tag_untagged_gaps: Optional[bool] = None,
     derived_verdicts: Optional[bool] = None,
+    criterion_anchor: Optional[bool] = None,
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
@@ -393,6 +397,7 @@ def trigger_run(
         capability_catalog_b64=capability_catalog_b64,
         tag_untagged_gaps=tag_untagged_gaps,
         derived_verdicts=derived_verdicts,
+        criterion_anchor=criterion_anchor,
         stage2_two_pass=stage2_two_pass,
         max_tokens=max_tokens,
         grounding_nudge=grounding_nudge,

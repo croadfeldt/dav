@@ -122,6 +122,10 @@ spec:
     - name: derived-verdicts
       type: string
       default: ""
+    # E4 criterion anchor (placement-scatter fix). Battery-gated.
+    - name: criterion-anchor
+      type: string
+      default: ""
     # Managed-UC test eval: fetch UC YAML from the console API instead
     # of requiring the UC to be in the corpus repo. Used pre-promotion.
     - name: managed-uc-uuids
@@ -335,6 +339,8 @@ spec:
           value: $(params.tag-untagged-gaps)
         - name: derived-verdicts
           value: $(params.derived-verdicts)
+        - name: criterion-anchor
+          value: $(params.criterion-anchor)
         - name: managed-uc-uuids
           value: $(params.managed-uc-uuids)
         - name: console-api-url
