@@ -20,6 +20,15 @@
     dest: "/tmp/dav-engine-build/"
     mode: "0644"
 
+# The real provenance path. --build-arg is ALSO passed below, but the deploy
+# assertion's first run proved oc has been silently dropping it (build specs
+# carry no buildArgs); a context file cannot be dropped.
+- name: Bake the deployed commit into the build context
+  ansible.builtin.copy:
+    content: "{{ dav_repo_commit }}"
+    dest: /tmp/dav-engine-build/BUILD_COMMIT
+    mode: "0644"
+
 - name: Check if engine BuildConfig exists
   kubernetes.core.k8s_info:
     kind: BuildConfig
