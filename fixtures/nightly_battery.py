@@ -22,6 +22,7 @@ import pathlib
 import ssl
 import sys
 import time
+import urllib.error
 import urllib.request
 
 import yaml
@@ -87,7 +88,6 @@ def main() -> int:
     # The ingest sweep converges within one pass after the run completes;
     # compute 409s while the DB still holds a partial snapshot (a 4-of-12
     # partial once scored recall 0.10 against a 12/12 run). Retry, bounded.
-    import urllib.error
     for _ in range(30):
         try:
             out = call("POST", f"{API}/api/fixture-scores/compute",
