@@ -1702,6 +1702,9 @@ class RunTriggerIn(BaseModel):
     # E1: enable the post-sample untagged-gap classifier for this run.
     # None/False = off (default until the fixture battery proves the delta).
     tag_untagged_gaps: Optional[bool] = None
+    # Derived verdicts on refuse-semantics UCs (derived-verdicts-design.md).
+    # None/False = off; battery-gated like every quality change.
+    derived_verdicts: Optional[bool] = None
     # Per-request inference HTTP timeout, forwarded as Tekton param
     # request-timeout-seconds (task-side param lands with the engine PR).
     request_timeout_seconds: Optional[int] = Field(None, ge=1)
@@ -3911,6 +3914,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             known_capability_ids=_known_cap_ids,
             capability_catalog_b64=_cap_catalog_b64,
             tag_untagged_gaps=payload.tag_untagged_gaps,
+            derived_verdicts=payload.derived_verdicts,
             stage2_two_pass=payload.stage2_two_pass,
             max_tokens=payload.max_tokens,
             grounding_nudge=(None if payload.grounding_nudge is None
@@ -7733,6 +7737,13 @@ async def fixture_scores_compute(payload: dict = Body(...), request: Request = N
         # nightly runner does.
         ar = await conn.fetchrow(
             "SELECT successful FROM analysis_runs WHERE run_id=$1", run_id)
+        # A run with ZERO successful UCs has nothing to score — computing it
+        # produced a garbage trend row (precision 1.0 by vacuity, recall 0.0)
+        # from the first crashed E6 battery. Failed runs are a signal for the
+        # run list, not the calibration trend.
+        if ar is not None and (ar["successful"] or 0) == 0:
+            raise HTTPException(
+                400, f"run {run_id} has 0 successful UCs — nothing to score")
         _analyzed = len({r["uc_handle"] for r in rows})
         if ar and (ar["successful"] or 0) > _analyzed:
             raise HTTPException(

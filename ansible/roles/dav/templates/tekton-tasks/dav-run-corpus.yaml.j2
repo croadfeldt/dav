@@ -314,6 +314,14 @@ spec:
         "true" enables the E1 post-sample untagged-gap classifier
         (dav.ai.gap_tagger). Default off until the fixture battery proves
         the delta.
+      default: ""
+
+    - name: derived-verdicts
+      type: string
+      description: |
+        "true" enables criteria-derived verdicts on refuse-semantics UCs
+        (derived-verdicts-design.md). Default off; battery-gated.
+      default: ""
 
     - name: managed-uc-uuids
       type: string
@@ -452,6 +460,9 @@ spec:
         fi
         if [ "$(params.tag-untagged-gaps)" = "true" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --tag-untagged-gaps"
+        fi
+        if [ "$(params.derived-verdicts)" = "true" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --derived-verdicts"
         fi
         if [ -n "$(params.managed-uc-uuids)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --managed-uc-uuids $(params.managed-uc-uuids) --console-api-url $(params.console-api-url)"

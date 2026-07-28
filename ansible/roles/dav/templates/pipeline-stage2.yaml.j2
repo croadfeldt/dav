@@ -117,6 +117,11 @@ spec:
     - name: tag-untagged-gaps
       type: string
       default: ""
+    # Derived verdicts (derived-verdicts-design.md): criteria-derived verdicts
+    # on refuse-semantics UCs. Battery-gated.
+    - name: derived-verdicts
+      type: string
+      default: ""
     # Managed-UC test eval: fetch UC YAML from the console API instead
     # of requiring the UC to be in the corpus repo. Used pre-promotion.
     - name: managed-uc-uuids
@@ -328,6 +333,8 @@ spec:
           value: $(params.capability-catalog-b64)
         - name: tag-untagged-gaps
           value: $(params.tag-untagged-gaps)
+        - name: derived-verdicts
+          value: $(params.derived-verdicts)
         - name: managed-uc-uuids
           value: $(params.managed-uc-uuids)
         - name: console-api-url

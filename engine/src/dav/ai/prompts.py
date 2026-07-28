@@ -226,7 +226,23 @@ def build_stage2_system_prompt(consumer_profile=None) -> str:
         )
     return prompt
 
-def _refusal_contract_block(use_case: UseCase) -> str:
+_CRITERIA_INSTRUCTION = """
+DERIVED VERDICTS — emit per-criterion evidence:
+In your final Analysis JSON, include a top-level `criteria` array answering, for
+EACH of the five refusal-contract elements (ids: typed, actionable, non_leaking,
+auditable, whole):
+  {"id": "<element>", "satisfied": "true"|"false"|"unknown",
+   "spec_ref": "<doc/section that settles it>", "note": "<one line why>"}
+Rules:
+  - "true" REQUIRES a spec_ref that actually settles it. No citation, no yes.
+  - "unknown" means THE SPEC DOES NOT SAY — it is a different answer from
+    "false" (the spec says something inadequate). Use it honestly.
+  - Answer all five. The engine derives the verdict from this vector; your
+    `summary.verdict` is advisory.
+"""
+
+
+def _refusal_contract_block(use_case: UseCase, emit_criteria: bool = False) -> str:
     """Inverted-success contract for refusal-semantics UCs; empty for normal ones.
 
     Whole corpus families (`must-reject/*`, the `-refused` class-versioning cases)
@@ -239,7 +255,8 @@ def _refusal_contract_block(use_case: UseCase) -> str:
     """
     if not getattr(use_case, "is_refusal_case", False):
         return ""
-    return """
+    tail = _CRITERIA_INSTRUCTION if emit_criteria else ""
+    return tail + """
 !! SUCCESS SEMANTICS: REFUSE !!
 This use case succeeds ONLY IF THE SYSTEM REFUSES the intent above. Realizing the
 intent is the FAILURE outcome, not the success outcome. The scored surface is the
@@ -268,7 +285,8 @@ def _stage2_task_line(use_case: UseCase, fw: str) -> str:
                 f"refusal contract meets the success criteria (see SUCCESS SEMANTICS above).")
     return f"analyze whether {fw} supports this use case."
 
-def build_stage2_user_prompt(use_case: UseCase, consumer_profile=None) -> str:
+def build_stage2_user_prompt(use_case: UseCase, consumer_profile=None,
+                             emit_criteria: bool = False) -> str:
     """Build the user-turn prompt with the use case to analyze.
 
     Framework name comes from the consumer profile so the LLM sees
@@ -310,7 +328,7 @@ EXPECTED DOMAIN INTERACTIONS:
 {chr(10).join(f'  - {di.domain}: {di.interaction}' for di in s.expected_domain_interactions) if s.expected_domain_interactions else '  (none stated by author — discover from spec)'}
 
 TAGS: {', '.join(use_case.tags) if use_case.tags else '(none)'}
-{_refusal_contract_block(use_case)}
+{_refusal_contract_block(use_case, emit_criteria)}
 ---
 
 Your task: {_stage2_task_line(use_case, fw)} Use the available
@@ -436,9 +454,9 @@ def build_pass2_analysis_system_prompt(consumer_profile=None) -> str:
 
 
 def build_pass2_user_prompt(use_case: UseCase, findings_json: str,
-                            consumer_profile=None) -> str:
+                            consumer_profile=None, emit_criteria: bool = False) -> str:
     """Pass 2 user prompt: the original UC + the findings JSON pass 1 emitted."""
-    base = build_stage2_user_prompt(use_case, consumer_profile)
+    base = build_stage2_user_prompt(use_case, consumer_profile, emit_criteria)
     return (
         base
         + "\n\n---\n\nPASS 1 FINDINGS (from your prior exploration of the spec):\n\n"

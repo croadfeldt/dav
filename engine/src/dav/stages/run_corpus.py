@@ -408,7 +408,15 @@ def run_one_uc(
         )
 
     # verification or reproduce
-    if mode == "verification" and len(samples) > 1:
+    if mode == "verification":
+        # ALWAYS through the merge, including n=1. The n>1 gate meant a single
+        # sample bypassed every derivation rule — measured: the E6 n=1 battery's
+        # chain UCs carried a cited `false` criterion (whole/typed) and still
+        # reported the model's hedged partially_supported, because the judge
+        # only lived inside the merge. Verdict invariance under sample count
+        # (the design's decisive test) requires ONE judging path at every n.
+        # Reproduce mode stays raw samples[0] — it wants byte-determinism,
+        # not judgment.
         merged = merge_analyses(samples, sample_seeds=sample_seeds)
     else:
         merged = samples[0]
@@ -850,6 +858,14 @@ def _cli():
              "Tekton params and shell — no separator to fight.",
     )
     parser.add_argument(
+        "--derived-verdicts", action="store_true", default=False,
+        help="Derived verdicts (derived-verdicts-design.md): on refuse-semantics "
+             "UCs the model emits a per-criterion evidence vector and the engine "
+             "derives the verdict (all-true=supported, any-false=not_supported, "
+             "else partial; ensemble votes per criterion id). Default off; "
+             "battery-gated.",
+    )
+    parser.add_argument(
         "--tag-untagged-gaps", action="store_true", default=False,
         help="E1: after each sample, classify untagged gaps onto the catalog "
              "with a cheap enum-constrained call (see dav.ai.gap_tagger). "
@@ -1196,6 +1212,7 @@ def _cli():
         sample_count=args.sample_count or _DEFAULT_SAMPLE_COUNT[args.mode],
         sample_concurrency=args.sample_concurrency,
         tag_untagged=args.tag_untagged_gaps,
+        derived_verdicts=args.derived_verdicts,
     )
 
     chat_template_kwargs = {"enable_thinking": False} if args.no_enable_thinking else None

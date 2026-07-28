@@ -60,7 +60,11 @@ from dav.core.use_case_schema import (
     SeverityDescriptor, ConfidenceDescriptor,
     Verdict, normalize_confidence, normalize_severity,
 )
+import logging
+
 from dav.core.verdict_rules import derive_verdict
+
+log = logging.getLogger(__name__)
 
 # --- Canonicalization (extracted for reuse; mirrors compare.py's logic) ---
 # We keep this aligned with compare.py's _canonicalize. If compare.py's
@@ -417,6 +421,43 @@ def _aggregate_metadata(samples: list[Analysis], seeds: list[int]) -> AnalysisMe
 
 # --- Public entry point ---
 
+
+
+def merge_criteria_by_vote(samples: list) -> list:
+    """Majority-vote each criterion id across ensemble samples.
+
+    Votes key on the FIXED criterion id (never free-text identity — the
+    measured failure mode: three samples describing one finding three ways so
+    nothing reached quorum). A tie resolves to "unknown", never to "false":
+    disagreement is uncertainty, not evidence of failure. The winning answer's
+    spec_ref/note come from the first sample that gave it; consensus records
+    "k/n" for the winning answer.
+    """
+    from collections import Counter, OrderedDict
+
+    from dav.core.use_case_schema import CriterionAnswer
+
+    by_id: "OrderedDict[str, list]" = OrderedDict()
+    for s in samples:
+        for c in getattr(s, "criteria", []) or []:
+            by_id.setdefault(c.id, []).append(c.normalized())
+    n = len(samples)
+    merged = []
+    for cid, answers in by_id.items():
+        votes = Counter(a.satisfied for a in answers)
+        top = votes.most_common()
+        if len(top) > 1 and top[0][1] == top[1][1]:
+            winner, k = "unknown", votes.get("unknown", top[0][1])
+        else:
+            winner, k = top[0]
+        exemplar = next((a for a in answers if a.satisfied == winner), answers[0])
+        merged.append(CriterionAnswer(
+            id=cid, satisfied=winner, spec_ref=exemplar.spec_ref,
+            capability_id=exemplar.capability_id, note=exemplar.note,
+            consensus=f"{k}/{n}"))
+    return merged
+
+
 def merge_analyses(
     samples: list[Analysis],
     *,
@@ -533,6 +574,15 @@ def merge_analyses(
     # Sub-quorum gaps stay in gaps_merged (visible, ingested, available to the
     # roadmap) — they just do not vote.
     _voting_gaps = [g for g in gaps_merged if getattr(g, "quorum_backed", True)]
+    _voted_criteria = merge_criteria_by_vote(samples)
+    if _voted_criteria:
+        # Derived verdicts: the criterion vector is the PRIMARY mechanism; the
+        # asserted-verdict majority becomes advisory. Gap-based downgrade rules
+        # still apply after (downgrade-only, so they can only strengthen the
+        # finding, never soften it).
+        from dav.core.verdict_rules import derive_verdict_from_criteria
+        merged_verdict, _crit_evidence = derive_verdict_from_criteria(_voted_criteria)
+        log.info("verdict derived from criteria: %s (%s)", merged_verdict, _crit_evidence)
     merged_verdict, _applied_rules = derive_verdict(merged_verdict, _voting_gaps)
     _verdict_gated = bool(_applied_rules)
 
@@ -589,4 +639,5 @@ def merge_analyses(
         tool_call_trace=representative_trace,
         sample_annotations=sample_annotations,
         assertion_result=None,
+        criteria=_voted_criteria,
     )
