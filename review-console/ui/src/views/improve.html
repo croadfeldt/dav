@@ -3,6 +3,21 @@
       <div style="display:flex;gap:4px;padding:8px 14px 0;border-bottom:1px solid var(--border);">
         <button class="btn ghost btn-sm pi-tab active" data-pi="prompts" onclick="switchPiTab('prompts')">📝 Prompt management</button>
         <button class="btn ghost btn-sm pi-tab" data-pi="improve" onclick="switchPiTab('improve')">🩺 Improvement</button>
+        <button class="btn ghost btn-sm pi-tab" data-pi="calibration" onclick="switchPiTab('calibration')">🎯 Calibration</button>
+      </div>
+      <!-- Calibration pane: fixture-battery trend vs the reference ceiling -->
+      <div id="calibrationPane" style="display:none;padding:14px;height:calc(100vh - 104px);overflow:auto;">
+        <div style="max-width:1150px;">
+          <div class="panel-title">Calibration — fixture battery vs reference</div>
+          <div style="font-size:11px;color:var(--text-dim);margin:2px 0 12px;">
+            Every row is one scored run of the ground-truth fixture suite (12 UCs, 9 seeded gaps, 5 controls),
+            all scored by the same scorer. <b>Reference</b> rows are the ceiling — a frontier model (or human
+            adjudication) on the identical blind pack. <b>Nightly</b> rows track the production model over time.
+            The gap between them is the number a new prompt, method, or model has to close: a change is an
+            improvement only if its row moves toward the reference without giving back precision.
+          </div>
+          <div id="calBody"><div class="empty">loading…</div></div>
+        </div>
       </div>
       <!-- Prompt management pane -->
       <div id="promptPane" style="padding:14px;height:calc(100vh - 104px);overflow:auto;">
