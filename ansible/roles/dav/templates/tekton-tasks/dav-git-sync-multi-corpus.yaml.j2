@@ -182,20 +182,36 @@ spec:
                 })
                 shutil.rmtree(tmp, ignore_errors=True)
                 continue
-            for entry in os.listdir(src_dir):
-                # Skip .git, hidden dirs, etc. — they're not UC content
-                if entry.startswith('.'):
-                    continue
-                s = os.path.join(src_dir, entry)
-                d = os.path.join(dst_dir, entry)
-                if os.path.isdir(s):
-                    # dirs_exist_ok hardens the copy itself (task #52): per-run
-                    # source isolation already prevents cross-arm races; this
-                    # makes a re-entrant/residual copy idempotent instead of
-                    # throwing FileExistsError.
-                    shutil.copytree(s, d, symlinks=False, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(s, d)
+            # Stage ONLY corpus-relevant files (UC yamls + published artifacts +
+            # md context), pruning junk trees wholesale. A registration rooted at
+            # a repo top (observed: the dav row, root_path empty) used to drag
+            # the ENTIRE repo through copytree — and one dangling symlink under
+            # review-console/ui/node_modules failed the whole run (audit
+            # re-measure 215110). The corpus stage needs none of that content,
+            # so select instead of excluding, and never die on one bad entry.
+            _PRUNE = {'.git', '.svn', 'node_modules', '__pycache__',
+                      '.venv', 'venv', 'dist', 'build', '.tox'}
+            _KEEP = ('.yaml', '.yml', '.md')
+            skipped_bad = 0
+            for walk_root, walk_dirs, walk_files in os.walk(src_dir):
+                walk_dirs[:] = [x for x in walk_dirs
+                                if x not in _PRUNE and not x.startswith('.')]
+                for fn in walk_files:
+                    if not fn.lower().endswith(_KEEP) or fn.startswith('.'):
+                        continue
+                    s = os.path.join(walk_root, fn)
+                    rel = os.path.relpath(s, src_dir)
+                    d = os.path.join(dst_dir, rel)
+                    try:
+                        os.makedirs(os.path.dirname(d), exist_ok=True)
+                        shutil.copy2(s, d)
+                    except OSError as e:
+                        # dangling symlink / vanished file: log, count, continue —
+                        # one bad entry must not fail the whole corpus.
+                        print(f'[multi-corpus] WARN {ns}: skipped {rel}: {e}', file=sys.stderr)
+                        skipped_bad += 1
+            if skipped_bad:
+                print(f'[multi-corpus] WARN {ns}: {skipped_bad} unreadable entr(y/ies) skipped', file=sys.stderr)
             shutil.rmtree(tmp, ignore_errors=True)
             cloned += 1
             yaml_count = sum(1 for r, _, fs in os.walk(dst_dir) for f in fs if f.endswith(('.yaml', '.yml')))
