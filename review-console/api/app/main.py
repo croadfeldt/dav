@@ -7793,6 +7793,66 @@ async def fixture_scores_compute(payload: dict = Body(...), request: Request = N
             "verdict_accuracy": result["verdict_accuracy"]}
 
 
+@app.get("/api/runs/{run_id}/readiness")
+async def run_readiness(run_id: str, request: Request):
+    """The readiness brief (Chris, 2026-07-28): an automated answer to three
+    questions per target use case — does the model/architecture support it;
+    if not, WHY NOT (cited evidence, not labels); and what GOTCHAS to expect
+    if you build against it anyway.
+
+    Pure projection over already-captured channels — nothing new is asked of
+    the model:
+      - supported?  -> the stabilized verdict
+      - why not     -> quorum-backed gaps (catalog id, severity, consensus) +
+                       criteria answered false with their citations
+      - gotchas     -> the material that isn't a verdict-mover but WILL cost
+                       an implementer time: advisory (sub-quorum) findings,
+                       criteria answered unknown ("the spec does not say"),
+                       and untagged findings (taxonomy-gap candidates)
+    """
+    get_user(request)
+    async with pool.acquire() as conn:
+        analyses = await conn.fetch(
+            "SELECT id, uc_handle, coalesce(verdict,'') AS verdict "
+            "FROM uc_analyses WHERE run_id=$1 ORDER BY uc_handle", run_id)
+        if not analyses:
+            raise HTTPException(404, f"no ingested analyses for run {run_id}")
+        gaps = await conn.fetch(
+            """SELECT g.analysis_id, coalesce(cc.cap_key,'') AS capability_id,
+                      coalesce(g.title,'') AS title, g.severity,
+                      coalesce(g.consensus,'') AS consensus, g.advisory,
+                      coalesce(g.rationale,'') AS rationale
+               FROM uc_gaps g
+               LEFT JOIN capability_catalog cc ON cc.id::text = g.catalog_capability_id::text
+               WHERE g.run_id=$1""", run_id)
+    by_analysis: dict = {}
+    for g in gaps:
+        by_analysis.setdefault(g["analysis_id"], []).append(g)
+    ucs, rollup = [], {"supported": 0, "partially_supported": 0,
+                       "not_supported": 0, "failed": 0, "gotchas": 0}
+    for a in analyses:
+        rows = by_analysis.get(a["id"], [])
+        primary = [g for g in rows if not g["advisory"]]
+        advisory = [g for g in rows if g["advisory"]]
+        why_not = [{"capability_id": g["capability_id"], "title": g["title"],
+                    "severity": g["severity"], "consensus": g["consensus"],
+                    "rationale": g["rationale"][:400]}
+                   for g in primary if g["capability_id"] or g["title"]]
+        gotchas = ([{"kind": "sub-quorum concern", "title": g["title"],
+                     "capability_id": g["capability_id"], "consensus": g["consensus"]}
+                    for g in advisory]
+                   + [{"kind": "untagged finding (taxonomy-gap candidate)",
+                       "title": g["title"], "consensus": g["consensus"]}
+                      for g in primary if g["title"] and not g["capability_id"]])
+        v = a["verdict"] or "failed"
+        rollup[v if v in rollup else "failed"] += 1
+        rollup["gotchas"] += len(gotchas)
+        ucs.append({"uc_handle": a["uc_handle"], "verdict": v,
+                    "supported": v == "supported",
+                    "why_not": why_not, "gotchas": gotchas})
+    return {"run_id": run_id, "rollup": rollup, "ucs": ucs}
+
+
 @app.get("/api/fixture-scores")
 async def fixture_scores_list(request: Request, limit: int = Query(30, le=200)):
     """The trend: newest first, engine_commit attached to every row."""
