@@ -92,6 +92,11 @@ class ConsumerProfile:
     # per-project `capability_catalog` and injected at run start (see run_corpus).
     known_capability_ids: list[str] = field(default_factory=list)
 
+    # E1 (gap tagging post-pass): catalog id → human name, used ONLY by the
+    # untagged-gap classifier's prompt (dav.ai.gap_tagger). Optional like
+    # known_capability_ids; empty = tagger has nothing to offer names for.
+    capability_catalog_names: dict = field(default_factory=dict)
+
     # Multi-perspective analysis (ADR-011): the corpus-published persona set
     # (PERSONAS.yaml — id/tier/framing/objectives) and its drift→canonical alias
     # map. OPTIONAL and validation-neutral like known_capability_ids: empty =

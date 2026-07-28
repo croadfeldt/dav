@@ -190,6 +190,10 @@ class AgentConfig:
     # without going through the CLI; the CLI overrides via flags.
     sample_count: int = 1
     sample_concurrency: int = 1
+    # E1: classify untagged gaps onto the catalog after each sample (see
+    # dav.ai.gap_tagger). Default OFF until the fixture battery proves the
+    # delta — every quality change ships measured, not assumed.
+    tag_untagged: bool = False
 
 class Stage2Agent:
     """

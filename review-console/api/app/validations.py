@@ -171,6 +171,8 @@ def _mk_pipelinerun(
     capabilities_json: Optional[str] = None,
     use_profile_json: Optional[str] = None,
     known_capability_ids: Optional[list[str]] = None,
+    capability_catalog_b64: Optional[str] = None,
+    tag_untagged_gaps: Optional[bool] = None,
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
@@ -263,6 +265,12 @@ def _mk_pipelinerun(
         # engine enum-constrains gaps[].capability_id for stable cross-run identity.
         params.append({"name": "known-capability-ids",
                        "value": ",".join(known_capability_ids)})
+    if capability_catalog_b64:
+        # E1 gap tagging: id -> name map for the untagged-gap classifier prompt.
+        params.append({"name": "capability-catalog-b64",
+                       "value": capability_catalog_b64})
+    if tag_untagged_gaps:
+        params.append({"name": "tag-untagged-gaps", "value": "true"})
     if stage2_two_pass is not None:
         params.append({"name": "stage2-two-pass", "value": stage2_two_pass})
     if grounding_nudge is not None:
@@ -333,6 +341,8 @@ def trigger_run(
     capabilities_json: Optional[str] = None,
     use_profile_json: Optional[str] = None,
     known_capability_ids: Optional[list[str]] = None,
+    capability_catalog_b64: Optional[str] = None,
+    tag_untagged_gaps: Optional[bool] = None,
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
@@ -373,6 +383,8 @@ def trigger_run(
         capabilities_json=capabilities_json,
         use_profile_json=use_profile_json,
         known_capability_ids=known_capability_ids,
+        capability_catalog_b64=capability_catalog_b64,
+        tag_untagged_gaps=tag_untagged_gaps,
         stage2_two_pass=stage2_two_pass,
         max_tokens=max_tokens,
         grounding_nudge=grounding_nudge,

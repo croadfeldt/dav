@@ -250,6 +250,15 @@ def run_samples(
         )
         agent._sample_seed = seed
         log.info("starting sample with seed=%d", seed)
+        if config.tag_untagged and getattr(consumer_profile, "capability_catalog_names", None):
+            # E1: classify untagged gaps BEFORE the ensemble merge — merge keys
+            # gaps by capability_id when present, so consistent tags across
+            # samples are what make cross-sample dedup + quorum counting work.
+            from dav.ai.gap_tagger import tag_untagged_gaps
+            analysis = agent.analyze(use_case)
+            tag_untagged_gaps(analysis, consumer_profile.capability_catalog_names,
+                              inference, seed=seed)
+            return analysis
         return agent.analyze(use_case)
 
     if config.sample_concurrency <= 1 or n == 1:

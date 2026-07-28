@@ -300,6 +300,21 @@ spec:
         Empty = unconstrained free string (existing behavior).
       default: ""
 
+    - name: capability-catalog-b64
+      type: string
+      description: |
+        Optional base64(JSON {capability id: human name}) for the E1
+        untagged-gap classifier prompt. Ids for validation still come from
+        known-capability-ids. Empty = tagger has no names.
+      default: ""
+
+    - name: tag-untagged-gaps
+      type: string
+      description: |
+        "true" enables the E1 post-sample untagged-gap classifier
+        (dav.ai.gap_tagger). Default off until the fixture battery proves
+        the delta.
+
     - name: managed-uc-uuids
       type: string
       description: |
@@ -431,6 +446,12 @@ spec:
         fi
         if [ -n "$(params.known-capability-ids)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --known-capability-ids $(params.known-capability-ids)"
+        fi
+        if [ -n "$(params.capability-catalog-b64)" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --capability-catalog-b64 $(params.capability-catalog-b64)"
+        fi
+        if [ "$(params.tag-untagged-gaps)" = "true" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --tag-untagged-gaps"
         fi
         if [ -n "$(params.managed-uc-uuids)" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --managed-uc-uuids $(params.managed-uc-uuids) --console-api-url $(params.console-api-url)"
