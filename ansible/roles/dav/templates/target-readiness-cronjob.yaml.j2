@@ -1,0 +1,62 @@
+{# Nightly TARGET-SET readiness run (readiness-brief-design.md: "automated
+   becomes continuous"). Triggers a verification run over the designated
+   target UC set on the real corpus with the default quality stack; the
+   morning's readiness rollup is then one GET away:
+     GET /api/runs/{run_id}/readiness
+   Trigger-only — no scoring step; readiness is a projection over the
+   ingested run. Reuses the fixture-battery PAT secret (the agent holds
+   runs.execute on the target project).
+   Vars: dav_target_readiness_enabled / _schedule / _project / _set_id /
+   _sample_count / dav_fixture_battery_secret #}
+{% if dav_target_readiness_enabled | bool %}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dav-target-readiness
+  namespace: {{ dav_namespace }}
+  labels:
+    app.kubernetes.io/part-of: dav
+    app.kubernetes.io/component: target-readiness
+spec:
+  schedule: "{{ dav_target_readiness_schedule }}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 300
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: dav
+            app.kubernetes.io/component: target-readiness
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: trigger
+              image: registry.redhat.io/openshift4/ose-cli:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  BODY='{"mode":"verification","selection_mode":"set","set_id":{{ dav_target_readiness_set_id }},"name":"NIGHTLY target readiness","category":"scheduled","sample_count":{{ dav_target_readiness_sample_count }},"uc_concurrency":2}'
+                  curl -ksf -X POST "http://dav-review-api.{{ dav_namespace }}.svc:8000/api/runs" \
+                    -H "Authorization: Bearer ${DAV_API_TOKEN}" \
+                    -H "X-DAV-Project: {{ dav_target_readiness_project }}" \
+                    -H "Content-Type: application/json" \
+                    -d "$BODY"
+              env:
+                - name: DAV_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ dav_fixture_battery_secret }}
+                      key: token
+              resources:
+                requests: {cpu: 10m, memory: 32Mi}
+                limits: {cpu: 100m, memory: 64Mi}
+{% endif %}

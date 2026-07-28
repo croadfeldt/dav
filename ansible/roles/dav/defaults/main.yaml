@@ -242,3 +242,14 @@ dav_fixture_battery_secret: "dav-fixture-cron"
 dav_fixture_battery_inference_url: "{{ inference_primary_endpoint | default('https://r9700.llm.ocp.roadfeldt.com/v1') }}"
 dav_fixture_battery_project: "760"
 dav_fixture_battery_sample_count: 3
+
+# --- Nightly target-set readiness run (readiness-brief-design.md) ---
+# Triggers a real-corpus verification run over the designated target UC set
+# with the default quality stack; the morning readiness rollup is
+# GET /api/runs/{run_id}/readiness. Offset from the fixture battery so the
+# two never contend for the GPU at once.
+dav_target_readiness_enabled: true
+dav_target_readiness_schedule: "30 10 * * *"     # 10:30 UTC = 4:30am Central
+dav_target_readiness_project: "20"
+dav_target_readiness_set_id: 29
+dav_target_readiness_sample_count: 3

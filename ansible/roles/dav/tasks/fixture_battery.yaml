@@ -42,3 +42,18 @@
     name: dav-fixture-battery
     namespace: "{{ dav_namespace }}"
   when: not (dav_fixture_battery_enabled | bool)
+
+- name: Deploy the target-readiness CronJob
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'target-readiness-cronjob.yaml.j2') | from_yaml_all | select | list }}"
+  when: dav_target_readiness_enabled | bool
+
+- name: Remove the target-readiness CronJob when disabled
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: CronJob
+    name: dav-target-readiness
+    namespace: "{{ dav_namespace }}"
+  when: not (dav_target_readiness_enabled | bool)
