@@ -161,6 +161,12 @@ def test_sub_quorum_gap_is_reported_but_does_not_vote():
     dissent = _sample("supported", [_gap("seen once")])
     merged = merge_analyses([clean, clean, dissent])
 
-    titles = [g.title for g in merged.gaps_identified]
-    assert "seen once" in titles, "sub-quorum finding was dropped, not just muted"
+    # E3 (2026-07-28): sub-quorum findings move to the ADVISORY channel — kept,
+    # never dropped, but out of the primary pool a reader and the precision
+    # math consume (F2 field evidence: 24/30 judge-rejected findings were
+    # 1/3-consensus hedges).
+    assert "seen once" not in [g.title for g in merged.gaps_identified], \
+        "sub-quorum finding leaked into the primary pool"
+    assert "seen once" in [g.title for g in merged.advisory_gaps], \
+        "sub-quorum finding was dropped, not demoted"
     assert merged.summary.verdict == "supported", "sub-quorum finding voted anyway"

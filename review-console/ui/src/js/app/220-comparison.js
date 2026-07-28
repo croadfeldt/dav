@@ -377,10 +377,15 @@ function renderAnalysis(data, ucUuid) {
     </div>`;
   }
 
-  // Gaps
-  if (gaps.length) {
-    html += `<div class="detail-section"><div class="detail-section-title">Gaps identified (${gaps.length})</div>`;
-    _sortGapsBySeverity(gaps).forEach(g => {
+  // Gaps — E3 advisory split: primary (quorum-backed) first, sub-quorum
+  // findings in a separate advisory section so a reader never wades through
+  // 1-of-N hedges to find the load-bearing findings (F2: 24/30 judge-rejected
+  // findings were exactly those hedges).
+  const primaryGaps = (gaps || []).filter(g => !g.advisory);
+  const advisoryGaps = (gaps || []).filter(g => g.advisory);
+  if (primaryGaps.length) {
+    html += `<div class="detail-section"><div class="detail-section-title">Gaps identified (${primaryGaps.length})</div>`;
+    _sortGapsBySeverity(primaryGaps).forEach(g => {
       const sev     = typeof g.severity==='object' ? g.severity : {};
       const sevLabel= sev.label || (typeof g.severity==='string' ? g.severity : 'minor');
       const sevBand = sev.band ? ' · '+sev.band : '';
@@ -396,6 +401,21 @@ function renderAnalysis(data, ucUuid) {
         ${g.recommendation ? `<div class="gap-recommendation"><span class="gap-sub-label">Recommendation</span>${esc(g.recommendation)}</div>` : ''}
         ${refs.length ? `<div class="gap-sub"><span class="gap-sub-label">Spec refs</span>${_specRefChips(refs)}</div>` : ''}
         ${g.spec_refs_missing ? `<div class="gap-sub" style="color:var(--red)"><span class="gap-sub-label" style="color:var(--red)">Missing from spec</span>${esc(g.spec_refs_missing)}</div>` : ''}
+      </div>`;
+    });
+    html += `</div>`;
+  }
+  if (advisoryGaps.length) {
+    html += `<div class="detail-section"><div class="detail-section-title" style="color:var(--text-faint)">Advisory (sub-quorum) findings (${advisoryGaps.length})</div>
+      <div style="font-size:10px;color:var(--text-faint);margin:2px 0 8px;">Fewer than a majority of ensemble samples agreed on these. Kept for taxonomy/roadmap review; they do not vote on the verdict or count as primary findings.</div>`;
+    _sortGapsBySeverity(advisoryGaps).forEach(g => {
+      const sevLabel = (typeof g.severity==='object' ? (g.severity.label||'minor') : (g.severity||'minor'));
+      html += `<div class="gap-card" style="opacity:.7">
+        <div class="gap-card-header">
+          <span class="sev-label ${sevClass(sevLabel)}">${esc(sevLabel)}</span>
+          <span style="font-size:10px;color:var(--text-faint)">consensus ${esc(g.consensus||'?')}</span>
+        </div>
+        <div class="gap-desc">${esc(g.description||g.title||'')}</div>
       </div>`;
     });
     html += '</div>';

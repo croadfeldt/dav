@@ -50,6 +50,7 @@ def fetch_from_db(run_id: str, pod: str, ns: str, schema: str) -> list[dict]:
         "SELECT a.uc_handle||E'\\t'||coalesce(a.verdict,'')||E'\\t'"
         "||coalesce(g.catalog_capability_id::text,'')||E'\\t'||coalesce(g.title,'') "
         "FROM uc_analyses a LEFT JOIN uc_gaps g ON g.analysis_id=a.id "
+        "AND NOT coalesce(g.advisory, false) "
         f"WHERE a.run_id='{run_id}' ORDER BY 1;"
     )
     proc = subprocess.run(
