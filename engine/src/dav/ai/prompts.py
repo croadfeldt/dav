@@ -14,7 +14,11 @@ analyses so baselines know which prompt produced them.
 
 from __future__ import annotations
 
+import logging
+
 from dav.core.use_case_schema import UseCase
+
+log = logging.getLogger(__name__)
 
 STAGE2_PROMPT_VERSION = "1.10"  # 1.10 — adds get_capability tool guidance to stop section_title misuse on capability matrix IDs
 
@@ -208,6 +212,12 @@ def build_stage2_system_prompt(consumer_profile=None) -> str:
     # by an A/B experiment's candidate arm until a win promotes it. Same lever shape as the
     # grounding nudge above — the established A/B-able seam.
     stage2_ctx = (os.environ.get("DAV_STAGE2_CONTEXT") or "").strip()
+    # Loud provenance: this value crosses console -> PipelineRun -> Pipeline ->
+    # Task -> env, and one hop (the Pipeline) silently dropped it for every run
+    # until 2026-07-28. A run that SHOULD carry context but logs nothing here is
+    # the dropped-pipe signature.
+    if stage2_ctx:
+        log.info("stage2-context: %d chars of project prompt context active", len(stage2_ctx))
     if stage2_ctx:
         prompt += (
             "\n\n## Project context & instructions for evaluation "

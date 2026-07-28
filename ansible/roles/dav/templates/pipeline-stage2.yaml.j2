@@ -36,13 +36,6 @@ spec:
     - name: consumer-spec-repo-branch
       type: string
       default: "{{ consumer_spec_repo_branch }}"
-    - name: consumer-corpus-repo-url
-      type: string
-      default: "{{ consumer_corpus_repo_url }}"
-    - name: consumer-corpus-repo-branch
-      type: string
-      default: "{{ consumer_corpus_repo_branch }}"
-
     # Where to put the cloned content within the workspace
     - name: spec-subdir
       type: string
@@ -106,6 +99,14 @@ spec:
     # ADR-009 gap identity: project catalog capability ids for guided-JSON
     # enum-constraint of gaps[].capability_id. Empty = unconstrained.
     - name: known-capability-ids
+      type: string
+      default: ""
+    # #93/#125: per-project Evaluation (stage-2) prompt context. The TASK has
+    # declared + consumed this param since the F8 build, but the pipeline never
+    # forwarded it — the trigger's value was silently dropped at this boundary
+    # and every "context applied" run actually ran the baseline prompt
+    # (discovered when the E2 battery's anchor moved nothing it targeted).
+    - name: stage2-context
       type: string
       default: ""
     # E1 gap tagging: catalog names (b64 JSON) + enable flag for the
@@ -321,6 +322,8 @@ spec:
           value: $(params.uc-uuids)
         - name: known-capability-ids
           value: $(params.known-capability-ids)
+        - name: stage2-context
+          value: $(params.stage2-context)
         - name: capability-catalog-b64
           value: $(params.capability-catalog-b64)
         - name: tag-untagged-gaps
