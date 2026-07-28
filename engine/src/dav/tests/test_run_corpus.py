@@ -33,11 +33,17 @@ _failures: list[str] = []
 
 def assert_eq(actual, expected, label: str) -> None:
     if actual != expected:
+        # Raise AND record: under pytest a silent append asserted NOTHING —
+        # the whole file was a vacuous pass (found when a deliberately
+        # contradictory assertion sailed through). The __main__ runner still
+        # aggregates via the exception it catches per-test.
         _failures.append(f"{label}: got {actual!r}, expected {expected!r}")
+        raise AssertionError(f"{label}: got {actual!r}, expected {expected!r}")
 
 def assert_true(cond: bool, label: str) -> None:
     if not cond:
         _failures.append(f"{label}: expected truthy")
+        raise AssertionError(f"{label}: expected truthy")
 
 # --- Fixtures ---
 
@@ -380,8 +386,14 @@ def test_run_one_uc_verification_with_multiple_samples_merges():
         assert_eq(result.success, True, "verification path")
         assert_eq(mmerge.call_count, 1, "merger called once")
 
-def test_run_one_uc_verification_n1_skips_merge():
-    """Verification mode with N=1 sample does NOT call merge_analyses."""
+def test_run_one_uc_verification_n1_merges():
+    """Verification mode with N=1 DOES call merge_analyses.
+
+    Inverted 2026-07-28: the old n>1 gate meant a single sample bypassed every
+    verdict-derivation rule — the E6 n=1 battery's chain UCs carried a cited
+    false criterion and still reported the model's hedged partial. Verdict
+    invariance under sample count requires one judging path at every n
+    (reproduce mode still returns the raw sample — it wants determinism)."""
     p = get_generic_reference_profile()
     with tempfile.TemporaryDirectory() as td:
         uc_path = Path(td) / "uc.yaml"
@@ -392,7 +404,8 @@ def test_run_one_uc_verification_n1_skips_merge():
 
         with mock.patch("dav.stages.run_corpus.run_samples",
                         return_value=[_stub_analysis()]), \
-             mock.patch("dav.stages.run_corpus.merge_analyses") as mmerge:
+             mock.patch("dav.stages.run_corpus.merge_analyses",
+                        return_value=_stub_analysis()) as mmerge:
             result = run_one_uc(
                 uc_path=uc_path, run_dir=run_dir,
                 inference_factory=lambda: None, mcp_factory=lambda: None,
@@ -401,7 +414,7 @@ def test_run_one_uc_verification_n1_skips_merge():
                 consumer_profile=p, consumer_content_path=None,
             )
         assert_eq(result.success, True, "trivial verification")
-        assert_eq(mmerge.call_count, 0, "merger NOT called for N=1")
+        assert_eq(mmerge.call_count, 1, "n=1 goes through the judge")
 
 # --- run-level metadata stamping ---
 # Per spec 07 §4 the AnalysisMetadata fields run_id, mode, endpoint_url,

@@ -36,10 +36,12 @@ _failures: list[str] = []
 def assert_eq(actual, expected, label: str) -> None:
     if actual != expected:
         _failures.append(f"{label}: got {actual!r}, expected {expected!r}")
+        raise AssertionError(f"{label}: got {actual!r}, expected {expected!r}")
 
 def assert_true(cond: bool, label: str) -> None:
     if not cond:
         _failures.append(f"{label}: expected truthy")
+        raise AssertionError(f"{label}: expected truthy")
 
 def assert_raises(fn, exc, label: str) -> None:
     try:

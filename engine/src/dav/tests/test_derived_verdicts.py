@@ -184,3 +184,18 @@ def test_full_merge_with_criteria_derives_and_logs():
     assert {c.id for c in merged.criteria} == set(REFUSAL_CRITERIA)
     whole = next(c for c in merged.criteria if c.id == "whole")
     assert (whole.satisfied, whole.consensus) == ("false", "3/3")
+
+
+def test_single_sample_merge_still_derives():
+    """n=1 must not bypass the judge: a lone sample with a cited false
+    criterion derives not_supported (measured miss: E6 n=1 chain UCs carried
+    whole=false / typed=false and still reported the hedged partial)."""
+    from dav.core.ensemble import merge_analyses
+    from dav.tests.test_ensemble import _analysis
+
+    a = _analysis(verdict="partially_supported")
+    a.criteria = [_c(c, "true") for c in REFUSAL_CRITERIA[:-1]] + \
+                 [_c("whole", "false", ref="")]
+    merged = merge_analyses([a], sample_seeds=[7])
+    assert merged.summary.verdict == "not_supported"
+    assert next(c for c in merged.criteria if c.id == "whole").consensus == "1/1"

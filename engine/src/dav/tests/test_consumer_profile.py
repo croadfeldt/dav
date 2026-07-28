@@ -31,10 +31,12 @@ _failures: list[str] = []
 def assert_eq(actual, expected, label: str) -> None:
     if actual != expected:
         _failures.append(f"{label}: got {actual!r}, expected {expected!r}")
+        raise AssertionError(f"{label}: got {actual!r}, expected {expected!r}")
 
 def assert_true(cond: bool, label: str) -> None:
     if not cond:
         _failures.append(f"{label}: expected truthy")
+        raise AssertionError(f"{label}: expected truthy")
 
 def assert_raises(fn, exc, label: str) -> None:
     try:
@@ -130,15 +132,13 @@ def test_dcm_reference_is_valid():
 
 def test_dcm_reference_has_expected_provider_types():
     p = get_generic_reference_profile()
-    # Current DCM spec defines 5 provider types. Compound services are a
-    # Data concept (compound resource type specifications) orchestrated by
-    # the Control Plane (Request Processor / Orchestrator), not a provider
-    # type. Earlier corpus + earlier reference profile listed 6 types
-    # including 'meta'; that was retired in DCM commit ecc11e9 (2026-04).
-    # See spec/architecture/ai/DCM-AI-PROMPT.md "meta_provider removed".
+    # spec-05 sync (a484ee4, 2026-06-30) RE-ADDED 'meta' to the built-in
+    # provider types — six total. The earlier 5-type expectation (meta retired
+    # in ecc11e9) sat here failing SILENTLY for a month because assert_eq
+    # never raised under pytest; strict helpers exposed it 2026-07-28.
     assert_eq(set(p.provider_types),
-              {"service", "information", "auth", "peer_dcm", "process"},
-              "DCM provider_types match current spec (5 types, no meta)")
+              {"service", "information", "meta", "auth", "peer_dcm", "process"},
+              "provider_types match spec-05 (6 types incl. meta — a484ee4)")
 
 def test_dcm_reference_has_expected_profiles():
     p = get_generic_reference_profile()
@@ -267,7 +267,7 @@ def test_load_profile_mcp_fallback_to_dcm_on_failure():
     fake_client.call.side_effect = RuntimeError("MCP down")
     with mock.patch("dav.ai.mcp_tools.McpClient", return_value=fake_client):
         p = load_profile(mcp_url="http://fake:8080", fall_back_to_generic=True)
-    assert_eq(p.consumer_id, "dcm", "fallback to DCM on MCP failure")
+    assert_eq(p.consumer_id, "generic", "fallback to the generic reference on MCP failure (94fe3d0 rename)")
 
 def test_load_profile_mcp_failure_no_fallback_raises():
     fake_client = mock.MagicMock()
@@ -280,7 +280,7 @@ def test_load_profile_mcp_failure_no_fallback_raises():
 
 def test_load_profile_no_args_returns_dcm():
     p = load_profile()
-    assert_eq(p.consumer_id, "dcm", "default returns DCM reference")
+    assert_eq(p.consumer_id, "generic", "default returns the generic reference (94fe3d0 rename)")
 
 def test_load_profile_no_args_no_fallback_raises():
     assert_raises(
@@ -293,7 +293,7 @@ def test_load_profile_no_args_no_fallback_raises():
 def test_default_profile_starts_as_dcm():
     reset_default_profile()
     p = get_default_profile()
-    assert_eq(p.consumer_id, "dcm", "default starts as DCM")
+    assert_eq(p.consumer_id, "generic", "default starts as the generic reference (94fe3d0 rename)")
 
 def test_set_and_get_default_profile():
     reset_default_profile()
@@ -307,7 +307,7 @@ def test_reset_default_profile():
     set_default_profile(custom)
     reset_default_profile()
     p = get_default_profile()
-    assert_eq(p.consumer_id, "dcm", "reset returns to DCM")
+    assert_eq(p.consumer_id, "generic", "reset returns to the generic reference (94fe3d0 rename)")
 
 def test_replacing_default_profile_logs_but_works():
     reset_default_profile()

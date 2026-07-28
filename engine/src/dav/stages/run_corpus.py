@@ -408,7 +408,15 @@ def run_one_uc(
         )
 
     # verification or reproduce
-    if mode == "verification" and len(samples) > 1:
+    if mode == "verification":
+        # ALWAYS through the merge, including n=1. The n>1 gate meant a single
+        # sample bypassed every derivation rule — measured: the E6 n=1 battery's
+        # chain UCs carried a cited `false` criterion (whole/typed) and still
+        # reported the model's hedged partially_supported, because the judge
+        # only lived inside the merge. Verdict invariance under sample count
+        # (the design's decisive test) requires ONE judging path at every n.
+        # Reproduce mode stays raw samples[0] — it wants byte-determinism,
+        # not judgment.
         merged = merge_analyses(samples, sample_seeds=sample_seeds)
     else:
         merged = samples[0]
