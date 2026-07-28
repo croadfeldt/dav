@@ -1699,6 +1699,9 @@ class RunTriggerIn(BaseModel):
     # Per-run grounding-nudge toggle (forwarded as Tekton grounding-nudge
     # "true"/"false"; None = engine default).
     grounding_nudge: Optional[bool] = None
+    # E1: enable the post-sample untagged-gap classifier for this run.
+    # None/False = off (default until the fixture battery proves the delta).
+    tag_untagged_gaps: Optional[bool] = None
     # Per-request inference HTTP timeout, forwarded as Tekton param
     # request-timeout-seconds (task-side param lands with the engine PR).
     request_timeout_seconds: Optional[int] = Field(None, ge=1)
@@ -3844,12 +3847,19 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
     # nothing and would just constrain the model, so we send nothing and the engine
     # keeps the free-string path. Best-effort: never block a run on catalog lookup.
     _known_cap_ids = None
+    _cap_catalog_b64 = None
     try:
         async with pool.acquire() as conn:
             _cap_rows = await conn.fetch(
-                "SELECT cap_key FROM capability_catalog "
+                "SELECT cap_key, name FROM capability_catalog "
                 "WHERE project_id=$1 AND status='confirmed' ORDER BY cap_key", _trigpid)
         _known_cap_ids = [r["cap_key"] for r in _cap_rows] or None
+        if _cap_rows:
+            import base64 as _b64
+            _cap_catalog_b64 = _b64.b64encode(json.dumps(
+                {r["cap_key"]: r["name"] or "" for r in _cap_rows}).encode()).decode()
+        else:
+            _cap_catalog_b64 = None
     except Exception as e:
         log.info("trigger: capability-catalog lookup failed (%s); gaps stay untagged", e)
     try:
@@ -3880,6 +3890,8 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             capabilities_json=capabilities_json,
             use_profile_json=use_profile_json,
             known_capability_ids=_known_cap_ids,
+            capability_catalog_b64=_cap_catalog_b64,
+            tag_untagged_gaps=payload.tag_untagged_gaps,
             stage2_two_pass=payload.stage2_two_pass,
             max_tokens=payload.max_tokens,
             grounding_nudge=(None if payload.grounding_nudge is None

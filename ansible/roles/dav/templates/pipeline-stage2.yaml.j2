@@ -108,6 +108,14 @@ spec:
     - name: known-capability-ids
       type: string
       default: ""
+    # E1 gap tagging: catalog names (b64 JSON) + enable flag for the
+    # post-sample untagged-gap classifier.
+    - name: capability-catalog-b64
+      type: string
+      default: ""
+    - name: tag-untagged-gaps
+      type: string
+      default: ""
     # Managed-UC test eval: fetch UC YAML from the console API instead
     # of requiring the UC to be in the corpus repo. Used pre-promotion.
     - name: managed-uc-uuids
@@ -313,6 +321,10 @@ spec:
           value: $(params.uc-uuids)
         - name: known-capability-ids
           value: $(params.known-capability-ids)
+        - name: capability-catalog-b64
+          value: $(params.capability-catalog-b64)
+        - name: tag-untagged-gaps
+          value: $(params.tag-untagged-gaps)
         - name: managed-uc-uuids
           value: $(params.managed-uc-uuids)
         - name: console-api-url

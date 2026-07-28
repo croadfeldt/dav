@@ -842,6 +842,20 @@ def _cli():
              "like any other UC. Requires --console-api-url.",
     )
     parser.add_argument(
+        "--capability-catalog-b64", type=str, default=None,
+        help="Base64-encoded JSON object mapping catalog capability id -> human "
+             "name. Used ONLY by the E1 untagged-gap classifier's prompt "
+             "(dav.ai.gap_tagger); ids for validation still come from "
+             "--known-capability-ids. Base64 because names travel through "
+             "Tekton params and shell — no separator to fight.",
+    )
+    parser.add_argument(
+        "--tag-untagged-gaps", action="store_true", default=False,
+        help="E1: after each sample, classify untagged gaps onto the catalog "
+             "with a cheap enum-constrained call (see dav.ai.gap_tagger). "
+             "Default off until the fixture battery proves the delta.",
+    )
+    parser.add_argument(
         "--known-capability-ids", type=str, default=None,
         help="Comma-separated catalog capability ids (the consumer's "
              "capability_catalog cap_keys). When set, gaps_identified[].capability_id "
@@ -889,6 +903,20 @@ def _cli():
         ]
         log.info("gap-identity: %d catalog capability id(s) supplied for guided-JSON",
                  len(consumer_profile.known_capability_ids))
+    if getattr(args, "capability_catalog_b64", None):
+        import base64 as _b64
+        import json as _json
+        try:
+            _names = _json.loads(_b64.b64decode(args.capability_catalog_b64))
+            if isinstance(_names, dict) and _names:
+                consumer_profile.capability_catalog_names = {
+                    str(k): str(v or "") for k, v in _names.items()}
+                log.info("gap-tagger: catalog names supplied for %d id(s)%s",
+                         len(_names),
+                         "" if args.tag_untagged_gaps else " (tagging disabled)")
+        except Exception as e:
+            log.warning("gap-tagger: --capability-catalog-b64 unparseable (%s) — "
+                        "tagging will have no names to offer", e)
     # Reconcile the dimension vocabulary against the corpus's published file
     # BEFORE the profile is installed and anything is validated against it.
     #
@@ -1167,6 +1195,7 @@ def _cli():
         seed=args.seed,
         sample_count=args.sample_count or _DEFAULT_SAMPLE_COUNT[args.mode],
         sample_concurrency=args.sample_concurrency,
+        tag_untagged=args.tag_untagged_gaps,
     )
 
     chat_template_kwargs = {"enable_thinking": False} if args.no_enable_thinking else None
