@@ -1,0 +1,17 @@
+uc: must-realize/fx-atomic-intent-requested
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-ATOMIC-001
+  why: The intent model offers no way to declare all-or-nothing semantics. Best-effort is the correct
+    DEFAULT for a desired-state control plane (Kubernetes and Terraform both work this way), but
+    a consumer whose requirement is genuinely transactional cannot express it. Missing capability,
+    not a correctness break — hence partially_supported, not not_supported.
+- capability_id: FIX-DEP-NATURE-001
+  why: 'Model-specific claim (reply-d): does the spec model the request/operational dependency NATURE
+    as the mechanism? A bespoke atomic flag would satisfy FIX-ATOMIC-001 but FAIL this one. The
+    verdict gap between the two ids is the finding: ATOMIC-without-DEP-NATURE means the analysis
+    wants a flag, not the reduction.'
+must_not_report:
+- capability_id: FIX-WHOLE-001
+  why: CONTROL. Best-effort partial fulfilment as the DEFAULT is correct and must not be reported
+    as a gap. The gap is the absence of an opt-in, not the default itself.

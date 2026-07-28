@@ -1,0 +1,40 @@
+uuid: uc-fx00000009
+handle: must-reject/fx-dependent-member-orphaned
+version: 1.0.0
+scenario:
+  description: 'An intent declares resource A and resource B, where B has a hard dependency on A.
+    A violates policy and is refused. Success is the REFUSAL OF B TOO. Realizing B with its dependency
+    unmet produces a broken graph — a resource pointing at something that does not exist. Unlike
+    partial fulfilment of INDEPENDENT members, which is correct behaviour, a broken dependency is
+    a failure: the platform has created state the consumer''s intent never described and which cannot
+    function.'
+  actor:
+    persona: application-team-member
+    profile: standard
+  intent: Declare two resources where the second hard-depends on the first, and have the first violate
+    policy
+  success_criteria:
+  - A is refused for its policy violation
+  - B is ALSO refused, because its hard dependency is unmet
+  - No resource is left holding a dangling reference
+  - The refusal of B names the refused dependency as its cause
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: hard_dependencies
+    policy_complexity: single_validation
+    provider_landscape: single_eligible
+    governance_context: standard_governance
+    failure_mode: policy_violation
+  profile: standard
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-27T00:00:00.000000+00:00'
+success_semantics: refuse
+tags:
+- fixture
+- must-reject
+- partial-fulfilment
+- dependencies

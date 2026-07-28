@@ -1,0 +1,18 @@
+uc: must-reject/fx-dependent-member-orphaned
+expected_verdict: not_supported
+expected_gaps:
+- capability_id: FIX-DEPS-001
+  why: '10-refusal-contract.md 5 is silent on dependent members. It says the valid subset is realized,
+    with nothing excluding a member whose hard dependency was just refused — so a conforming implementation
+    may realize B pointing at a non-existent A. Chris''s ruling 2026-07-27: a broken dependency
+    is a FAILURE, not a warning, which is why this expects not_supported where the independent-member
+    case expects partially_supported. The spec permits producing state that cannot function.'
+must_not_report:
+- capability_id: FIX-PARTIAL-WARN-001
+  why: CONTROL here. The surfacing gap is real but belongs to the INDEPENDENT-member case. Reporting
+    it against a broken dependency conflates a warning-class concern with a correctness failure
+    — precisely the distinction this UC exists to test.
+- capability_id: FIX-ATOMIC-001
+  why: 'CONTROL (claim 2, UDLM/DCM session): purely operational chain; the natures are distinct
+    by design, so a request-atomicity gap here is a false positive. Claim-2 positive maps to FIX-ATOMIC-001
+    on fx-atomic-intent-requested.'

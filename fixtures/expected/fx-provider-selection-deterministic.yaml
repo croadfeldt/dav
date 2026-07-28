@@ -1,0 +1,7 @@
+uc: must-realize/fx-provider-selection-deterministic
+expected_verdict: supported
+expected_gaps: []
+must_not_report:
+- capability_id: FIX-PROV-001
+  why: CONTROL. Selection is specified as a total function with a deterministic tie-break. Reporting
+    non-determinism here is a false positive.

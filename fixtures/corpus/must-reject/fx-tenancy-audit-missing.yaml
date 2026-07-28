@@ -1,0 +1,37 @@
+uuid: uc-fx00000001
+handle: must-reject/fx-tenancy-audit-missing
+version: 1.0.0
+scenario:
+  description: Tenant A submits an intent whose dependency references, by id, a resource owned by
+    tenant B. No cross-tenant grant exists. Success is the REFUSAL. The refusal must be typed (TENANCY_DENIED,
+    distinct from NOT_FOUND), actionable (it names the grant mechanism), and auditable — a refusal
+    record must exist carrying both tenant identities and the attempted reference.
+  actor:
+    persona: application-team-member
+    profile: standard
+  intent: Declare a resource whose hard dependency targets another tenant's resource by id, with
+    no grant in place
+  success_criteria:
+  - The request is refused at admission; no dependency edge into tenant B is created
+  - The refusal carries reason_code TENANCY_DENIED, not NOT_FOUND
+  - A refusal audit record exists naming both tenants and the attempted reference
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: hard_dependencies
+    policy_complexity: cross_domain_constraint
+    provider_landscape: single_eligible
+    governance_context: standard_governance
+    failure_mode: policy_violation
+  profile: standard
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-27T00:00:00.000000+00:00'
+success_semantics: refuse
+tags:
+- fixture
+- must-reject
+- refusal-contract
+- auditable

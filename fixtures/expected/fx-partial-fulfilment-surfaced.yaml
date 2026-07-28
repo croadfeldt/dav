@@ -1,0 +1,17 @@
+uc: must-realize/fx-partial-fulfilment-surfaced
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-PARTIAL-WARN-001
+  why: '10-refusal-contract.md 5 specifies the partial-fulfilment BEHAVIOUR correctly and then stops.
+    Nothing requires the outcome to be surfaced as a warning, to explain why the member was refused,
+    or to name a resolution. partial_failures is a field, not a signal: a consumer can miss it entirely
+    and believe their intent was fully satisfied. Chris''s ruling 2026-07-27 — this is the intent-requirement
+    side of the platform, distinct from the operational side all prior work covered.'
+must_not_report:
+- capability_id: FIX-WHOLE-001
+  why: 'CONTROL, and a correction to my own first draft. I had seeded partial application as a WRONG
+    RULE expecting not_supported. Chris ruled otherwise: realizing the valid subset and refusing
+    the violating member IS the system working as expected. Reporting the partial application itself
+    as a gap is a false positive.'
+- capability_id: FIX-TYPED-001
+  why: CONTROL. The refusal of the offending member is typed and fully specified.

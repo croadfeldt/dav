@@ -1,0 +1,36 @@
+uuid: uc-fx00000012
+handle: must-reject/fx-refused-chain-root-surfaced
+version: 1.0.0
+scenario:
+  description: 'An intent declares a three-member operational chain — app depends on
+    container, container depends on PVC — and the PVC violates policy. Per the dependent-member
+    ruling the whole chain is refused. The claim under test (UDLM/DCM session, intent-fulfillment
+    model): the surfaced refusal must name the ROOT unsatisfied dependency — the PVC — and the
+    chain it cascaded through, not merely report that the app "failed". A consumer debugging
+    from a leaf-level message has to rediscover the root by hand; a surface that names the root
+    is what makes the refusal actionable.'
+  actor:
+    persona: application-team-member
+    profile: standard
+  intent: Declare an app->container->PVC chain in which the PVC violates policy, and receive a refusal naming the PVC as root cause
+  success_criteria:
+  - All three members are refused (no dangling partial chain)
+  - The refusal names the PVC as the root unsatisfied dependency
+  - The refusal shows the cascade chain (PVC -> container -> app)
+  - The leaf members are marked dependency-refused, distinct from policy-refused
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: hard_dependencies
+    policy_complexity: single_validation
+    provider_landscape: single_eligible
+    governance_context: standard_governance
+    failure_mode: policy_violation
+  profile: standard
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-27T00:00:00.000000+00:00'
+success_semantics: refuse
+tags: [fixture, must-reject, partial-fulfilment, root-cause, claim-test]

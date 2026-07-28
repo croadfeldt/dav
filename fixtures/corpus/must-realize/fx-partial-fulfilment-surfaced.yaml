@@ -1,0 +1,41 @@
+uuid: uc-fx00000004
+handle: must-realize/fx-partial-fulfilment-surfaced
+version: 1.0.0
+scenario:
+  description: 'An intent declares four resources; one violates policy. Halyard realizes the three
+    valid members and refuses the fourth — which is the CORRECT outcome, since the violation is
+    scoped to that member and blocking the rest would deny work that breaks no rule. What the consumer
+    then needs is to be told: the partial outcome must be surfaced as a warning that says which
+    member was refused, WHY, and where possible how to resolve it. This is an intent-requirement
+    concern, not an operational failure — the platform did what was asked; the consumer''s declared
+    intent was not fully satisfiable and they have to be able to see that and act on it.'
+  actor:
+    persona: application-team-member
+    profile: standard
+  intent: Submit a multi-resource intent in which one member violates policy, and be told clearly
+    that the outcome was partial, why, and how to resolve it
+  success_criteria:
+  - The three valid resources are realized and the violating member is refused
+  - The partial outcome is surfaced to the consumer as a warning, not buried in a field
+  - The warning names the refused member and the reason it was refused
+  - Where a remediation exists, the warning names it
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: composite_service
+    policy_complexity: single_validation
+    provider_landscape: single_eligible
+    governance_context: standard_governance
+    failure_mode: policy_violation
+  profile: standard
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-27T00:00:00.000000+00:00'
+success_semantics: realize
+tags:
+- fixture
+- must-realize
+- partial-fulfilment
+- intent-requirements

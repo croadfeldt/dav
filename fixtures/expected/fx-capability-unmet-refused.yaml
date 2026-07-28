@@ -1,0 +1,14 @@
+uc: must-reject/fx-capability-unmet-refused
+expected_verdict: supported
+expected_gaps: []
+must_not_report:
+- capability_id: FIX-PROV-001
+  why: CONTROL. 40-providers.md specifies eligibility as a superset test, deterministic tie-breaking,
+    the CAPABILITY_UNMET code and remediation naming the unmet ids. Any gap reported here is a false
+    positive.
+- capability_id: FIX-TYPED-001
+  why: CONTROL. Fully covered by the closed code set.
+- capability_id: FIX-WHOLE-001
+  why: 'REGRESSION CHECK (analyzer prior): first fixture pass invented a whole-intent refusal gap
+    here. Declarative convergence is ruled correct; a whole-intent report on this control means
+    the transaction-semantics prior is back.'

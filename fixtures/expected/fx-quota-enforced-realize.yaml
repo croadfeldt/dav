@@ -1,0 +1,8 @@
+uc: must-realize/fx-quota-enforced-realize
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-QUOTA-001
+  why: 50-quota.md 'Enforcement point' is empty. Allocation exists and QUOTA_EXCEEDED is defined,
+    but nothing says WHERE consumption is checked and committed — so two concurrent intents can
+    both pass a check only one has headroom for.
+must_not_report: []
