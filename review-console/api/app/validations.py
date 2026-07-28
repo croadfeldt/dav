@@ -186,12 +186,13 @@ def _mk_pipelinerun(
     name = f"{PIPELINE_NAME}-console-{suffix}"
 
     params = [{"name": "git-branch", "value": branch}]
-    if commit_sha:
-        params.append({"name": "commit-sha", "value": commit_sha})
+    # commit_sha / test_count are accepted for legacy self-test callers but NOT
+    # forwarded: the stage-2 Pipeline never declared them, and Tekton REJECTS a
+    # PipelineRun carrying undeclared params — appending them turned a legacy
+    # call into a hard admission failure (found by the trigger→pipeline param
+    # contract test, alongside the silently-dropped stage2-context).
     if inference_endpoint:
         params.append({"name": "inference-endpoint", "value": inference_endpoint})
-    if test_count:
-        params.append({"name": "test-count", "value": test_count})
     if mode:
         params.append({"name": "mode", "value": mode})
     if sample_count is not None:
@@ -213,10 +214,12 @@ def _mk_pipelinerun(
                        "value": str(request_timeout_seconds)})
     if corpus_subpath:
         params.append({"name": "corpus-uc-subpath", "value": corpus_subpath})
-    if corpus_repo_url:
-        params.append({"name": "consumer-corpus-repo-url", "value": corpus_repo_url})
-    if corpus_repo_branch:
-        params.append({"name": "consumer-corpus-repo-branch", "value": corpus_repo_branch})
+    # corpus_repo_url / corpus_repo_branch are accepted (and stored on the
+    # session as provenance) but NOT forwarded: corpus sync is registry-driven
+    # (dav-git-sync-multi-corpus reads /config/sources by namespace), so the
+    # per-run repo override has been silently inert since that migration — the
+    # pipeline declared the params and nothing consumed them. Real per-run
+    # source pinning (SHA) is the run-source-resolution epic's job.
     if spec_repo_url:
         params.append({"name": "consumer-spec-repo-url", "value": spec_repo_url})
     if spec_repo_branch:
