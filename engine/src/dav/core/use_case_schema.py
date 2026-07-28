@@ -937,6 +937,12 @@ class GapIdentified:
         # for the no-catalog path.
         if self.capability_id:
             d["capability_id"] = self.capability_id
+        # The k/n ensemble agreement (#80). Computed by the merge, persisted by
+        # ingest (t008) — and dropped RIGHT HERE for a day because the field was
+        # added to the dataclass without updating this serializer. Same emit-only-
+        # when-set rule as capability_id, same reason.
+        if self.consensus:
+            d["consensus"] = self.consensus
         return d
 
     @classmethod
@@ -956,6 +962,7 @@ class GapIdentified:
             spec_refs_missing=spec_refs_missing,
             title=data.get("title", ""),
             capability_id=(data.get("capability_id") or "").strip(),
+            consensus=(data.get("consensus") or "").strip(),
         )
 
 @dataclass
