@@ -125,3 +125,40 @@ def test_round_trip_preserves_consensus():
     c = CriterionAnswer(id="typed", satisfied="true", spec_ref="spec/a.md#1",
                         consensus="3/3", note="n")
     assert CriterionAnswer.from_dict(c.to_dict()).to_dict() == c.to_dict()
+
+
+# ── agent gating on a REAL UseCase ───────────────────────────────────────────
+# The first E6 battery failed all 12 UCs in <1s with "'str' object is not
+# callable": the gating called effective_success_semantics() — a @property.
+# The pure-function tests above could never catch that; this one exercises the
+# gate through a real UseCase object, exactly as the agent does.
+
+def _real_uc(handle):
+    from dav.core.use_case_schema import UseCase
+    return UseCase.from_dict({
+        "uuid": "u-1", "handle": handle,
+        "scenario": {
+            "description": "d", "intent": "i", "success_criteria": ["s"],
+            "actor": {"persona": "platform-engineer", "profile": "infrastructure"},
+            "profile": "infrastructure",
+            "dimensions": {
+                "lifecycle_phase": "new_request",
+                "resource_complexity": "single_no_deps",
+                "policy_complexity": "unconstrained",
+                "provider_landscape": "single_provider",
+                "governance_context": "standard",
+                "failure_mode": "none",
+            },
+        },
+        "generated_by": {"mode": "manual", "source": "human"},
+    })
+
+
+def test_wants_criteria_gates_on_flag_and_semantics():
+    from dav.ai.agent import AgentConfig, Stage2Agent
+    agent = Stage2Agent.__new__(Stage2Agent)      # gate needs only config
+    agent.config = AgentConfig(derived_verdicts=True)
+    assert agent._wants_criteria(_real_uc("must-reject/x-refused")) is True
+    assert agent._wants_criteria(_real_uc("compute/vm-basic")) is False
+    agent.config = AgentConfig(derived_verdicts=False)
+    assert agent._wants_criteria(_real_uc("must-reject/x-refused")) is False

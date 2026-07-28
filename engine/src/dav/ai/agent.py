@@ -212,7 +212,7 @@ class Stage2Agent:
         must-realize UCs keep the current path — the design deliberately does
         not invent a realize-side criterion set without evidence."""
         return bool(self.config.derived_verdicts
-                    and use_case.effective_success_semantics() == "refuse")
+                    and use_case.effective_success_semantics == "refuse")
 
     def _client(self) -> InferenceClient:
         """The backend for the current phase.

@@ -7737,6 +7737,13 @@ async def fixture_scores_compute(payload: dict = Body(...), request: Request = N
         # nightly runner does.
         ar = await conn.fetchrow(
             "SELECT successful FROM analysis_runs WHERE run_id=$1", run_id)
+        # A run with ZERO successful UCs has nothing to score — computing it
+        # produced a garbage trend row (precision 1.0 by vacuity, recall 0.0)
+        # from the first crashed E6 battery. Failed runs are a signal for the
+        # run list, not the calibration trend.
+        if ar is not None and (ar["successful"] or 0) == 0:
+            raise HTTPException(
+                400, f"run {run_id} has 0 successful UCs — nothing to score")
         _analyzed = len({r["uc_handle"] for r in rows})
         if ar and (ar["successful"] or 0) > _analyzed:
             raise HTTPException(
