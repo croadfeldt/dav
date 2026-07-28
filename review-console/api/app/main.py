@@ -1705,6 +1705,9 @@ class RunTriggerIn(BaseModel):
     # Derived verdicts on refuse-semantics UCs (derived-verdicts-design.md).
     # None/False = off; battery-gated like every quality change.
     derived_verdicts: Optional[bool] = None
+    # E4 criterion anchor: scope gap reporting to the UC's success criteria.
+    # None/False = off; battery-gated.
+    criterion_anchor: Optional[bool] = None
     # Per-request inference HTTP timeout, forwarded as Tekton param
     # request-timeout-seconds (task-side param lands with the engine PR).
     request_timeout_seconds: Optional[int] = Field(None, ge=1)
@@ -3915,6 +3918,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             capability_catalog_b64=_cap_catalog_b64,
             tag_untagged_gaps=payload.tag_untagged_gaps,
             derived_verdicts=payload.derived_verdicts,
+            criterion_anchor=payload.criterion_anchor,
             stage2_two_pass=payload.stage2_two_pass,
             max_tokens=payload.max_tokens,
             grounding_nudge=(None if payload.grounding_nudge is None
