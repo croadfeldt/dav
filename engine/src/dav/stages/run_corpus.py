@@ -919,6 +919,31 @@ def _cli():
             "silently quarantined 85%% of the UDLM corpus. Verify the corpus repo "
             "publishes it.", DIMENSION_VOCABULARY_FILENAME)
 
+    # Personas (ADR-011): adopt the corpus-published canonical persona set the
+    # same way. With no file, the run stays single-lens — a warning, not an
+    # error, because persona-less corpora are still valid analysis targets.
+    from dav.core.consumer_profile import (
+        PERSONAS_FILENAME,
+        apply_personas,
+        find_personas,
+    )
+    _personas_path = find_personas(args.corpus_path, args.consumer_content_path)
+    if _personas_path is not None:
+        consumer_profile, _preport = apply_personas(consumer_profile, _personas_path)
+        if _preport["errors"]:
+            log.warning("personas: %s failed validation and was NOT applied "
+                        "(run stays single-lens): %s",
+                        _personas_path, _preport["errors"])
+        else:
+            log.info("personas: adopted %s (version %s) — %d personas %s, %d aliases",
+                     _personas_path, _preport.get("version"), _preport["count"],
+                     _preport["tiers"], _preport["aliases"])
+    else:
+        log.warning(
+            "personas: no %s found under the corpus or spec content — analysis "
+            "stays single-lens (actor.persona as free text). The corpus repos "
+            "publish it at use-cases/ since udlm#276.", PERSONAS_FILENAME)
+
     set_default_profile(consumer_profile)
     log.info(
         "consumer profile: %s (%s)",

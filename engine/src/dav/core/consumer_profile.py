@@ -92,6 +92,18 @@ class ConsumerProfile:
     # per-project `capability_catalog` and injected at run start (see run_corpus).
     known_capability_ids: list[str] = field(default_factory=list)
 
+    # Multi-perspective analysis (ADR-011): the corpus-published persona set
+    # (PERSONAS.yaml — id/tier/framing/objectives) and its drift→canonical alias
+    # map. OPTIONAL and validation-neutral like known_capability_ids: empty =
+    # single-lens behavior unchanged. When non-empty, lens derivation
+    # ({actor.persona} ∪ scenario.perspectives) resolves against it. Unknown
+    # persona values are REPORTED, not fatal — hard-gating a previously
+    # unconstrained field would silently quarantine existing UCs, the exact
+    # failure mode the dimension-vocabulary fork produced (85% of the UDLM
+    # corpus). Sourced from the corpus at run start (see run_corpus).
+    personas: list[dict] = field(default_factory=list)
+    persona_aliases: dict = field(default_factory=dict)
+
     # Optional architectural-context strings substituted into the system prompt.
     # Example for DCM:
     #   abstractions_summary: "Data, Provider, Policy"
@@ -433,6 +445,128 @@ def apply_dimension_vocabulary(profile: ConsumerProfile, path) -> tuple[Consumer
     # spellings is how one concept silently becomes two categories.
     report["folded_aliases"] = doc.get("folded_aliases") or {}
     return (_dc.replace(profile, **updates) if updates else profile), report
+
+
+# --- Personas: single-sourced from the corpus, not forked here (ADR-011) ------
+
+PERSONAS_FILENAME = "PERSONAS.yaml"
+
+_PERSONA_TIERS = {"operational", "governance", "oversight"}
+
+
+def find_personas(*roots) -> "pathlib.Path | None":
+    """Locate PERSONAS.yaml under any of `roots` (recursively).
+
+    The model repos publish it at use-cases/ (udlm) and dav/use-cases/ (dcm),
+    byte-identical, CI-gated (PER-001) — same contract as DIMENSION-VOCABULARY.
+    """
+    import pathlib as _pl
+    for root in roots:
+        if not root:
+            continue
+        rp = _pl.Path(root)
+        if not rp.exists():
+            continue
+        if rp.is_file() and rp.name == PERSONAS_FILENAME:
+            return rp
+        hit = next(iter(sorted(rp.rglob(PERSONAS_FILENAME))), None)
+        if hit is not None:
+            return hit
+    return None
+
+
+def apply_personas(profile: ConsumerProfile, path) -> tuple[ConsumerProfile, dict]:
+    """Return `profile` with `personas` + `persona_aliases` from the published file.
+
+    Shape-validates each entry (id, tier in {operational, governance, oversight},
+    framing, non-empty objectives; duplicate ids rejected) — a malformed persona
+    would otherwise surface as a half-configured lens deep inside a run. A file
+    that fails validation is NOT applied; the report carries the errors so the
+    caller can warn loudly and continue single-lens.
+
+    Unlike folded_aliases in the dimension vocabulary (recorded, not applied),
+    persona aliases ARE kept for resolution: actor.persona was a free string
+    with measured drift (auditor vs compliance-auditor ...), and the alias map
+    is the corpus's own ruling on how that drift folds. Resolution happens in
+    resolve_persona(); the stored UC text is never rewritten.
+    """
+    import dataclasses as _dc
+    import pathlib as _pl
+    import yaml as _yaml
+
+    doc = _yaml.safe_load(_pl.Path(path).read_text()) or {}
+    entries = doc.get("personas") or []
+    aliases = doc.get("folded_aliases") or {}
+    report = {"path": str(path), "version": doc.get("version"),
+              "count": 0, "tiers": {}, "aliases": len(aliases), "errors": []}
+
+    seen: set[str] = set()
+    for i, p in enumerate(entries):
+        pid = (p.get("id") or "").strip() if isinstance(p, dict) else ""
+        if not pid:
+            report["errors"].append(f"personas[{i}]: missing id")
+            continue
+        if pid in seen:
+            report["errors"].append(f"personas[{i}]: duplicate id '{pid}'")
+        seen.add(pid)
+        if p.get("tier") not in _PERSONA_TIERS:
+            report["errors"].append(
+                f"persona '{pid}': tier {p.get('tier')!r} not in {sorted(_PERSONA_TIERS)}")
+        if not (p.get("framing") or "").strip():
+            report["errors"].append(f"persona '{pid}': framing must not be empty")
+        if not p.get("objectives"):
+            report["errors"].append(f"persona '{pid}': objectives must not be empty")
+    for drift, canon in aliases.items():
+        if canon not in seen:
+            report["errors"].append(
+                f"folded_aliases: '{drift}' -> '{canon}' which is not a persona id")
+
+    if report["errors"]:
+        return profile, report
+
+    report["count"] = len(entries)
+    for p in entries:
+        report["tiers"][p["tier"]] = report["tiers"].get(p["tier"], 0) + 1
+    return _dc.replace(profile, personas=list(entries),
+                       persona_aliases=dict(aliases)), report
+
+
+def resolve_persona(profile: ConsumerProfile, value: str) -> "str | None":
+    """Resolve a persona value to its canonical id, via the corpus alias map.
+
+    Returns None when the profile has no persona set loaded (nothing to resolve
+    against) or the value is unknown — the caller decides how loudly to report;
+    it must never silently drop the UC.
+    """
+    if not profile.personas:
+        return None
+    v = (value or "").strip()
+    v = profile.persona_aliases.get(v, v)
+    return v if any(p.get("id") == v for p in profile.personas) else None
+
+
+def lens_ids_for_uc(profile: ConsumerProfile, actor_persona: str,
+                    perspectives: "list[str] | None") -> tuple[list[str], list[str]]:
+    """Derive a UC's analysis lens set: {actor.persona} ∪ scenario.perspectives.
+
+    Returns (lens_ids, unknown_values). lens_ids is ordered (actor first, then
+    perspectives in declared order), deduplicated after alias resolution — so
+    'auditor' and 'compliance-auditor' become one lens, not two. unknown_values
+    are the raw inputs that resolved to nothing; the caller reports them and
+    analyzes with the lenses that did resolve (never zero: with no persona set
+    loaded, the caller stays single-lens).
+    """
+    lens: list[str] = []
+    unknown: list[str] = []
+    for raw in [actor_persona, *(perspectives or [])]:
+        if not (raw or "").strip():
+            continue
+        rid = resolve_persona(profile, raw)
+        if rid is None:
+            unknown.append(raw)
+        elif rid not in lens:
+            lens.append(rid)
+    return lens, unknown
 
 
 def get_default_profile() -> ConsumerProfile:
