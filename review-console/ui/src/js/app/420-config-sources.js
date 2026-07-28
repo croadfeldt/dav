@@ -357,7 +357,16 @@ function _renderRunChipLive() {
   }
   if (lbl) lbl.textContent = 'Analysis';      // label stays "Analysis"; the dot pulses + stats lead with "# active"
   let ucs = 0, succ = 0, fail = 0;
-  active.forEach(r => { ucs += _runScopeTotal(r); succ += (r.uc_succeeded || 0); fail += (r.uc_failed || 0); });
+  // Prefer the server-attached LIVE progress (run-progress.yaml — same source as
+  // the detail panel). Session columns only populate at finalize/ingest, which
+  // made the pill read "0/0 UC" for the whole life of an in-flight run.
+  active.forEach(r => {
+    if (r.progress && r.progress.total_ucs) {
+      ucs += r.progress.total_ucs; succ += (r.progress.succeeded || 0); fail += (r.progress.failed || 0);
+    } else {
+      ucs += _runScopeTotal(r); succ += (r.uc_succeeded || 0); fail += (r.uc_failed || 0);
+    }
+  });
   const done = succ + fail;
   // "<N> active · <done>/<total> UC · ✓ ok ✗ failed".
   nm.textContent = `${active.length} active · ${done}/${ucs} UC · ✓${succ} ✗${fail}`;
