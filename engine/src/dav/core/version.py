@@ -100,6 +100,20 @@ def engine_commit_string() -> str:
     global _ENGINE_COMMIT_CACHE
     if _ENGINE_COMMIT_CACHE is not None:
         return _ENGINE_COMMIT_CACHE
+    # Built images carry no .git, so in-container this returned "" for the life
+    # of the project — which made "is the running engine the merged code?"
+    # unanswerable from the inside, and that gap cost a silently-failed deploy.
+    # The build now bakes BUILD_COMMIT next to the source; it wins over git so
+    # the value is identical in dev checkouts and in the image.
+    here = Path(__file__).resolve()
+    for ancestor in [here, *here.parents]:
+        marker = ancestor / "BUILD_COMMIT"
+        if marker.exists():
+            try:
+                _ENGINE_COMMIT_CACHE = marker.read_text().strip()
+                return _ENGINE_COMMIT_CACHE
+            except OSError:
+                break
     root = _engine_repo_root()
     _ENGINE_COMMIT_CACHE = _run_git(["rev-parse", "HEAD"], root)
     return _ENGINE_COMMIT_CACHE
