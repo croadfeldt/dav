@@ -84,10 +84,23 @@ def main() -> int:
         print("FATAL: no run_id — run never reached ingest inside the ceiling")
         return 1
 
-    out = call("POST", f"{API}/api/fixture-scores/compute",
-               {"run_id": run_id, "expected": expected, "source": "nightly"})
-    print(json.dumps(out, indent=2))
-    return 0
+    # The ingest sweep converges within one pass after the run completes;
+    # compute 409s while the DB still holds a partial snapshot (a 4-of-12
+    # partial once scored recall 0.10 against a 12/12 run). Retry, bounded.
+    import urllib.error
+    for _ in range(30):
+        try:
+            out = call("POST", f"{API}/api/fixture-scores/compute",
+                       {"run_id": run_id, "expected": expected, "source": "nightly"})
+            print(json.dumps(out, indent=2))
+            return 0
+        except urllib.error.HTTPError as e:
+            if e.code != 409:
+                raise
+            print("ingest not converged yet; retrying in 60s", flush=True)
+            time.sleep(60)
+    print("FATAL: ingest never converged inside the retry window")
+    return 1
 
 
 if __name__ == "__main__":
