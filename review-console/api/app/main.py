@@ -290,19 +290,49 @@ async def _analysis_ingest_loop():
         try:
             on_disk = []
             try:
-                on_disk = [r["run_id"] for r in _results.list_runs() if r.get("run_id")]
+                on_disk = [r for r in _results.list_runs() if r.get("run_id")]
             except Exception as e:
                 log.info("ingest loop: list_runs failed (%s); workspace not mounted yet?", e)
             if on_disk:
+                import time as _time
                 async with pool.acquire() as conn:
                     ingested_rows = await conn.fetch(
-                        "SELECT run_id FROM analysis_runs WHERE run_id = ANY($1)",
-                        on_disk,
+                        "SELECT run_id, successful FROM analysis_runs WHERE run_id = ANY($1)",
+                        [r["run_id"] for r in on_disk],
                     )
-                ingested = {r["run_id"] for r in ingested_rows}
-                pending = [rid for rid in on_disk if rid not in ingested]
+                ingested = {r["run_id"]: (r["successful"] or 0) for r in ingested_rows}
+                # The engine rewrites run-summary.yaml after EVERY UC with
+                # phase: running (so a killed run stays visible). Ingesting one
+                # of those snapshots used to make the partial PERMANENT: the
+                # run_id landed in analysis_runs and this loop's not-in-DB
+                # filter never looked at it again (measured: battery run
+                # 02-25-12Z ingested 4 of 12 UCs mid-run, scored recall 0.10
+                # against a 12/12-successful run). Two guards:
+                #   1. Don't ingest an in-flight snapshot unless it has gone
+                #      quiet (summary mtime > 30 min) — the quiet case is the
+                #      cancelled/OOM-killed run the incremental summary exists
+                #      to rescue.
+                #   2. Re-ingest an already-ingested run whose on-disk summary
+                #      shows MORE successful UCs than the DB row — upsert is
+                #      the documented _ingest_run_analyses contract, so
+                #      convergence heals any partial from before these guards.
+                _now = _time.time()
+                pending = []
+                for r in on_disk:
+                    rid = r["run_id"]
+                    in_flight = (r.get("phase") == "running"
+                                 and (_now - (r.get("summary_mtime") or 0)) < 1800)
+                    if in_flight:
+                        continue
+                    if rid not in ingested:
+                        pending.append(rid)
+                    elif (r.get("successful") or 0) > ingested[rid]:
+                        log.warning(
+                            "ingest loop: %s partially ingested (db=%d disk=%d successful) "
+                            "— re-ingesting to converge", rid, ingested[rid], r.get("successful") or 0)
+                        pending.append(rid)
                 if pending:
-                    log.info("ingest loop: %d run(s) on disk not yet in DB; ingesting", len(pending))
+                    log.info("ingest loop: %d run(s) to ingest/converge", len(pending))
                 for rid in pending:
                     try:
                         async with pool.acquire() as conn:
@@ -7655,6 +7685,18 @@ async def fixture_scores_compute(payload: dict = Body(...), request: Request = N
                WHERE a.run_id = $1""", run_id)
         if not rows:
             raise HTTPException(404, f"no ingested analyses for run_id {run_id}")
+        # Refuse to score a partial ingest. The ingest sweep can lag (or, before
+        # the convergence guard, permanently under-ingest); scoring 4 of 12 UCs
+        # once produced recall 0.10 against a 12/12-successful run. 409 tells
+        # the caller "true state exists but is not here yet — retry", which the
+        # nightly runner does.
+        ar = await conn.fetchrow(
+            "SELECT successful FROM analysis_runs WHERE run_id=$1", run_id)
+        _analyzed = len({r["uc_handle"] for r in rows})
+        if ar and (ar["successful"] or 0) > _analyzed:
+            raise HTTPException(
+                409, f"ingest not converged for {run_id}: {_analyzed} UC(s) in DB "
+                     f"vs {ar['successful']} successful in the run — retry shortly")
         meta = await conn.fetchrow(
             """SELECT max(engine_commit) AS engine_commit, max(model) AS model,
                       max(sample_count) AS sample_count

@@ -93,6 +93,11 @@ def list_runs() -> list[dict]:
             continue
         runs.append({
             "run_id":                  s.get("run_id", run_dir.name),
+            # "running" = in-flight incremental snapshot (the engine rewrites the
+            # summary after every UC); "completed"/"halted" = final write. Legacy
+            # summaries predate the key — treat absent as final.
+            "phase":                   s.get("phase"),
+            "summary_mtime":           summary_path.stat().st_mtime,
             "mode":                    s.get("mode"),
             "started_at":              s.get("started_at"),
             "finished_at":             s.get("finished_at"),
