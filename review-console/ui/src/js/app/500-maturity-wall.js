@@ -342,7 +342,90 @@ function switchPiTab(which) {
   document.querySelectorAll('.pi-tab').forEach(b => b.classList.toggle('active', b.dataset.pi === which));
   document.getElementById('promptPane').style.display = which === 'prompts' ? '' : 'none';
   document.getElementById('improvePane').style.display = which === 'improve' ? '' : 'none';
+  document.getElementById('calibrationPane').style.display = which === 'calibration' ? '' : 'none';
   if (which === 'prompts' && !_pmMeta) pmInit();
+  if (which === 'calibration') calLoad();
+}
+
+// ── Calibration: fixture-battery trend vs the reference ceiling ───────────────
+async function calLoad() {
+  const box = document.getElementById('calBody');
+  let data;
+  try { data = await api('/api/fixture-scores?limit=60'); }
+  catch (e) { box.innerHTML = `<div style="color:var(--red);font-size:11px;">${esc(e.message)}</div>`; return; }
+  const rows = data.scores || [];
+  if (!rows.length) {
+    box.innerHTML = '<div class="empty">No fixture scores yet — the nightly battery seeds the first row, or trigger one: <code>oc -n dav create job --from=cronjob/dav-fixture-battery battery-now</code></div>';
+    return;
+  }
+  // Reference rows pinned on top as the ceiling; everything else newest-first.
+  const refs = rows.filter(r => r.source === 'reference');
+  const rest = rows.filter(r => r.source !== 'reference');
+  const pct = v => v == null ? '—' : Number(v).toFixed(3);
+  const srcBadge = s => {
+    const map = { reference: ['REFERENCE', 'var(--accent)'], nightly: ['nightly', 'var(--green)'],
+                  manual: ['manual', 'var(--text-faint)'], 'prompt-loop': ['prompt-loop', 'var(--amber,gold)'] };
+    const [t, c] = map[s] || [s, 'var(--text-faint)'];
+    return `<span style="display:inline-block;padding:1px 7px;border-radius:9px;border:1px solid ${c};color:${c};font-size:9px;font-weight:600;">${esc(t)}</span>`;
+  };
+  // Delta vs the best reference row, so "distance to ceiling" is read, not computed.
+  const best = refs[0] || null;
+  const delta = (r, k) => {
+    if (!best || r.source === 'reference' || r[k] == null || best[k] == null) return '';
+    const d = Number(r[k]) - Number(best[k]);
+    const c = d >= -0.05 ? 'var(--green)' : (d >= -0.3 ? 'var(--amber,gold)' : 'var(--red)');
+    return ` <span style="font-size:9px;color:${c};">${d >= 0 ? '+' : ''}${d.toFixed(2)}</span>`;
+  };
+  const tr = (r, i) => `
+    <tr style="${r.source === 'reference' ? 'background:var(--bg-raised);' : ''}cursor:pointer;" onclick="calToggleDetail(${i})">
+      <td style="white-space:nowrap;">${esc((r.scored_at || '').slice(0, 16).replace('T', ' '))}</td>
+      <td>${srcBadge(r.source)}</td>
+      <td>${esc(r.model || '?')}${r.sample_count ? ` <span style="color:var(--text-faint);">n=${r.sample_count}</span>` : ''}</td>
+      <td style="font-family:monospace;font-size:10px;">${esc((r.engine_commit || '').slice(0, 8) || '—')}</td>
+      <td style="text-align:right;">${pct(r.precision_score)}${delta(r, 'precision_score')}</td>
+      <td style="text-align:right;">${pct(r.recall)}${delta(r, 'recall')}</td>
+      <td style="text-align:right;">${pct(r.verdict_accuracy)}${delta(r, 'verdict_accuracy')}</td>
+      <td style="text-align:right;color:var(--text-dim);">${r.tp ?? '—'}/${r.fp ?? '—'}/${r.fn ?? '—'}</td>
+    </tr>
+    <tr id="calDetail${i}" style="display:none;"><td colspan="8" style="padding:8px 12px;background:var(--bg);">${calDetailHtml(r)}</td></tr>`;
+  const ordered = [...refs, ...rest];
+  box.innerHTML = `
+    <table class="data-table" style="width:100%;font-size:11px;">
+      <thead><tr>
+        <th>scored</th><th>source</th><th>model</th><th>engine</th>
+        <th style="text-align:right;" title="tp/(tp+fp) — how much noise a reader wades through">precision</th>
+        <th style="text-align:right;" title="tp/(tp+fn) — seeded gaps found by id">recall</th>
+        <th style="text-align:right;">verdicts</th>
+        <th style="text-align:right;">tp/fp/fn</th>
+      </tr></thead>
+      <tbody>${ordered.map((r, i) => tr(r, i)).join('')}</tbody>
+    </table>
+    <div style="font-size:10px;color:var(--text-faint);margin-top:8px;">Deltas are vs the top reference row. Click a row for its per-UC detail.</div>`;
+}
+function calToggleDetail(i) {
+  const el = document.getElementById(`calDetail${i}`);
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+function calDetailHtml(r) {
+  let det = r.detail;
+  if (typeof det === 'string') { try { det = JSON.parse(det); } catch { det = null; } }
+  if (!Array.isArray(det) || !det.length) return '<span style="color:var(--text-faint);font-size:10px;">no per-UC detail stored</span>';
+  const row = d => {
+    // server detail rows are dicts; the repo scorer's are positional lists — accept both
+    const uc = d.uc ?? d[0], verdict = d.verdict ?? d[1];
+    const found = d.found ?? d[2] ?? [], missed = d.missed ?? d[3] ?? [], noise = d.noise ?? d[4] ?? [];
+    const vOk = d.verdict_ok !== undefined ? d.verdict_ok : !String(verdict).includes('want');
+    return `<tr>
+      <td style="font-family:monospace;font-size:10px;">${esc(String(uc))}</td>
+      <td style="color:${vOk ? 'var(--green)' : 'var(--red)'};">${esc(String(verdict))}${d.expected_verdict && !vOk ? ` <span style="color:var(--text-faint);">want ${esc(d.expected_verdict)}</span>` : ''}</td>
+      <td style="color:var(--green);">${(found || []).map(x => esc(String(x))).join(', ') || '—'}</td>
+      <td style="color:var(--red);">${(missed || []).map(x => esc(String(x))).join(', ') || '—'}</td>
+      <td style="color:var(--amber,gold);font-size:10px;">${(noise || []).map(x => esc(String(x))).join(', ') || '—'}</td>
+    </tr>`;
+  };
+  return `<table style="width:100%;font-size:10px;">
+    <thead><tr><th>use case</th><th>verdict</th><th>found</th><th>missed</th><th>noise</th></tr></thead>
+    <tbody>${det.map(row).join('')}</tbody></table>`;
 }
 async function pmInit() {
   const sel = document.getElementById('pmStage');
