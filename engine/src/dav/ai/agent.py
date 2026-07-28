@@ -1257,6 +1257,18 @@ class Stage2Agent:
                     f"gap capability_id(s) {bad} are not catalog ids — use one of the "
                     f"supplied known capability ids or omit the field")
 
+        # Derived verdicts: the criteria vector is REQUIRED on refuse UCs when
+        # the flag asked for it — but the guided schema that requires it only
+        # attaches on the budget/retry turn (same shape as the capability-id
+        # enum, #96). An early final without criteria must fail validation so
+        # the response re-emits under the schema that makes omission impossible.
+        if self._wants_criteria(use_case) and not analysis.criteria:
+            raise AgentError(
+                "refusal-contract criteria vector missing — emit the `criteria` "
+                "array answering all five elements (typed, actionable, "
+                "non_leaking, auditable, whole) per the DERIVED VERDICTS "
+                "instruction")
+
         # Validate rationale coverage (§5.1 of requirements)
         self._warn_on_empty_rationales(analysis)
         return analysis

@@ -162,3 +162,25 @@ def test_wants_criteria_gates_on_flag_and_semantics():
     assert agent._wants_criteria(_real_uc("compute/vm-basic")) is False
     agent.config = AgentConfig(derived_verdicts=False)
     assert agent._wants_criteria(_real_uc("must-reject/x-refused")) is False
+
+
+def test_full_merge_with_criteria_derives_and_logs():
+    """End-to-end through merge_analyses: samples carrying criteria must (a)
+    not crash (the first E6 battery lost every must-reject UC to a NameError
+    in the ensemble's new logging line), and (b) produce the criteria-derived
+    verdict on the merged analysis."""
+    from dav.core.ensemble import merge_analyses
+    from dav.tests.test_ensemble import _analysis
+
+    samples = []
+    for _ in range(3):
+        a = _analysis(verdict="partially_supported")
+        a.criteria = [_c(c, "true") for c in REFUSAL_CRITERIA[:-1]] + \
+                     [_c("whole", "false", ref="")]
+        samples.append(a)
+    merged = merge_analyses(samples, sample_seeds=[1, 2, 3])
+    # any quorum-backed false → not_supported, regardless of what samples asserted
+    assert merged.summary.verdict == "not_supported"
+    assert {c.id for c in merged.criteria} == set(REFUSAL_CRITERIA)
+    whole = next(c for c in merged.criteria if c.id == "whole")
+    assert (whole.satisfied, whole.consensus) == ("false", "3/3")

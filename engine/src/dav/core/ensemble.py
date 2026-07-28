@@ -60,7 +60,11 @@ from dav.core.use_case_schema import (
     SeverityDescriptor, ConfidenceDescriptor,
     Verdict, normalize_confidence, normalize_severity,
 )
+import logging
+
 from dav.core.verdict_rules import derive_verdict
+
+log = logging.getLogger(__name__)
 
 # --- Canonicalization (extracted for reuse; mirrors compare.py's logic) ---
 # We keep this aligned with compare.py's _canonicalize. If compare.py's
