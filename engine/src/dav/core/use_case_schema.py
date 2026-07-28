@@ -556,6 +556,12 @@ class Scenario:
     dimensions: Dimensions
     profile: str
     expected_domain_interactions: list[DomainInteraction] = field(default_factory=list)
+    # Multi-perspective analysis (ADR-011): additional stakeholder lenses this
+    # UC must be analyzed from, beyond actor.persona. Values come from the
+    # corpus-published PERSONAS.yaml (canonical ids or folded aliases).
+    # Validation-neutral here: unknown values are surfaced by lens derivation
+    # (lens_ids_for_uc), never turned into quarantine — see ConsumerProfile.personas.
+    perspectives: list[str] = field(default_factory=list)
 
     def validate(self, consumer_profile=None) -> list[str]:
         if consumer_profile is None:
@@ -683,6 +689,7 @@ class UseCase:
             dimensions=dimensions,
             profile=scenario_data["profile"],
             expected_domain_interactions=expected,
+            perspectives=list(scenario_data.get("perspectives") or []),
         )
         generated_by = GeneratedBy(**_known_fields(GeneratedBy, data["generated_by"],
                                                    where=f"use_case[{data.get('handle', '?')}].generated_by"))
