@@ -110,10 +110,17 @@ def engine_commit_string() -> str:
         marker = ancestor / "BUILD_COMMIT"
         if marker.exists():
             try:
-                _ENGINE_COMMIT_CACHE = marker.read_text().strip()
-                return _ENGINE_COMMIT_CACHE
+                value = marker.read_text().strip()
             except OSError:
                 break
+            # The repo carries BUILD_COMMIT as an "unknown" placeholder so the
+            # Containerfile COPY never fails; a placeholder is a miss, not an
+            # answer — dev checkouts fall through to git and keep real
+            # provenance.
+            if value and value != "unknown":
+                _ENGINE_COMMIT_CACHE = value
+                return _ENGINE_COMMIT_CACHE
+            break
     root = _engine_repo_root()
     _ENGINE_COMMIT_CACHE = _run_git(["rev-parse", "HEAD"], root)
     return _ENGINE_COMMIT_CACHE

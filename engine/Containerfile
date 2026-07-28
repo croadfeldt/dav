@@ -32,10 +32,21 @@ COPY src/ ./src/
 RUN pip install --no-cache-dir -e .
 
 # Bake the commit where version.py's upward walk finds it (/engine is an
-# ancestor of src/dav/core/version.py). Built images carry no .git, so without
-# this every analysis stamped engine_commit="" and the deploy had no way to
-# prove the running engine is the merged code.
-RUN printf '%s' "${DAV_REPO_COMMIT}" > /engine/BUILD_COMMIT
+# ancestor of src/dav/core/version.py). Two mechanisms, file wins:
+#
+# 1. COPY from the build context. The Ansible role writes the real SHA into
+#    the context before oc start-build; the repo carries an "unknown"
+#    placeholder so non-Ansible builds don't fail the COPY. This path cannot
+#    be dropped by tooling.
+# 2. The build-arg overwrite, kept for whenever it works — the deploy
+#    assertion's FIRST live run revealed that `oc start-build --build-arg`
+#    has been silently dropped for this BuildConfig since the labels were
+#    added: build specs carry no buildArgs, so the OCI revision label has
+#    read "unknown" the whole time and nobody could tell until something
+#    asserted on it. The guard keeps a defaulted arg from clobbering the
+#    real file.
+COPY BUILD_COMMIT /engine/BUILD_COMMIT
+RUN [ "${DAV_REPO_COMMIT}" != "unknown" ] && printf '%s' "${DAV_REPO_COMMIT}" > /engine/BUILD_COMMIT || true
 
 # dav is importable as a package (and pip install -e also sets the
 # right paths), but we also set PYTHONPATH explicitly for any scripts
