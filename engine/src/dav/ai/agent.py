@@ -1212,6 +1212,26 @@ class Stage2Agent:
         except (KeyError, TypeError) as e:
             raise AgentError(f"final analysis missing required fields: {e}") from e
 
+        # Gap identity: when the profile carries catalog ids, an off-catalog
+        # capability_id is a VALIDATION FAILURE, not a value to pass through.
+        # Why here: the enum that would prevent it lives in the guided schema,
+        # and the guided schema only attaches on the budget-exhaustion turn —
+        # the healthy early-final path is unconstrained, and models fill the
+        # id-shaped hole with id-shaped text (measured: 'CREDENTIAL_INLINE', a
+        # spec reason code, with 14 catalog ids supplied and 0 used). Raising
+        # routes the response through the existing re-emit-with-guided-schema
+        # retry, where the enum makes a wrong id grammatically impossible.
+        # An EMPTY capability_id stays legal: unmapped gaps are taxonomy-gap
+        # candidates by design, and forcing a tag would manufacture identity.
+        known = set(getattr(self.consumer_profile, "known_capability_ids", None) or [])
+        if known:
+            bad = sorted({g.capability_id for g in analysis.gaps_identified
+                          if g.capability_id and g.capability_id not in known})
+            if bad:
+                raise AgentError(
+                    f"gap capability_id(s) {bad} are not catalog ids — use one of the "
+                    f"supplied known capability ids or omit the field")
+
         # Validate rationale coverage (§5.1 of requirements)
         self._warn_on_empty_rationales(analysis)
         return analysis
