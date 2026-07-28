@@ -3470,9 +3470,28 @@ async def list_runs(request: Request, limit: int = Query(50, ge=1, le=200), show
                 runid_by_name[row["run_name"]] = dict(row)
         except Exception as e:
             log.warning("list_runs session join failed: %s", e)
+    # Live progress for ACTIVE runs (masthead pill + list): the session columns
+    # (uc_scope_total / uc_succeeded / uc_failed) only populate at finalize and
+    # ingest, so an in-flight run aggregated to "0/0 UC" in the pill while the
+    # detail panel's log-derived progress correctly read "4/12" (observed on the
+    # E2 battery run). Attach the same run-progress.yaml source the detail uses,
+    # one batched correlation for all active runs.
+    _live_progress: dict = {}
+    if any(r.get("phase") not in TERMINAL_PHASES for r in runs if r.get("name")):
+        try:
+            async with pool.acquire() as _lc:
+                _live_progress = await _correlate_all_inflight(_lc)
+        except Exception as e:
+            log.info("list_runs: inflight progress correlation failed: %s", e)
     for r in runs:
         ar = runid_by_name.get(r.get("name")) or {}
         r["run_id"] = ar.get("run_id")   # null until analysis is ingested
+        _lp = _live_progress.get(r.get("name"))
+        if _lp and r.get("phase") not in TERMINAL_PHASES:
+            r["progress"] = {"total_ucs": _lp.get("total_ucs"),
+                             "completed": _lp.get("completed"),
+                             "succeeded": _lp.get("succeeded"),
+                             "failed": _lp.get("failed")}
         # UCs the engine dropped before the analyze pass (load / profile-validation
         # failure). Surfaced so a run that silently analyzed less than the operator
         # asked for is visible in the list instead of only in run_summary.json.
@@ -4107,6 +4126,14 @@ async def runs_stats():
 
 async def _correlate_inflight_progress(name: str, started_iso: Optional[str], conn,
                                        tolerance_seconds: int = 900) -> Optional[dict]:
+    """Single-run wrapper over _correlate_all_inflight (kept for the run-detail path)."""
+    assigned = await _correlate_all_inflight(conn, extra_run=(name, started_iso),
+                                             tolerance_seconds=tolerance_seconds)
+    return assigned.get(name)
+
+
+async def _correlate_all_inflight(conn, extra_run: "tuple[str, Optional[str]] | None" = None,
+                                  tolerance_seconds: int = 900) -> dict:
     """Correlate a PipelineRun to its DISTINCT in-flight workspace run-dir among concurrent runs.
 
     The engine generates its own workspace run_id and does NOT record the PipelineRun name, so there
@@ -4129,15 +4156,17 @@ async def _correlate_inflight_progress(name: str, started_iso: Optional[str], co
             return None
     dirs = _results.list_inflight_progress()
     if not dirs:
-        return None
+        return {}
     try:
         active = await asyncio.to_thread(validations.list_recent, 50)
     except Exception:
         active = []
     runs: list[tuple] = [(r.get("name"), _p(r.get("started_at") or r.get("created_at")))
                          for r in active if r.get("phase") not in TERMINAL_PHASES and r.get("name")]
-    if not any(n == name for (n, _t) in runs):
-        runs.append((name, _p(started_iso)))
+    if extra_run is not None:
+        name, started_iso = extra_run
+        if not any(n == name for (n, _t) in runs):
+            runs.append((name, _p(started_iso)))
     # Expected UC count per run (the deterministic key) from its trigger payload / set.
     exp: dict = {}
     try:
@@ -4191,7 +4220,7 @@ async def _correlate_inflight_progress(name: str, started_iso: Optional[str], co
             continue
         assigned[rn] = dd
         claimed.add(drid)
-    return assigned.get(name)
+    return assigned
 
 
 @app.get("/api/runs/{name}/turns")
