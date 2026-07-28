@@ -958,6 +958,10 @@ class GapIdentified:
     # same six must-reject UCs went 4 gaps / 5 `supported` at n=1 to 20 gaps /
     # 0 `supported` at n=3, purely from union growth.
     consensus: str = ""
+    # Multi-lens (ADR-011): which persona lenses surfaced this gap. Empty =
+    # single-lens analysis (every pre-multi-lens file). Cross-lens agreement
+    # ("3 personas independently flagged this") is display signal, never a gate.
+    personas: list[str] = field(default_factory=list)
 
     @property
     def quorum_backed(self) -> bool:
@@ -1008,6 +1012,8 @@ class GapIdentified:
         # when-set rule as capability_id, same reason.
         if self.consensus:
             d["consensus"] = self.consensus
+        if self.personas:
+            d["personas"] = list(self.personas)
         return d
 
     @classmethod
@@ -1028,6 +1034,7 @@ class GapIdentified:
             title=data.get("title", ""),
             capability_id=(data.get("capability_id") or "").strip(),
             consensus=(data.get("consensus") or "").strip(),
+            personas=list(data.get("personas") or []),
         )
 
 @dataclass

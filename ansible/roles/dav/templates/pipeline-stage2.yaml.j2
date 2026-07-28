@@ -126,6 +126,10 @@ spec:
     - name: criterion-anchor
       type: string
       default: ""
+    # ADR-011 multi-lens. Battery-gated.
+    - name: multi-lens
+      type: string
+      default: ""
     # Managed-UC test eval: fetch UC YAML from the console API instead
     # of requiring the UC to be in the corpus repo. Used pre-promotion.
     - name: managed-uc-uuids
@@ -341,6 +345,8 @@ spec:
           value: $(params.derived-verdicts)
         - name: criterion-anchor
           value: $(params.criterion-anchor)
+        - name: multi-lens
+          value: $(params.multi-lens)
         - name: managed-uc-uuids
           value: $(params.managed-uc-uuids)
         - name: console-api-url

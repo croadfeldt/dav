@@ -682,3 +682,79 @@ def _print_summary(
 
 if __name__ == "__main__":
     _cli()
+
+
+def run_samples_multi_lens(
+    use_case: UseCase,
+    inference_factory: Callable[[], InferenceClient],
+    mcp_factory: Callable[[], McpClient],
+    config: AgentConfig,
+    lenses: list[dict],
+    sample_seeds: list[int] | None = None,
+    consumer_profile=None,
+    consumer_content_path=None,
+    turns_log_path: "Path | None" = None,
+    pass1_inference_factory: "Callable[[], InferenceClient] | None" = None,
+) -> "dict[str, list[Analysis]]":
+    """ADR-011 multi-lens sampling: each sample runs ONE shared pass-1 and a
+    pass-2 per lens (Stage2Agent.analyze_multi_lens). Returns
+    {persona_id: [Analysis per sample, seed order]} so the caller can apply
+    quorum WITHIN each lens (merge_analyses per lens) and union across.
+
+    Mirrors run_samples' concurrency contract: one agent + McpClient per
+    sample, shared InferenceClient, results in seed order.
+    """
+    n = config.sample_count
+    if n < 1:
+        raise ValueError(f"sample_count must be >= 1, got {n}")
+    if sample_seeds is None:
+        sample_seeds = ([config.seed + i for i in range(n)]
+                        if config.seed is not None else list(range(n)))
+    if len(sample_seeds) != n:
+        raise ValueError(f"sample_seeds length {len(sample_seeds)} != sample_count {n}")
+
+    inference = inference_factory()
+    inference_pass1 = pass1_inference_factory() if pass1_inference_factory else None
+
+    def _run_one(seed: int) -> "dict[str, Analysis]":
+        mcp = mcp_factory()
+        per_sample = None
+        if turns_log_path is not None:
+            if str(turns_log_path).endswith(".jsonl"):
+                per_sample = turns_log_path.with_name(
+                    turns_log_path.stem + f".seed-{seed}.jsonl")
+            else:
+                turns_log_path.mkdir(parents=True, exist_ok=True)
+                per_sample = turns_log_path / f"{use_case.uuid}.seed-{seed}.jsonl"
+        agent = Stage2Agent(
+            inference=inference, mcp=mcp, config=config,
+            consumer_profile=consumer_profile,
+            consumer_content_path=consumer_content_path,
+            turns_log_path=per_sample,
+            inference_pass1=inference_pass1,
+        )
+        agent._sample_seed = seed
+        by_lens = agent.analyze_multi_lens(use_case, lenses)
+        if config.tag_untagged and getattr(consumer_profile, "capability_catalog_names", None):
+            from dav.ai.gap_tagger import tag_untagged_gaps
+            for a in by_lens.values():
+                tag_untagged_gaps(a, consumer_profile.capability_catalog_names,
+                                  inference, seed=seed)
+        return by_lens
+
+    results_by_seed: "dict[int, dict[str, Analysis]]" = {}
+    if config.sample_concurrency <= 1 or n == 1:
+        for seed in sample_seeds:
+            results_by_seed[seed] = _run_one(seed)
+    else:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=config.sample_concurrency) as ex:
+            futs = {ex.submit(_run_one, seed): seed for seed in sample_seeds}
+            for f in as_completed(futs):
+                results_by_seed[futs[f]] = f.result()
+
+    out: "dict[str, list[Analysis]]" = {}
+    for seed in sample_seeds:
+        for pid, analysis in results_by_seed[seed].items():
+            out.setdefault(pid, []).append(analysis)
+    return out

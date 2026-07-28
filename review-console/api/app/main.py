@@ -1708,6 +1708,8 @@ class RunTriggerIn(BaseModel):
     # E4 criterion anchor: scope gap reporting to the UC's success criteria.
     # None/False = off; battery-gated.
     criterion_anchor: Optional[bool] = None
+    # ADR-011 multi-lens analysis. None/False = off; battery-gated.
+    multi_lens: Optional[bool] = None
     # Per-request inference HTTP timeout, forwarded as Tekton param
     # request-timeout-seconds (task-side param lands with the engine PR).
     request_timeout_seconds: Optional[int] = Field(None, ge=1)
@@ -3927,6 +3929,7 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             derived_verdicts=payload.derived_verdicts,
             criterion_anchor=(payload.criterion_anchor
                               if payload.criterion_anchor is not None else True),
+            multi_lens=payload.multi_lens,
             stage2_two_pass=payload.stage2_two_pass,
             max_tokens=payload.max_tokens,
             grounding_nudge=(None if payload.grounding_nudge is None

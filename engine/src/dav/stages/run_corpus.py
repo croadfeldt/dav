@@ -151,8 +151,13 @@ def gather_corpus(corpus_path: Path) -> list[Path]:
         and not f.name.startswith(".")
         # The multi-corpus git-sync task drops a corpus-manifest.yaml at
         # the corpus root (source provenance + clone status); it's run
-        # metadata, not a UC.
+        # metadata, not a UC. The corpus-published artifacts (dimension
+        # vocabulary, personas) live beside the UCs by design — the engine
+        # READS them at run start; gathering them as UCs would just
+        # quarantine noise every run.
         and f.name != "corpus-manifest.yaml"
+        and f.name != "DIMENSION-VOCABULARY.yaml"
+        and f.name != "PERSONAS.yaml"
     ]
     return sorted(files)
 
@@ -364,19 +369,52 @@ def run_one_uc(
     # Pass the dir; run_samples derives per-seed file names from use_case.uuid
     turns_path = turns_dir
 
+    # ADR-011 multi-lens: resolve the UC's lens set when enabled. Personas
+    # come from the corpus-published artifact on the profile; unknown values
+    # were already reported by lens derivation. Falls back to single-lens
+    # whenever <2 lenses resolve — byte-identical behavior.
+    _lenses: list = []
+    # Verification only: explore wants raw per-sample variance and reproduce
+    # wants byte-determinism — neither composes with per-lens synthesis yet.
+    if mode == "verification" and config.multi_lens and getattr(consumer_profile, "personas", None):
+        from dav.core.consumer_profile import lens_ids_for_uc
+        _ids, _unknown = lens_ids_for_uc(
+            consumer_profile, use_case.scenario.actor.persona,
+            getattr(use_case.scenario, "perspectives", None))
+        if _unknown:
+            log.warning("UC %s: unknown persona value(s) %s ignored for lens set",
+                        use_case.handle, _unknown)
+        _by_id = {p["id"]: p for p in consumer_profile.personas}
+        _lenses = [_by_id[i] for i in _ids if i in _by_id]
+
     # Run samples
     try:
-        samples = run_samples(
-            pass1_inference_factory=pass1_inference_factory,
-            use_case=use_case,
-            inference_factory=inference_factory,
-            mcp_factory=mcp_factory,
-            config=config_for_uc,
-            sample_seeds=sample_seeds,
-            consumer_profile=consumer_profile,
-            consumer_content_path=consumer_content_path,
-            turns_log_path=turns_path,
-        )
+        if len(_lenses) > 1:
+            from dav.stages.stage2_analyze import run_samples_multi_lens
+            samples = run_samples_multi_lens(
+                pass1_inference_factory=pass1_inference_factory,
+                use_case=use_case,
+                inference_factory=inference_factory,
+                mcp_factory=mcp_factory,
+                config=config_for_uc,
+                lenses=_lenses,
+                sample_seeds=sample_seeds,
+                consumer_profile=consumer_profile,
+                consumer_content_path=consumer_content_path,
+                turns_log_path=turns_path,
+            )
+        else:
+            samples = run_samples(
+                pass1_inference_factory=pass1_inference_factory,
+                use_case=use_case,
+                inference_factory=inference_factory,
+                mcp_factory=mcp_factory,
+                config=config_for_uc,
+                sample_seeds=sample_seeds,
+                consumer_profile=consumer_profile,
+                consumer_content_path=consumer_content_path,
+                turns_log_path=turns_path,
+            )
     except Exception as e:
         return CorpusUcResult(
             uc_uuid=use_case.uuid, uc_handle=use_case.handle, uc_path=uc_path,
@@ -407,8 +445,20 @@ def run_one_uc(
             sample_count=sample_count,
         )
 
+    # ADR-011 multi-lens: when enabled and the UC resolves >1 lens, each
+    # sample ran one shared pass-1 + per-lens pass-2; apply quorum WITHIN
+    # each lens, then union across lenses (findings tagged by persona).
+    if mode == "verification" and isinstance(samples, dict):
+        from dav.core.consumer_profile import get_default_profile
+        from dav.core.ensemble import union_lens_merges
+        lens_merged = {pid: merge_analyses(lens_samples, sample_seeds=sample_seeds)
+                       for pid, lens_samples in samples.items()}
+        actor = next(iter(samples))     # insertion order: actor lens first
+        merged = union_lens_merges(lens_merged, actor)
+        log.info("multi-lens union: %d lens(es), %d primary / %d advisory gap(s)",
+                 len(lens_merged), len(merged.gaps_identified), len(merged.advisory_gaps))
     # verification or reproduce
-    if mode == "verification":
+    elif mode == "verification":
         # ALWAYS through the merge, including n=1. The n>1 gate meant a single
         # sample bypassed every derivation rule — measured: the E6 n=1 battery's
         # chain UCs carried a cited `false` criterion (whole/typed) and still
@@ -866,6 +916,13 @@ def _cli():
              "battery-gated.",
     )
     parser.add_argument(
+        "--multi-lens", action="store_true", default=False,
+        help="ADR-011 multi-lens analysis: shared pass-1, per-lens pass-2 over "
+             "{actor.persona} ∪ scenario.perspectives; quorum within lens, "
+             "union across lenses, findings tagged by persona. Requires the "
+             "corpus-published PERSONAS.yaml. Default off; battery-gated.",
+    )
+    parser.add_argument(
         "--tag-untagged-gaps", action="store_true", default=False,
         help="E1: after each sample, classify untagged gaps onto the catalog "
              "with a cheap enum-constrained call (see dav.ai.gap_tagger). "
@@ -1213,6 +1270,7 @@ def _cli():
         sample_concurrency=args.sample_concurrency,
         tag_untagged=args.tag_untagged_gaps,
         derived_verdicts=args.derived_verdicts,
+        multi_lens=args.multi_lens,
     )
 
     chat_template_kwargs = {"enable_thinking": False} if args.no_enable_thinking else None

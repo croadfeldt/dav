@@ -198,6 +198,10 @@ class AgentConfig:
     # model emits a per-criterion evidence vector (ADR-003's five elements) and
     # the ENGINE derives the verdict from it. Default OFF; battery-gated.
     derived_verdicts: bool = False
+    # ADR-011 multi-lens: shared pass-1, per-lens pass-2 over the UC's lens
+    # set ({actor.persona} ∪ scenario.perspectives), quorum within lens,
+    # union across lenses. Default OFF; battery-gated.
+    multi_lens: bool = False
 
 class Stage2Agent:
     """
@@ -1023,6 +1027,71 @@ class Stage2Agent:
             )
             self._emit_findings_only = False
             return self.analyze(use_case)
+        finally:
+            self._two_pass_active = False
+            self._pass_label = None
+            self._sys_prompt_override = None
+            self._user_prompt_override = None
+            self._emit_findings_only = False
+
+    def analyze_multi_lens(self, use_case: UseCase, lenses: list[dict]) -> "dict[str, Analysis]":
+        """ADR-011 multi-lens: ONE pass-1 exploration, then pass-2 per lens.
+
+        `lenses` are corpus-published persona entries (id/tier/framing/
+        objectives). Returns {persona_id: Analysis}. The caller owns the
+        merge discipline: quorum WITHIN a lens (repeated samples), union
+        ACROSS lenses — a gap only the auditor sees is the point, never
+        1-of-N noise (docs/persona-perspective-analysis.md).
+
+        Pass-1 is the expensive phase (MCP exploration, ~60% of wall-clock)
+        and is lens-neutral by design — it retrieves and summarizes; the
+        LENS is a judgment frame, which is pass-2's job. Sharing pass-1 is
+        what makes N lenses affordable.
+        """
+        from .prompts import (
+            build_lens_block,
+            build_pass1_findings_system_prompt,
+            build_pass2_analysis_system_prompt,
+            build_pass2_user_prompt,
+        )
+
+        log.info("stage2 multi-lens beginning for %s: %s",
+                 use_case.uuid, [p.get("id") for p in lenses])
+        self._two_pass_active = True
+        try:
+            self._pass_label = "pass1"
+            self._sys_prompt_override = build_pass1_findings_system_prompt(self.consumer_profile)
+            if self._uc_spec_namespaces:
+                self._sys_prompt_override += (
+                    "\n\n## Per-UC spec source scope (HARD)\n"
+                    f"This use case declares `spec_namespaces: "
+                    f"{self._uc_spec_namespaces}`.")
+            self._user_prompt_override = None
+            self._emit_findings_only = True
+            findings_str = self.analyze(use_case)
+
+            out: dict = {}
+            for persona in lenses:
+                self._reset_between_passes()
+                self._pass_label = "pass2"
+                self._sys_prompt_override = build_pass2_analysis_system_prompt(self.consumer_profile)
+                if self._uc_spec_namespaces:
+                    self._sys_prompt_override += (
+                        "\n\n## Per-UC spec source scope (HARD)\n"
+                        f"Same constraint as pass 1: spec_namespaces="
+                        f"{self._uc_spec_namespaces}.")
+                self._user_prompt_override = (
+                    build_pass2_user_prompt(
+                        use_case, findings_str, self.consumer_profile,
+                        emit_criteria=self._wants_criteria(use_case))
+                    + build_lens_block(persona))
+                self._emit_findings_only = False
+                analysis = self.analyze(use_case)
+                pid = persona.get("id", "?")
+                for g in analysis.gaps_identified:
+                    g.personas = [pid]
+                out[pid] = analysis
+            return out
         finally:
             self._two_pass_active = False
             self._pass_label = None

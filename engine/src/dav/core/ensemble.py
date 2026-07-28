@@ -423,6 +423,53 @@ def _aggregate_metadata(samples: list[Analysis], seeds: list[int]) -> AnalysisMe
 
 
 
+def union_lens_merges(lens_merged: "dict[str, Analysis]", actor_lens: str) -> Analysis:
+    """ADR-011 union-across-lenses: one Analysis from per-lens quorum merges.
+
+    The design rule this encodes: quorum applies WITHIN a lens (repeated
+    samples of the same persona); across lenses findings merge by UNION,
+    tagged with every persona that surfaced them — a gap only the auditor
+    sees is the point, and cross-lens agreement is display signal
+    ("3 personas independently flagged this"), never a gate.
+
+    Verdict/criteria/metadata come from the ACTOR lens (the UC's own
+    persona); persona-qualified verdicts are the epic's later increment,
+    gated on the ADR-003 adjudication.
+    """
+    base = lens_merged[actor_lens]
+    def key(g):
+        cap = (getattr(g, "capability_id", "") or "").strip().lower()
+        return ("cap", cap) if cap else ("title", canonicalize(g.title or g.description))
+    primary: "dict = {}"
+    primary = {}
+    advisory = {}
+    for pid, analysis in lens_merged.items():
+        for pool, gaps in ((primary, analysis.gaps_identified),
+                           (advisory, analysis.advisory_gaps)):
+            for g in gaps:
+                k = key(g)
+                if k in pool:
+                    seen = pool[k].personas or []
+                    for x in (g.personas or [pid]):
+                        if x not in seen:
+                            seen.append(x)
+                    pool[k].personas = seen
+                else:
+                    if not g.personas:
+                        g.personas = [pid]
+                    pool[k] = g
+    # A gap that reached quorum in ANY lens is primary; drop its advisory twin.
+    for k in list(advisory.keys()):
+        if k in primary:
+            for x in (advisory[k].personas or []):
+                if x not in (primary[k].personas or []):
+                    primary[k].personas.append(x)
+            del advisory[k]
+    base.gaps_identified = list(primary.values())
+    base.advisory_gaps = list(advisory.values())
+    return base
+
+
 def merge_criteria_by_vote(samples: list) -> list:
     """Majority-vote each criterion id across ensemble samples.
 

@@ -24,6 +24,8 @@ scenario:
     governance_context: standard_governance
     failure_mode: happy_path
   profile: standard
+  perspectives:
+  - sre
 generated_by:
   mode: authoring
   source: human-authored
