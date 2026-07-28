@@ -228,3 +228,17 @@ dav_self_improve_scan_schedule: "37 */6 * * *"   # every 6h at :37
 review_console_runs_trigger_enabled: true
 review_console_runs_pipeline_name: "dav-stage2"
 review_console_runs_pipelinerun_listing_label: "app.kubernetes.io/part-of=dav"
+
+# --- Nightly fixture battery (process ruling: validation is a trend) ---
+# Runs the ground-truth fixture suite against the PRODUCTION default model
+# nightly and stores precision/recall/verdict-accuracy in fixture_scores.
+# Requires the Secret named below (key: token) holding a DAV agent PAT —
+# minted out of band, never templated here.
+dav_fixture_battery_enabled: true
+dav_fixture_battery_schedule: "0 9 * * *"        # 09:00 UTC = 3am Central
+dav_fixture_battery_repo: "https://github.com/croadfeldt/dav.git"
+dav_fixture_battery_branch: "main"
+dav_fixture_battery_secret: "dav-fixture-cron"
+dav_fixture_battery_inference_url: "{{ inference_primary_endpoint | default('https://r9700.llm.ocp.roadfeldt.com/v1') }}"
+dav_fixture_battery_project: "760"
+dav_fixture_battery_sample_count: 3

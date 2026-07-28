@@ -1,0 +1,44 @@
+---
+# Nightly fixture battery CronJob (process ruling: validation is a trend,
+# not an event). The battery runs the ground-truth fixture suite against the
+# production default model and stores scores in fixture_scores; regressions
+# arrive with the engine_commit that caused them.
+#
+# The API PAT secret is minted out of band (a DAV agent PAT, key: token).
+# We warn rather than create: a playbook-created placeholder would make the
+# CronJob fail at 3am instead of at deploy time, in front of nobody.
+
+- name: Check the fixture-battery PAT secret exists
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: "{{ dav_fixture_battery_secret }}"
+    namespace: "{{ dav_namespace }}"
+  register: fixture_battery_secret_info
+  when: dav_fixture_battery_enabled | bool
+
+- name: Warn when the PAT secret is missing (battery will CrashLoop until created)
+  ansible.builtin.debug:
+    msg: >-
+      Secret {{ dav_fixture_battery_secret }} not found in {{ dav_namespace }}.
+      Mint a DAV agent PAT and run:
+      oc -n {{ dav_namespace }} create secret generic
+      {{ dav_fixture_battery_secret }} --from-literal=token=<PAT>
+  when:
+    - dav_fixture_battery_enabled | bool
+    - fixture_battery_secret_info.resources | default([]) | length == 0
+
+- name: Deploy the fixture-battery CronJob
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lookup('template', 'fixture-battery-cronjob.yaml.j2') | from_yaml_all | select | list }}"
+  when: dav_fixture_battery_enabled | bool
+
+- name: Remove the fixture-battery CronJob when disabled
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: CronJob
+    name: dav-fixture-battery
+    namespace: "{{ dav_namespace }}"
+  when: not (dav_fixture_battery_enabled | bool)

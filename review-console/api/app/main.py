@@ -26,7 +26,7 @@ from typing import Optional, Union
 import asyncpg
 import httpx
 import yaml as _yaml
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -7625,6 +7625,78 @@ async def corpus_index_summary(request: Request,
             "predicted_quarantine": invalid,       # complete list, no silent cap
             "unvalidated": unvalidated,
             "by_namespace": by_ns}
+
+
+@app.post("/api/fixture-scores/compute")
+async def fixture_scores_compute(payload: dict = Body(...), request: Request = None):
+    """Score an ingested fixture run against caller-supplied ground truth and
+    persist the result (process ruling #1: validation is a trend, not an event).
+
+    The caller (the nightly battery runner, or an operator) supplies `expected`
+    — the parsed fixtures/expected/*.yaml — because expected/ deliberately is
+    NOT a corpus/spec role and so never enters the DB. Rows are pulled with the
+    catalog-PK→cap_key translation; scoring semantics are the repo scorer's,
+    ported to app.fixture_scoring with the contract documented there.
+    """
+    get_user(request)
+    run_id = (payload.get("run_id") or "").strip()
+    expected = payload.get("expected") or []
+    if not run_id or not expected:
+        raise HTTPException(400, "run_id and expected[] are required")
+    from app.fixture_scoring import score as _fx_score
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT a.uc_handle, coalesce(a.verdict,'') AS verdict,
+                      coalesce(cc.cap_key, g.catalog_capability_id::text, '') AS capability_id,
+                      coalesce(g.title,'') AS title
+               FROM uc_analyses a
+               LEFT JOIN uc_gaps g ON g.analysis_id = a.id
+               LEFT JOIN capability_catalog cc ON cc.id::text = g.catalog_capability_id::text
+               WHERE a.run_id = $1""", run_id)
+        if not rows:
+            raise HTTPException(404, f"no ingested analyses for run_id {run_id}")
+        meta = await conn.fetchrow(
+            """SELECT max(engine_commit) AS engine_commit, max(model) AS model,
+                      max(sample_count) AS sample_count
+               FROM uc_analyses WHERE run_id = $1""", run_id)
+        run_name = await conn.fetchval(
+            "SELECT run_name FROM analysis_runs WHERE run_id = $1 LIMIT 1", run_id)
+        result = _fx_score(expected, [dict(r) for r in rows])
+        await conn.execute(
+            """INSERT INTO fixture_scores
+               (run_id, run_name, model, sample_count, engine_commit,
+                precision_score, recall, verdict_accuracy,
+                tp, fp, fn, verdict_ok, verdict_total, detail, source, scored_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15, now())
+               ON CONFLICT (run_id) DO UPDATE SET
+                 precision_score=EXCLUDED.precision_score, recall=EXCLUDED.recall,
+                 verdict_accuracy=EXCLUDED.verdict_accuracy,
+                 tp=EXCLUDED.tp, fp=EXCLUDED.fp, fn=EXCLUDED.fn,
+                 verdict_ok=EXCLUDED.verdict_ok, verdict_total=EXCLUDED.verdict_total,
+                 detail=EXCLUDED.detail, source=EXCLUDED.source, scored_at=now()""",
+            run_id, run_name, meta["model"], meta["sample_count"],
+            meta["engine_commit"],
+            result["precision"], result["recall"], result["verdict_accuracy"],
+            result["tp"], result["fp"], result["fn"],
+            result["verdict_ok"], result["verdict_total"],
+            json.dumps(result["detail"]), (payload.get("source") or "manual"))
+    return {"ok": True, "run_id": run_id,
+            "engine_commit": meta["engine_commit"],
+            "precision": result["precision"], "recall": result["recall"],
+            "verdict_accuracy": result["verdict_accuracy"]}
+
+
+@app.get("/api/fixture-scores")
+async def fixture_scores_list(request: Request, limit: int = Query(30, le=200)):
+    """The trend: newest first, engine_commit attached to every row."""
+    get_user(request)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """SELECT run_id, run_name, model, sample_count, engine_commit,
+                      precision_score, recall, verdict_accuracy,
+                      tp, fp, fn, verdict_ok, verdict_total, source, scored_at
+               FROM fixture_scores ORDER BY scored_at DESC LIMIT $1""", limit)
+    return {"scores": [dict(r) | {"scored_at": r["scored_at"].isoformat()} for r in rows]}
 
 
 @app.get("/api/corpus/sync-status")

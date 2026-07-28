@@ -1,0 +1,78 @@
+{# Nightly fixture battery (process ruling #1: validation is a trend, not an
+   event). Clones the DAV repo, runs fixtures/nightly_battery.py — which
+   triggers a fixture run through the public API, waits for ingest, and posts
+   the score to /api/fixture-scores/compute. Ground truth (fixtures/expected/)
+   travels from the clone: it is deliberately never a corpus/spec role, so the
+   DB cannot leak the answer key into a run.
+
+   Uses the dav-engine image — git, python3 and pyyaml are already in it, and
+   it rebuilds with the tree, so the runner never drifts from the API.
+
+   The API PAT comes from the Secret {{ dav_fixture_battery_secret }} (key:
+   token), which is NOT managed here — mint a DAV agent PAT and create it:
+     oc -n {{ dav_namespace }} create secret generic {{ dav_fixture_battery_secret }} --from-literal=token=<PAT>
+   Vars: dav_fixture_battery_enabled / _schedule / _repo / _branch /
+   _inference_url / _project / _sample_count
+#}
+{% if dav_fixture_battery_enabled | bool %}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: dav-fixture-battery
+  namespace: {{ dav_namespace }}
+  labels:
+    app.kubernetes.io/part-of: dav
+    app.kubernetes.io/component: fixture-battery
+spec:
+  schedule: "{{ dav_fixture_battery_schedule }}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 600
+  jobTemplate:
+    spec:
+      backoffLimit: 0            # a failed battery is a signal, not a retry case
+      # runner polls up to 120 min; give the pod a hard ceiling just past that
+      activeDeadlineSeconds: 8400
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: dav
+            app.kubernetes.io/component: fixture-battery
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: battery
+              image: {{ dav_registry }}/dav-engine:latest
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  git clone --depth 1 --branch {{ dav_fixture_battery_branch }} \
+                    {{ dav_fixture_battery_repo }} /tmp/dav
+                  exec python3 /tmp/dav/fixtures/nightly_battery.py
+              env:
+                - name: DAV_API_URL
+                  value: "http://dav-review-api.{{ dav_namespace }}.svc:8000"
+                - name: DAV_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ dav_fixture_battery_secret }}
+                      key: token
+                - name: INFERENCE_URL
+                  value: "{{ dav_fixture_battery_inference_url }}"
+                - name: DAV_FIXTURES_PROJECT
+                  value: "{{ dav_fixture_battery_project }}"
+                - name: SAMPLE_COUNT
+                  value: "{{ dav_fixture_battery_sample_count }}"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+{% endif %}
