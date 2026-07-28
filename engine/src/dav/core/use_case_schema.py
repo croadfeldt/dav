@@ -1271,6 +1271,12 @@ class Analysis:
     # Derived verdicts: per-criterion evidence (empty unless the derived-verdicts
     # flag asked for it and the UC has refuse success-semantics).
     criteria: list[CriterionAnswer] = field(default_factory=list)
+    # E3 advisory split: sub-quorum findings (fewer than ⌈N/2⌉ samples agree).
+    # Kept and stored — they are taxonomy/roadmap material — but OUT of the
+    # primary pool a reader (and the precision math) consumes. Field evidence:
+    # 24 of 30 real-corpus findings a frontier judge rejected were
+    # 1/3-consensus retrieval hedges (F2 adjudication, 2026-07-28).
+    advisory_gaps: list[GapIdentified] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -1293,6 +1299,8 @@ class Analysis:
         }
         if self.criteria:
             out["criteria"] = [c.to_dict() for c in self.criteria]
+        if self.advisory_gaps:
+            out["advisory_gaps"] = [g.to_dict() for g in self.advisory_gaps]
         return out
 
     @classmethod
@@ -1328,6 +1336,7 @@ class Analysis:
             sample_annotations=sample_ann,
             assertion_result=assertion,
             criteria=[CriterionAnswer.from_dict(x) for x in data.get("criteria", [])],
+            advisory_gaps=[GapIdentified.from_dict(x) for x in data.get("advisory_gaps", [])],
         )
 
 # --- JSON Schema for LLM guided decoding ---

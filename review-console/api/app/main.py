@@ -7726,6 +7726,7 @@ async def fixture_scores_compute(payload: dict = Body(...), request: Request = N
                       coalesce(g.title,'') AS title
                FROM uc_analyses a
                LEFT JOIN uc_gaps g ON g.analysis_id = a.id
+                    AND NOT coalesce(g.advisory, false)
                LEFT JOIN capability_catalog cc ON cc.id::text = g.catalog_capability_id::text
                WHERE a.run_id = $1""", run_id)
         if not rows:
@@ -8440,6 +8441,11 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 consumer_version = a_meta.get("consumer_version")
                 infra = a_meta.get("infrastructure_confidence") or {}
                 gaps = analysis.get("gaps_identified") or []
+                # E3: sub-quorum findings ride in advisory_gaps — stored with
+                # the advisory flag so every primary consumer (scoring, UI
+                # primary lists) can exclude them without losing them.
+                for _ag in (analysis.get("advisory_gaps") or []):
+                    gaps.append({**_ag, "_advisory": True})
                 caps = analysis.get("capabilities_invoked") or []
             elif analysis and analysis.get("_source") == "explore":
                 # Use first sample's metadata
@@ -8584,8 +8590,8 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                        (analysis_id, run_id, uc_uuid, gap_id, title,
                         description, severity, recommendation, rationale,
                         namespace, catalog_capability_id, normalization_status,
-                        consensus)
-                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)""",
+                        consensus, advisory)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)""",
                     analysis_id, run_id, uc_uuid,
                     gap_id, title, desc, sev,
                     gap.get("recommendation"),
@@ -8594,6 +8600,7 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                     # Ensemble agreement ("k/n"). None for single-sample runs,
                     # where there is nothing to disagree with — NOT low agreement.
                     (gap.get("consensus") or None),
+                    bool(gap.get("_advisory")),
                 )
                 ingested_gaps += 1
 

@@ -574,6 +574,11 @@ def merge_analyses(
     # Sub-quorum gaps stay in gaps_merged (visible, ingested, available to the
     # roadmap) — they just do not vote.
     _voting_gaps = [g for g in gaps_merged if getattr(g, "quorum_backed", True)]
+    # E3: the sub-quorum remainder becomes the ADVISORY channel — stored and
+    # visible, but out of the primary pool. Field-measured: 24/30 real-corpus
+    # findings rejected by the F2 frontier judge were 1/3-consensus retrieval
+    # hedges ("not in retrieved sections") that the spec settles directly.
+    _advisory_gaps = [g for g in gaps_merged if not getattr(g, "quorum_backed", True)]
     _voted_criteria = merge_criteria_by_vote(samples)
     if _voted_criteria:
         # Derived verdicts: the criterion vector is the PRIMARY mechanism; the
@@ -635,9 +640,10 @@ def merge_analyses(
         capabilities_invoked=capabilities_merged,
         provider_types_involved=provider_types_merged,
         policy_modes_required=policy_modes_merged,
-        gaps_identified=gaps_merged,
+        gaps_identified=_voting_gaps,
         tool_call_trace=representative_trace,
         sample_annotations=sample_annotations,
         assertion_result=None,
         criteria=_voted_criteria,
+        advisory_gaps=_advisory_gaps,
     )

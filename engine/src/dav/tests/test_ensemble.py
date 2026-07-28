@@ -302,7 +302,7 @@ def test_merge_gaps_canonicalizes_descriptions():
               "gap consensus")
 
 def test_merge_gap_only_in_one_sample():
-    """A gap that appears in only 1 of N samples is still included; consensus 1/N."""
+    """A 1-of-N gap is kept in the ADVISORY channel (E3), never the primary pool."""
     g_unique = _gap("Edge case in modify flow", sev="moderate", conf="medium")
     samples = [
         _analysis(verdict="supported", gaps=[g_unique]),
@@ -310,7 +310,8 @@ def test_merge_gap_only_in_one_sample():
         _analysis(verdict="supported", gaps=[]),
     ]
     merged = merge_analyses(samples)
-    assert_eq(len(merged.gaps_identified), 1, "unique gap included")
+    assert_eq(len(merged.gaps_identified), 0, "sub-quorum gap out of the primary pool")
+    assert_eq(len(merged.advisory_gaps), 1, "unique gap kept as advisory")
     canon_key = canonicalize("Edge case in modify flow")
     assert_eq(merged.sample_annotations.gap_consensus[canon_key], "1/3",
               "low-consensus gap annotated")
