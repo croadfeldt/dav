@@ -79,6 +79,9 @@
       --build-arg=DAV_REPO_DIRTY={{ dav_repo_dirty }}
       -n {{ dav_namespace }}
       --wait
+    # Fail in 20 min, not 4h20m: a dead build (BuildPodDeleted, 2026-07-28)
+    # left --wait hanging on the corpse for the CronJob-less afternoon.
+    timeout: 1200
   register: engine_build_result
 
 - name: Report engine build
