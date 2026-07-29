@@ -17,7 +17,8 @@ Battery noise floor: ±2 verdicts between identical-config runs at n=1 battery._
 | E3 | advisory split (sub-quorum → advisory) | 1.000 | 0.300 | 0.583 | **precision axis closed** — primary pool is all true positives; every sub-quorum finding kept, labeled, visible. Merged #112, default on |
 | E1×E3 | tagger feeds quorum | **1.000** | **0.400** | **0.667** | **current operating point** — composition works: consistent tags merge same-UC fragments to quorum |
 | E1×E3 n=5 | more draws | 0.600 | 0.300 | 0.750 | **rejected**: consistent noise reaches 3-of-5 quorum; recall doesn't recover; +67% wall-clock |
-| E4 | criterion anchor (#113, open) | pending | | | prediction: R → ~0.6 with P holding — scattered finds converge on the UC whose criteria they block |
+| E4 | criterion anchor (#113, merged) | 0.750 | 0.600 | 0.667 | prediction hit on recall (0.4→0.6, full baseline recovered at quorum); the two residual fp are forbidden-control over-claims. With E4b guard (default path): 0.625/0.500/0.667 — E4b NEUTRAL at fixture granularity (±1-finding = ±0.1 P/R); kept, unclaimed |
+| E5 | multi-lens union (#118, merged; flag) | 0.667 | 0.600 | 0.583 | topline parity with the stack's best arm — the union's measured value is ATTRIBUTION: every primary finding cross-lens corroborated (2–3 personas, zero solo primaries), lens-unique concerns advisory with persona tags (gotchas gain the stakeholder dimension). Caveat: lenses share pass-1, so corroboration is partially correlated. Two invalid attempts preceded it: an ensemble NameError run and a stale-ConfigMap run (below) |
 
 ## The two structural findings behind the rows
 
@@ -43,3 +44,13 @@ quorum design: those hedges are advisory, not primary.
   `source='invalid'`.
 - `FIX-WHOLE-001` retired from the offered catalog (ruled-not-required; its presence
   manufactured the exact fp the model session pre-registered as a regression signal).
+
+## Incident appended 2026-07-29: the projection trap, measured
+
+Editing `managed_repos` in the DB does NOTHING until `POST /api/repos/project?role=corpus`
+regenerates the ConfigMap the sync task reads — the fixtures registration pointed at main in
+the DB while runs kept cloning the old branch from the stale projection, producing a
+mislabeled multi-lens row (invalidated in place). This is the run-source-resolution epic's
+star witness: the DB is ruled the source of truth; the projection step is the fork. Delivery
+gates for experiments are now two-signal (sync-log clone ref + engine feature log) and fail
+loudly on the wrong branch.
