@@ -215,6 +215,11 @@ function fmtDuration(startTs, endTs) {
   if (!startTs) return '—';
   const s = (endTs ? new Date(endTs) : new Date()) - new Date(startTs);
   const sec = Math.floor(s / 1000);
+  // Negative = inconsistent timestamps (observed: a run that failed during
+  // the apiserver outage showed "-15529s" — its completion predates the
+  // recorded start by the trigger-hang window). A nonsense number is worse
+  // than no number.
+  if (sec < 0) return '—';
   if (sec < 60) return `${sec}s`;
   const m = Math.floor(sec / 60), r = sec % 60;
   return r ? `${m}m ${r}s` : `${m}m`;

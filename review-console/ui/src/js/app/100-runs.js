@@ -751,11 +751,13 @@ function selectRun(name) {
   // it the current analysis run (drives Results/Architecture/Engineering + masthead).
   const _r = allRuns.find(x => x.name === name);
   if (_r && _r.run_id && _r.run_id !== activeRunResultId) selectRunResult(_r.run_id);
-  // Highlight in list
+  // Highlight in list — by the STABLE run name the rows already carry, never
+  // display text: matching on session_name text highlighted every retry of an
+  // identically-named run at once (screenshot 2026-07-28: two MULTI-LENS
+  // attempts both "selected"), and the && / || precedence made the fallback
+  // fire on unrelated rows.
   document.querySelectorAll('.run-list-item').forEach(el =>
-    el.classList.toggle('active', el.querySelector('.rli-main .rli-name') &&
-      allRuns.find(r => r.name === name)?.session_name === el.querySelector('.rli-name')?.textContent ||
-      el.querySelector('.rli-sub')?.textContent?.startsWith(name)));
+    el.classList.toggle('active', el.dataset.runName === name));
   renderRunsList(); // re-render to show active state
   // Show detail panel header + tabs
   document.getElementById('rdPanelHeader').style.display = '';
