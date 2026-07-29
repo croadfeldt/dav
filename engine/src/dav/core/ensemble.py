@@ -467,6 +467,10 @@ def union_lens_merges(lens_merged: "dict[str, Analysis]", actor_lens: str) -> An
             del advisory[k]
     base.gaps_identified = list(primary.values())
     base.advisory_gaps = list(advisory.values())
+    # ADR-003 GRADUATED (ruled 2026-07-29): every lens's verdict survives,
+    # keyed by persona. summary.verdict remains the actor's; "supported for
+    # the engineer, not_supported for the auditor" is now data.
+    base.persona_verdicts = {pid: a.summary.verdict for pid, a in lens_merged.items()}
     return base
 
 

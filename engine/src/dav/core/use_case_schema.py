@@ -1278,6 +1278,13 @@ class Analysis:
     # Derived verdicts: per-criterion evidence (empty unless the derived-verdicts
     # flag asked for it and the UC has refuse success-semantics).
     criteria: list[CriterionAnswer] = field(default_factory=list)
+    # ADR-003 GRADUATED ruling (Chris, 2026-07-29): support is stakeholder-
+    # relative. Each persona lens's quorum-merged verdict, keyed by persona id.
+    # The top-level summary.verdict stays the ACTOR lens's (the UC's own
+    # stakeholder — back-compatible with every scorer and consumer); the
+    # disagreement between lenses IS the finding, not noise to collapse.
+    persona_verdicts: dict = field(default_factory=dict)
+
     # E3 advisory split: sub-quorum findings (fewer than ⌈N/2⌉ samples agree).
     # Kept and stored — they are taxonomy/roadmap material — but OUT of the
     # primary pool a reader (and the precision math) consumes. Field evidence:
@@ -1308,6 +1315,8 @@ class Analysis:
             out["criteria"] = [c.to_dict() for c in self.criteria]
         if self.advisory_gaps:
             out["advisory_gaps"] = [g.to_dict() for g in self.advisory_gaps]
+        if self.persona_verdicts:
+            out["persona_verdicts"] = dict(self.persona_verdicts)
         return out
 
     @classmethod
@@ -1344,6 +1353,7 @@ class Analysis:
             assertion_result=assertion,
             criteria=[CriterionAnswer.from_dict(x) for x in data.get("criteria", [])],
             advisory_gaps=[GapIdentified.from_dict(x) for x in data.get("advisory_gaps", [])],
+            persona_verdicts=dict(data.get("persona_verdicts") or {}),
         )
 
 # --- JSON Schema for LLM guided decoding ---
