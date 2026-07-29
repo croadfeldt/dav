@@ -71,10 +71,16 @@ def _load_kube_config() -> None:
 
 
 def _api() -> client.CustomObjectsApi:
+    # Reload the in-cluster config on EVERY call, deliberately: bound SA
+    # tokens rotate (~1h) and the kubernetes client snapshots the token at
+    # config-load — a pod older than one rotation gets 401 Unauthorized on
+    # every trigger while a fresh read of the same mounted file works
+    # (measured 2026-07-28: curl with the token → 200, cached client → 401,
+    # which broke POST /api/runs with a 500). Config load is a file read —
+    # trivial next to creating a PipelineRun.
     global _custom_api
-    if _custom_api is None:
-        _load_kube_config()
-        _custom_api = client.CustomObjectsApi()
+    _load_kube_config()
+    _custom_api = client.CustomObjectsApi()
     return _custom_api
 
 
@@ -82,10 +88,10 @@ _authn_api: Optional[client.AuthenticationV1Api] = None
 
 
 def _authn() -> client.AuthenticationV1Api:
+    # Same token-rotation hazard as _api(); reload per call.
     global _authn_api
-    if _authn_api is None:
-        _load_kube_config()
-        _authn_api = client.AuthenticationV1Api()
+    _load_kube_config()
+    _authn_api = client.AuthenticationV1Api()
     return _authn_api
 
 
