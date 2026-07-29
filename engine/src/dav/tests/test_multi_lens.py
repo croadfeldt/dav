@@ -73,3 +73,27 @@ def test_advisory_unions_and_tags_too():
         {"actor": _a(), "sre": _a(advisory=[ga])}, actor_lens="actor")
     assert [g.description for g in merged.advisory_gaps] == ["one-sample concern"]
     assert merged.advisory_gaps[0].personas == ["sre"]
+
+
+def test_persona_verdicts_survive_the_union():
+    """ADR-003 GRADUATED ruling (2026-07-29): support is stakeholder-relative.
+    Every lens's verdict is kept keyed by persona; the top-level verdict stays
+    the actor's; the empty-Auditable shape — supported-for-engineer,
+    not_supported-for-auditor — is data, and the disagreement IS the finding."""
+    merged = union_lens_merges(
+        {"platform-engineer": _a(verdict="supported"),
+         "compliance-auditor": _a(verdict="not_supported")},
+        actor_lens="platform-engineer")
+    assert merged.summary.verdict == "supported"                    # actor's, back-compat
+    assert merged.persona_verdicts == {"platform-engineer": "supported",
+                                       "compliance-auditor": "not_supported"}
+
+
+def test_persona_verdicts_round_trip():
+    from dav.core.use_case_schema import Analysis
+    from dav.tests.test_ensemble import _analysis
+    a = _analysis(verdict="supported")
+    a.persona_verdicts = {"sre": "partially_supported", "compliance-auditor": "not_supported"}
+    d = a.to_dict()
+    assert d["persona_verdicts"] == a.persona_verdicts
+    assert Analysis.from_dict(d).persona_verdicts == a.persona_verdicts

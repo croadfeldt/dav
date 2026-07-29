@@ -7816,7 +7816,7 @@ async def run_readiness(run_id: str, request: Request):
     get_user(request)
     async with pool.acquire() as conn:
         analyses = await conn.fetch(
-            "SELECT id, uc_handle, coalesce(verdict,'') AS verdict "
+            "SELECT id, uc_handle, coalesce(verdict,'') AS verdict, persona_verdicts "
             "FROM uc_analyses WHERE run_id=$1 ORDER BY uc_handle", run_id)
         if not analyses:
             raise HTTPException(404, f"no ingested analyses for run {run_id}")
@@ -7850,9 +7850,26 @@ async def run_readiness(run_id: str, request: Request):
         v = a["verdict"] or "failed"
         rollup[v if v in rollup else "failed"] += 1
         rollup["gotchas"] += len(gotchas)
-        ucs.append({"uc_handle": a["uc_handle"], "verdict": v,
-                    "supported": v == "supported",
-                    "why_not": why_not, "gotchas": gotchas})
+        pv = a["persona_verdicts"]
+        if isinstance(pv, str):
+            try:
+                pv = json.loads(pv)
+            except Exception:
+                pv = None
+        entry = {"uc_handle": a["uc_handle"], "verdict": v,
+                 "supported": v == "supported",
+                 "why_not": why_not, "gotchas": gotchas}
+        if pv:
+            # ADR-003 GRADUATED (2026-07-29): the roll-up sentence the design
+            # promised — "supported for N of M perspectives" — with the
+            # dissenting personas named. The disagreement IS the finding.
+            entry["persona_verdicts"] = pv
+            _sup = [k for k, x in pv.items() if x == "supported"]
+            _dis = {k: x for k, x in pv.items() if x != "supported"}
+            entry["perspective_rollup"] = (
+                f"supported for {len(_sup)} of {len(pv)} perspectives"
+                + (f"; dissent: {_dis}" if _dis else ""))
+        ucs.append(entry)
     return {"run_id": run_id, "rollup": rollup, "ucs": ucs}
 
 
@@ -8585,10 +8602,10 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                     infra_confidence_recommendations,
                     engine_commit, consumer_version, uc_content_sha,
                     source_repo_shas, eval_fingerprint,
-                    error_reason, error_phase)
+                    error_reason, error_phase, persona_verdicts)
                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
                            $15,$16,$17::jsonb,$18,$19::jsonb,
-                           $20,$21,$22,$23::jsonb,$24,$25,$26)
+                           $20,$21,$22,$23::jsonb,$24,$25,$26,$27::jsonb)
                    RETURNING id""",
                 run_id, uc_uuid,
                 uc.get("uc_handle"),
@@ -8607,6 +8624,9 @@ async def _ingest_run_analyses(run_id: str, conn: "asyncpg.Connection") -> dict:
                 engine_commit, consumer_version, uc_content_sha,
                 (json.dumps(source_repo_shas) if source_repo_shas is not None else None), eval_fp,
                 err_reason, err_phase,
+                # ADR-003 GRADUATED: per-persona verdicts from multi-lens runs
+                (json.dumps(analysis.get("persona_verdicts"))
+                 if analysis and analysis.get("persona_verdicts") else None),
             )
             analysis_id = row["id"]
             ingested_ucs += 1
