@@ -6267,6 +6267,8 @@ function selectRun(name) {
   // it the current analysis run (drives Results/Architecture/Engineering + masthead).
   const _r = allRuns.find(x => x.name === name);
   if (_r && _r.run_id && _r.run_id !== activeRunResultId) selectRunResult(_r.run_id);
+  // Readiness brief: ingested runs only (the brief is a projection over the DB)
+  loadRunReadiness(_r && _r.run_id ? _r.run_id : null);
   // Highlight in list — by the STABLE run name the rows already carry, never
   // display text: matching on session_name text highlighted every retry of an
   // identically-named run at once (screenshot 2026-07-28: two MULTI-LENS
@@ -6295,6 +6297,10 @@ function selectRun(name) {
     <div class="run-section" id="rdProgressSection" style="display:none;">
       <div class="run-section-title">UC progress (live)</div>
       <div id="rdProgress"></div>
+    </div>
+    <div class="run-section" id="rdReadinessSection" style="display:none;">
+      <div class="run-section-title">Readiness brief <span style="font-size:9px;color:var(--text-faint);text-transform:none;letter-spacing:0;">supported? · why not? · gotchas — per stakeholder</span></div>
+      <div id="rdReadiness"><div class="empty" style="font-size:11px">loading…</div></div>
     </div>
     <!-- Operational stats: GPU + Inference side-by-side on wide screens (≥1100px) -->
     <div class="rd-stats-grid">
@@ -7586,6 +7592,48 @@ async function submitNewRun() {
     status.innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
     toast('Trigger failed: ' + e.message, true); btn.disabled = false;
   }
+}
+
+
+// ── Readiness brief (run detail): the three questions, per stakeholder ────────
+// GET /api/runs/{run_id}/readiness — supported? / why not (cited)? / gotchas
+// (persona-attributed)? Persona roll-ups per the ADR-003 GRADUATED ruling:
+// "supported for N of M perspectives; dissent: {...}" — dissent IS the finding.
+async function loadRunReadiness(runId) {
+  const sec = document.getElementById('rdReadinessSection');
+  const box = document.getElementById('rdReadiness');
+  if (!sec || !box) return;
+  if (!runId) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  let d;
+  try { d = await api('/api/runs/' + encodeURIComponent(runId) + '/readiness'); }
+  catch (e) { box.innerHTML = `<div style="color:var(--text-faint);font-size:11px;">${esc(e.message)}</div>`; return; }
+  const R = d.rollup || {};
+  const vChip = v => `<span class="verdict-chip ${verdictClass(v)}" style="font-size:9px;">${esc(String(v).replace(/_/g,' '))}</span>`;
+  let h = `<div style="font-size:11px;color:var(--text-dim);margin-bottom:8px;">
+    ${R.supported ?? 0} supported · ${R.partially_supported ?? 0} partial · ${R.not_supported ?? 0} not supported
+    · <b>${R.gotchas ?? 0} gotcha${(R.gotchas ?? 0) === 1 ? '' : 's'}</b> across ${d.ucs?.length ?? 0} use cases</div>`;
+  h += (d.ucs || []).map((u, i) => {
+    const persp = u.perspective_rollup
+      ? `<div style="font-size:10px;color:var(--accent);margin-top:2px;">${esc(u.perspective_rollup)}</div>` : '';
+    const why = (u.why_not || []).map(w =>
+      `<div style="font-size:10px;margin:2px 0 0 12px;">✗ <b>${esc(w.capability_id || w.title)}</b>`
+      + `${w.severity ? ` <span style="color:var(--text-faint)">${esc(typeof w.severity==='object'?(w.severity.label||''):w.severity)}</span>` : ''}`
+      + `${w.consensus ? ` <span style="color:var(--text-faint)">${esc(w.consensus)}</span>` : ''}`
+      + `${w.rationale ? `<div style="color:var(--text-dim);margin-left:14px;">${esc(w.rationale.slice(0,180))}</div>` : ''}</div>`).join('');
+    const got = (u.gotchas || []).map(g =>
+      `<div style="font-size:10px;color:var(--warn,#d08770);margin:2px 0 0 12px;">⚠ ${esc(g.title || g.capability_id || '')}`
+      + ` <span style="color:var(--text-faint)">${esc(g.kind || '')}${g.consensus ? ' · ' + esc(g.consensus) : ''}</span></div>`).join('');
+    const body = (why || got)
+      ? `<div id="rdRb${i}" style="display:none;padding:2px 0 6px;">${why}${got}</div>` : '';
+    return `<div style="border-top:1px solid var(--border);padding:5px 0;${body ? 'cursor:pointer;' : ''}"
+      ${body ? `onclick="const b=document.getElementById('rdRb${i}');b.style.display=b.style.display==='none'?'':'none'"` : ''}>
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;">
+        <span style="font-family:var(--mono,monospace);font-size:10px;">${esc(u.uc_handle)}</span>
+        <span>${vChip(u.verdict)}${(u.why_not||[]).length ? ` <span style="font-size:9px;color:var(--red)">${u.why_not.length} why-not</span>` : ''}${(u.gotchas||[]).length ? ` <span style="font-size:9px;color:var(--warn,#d08770)">${u.gotchas.length} gotcha${u.gotchas.length===1?'':'s'}</span>` : ''}</span>
+      </div>${persp}${body}</div>`;
+  }).join('');
+  box.innerHTML = h;
 }
 
 // ══════════════════════════ RESULTS ══════════════════════════
