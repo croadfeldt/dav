@@ -154,15 +154,12 @@
 - name: Start binary build for review console API
   ansible.builtin.command:
     cmd: >-
-      oc start-build dav-review-api
+      timeout 1200 oc start-build dav-review-api
       --from-dir=/tmp/dav-review-build/api
       --build-arg=DAV_REPO_COMMIT={{ dav_repo_commit }}
       --build-arg=DAV_REPO_DIRTY={{ dav_repo_dirty }}
       -n {{ dav_namespace }}
       --wait
-    # Fail in 20 min, not 4h20m: a dead build (BuildPodDeleted, 2026-07-28)
-    # left --wait hanging on the corpse for the CronJob-less afternoon.
-    timeout: 1200
   register: review_api_build
   when: review_console_build_images | bool
 
@@ -231,15 +228,12 @@
 - name: Start binary build for review console UI
   ansible.builtin.command:
     cmd: >-
-      oc start-build dav-review-ui
+      timeout 1200 oc start-build dav-review-ui
       --from-dir=/tmp/dav-review-build/ui
       --build-arg=DAV_REPO_COMMIT={{ dav_repo_commit }}
       --build-arg=DAV_REPO_DIRTY={{ dav_repo_dirty }}
       -n {{ dav_namespace }}
       --wait
-    # Fail in 20 min, not 4h20m: a dead build (BuildPodDeleted, 2026-07-28)
-    # left --wait hanging on the corpse for the CronJob-less afternoon.
-    timeout: 1200
   register: review_ui_build
   when: review_console_build_images | bool
 
