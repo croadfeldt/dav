@@ -240,6 +240,10 @@ dav_fixture_battery_repo: "https://github.com/croadfeldt/dav.git"
 dav_fixture_battery_branch: "main"
 dav_fixture_battery_secret: "dav-fixture-cron"
 dav_fixture_battery_inference_url: "{{ inference_primary_endpoint | default('https://r9700.llm.ocp.roadfeldt.com/v1') }}"
+# Minutes the battery waits for its run to finish+ingest before giving up.
+# Model-dependent: fast models fit the 120 default; slow/thinking models on
+# the 28-UC suite need 360+.
+dav_fixture_battery_ceiling_min: 120
 dav_fixture_battery_project: "760"
 dav_fixture_battery_sample_count: 3
 
