@@ -1521,9 +1521,19 @@ def _cli():
                 except Exception as e:                      # belt-and-suspenders
                     log.error("UC %s crashed the worker: %s", uc_path, e)
                     continue
-                _write_progress(current_index=len(results) + 1,
+                # Record FIRST, then write progress. The old order wrote the
+                # progress file from the pre-append results list, so
+                # completed/succeeded lagged one UC behind forever (observed
+                # live: progress said completed=0 while run-summary already
+                # counted successful=1, and the "N of M" display jumped 1->3
+                # with no completion shown). Note the semantics under
+                # concurrency: current_index/current_uc_path describe the
+                # UC that just COMPLETED (completion order), not the ones in
+                # flight — there is no single "current" UC with >1 workers.
+                halt = _record(result)
+                _write_progress(current_index=len(results),
                                 current_uc_path=str(uc_path), phase="running")
-                if _record(result):
+                if halt:
                     halted = True
                     for pending in futures:
                         pending.cancel()
