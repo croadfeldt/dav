@@ -471,6 +471,39 @@ def union_lens_merges(lens_merged: "dict[str, Analysis]", actor_lens: str) -> An
     # keyed by persona. summary.verdict remains the actor's; "supported for
     # the engineer, not_supported for the auditor" is now data.
     base.persona_verdicts = {pid: a.summary.verdict for pid, a in lens_merged.items()}
+
+    # Criteria ownership (criteria × persona composition): the merged analysis
+    # ships ONE criteria vector, and for each element the OWNING persona's
+    # answer is authoritative when that lens ran — the auditor judges
+    # `auditable`, the security-officer judges `non_leaking`. Fallback: the
+    # actor lens, then any lens that answered. Every lens still keeps its own
+    # full vector feeding its own persona verdict; ownership only picks what
+    # SHIPS on the merged analysis.
+    from dav.core.use_case_schema import CRITERION_OWNERS
+    ids = []
+    by_lens = {}
+    for pid, analysis in lens_merged.items():
+        for c in getattr(analysis, "criteria", None) or []:
+            by_lens.setdefault(c.id, {})[pid] = c
+            if c.id not in ids:
+                ids.append(c.id)
+    merged_criteria = []
+    for cid in ids:
+        answers = by_lens[cid]
+        owner = CRITERION_OWNERS.get(cid)
+        if owner in answers:
+            chosen, source = answers[owner], owner
+        elif actor_lens in answers:
+            chosen, source = answers[actor_lens], actor_lens
+        else:
+            source = next(iter(answers))
+            chosen = answers[source]
+        if source != actor_lens:
+            note = f"per {source}"
+            chosen.note = f"{note} — {chosen.note}" if chosen.note else note
+        merged_criteria.append(chosen)
+    if merged_criteria:
+        base.criteria = merged_criteria
     return base
 
 

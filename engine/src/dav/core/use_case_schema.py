@@ -882,6 +882,22 @@ REFUSAL_CRITERIA: tuple[str, ...] = (
 
 CRITERION_ANSWERS = ("true", "false", "unknown")
 
+# Each refusal-contract element's OWNING persona — the stakeholder whose lens is
+# authoritative for that element. Source: the corpus persona artifact's own
+# observation (PERSONAS.yaml header, "pleasing circularity", 2026-07-27): ADR-003's
+# elements ARE implicit persona demands. The union merge prefers the owner lens's
+# answer for its element; every lens still answers all five (its own verdict needs
+# them), ownership only decides which answer SHIPS on the merged analysis.
+# TODO(single-source): ask the model session to publish this mapping as data in
+# PERSONAS.yaml; until then this constant cites their prose.
+CRITERION_OWNERS = {
+    "typed": "platform-engineer",
+    "actionable": "application-team-member",
+    "non_leaking": "security-officer",
+    "auditable": "compliance-auditor",
+    "whole": "application-team-member",
+}
+
 
 @dataclass
 class CriterionAnswer:
