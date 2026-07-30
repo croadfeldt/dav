@@ -174,6 +174,24 @@ DEFAULT_MAX_TOKENS = 6144
 class AgentError(Exception):
     pass
 
+def resolve_spec_scope(uc_ns: "list[str]", run_ns: "list[str]") -> "list[str]":
+    """Effective hard-scope namespace list for one UC analysis.
+
+    Intersection when both the UC and the run declare a scope (a UC cannot
+    widen the operator's run scope); either alone when only one is set;
+    empty = unscoped. Disjoint non-empty scopes resolve to the RUN filter —
+    a mis-triggered run must not fall open to unscoped.
+    """
+    if uc_ns and run_ns:
+        both = [n for n in uc_ns if n in run_ns]
+        if both:
+            return both
+        log.warning("spec scope: UC namespaces %s disjoint from run filter %s "
+                    "— enforcing the run filter", uc_ns, run_ns)
+        return list(run_ns)
+    return list(uc_ns or run_ns)
+
+
 @dataclass
 class AgentConfig:
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS
@@ -550,8 +568,19 @@ class Stage2Agent:
         self._last_prompt_tokens = 0
         self._budget_capped_turn_count = 0
         self._context_overflow_retry_count = 0
-        # M12 "C" pass: pick up per-UC spec scope, if any.
-        self._uc_spec_namespaces = list(getattr(use_case, "spec_namespaces", None) or [])
+        # M12 "C" pass: pick up per-UC spec scope, if any. Run-source epic
+        # increment: the run-level DAV_SPEC_NAMESPACES_FILTER now feeds the
+        # SAME hard gate instead of being prompt-hint-only — the operator's
+        # per-run scoping was advisory while the UC's was enforced, which
+        # inverted who should hold the stronger control. Effective scope:
+        # intersection when both are set (a UC cannot widen the operator's
+        # run scope); UC list alone, or run filter alone, when only one is.
+        import os as _os
+        self._uc_spec_namespaces = resolve_spec_scope(
+            list(getattr(use_case, "spec_namespaces", None) or []),
+            [x.strip() for x in
+             (_os.environ.get("DAV_SPEC_NAMESPACES_FILTER") or "").split(",")
+             if x.strip()])
         self._out_of_scope_blocked_count = 0
 
         tool_defs = get_tool_definitions()

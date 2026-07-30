@@ -205,6 +205,15 @@ VALID_TRANSITIONS: dict[str, set[str]] = {
 
 pool: Optional[asyncpg.Pool] = None
 
+# Event-driven ingest (run-source epic): the finalizer sets this the moment a
+# run reaches terminal phase, and the ingest loop wakes immediately instead of
+# waiting out its 5-minute tick. The SWEEP is still what runs — all of its
+# guards (in-flight snapshot quiet-time, converge-on-more-successful) apply
+# unchanged; the event only collapses the latency. The periodic tick remains
+# as the backstop for anything the event misses (console restart between
+# finalize and ingest, runs finalized by another replica).
+_ingest_wake: "Optional[asyncio.Event]" = None
+
 
 async def _finalizer_loop():
     """Background task: find run_sessions rows whose PipelineRun has reached
@@ -234,6 +243,8 @@ async def _finalizer_loop():
                     detail = await asyncio.to_thread(validations.get_run_detail, r["run_name"])
                     if detail.get("phase") in TERMINAL_PHASES:
                         await _maybe_finalize_session(detail)
+                        if _ingest_wake is not None:
+                            _ingest_wake.set()   # run just went terminal: ingest now, not in <=5 min
                     elif (r["eff_timeout"] and r["started_at"] and not r["timeout_fired"]
                           and (datetime.now(timezone.utc) - r["started_at"]).total_seconds() > r["eff_timeout"]):
                         # Console-enforced "time allowed": the Tekton spec timeout is the
@@ -283,8 +294,21 @@ async def _analysis_ingest_loop():
     disk; nobody wired the post-pipeline auto-ingest before now).
     """
     import asyncio
-    SLEEP_SECONDS = 300   # 5 minutes
+    global _ingest_wake
+    SLEEP_SECONDS = 300   # 5 minutes (backstop tick; the finalizer event preempts it)
     INITIAL_DELAY = 10    # let the pool + migrations settle first
+    _ingest_wake = asyncio.Event()
+
+    async def _tick():
+        # Wake on the finalizer's terminal-phase event OR the backstop tick,
+        # whichever comes first. clear() before returning so each terminal
+        # event triggers exactly one immediate pass.
+        try:
+            await asyncio.wait_for(_ingest_wake.wait(), timeout=SLEEP_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        _ingest_wake.clear()
+
     await asyncio.sleep(INITIAL_DELAY)
     while True:
         try:
@@ -343,12 +367,12 @@ async def _analysis_ingest_loop():
                         )
                     except Exception as e:
                         log.warning("ingest loop: %s failed (%s); will retry next pass", rid, e)
-            await asyncio.sleep(SLEEP_SECONDS)
+            await _tick()
         except asyncio.CancelledError:
             return
         except Exception as e:
             log.warning("ingest loop hiccup: %s", e)
-            await asyncio.sleep(SLEEP_SECONDS)
+            await _tick()
 
 
 async def _backfill_uc_projections(conn: "asyncpg.Connection") -> int:
@@ -1679,10 +1703,11 @@ class RunTriggerIn(BaseModel):
     # role=corpus repos in the registry are included. Operator selects a
     # subset from the New Run modal for ad-hoc / debug runs.
     corpus_namespaces: Optional[list[str]] = None
-    # Per-run spec source filter. Soft enforcement — flows through to the
-    # engine which injects a focus hint into the LLM system prompt. The
-    # MCP itself still serves every registered spec namespace; this only
-    # tells the LLM which ones to prefer for grounding.
+    # Per-run spec source filter. HARD enforcement (run-source epic): the
+    # engine feeds this into the same per-call MCP scope gate as UC-level
+    # spec_namespaces (effective scope = intersection when both are set) —
+    # out-of-scope get_document calls are refused engine-side. The system-
+    # prompt focus hint remains as steering on top of the gate.
     spec_namespaces: Optional[list[str]] = None
     category: str = "ad-hoc"
     tags: list[str] = []
