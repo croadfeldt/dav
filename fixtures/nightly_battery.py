@@ -70,9 +70,13 @@ def main() -> int:
     print(f"run: {run_name}", flush=True)
 
     # Wait for terminal phase, then for auto-ingest to surface the run_id.
-    # 120 min ceiling: a hung run must not wedge tomorrow's cron (Forbid policy).
+    # Ceiling: a hung run must not wedge tomorrow's cron (Forbid policy).
+    # Env-tunable because it is MODEL-DEPENDENT: the 32B clears the v1 suite
+    # in ~20 min, but Qwen3.6-27B with thinking took ~23 min/UC on the v2
+    # 28-UC suite (~5.5 h) and a healthy run died at the old fixed 120.
+    ceiling_min = int(os.environ.get("BATTERY_CEILING_MIN", "120"))
     run_id, phase = None, "?"
-    for _ in range(120):
+    for _ in range(ceiling_min):
         time.sleep(60)
         for r in call("GET", f"{API}/api/runs?limit=10")["runs"]:
             if (r.get("name") or r.get("run_name")) == run_name:
