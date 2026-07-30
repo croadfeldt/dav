@@ -1,0 +1,15 @@
+uc: must-reject/fx-peer-overreach-refused
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-FED-SCOPE-001
+  why: 70-federation.md "Dispatch scope" is an empty section. Nothing scopes WHAT may be
+    dispatched to a peer — no sovereignty or tenancy boundary is evaluated on the originating
+    side, so the only refusal available is the peer's own, which fires after the intent body
+    has already left the instance. The guarantee this UC asks for — refuse before anything
+    crosses — has no mechanism.
+must_not_report:
+- capability_id: FIX-FED-OBO-001
+  why: 'CONTROL. 70-federation.md On-behalf-of is specified: every dispatch carries the
+    originating caller identity, the peer evaluates against it, and a missing identity is
+    refused with FEDERATION_ANONYMOUS. Flagging identity propagation here is a false positive
+    — the hole is dispatch scoping, not identity.'

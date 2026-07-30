@@ -1,0 +1,11 @@
+uc: must-realize/fx-placement-explained
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-PLACE-EXPLAIN-001
+  why: '55-placement.md ''Placement explanation'' is empty. Selection is deterministic
+    (40-providers.md), so for any given intent, inventory and profile the answer to "why provider
+    X" exists — but nothing records the eligible set or the deciding rule at selection time. An
+    operator asked to explain a placement must reconstruct the inventory and profile as they were
+    at realization and replay the function by hand; once the inventory drifts, the answer is
+    unrecoverable.'
+must_not_report: []

@@ -1,0 +1,15 @@
+uc: must-reject/fx-grant-lifecycle-review
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-GRANT-EXPIRE-001
+  why: 20-tenancy.md "Grant lifecycle" is an empty section. A grant carries an expiry and
+    admission requires a live grant, but nothing specifies what expiry does after admission —
+    dependency edges created while the grant was live are never re-evaluated or severed, no
+    review surface enumerates standing grants, and no renewal semantics exist. A grant can
+    therefore confer standing cross-tenant access that survives its own expiry.
+must_not_report:
+- capability_id: FIX-TYPED-001
+  why: 'CONTROL. The admission-time path is specified: absent a live grant, admission refuses
+    with TENANCY_DENIED, distinct from NOT_FOUND, and no dependency edge is created
+    (20-tenancy.md, 10-refusal-contract.md §1). Flagging the admission check or refusal typing
+    here is a false positive — the hole is what happens after admission.'

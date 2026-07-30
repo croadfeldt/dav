@@ -1,0 +1,13 @@
+uc: must-realize/fx-realize-audited
+expected_verdict: supported
+expected_gaps: []
+must_not_report:
+- capability_id: FIX-AUDIT-READ-001
+  why: 'CONTROL. This scenario audits a REALIZE operation, which 80-audit.md fully specifies:
+    caller identity, tenant, resource, operation, outcome, monotonic per-tenant sequence. No
+    projection read occurs, so the unaudited read path is not exercised; reporting it here is a
+    false positive.'
+- capability_id: FIX-AUDIT-INTEG-001
+  why: 'CONTROL. The scenario claims append-only, sequenced records, which 80-audit.md states. It
+    makes no tamper-evidence or external-verifiability claim, so the missing integrity-proof
+    mechanism is not exercised here; reporting it is a false positive.'

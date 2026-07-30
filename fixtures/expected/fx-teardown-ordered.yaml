@@ -1,0 +1,9 @@
+uc: must-realize/fx-teardown-ordered
+expected_verdict: supported
+expected_gaps: []
+must_not_report:
+- capability_id: FIX-DRAIN-001
+  why: 'CONTROL. 90-lifecycle.md fully specifies teardown ordering — reverse dependency order with
+    recorded-position resume — and this teardown has no consumers outside the intent, so the
+    missing drain semantics are not exercised. Reporting missing drain or grace here is a false
+    positive.'

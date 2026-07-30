@@ -1,0 +1,44 @@
+uuid: uc-fx00000019
+handle: must-realize/fx-teardown-ordered
+version: 1.0.0
+scenario:
+  description: 'A tenant tears down a three-resource intent: web-front depends on session-cache,
+    which depends on state-db. Nothing outside the intent consumes any of the three — there are no
+    external bindings and no active consumers beyond the intent''s own members. Success is an
+    orderly decommission per 90-lifecycle.md: teardown proceeds in reverse dependency order
+    (web-front, then session-cache, then state-db — no resource removed before everything depending
+    on it is gone), and a teardown interrupted mid-sequence resumes from its recorded position.
+    This case is fully specified and is present as a CONTROL: a correct analysis should report no
+    gap here.'
+  actor:
+    persona: application-team-member
+    profile: standard
+  intent: Tear down a multi-resource intent with internal dependencies, in reverse dependency
+    order, resumable after interruption
+  success_criteria:
+  - No resource is torn down before every resource depending on it has been torn down
+  - A teardown interrupted mid-sequence resumes from its recorded position
+  - The teardown completes with all three resources removed
+  dimensions:
+    lifecycle_phase: decommission
+    resource_complexity: hard_dependencies
+    policy_complexity: single_validation
+    provider_landscape: single_eligible
+    governance_context: standard_governance
+    failure_mode: happy_path
+  profile: standard
+  perspectives:
+  - sre
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-30T00:00:00.000000+00:00'
+success_semantics: realize
+tags:
+- fixture
+- must-realize
+- lifecycle
+- teardown
+- control

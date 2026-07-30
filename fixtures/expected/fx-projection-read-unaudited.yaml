@@ -1,0 +1,15 @@
+uc: must-reject/fx-projection-read-unaudited
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-AUDIT-READ-001
+  why: 80-audit.md "Read and projection access" is an empty section. The realization audit
+    names realize, update, and teardown only — no rule requires a read of a masked projection
+    to append any record, name any fields, or be retrievable by the owning tenant's auditor.
+    Cross-tenant data access is the one boundary crossing that can leave no trace while every
+    write is audited.
+must_not_report:
+- capability_id: FIX-AUDIT-OPS-001
+  why: 'CONTROL. 80-audit.md Realization audit is specified: realize/update/teardown append
+    records naming caller, tenant, resource, operation, and outcome, append-only with a
+    per-tenant monotonic sequence. Flagging operation auditing here is a false positive — the
+    hole is reads, not operations.'

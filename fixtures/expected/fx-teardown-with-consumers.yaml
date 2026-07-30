@@ -1,0 +1,11 @@
+uc: must-realize/fx-teardown-with-consumers
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-DRAIN-001
+  why: '90-lifecycle.md ''Consumer drain'' is empty — and the adjacent sentence makes the hole
+    load-bearing: teardown of a resource with active consumers "proceeds per the ordering above".
+    Reverse dependency order protects dependents INSIDE the teardown set; it says nothing about
+    consumers outside it. No drain, no grace period, no notification, no in-flight cutoff — the
+    platform hard-cuts every active external consumer mid-request, and does so in full conformance
+    with its own spec.'
+must_not_report: []

@@ -1,0 +1,10 @@
+uc: must-reject/fx-federation-anonymous-refused
+expected_verdict: supported
+expected_gaps: []
+must_not_report:
+- capability_id: FIX-FED-SCOPE-001
+  why: 'CONTROL. Everything this UC exercises is specified: 70-federation.md On-behalf-of
+    requires the originating caller identity on every dispatch, forbids evaluation against the
+    instance identity, and refuses a missing identity with FEDERATION_ANONYMOUS. Dispatch
+    scoping is never exercised here — a dispatch-scope gap reported against this UC is a
+    false positive.'

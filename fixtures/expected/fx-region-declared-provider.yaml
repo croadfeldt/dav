@@ -1,0 +1,13 @@
+uc: must-realize/fx-region-declared-provider
+expected_verdict: supported
+expected_gaps: []
+must_not_report:
+- capability_id: FIX-RESIDENCY-001
+  why: 'CONTROL. This scenario exercises the region DECLARATION, which 55-placement.md fully
+    specifies: region required from the closed list, rejected if absent, immutable after
+    registration. The intent carries no residency constraint, so the missing enforcement point is
+    not exercised; reporting it here is a false positive.'
+- capability_id: FIX-PLACE-EXPLAIN-001
+  why: 'CONTROL. A single eligible provider leaves nothing to explain — selection is trivially
+    determined and the missing selection-explanation record is not exercised here. Reporting it
+    is a false positive.'

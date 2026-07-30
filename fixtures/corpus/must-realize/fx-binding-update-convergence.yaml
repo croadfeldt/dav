@@ -1,0 +1,47 @@
+uuid: uc-fx00000018
+handle: must-realize/fx-binding-update-convergence
+version: 1.0.0
+scenario:
+  description: 'A tenant''s intent declares profile-db, which publishes an endpoint output, and
+    profile-api, whose input is bound to that output per 60-bindings.md — the binding was declared
+    and validated at admission. The tenant then issues an in-place update to profile-db that
+    changes the published endpoint value, which 90-lifecycle.md expressly allows. Success is the
+    update taking effect END TO END: the new output is published AND the bound consumer converges
+    to it under stated propagation semantics (push, re-resolve, or restart), with any stale window
+    bounded and observable. Binding validation at admission establishes the edge once; an update
+    that changes the source value must not leave profile-api silently reading the endpoint captured
+    at its own realization.'
+  actor:
+    persona: application-team-member
+    profile: standard
+  intent: Update a resource whose published outputs are bound into a consumer, and have the
+    consumer converge to the new values
+  success_criteria:
+  - The in-place update is realized and the resource's published outputs reflect the new values
+  - Consumers bound to a changed output converge to the new value, with the propagation semantics
+    (push, re-resolve, or restart) stated
+  - Until convergence, the stale window is bounded and observable — a consumer can tell it is
+    reading a pre-update value
+  dimensions:
+    lifecycle_phase: modification
+    resource_complexity: hard_dependencies
+    policy_complexity: single_validation
+    provider_landscape: single_eligible
+    governance_context: standard_governance
+    failure_mode: data_inconsistency
+  profile: standard
+  perspectives:
+  - application-team-member
+  - sre
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-30T00:00:00.000000+00:00'
+success_semantics: realize
+tags:
+- fixture
+- must-realize
+- bindings
+- update-convergence

@@ -18,3 +18,9 @@ and no dependency edge is created.
 A tenant may expose a **masked projection** of a resource to another tenant: a
 read-only view with designated fields redacted. Projections are read paths only.
 A write targeting a projection is refused with `PROJECTION_READONLY`.
+
+## Grant lifecycle
+
+<!-- seeded hole: FIX-GRANT-EXPIRE-001 -->
+
+Cross-tenant grants are created by the granting tenant's administrator.

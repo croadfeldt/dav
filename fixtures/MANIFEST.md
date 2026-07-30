@@ -93,3 +93,43 @@ I believe all three are genuine spec obligations — a refusal you cannot audit,
 leaks the protected resource, or that half-applies an intent, is not a refusal that
 a consumer can rely on. But these are the three most arguable claims here, and they
 are where I would look first if the fixture starts producing results that feel wrong.
+
+## v2 additions (2026-07-30) — placement, rotation, federation, audit, lifecycle
+
+Ten new seeded holes and six new controls, same contract as above: each claim
+asserts what a correct spec would have to specify. The v2 hole style is uniform —
+the mechanism is SPECIFIED and correct; the *guarantee* one persona depends on is
+absent. Each hole names its owning persona because v2 is also the measurement bed
+for criteria × persona composition (dav#127).
+
+### Seeded holes (recall)
+
+| id | where | owner | the claim |
+|---|---|---|---|
+| `FIX-RESIDENCY-001` | `55-placement.md` | sovereignty-authority | Providers declare a region and intents can carry a residency constraint, but the enforcement point is empty — nothing forbids realizing on a wrong-region provider. **Claim: a residency constraint that is collected but never enforced is a compliance statement, not a control.** |
+| `FIX-PLACE-EXPLAIN-001` | `55-placement.md` | platform-operator | Selection among eligible providers is deterministic, but no record of *why* a provider was chosen survives. After inventory drift, "why is this workload here" is unanswerable. **Claim: placement must be explainable after the fact, not just deterministic in the moment.** |
+| `FIX-ROTATE-001` | `65-rotation.md` | security-officer | Rotate atomically replaces the secret behind a stable credref, but consumers that resolved the OLD secret at realization are never refreshed or invalidated. **Claim: rotation that leaves the old secret live in every existing consumer revokes nothing.** |
+| `FIX-FED-SCOPE-001` | `70-federation.md` | integrator | On-behalf-of propagates the caller identity, but nothing scopes WHAT a peer may dispatch — a peer holding one legitimate use is indistinguishable from one dispatching arbitrary intents. **Claim: federation without dispatch scoping makes every peer a full-trust peer.** |
+| `FIX-FED-COMPAT-001` | `70-federation.md` | federation-peer-operator | Peers exchange a protocol version string that nothing consumes; the outcome of an unknown field or version skew is unspecified. **Claim: a version handshake that decides nothing is not compatibility, and skew failures will be undiagnosable.** |
+| `FIX-AUDIT-READ-001` | `80-audit.md` | compliance-auditor | Realization operations are audited; projection READS are not. Who looked at a masked projection — the question an information-firewall exists to answer — is unrecorded. **Claim: an audit trail that records writes but not reads cannot support a disclosure investigation.** |
+| `FIX-AUDIT-INTEG-001` | `80-audit.md` | compliance-auditor | "Audit integrity" is an empty section: append-only is asserted, but no hash chain, signature, or anchor makes tampering detectable. **Claim: append-only by promise is not evidence; an auditor must be able to verify, not trust.** |
+| `FIX-DRAIN-001` | `90-lifecycle.md` | sre | Teardown ordering protects dependents inside the teardown set; consumers OUTSIDE it are hard-cut mid-request. **Claim: orderly decommission requires drain or stated grace for external consumers, not just internal ordering.** |
+| `FIX-UPDATE-CONV-001` | `90-lifecycle.md` | application-team-member | Bindings are validated at admission only; an update that removes an output leaves existing consumers bound to a dangling reference with no reconvergence or notification. **Claim: a declarative system that validates only at admission is declarative only once.** |
+| `FIX-GRANT-EXPIRE-001` | `20-tenancy.md` | tenancy-authority | Grants gate admission but have no lifecycle: no expiry, review, or revocation-on-change. Access outlives the reason it was granted. **Claim: a grant with no lifecycle is a permanent entitlement, whatever it was intended to be.** |
+
+### Controls (precision)
+
+| uc | forbids | why it is a control |
+|---|---|---|
+| `fx-teardown-ordered` | `FIX-DRAIN-001` | No external consumers exist; ordering (specified, correct) is all this teardown needs. |
+| `fx-region-declared-provider` | `FIX-RESIDENCY-001`, `FIX-PLACE-EXPLAIN-001` | Region *declaration* is fully specified; no residency constraint in the intent, single eligible provider — neither hole is exercised. |
+| `fx-ref-credential-realize2` | `FIX-ROTATE-001` | Every consumer realized after rotation; the unrefreshed-pre-rotation-consumer hole is not exercised. |
+| `fx-realize-audited` | `FIX-AUDIT-READ-001`, `FIX-AUDIT-INTEG-001` | A realize op, fully audited per spec; no read occurs and no integrity claim is made. |
+| `fx-federation-anonymous-refused` | `FIX-FED-SCOPE-001` | The anonymous-dispatch refusal (`FEDERATION_ANONYMOUS`) is fully specified; dispatch scoping never exercised. |
+| `fx-peer-caller-tenancy` | `FIX-FED-COMPAT-001` | Originating-caller tenancy evaluation is fully specified; version compatibility never exercised. |
+
+Two new fixture-local coverage ids exist only in `must_not_report` (the
+`FIX-TYPED-001` pattern): `FIX-FED-OBO-001` (on-behalf-of identity propagation is
+specified) and `FIX-AUDIT-OPS-001` (operation auditing is specified). They need
+catalog rows in project 760 like every other `FIX-*` id, so a reported gap can
+canonicalize onto them and trip the forbid.
