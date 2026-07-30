@@ -97,3 +97,45 @@ def test_persona_verdicts_round_trip():
     d = a.to_dict()
     assert d["persona_verdicts"] == a.persona_verdicts
     assert Analysis.from_dict(d).persona_verdicts == a.persona_verdicts
+
+
+def _crit(cid, satisfied, note=""):
+    from dav.core.use_case_schema import CriterionAnswer
+    return CriterionAnswer(id=cid, satisfied=satisfied, spec_ref="spec/10-refusal-contract.md",
+                           note=note, consensus="3/3")
+
+
+def test_criteria_ownership_owner_lens_wins():
+    """Criteria × persona composition: the OWNING persona's answer ships.
+    The auditor says auditable=false while the actor says true — the merged
+    vector carries the auditor's answer, marked with its source."""
+    actor = _a(verdict="supported")
+    actor.criteria = [_crit("auditable", "true"), _crit("typed", "true")]
+    auditor = _a(verdict="not_supported")
+    auditor.criteria = [_crit("auditable", "false", note="no read-side record")]
+    merged = union_lens_merges(
+        {"application-team-member": actor, "compliance-auditor": auditor},
+        actor_lens="application-team-member")
+    by_id = {c.id: c for c in merged.criteria}
+    assert by_id["auditable"].satisfied == "false"
+    assert by_id["auditable"].note == "per compliance-auditor — no read-side record"
+    # typed's owner (platform-engineer) didn't run: actor answer ships, unmarked
+    assert by_id["typed"].satisfied == "true"
+    assert by_id["typed"].note == ""
+
+
+def test_criteria_ownership_actor_fallback_then_any():
+    """No owner lens and no actor answer → any answering lens ships, marked."""
+    actor = _a()
+    actor.criteria = []
+    sre = _a()
+    sre.criteria = [_crit("non_leaking", "unknown")]
+    merged = union_lens_merges({"actor": actor, "sre": sre}, actor_lens="actor")
+    assert merged.criteria[0].id == "non_leaking"
+    assert merged.criteria[0].note == "per sre"
+
+
+def test_criteria_ownership_absent_when_no_lens_answers():
+    """Single-lens and criteria-free merges keep the actor vector untouched."""
+    merged = union_lens_merges({"actor": _a()}, actor_lens="actor")
+    assert not getattr(merged, "criteria", None)
