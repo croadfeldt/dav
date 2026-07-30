@@ -44,7 +44,7 @@ spec:
                 - -c
                 - |
                   set -e
-                  BODY='{"mode":"verification","selection_mode":"set","set_id":{{ dav_target_readiness_set_id }},"name":"NIGHTLY target readiness","category":"scheduled","sample_count":{{ dav_target_readiness_sample_count }},"uc_concurrency":2}'
+                  BODY='{"mode":"verification","selection_mode":"set","set_id":{{ dav_target_readiness_set_id }},"name":"NIGHTLY target readiness","category":"production-validation","sample_count":{{ dav_target_readiness_sample_count }},"uc_concurrency":2}'
                   curl -ksf -X POST "http://dav-review-api.{{ dav_namespace }}.svc:8000/api/runs" \
                     -H "Authorization: Bearer ${DAV_API_TOKEN}" \
                     -H "X-DAV-Project: {{ dav_target_readiness_project }}" \
