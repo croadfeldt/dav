@@ -458,7 +458,11 @@ class Stage2Agent:
             "this list — only fetch something NEW, or stop fetching and write "
             "your final JSON analysis:\n" + listed
         )
-        return ChatMessage(role="system", content=body)
+        # role=user, not system: strict chat templates (Qwen3.6) reject
+        # non-leading system messages with a 400 ("System message must be at
+        # the beginning"). Qwen3-32B merely tolerated the old role=system.
+        # The memo is a harness nudge, not policy — user role carries it fine.
+        return ChatMessage(role="user", content=body)
 
     def _check_namespace_scope(self, tool_name: str, args: dict) -> Optional[str]:
         """Hard MCP-call scope guard (M12 "C" pass).
