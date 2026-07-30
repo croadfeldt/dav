@@ -1,0 +1,15 @@
+uc: must-reject/fx-audit-tamper-evidence
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-AUDIT-INTEG-001
+  why: 80-audit.md "Audit integrity" is an empty section. Append-only is asserted and records
+    carry a per-tenant monotonic sequence, but no tamper-evidence mechanism exists — no hash
+    chain, signature, or external anchor. A record rewritten in place under its original
+    sequence number, or a truncated tail, is undetectable, so "append-only" is a promise the
+    auditor must take on the platform's word, not evidence they can check.
+must_not_report:
+- capability_id: FIX-AUDIT-OPS-001
+  why: 'CONTROL. The audit records themselves are specified: 80-audit.md names the fields,
+    append-only semantics, per-tenant monotonic sequence, and retention window. Flagging
+    record content or coverage of operations here is a false positive — the hole is proof of
+    integrity, not what is recorded.'

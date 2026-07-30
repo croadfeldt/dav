@@ -1,0 +1,46 @@
+uuid: uc-fx00000017
+handle: must-realize/fx-teardown-with-consumers
+version: 1.0.0
+scenario:
+  description: 'A tenant tears down an intent whose resource events-broker publishes an endpoint
+    output that two running consumers — realized from a separate intent and bound to that output
+    per 60-bindings.md — are actively using at teardown time. Teardown ordering per 90-lifecycle.md
+    is reverse dependency order with recorded-position resume, which protects dependents INSIDE the
+    teardown set. Success is an orderly decommission for the consumers outside it too: active
+    consumers are drained or given a stated grace period before events-broker is removed, and
+    in-flight work either completes or is bounded by a stated cutoff — not severed mid-request the
+    instant the broker''s turn in the ordering arrives.'
+  actor:
+    persona: application-team-member
+    profile: standard
+  intent: Tear down a resource that has active external consumers, with those consumers drained
+    or granted grace rather than hard-cut
+  success_criteria:
+  - Teardown proceeds in reverse dependency order and resumes from its recorded position if
+    interrupted
+  - Active consumers of a resource being torn down are drained or given a stated grace period
+    before the resource is removed
+  - In-flight consumer work either completes or is bounded by a stated cutoff — it is not severed
+    mid-request without warning
+  dimensions:
+    lifecycle_phase: decommission
+    resource_complexity: hard_dependencies
+    policy_complexity: single_validation
+    provider_landscape: single_eligible
+    governance_context: standard_governance
+    failure_mode: happy_path
+  profile: standard
+  perspectives:
+  - sre
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-30T00:00:00.000000+00:00'
+success_semantics: realize
+tags:
+- fixture
+- must-realize
+- lifecycle
+- teardown

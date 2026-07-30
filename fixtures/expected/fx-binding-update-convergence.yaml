@@ -1,0 +1,11 @@
+uc: must-realize/fx-binding-update-convergence
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-UPDATE-CONV-001
+  why: '90-lifecycle.md ''Update convergence for bindings'' is empty. The spec expressly allows an
+    in-place update to change a resource''s published outputs, and 60-bindings.md validates
+    bindings only at admission, before any resource is realized — nothing specifies what happens
+    to consumers already bound when the source value changes: no propagation semantics, no
+    re-resolution trigger, no stale-window bound. A bound consumer keeps the value captured at its
+    own realization indefinitely; the binding silently dangles the moment the source updates.'
+must_not_report: []

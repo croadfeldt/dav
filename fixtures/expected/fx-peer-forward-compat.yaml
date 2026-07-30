@@ -1,0 +1,11 @@
+uc: must-realize/fx-peer-forward-compat
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-FED-COMPAT-001
+  why: '70-federation.md ''Version compatibility'' is empty. Instances exchange a protocol version
+    string at registration and then nothing uses it: no compatibility rule, no unknown-field
+    handling. An intent from a newer peer carrying one added field has no specified outcome on an
+    older instance — refuse, silently drop the field, or fail are all equally conforming — so a
+    mixed-version federation cannot be upgraded one instance at a time without the newer peer
+    breaking the older one.'
+must_not_report: []

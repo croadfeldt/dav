@@ -1,0 +1,11 @@
+uc: must-realize/fx-residency-pinned-realize
+expected_verdict: partially_supported
+expected_gaps:
+- capability_id: FIX-RESIDENCY-001
+  why: '55-placement.md ''Residency enforcement point'' is empty. The residency field exists on
+    the intent schema and every provider declares an immutable region from the closed list — all
+    the data needed to enforce the constraint is present — but nothing connects them: no rule
+    excludes wrong-region providers from eligibility before selection, and nothing refuses a
+    constraint no region can satisfy. A wrong-region provider can realize the intent, so the
+    constraint costs nothing to violate — declared sovereignty with no enforcement.'
+must_not_report: []

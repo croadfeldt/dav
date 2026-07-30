@@ -1,0 +1,46 @@
+uuid: uc-fx00000026
+handle: must-reject/fx-grant-lifecycle-review
+version: 1.0.0
+scenario:
+  description: Tenant A granted tenant B access to one resource, with an expiry, and tenant B's
+    intent was admitted with a dependency edge crossing the boundary. The grant's expiry
+    passes. The guarantee under test is the refusal-adjacent one that keeps a grant from
+    becoming standing access — expiry must MEAN something after admission. New references must
+    be refused, edges admitted under the grant must be re-evaluated rather than persisting
+    silently, and the tenancy authority must be able to review what standing cross-tenant
+    access exists and renew it as an explicit act.
+  actor:
+    persona: tenancy-authority
+    profile: standard
+  intent: Review and enforce the lifecycle of a cross-tenant grant past its expiry, so that
+    access ends when the grant does
+  success_criteria:
+  - After expiry, a new intent referencing the resource is refused with TENANCY_DENIED as if
+    no grant existed (20-tenancy.md)
+  - Dependency edges admitted while the grant was live are re-evaluated, severed, or surfaced
+    for action when the grant expires — they do not silently persist
+  - The tenancy authority can enumerate live grants with their expiries for review
+  - Renewal is an explicit act by the granting tenant; expiry never extends silently
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: hard_dependencies
+    policy_complexity: cross_domain_constraint
+    provider_landscape: single_eligible
+    governance_context: standard_governance
+    failure_mode: policy_violation
+  profile: standard
+  perspectives:
+  - tenancy-authority
+  - compliance-auditor
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-30T00:00:00.000000+00:00'
+success_semantics: refuse
+tags:
+- fixture
+- must-reject
+- tenancy
+- grant-lifecycle

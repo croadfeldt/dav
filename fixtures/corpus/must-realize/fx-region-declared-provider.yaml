@@ -1,0 +1,44 @@
+uuid: uc-fx00000020
+handle: must-realize/fx-region-declared-provider
+version: 1.0.0
+scenario:
+  description: 'A platform operator registers provider prov-eu-01 with region eu from the closed
+    jurisdiction list, as 55-placement.md requires: a registration without a region is rejected,
+    and the region is immutable after registration — relocating the provider means a new
+    registration. A tenant intent carrying no residency constraint, for which prov-eu-01 is the
+    single eligible provider, then realizes on it. Success is the declaration discipline holding
+    end to end: region required at registration, immutable afterwards, and the intent realized on
+    the registered provider. This case is fully specified and is present as a CONTROL: a correct
+    analysis should report no gap here.'
+  actor:
+    persona: platform-operator
+    profile: standard
+  intent: Register a provider with a declared, immutable region and realize an intent on it
+  success_criteria:
+  - Every provider registration carries a region from the closed jurisdiction list, and a
+    registration without one is rejected
+  - The region is immutable after registration; relocation requires a new registration
+  - The intent is realized on the registered provider
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: single_no_deps
+    policy_complexity: single_validation
+    provider_landscape: single_eligible
+    governance_context: standard_governance
+    failure_mode: happy_path
+  profile: standard
+  perspectives:
+  - platform-operator
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-30T00:00:00.000000+00:00'
+success_semantics: realize
+tags:
+- fixture
+- must-realize
+- placement
+- providers
+- control

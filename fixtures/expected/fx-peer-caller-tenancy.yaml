@@ -1,0 +1,10 @@
+uc: must-reject/fx-peer-caller-tenancy
+expected_verdict: supported
+expected_gaps: []
+must_not_report:
+- capability_id: FIX-FED-COMPAT-001
+  why: 'CONTROL. Everything this UC exercises is specified: 70-federation.md requires the
+    peer to evaluate tenancy and policy against the ORIGINATING caller, and the refusal path
+    is the fully specified TENANCY_DENIED, distinct from NOT_FOUND (10-refusal-contract.md
+    §1). Protocol version compatibility is never exercised here — a version-compatibility gap
+    reported against this UC is a false positive.'

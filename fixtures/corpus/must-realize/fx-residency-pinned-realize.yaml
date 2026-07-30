@@ -1,0 +1,44 @@
+uuid: uc-fx00000013
+handle: must-realize/fx-residency-pinned-realize
+version: 1.0.0
+scenario:
+  description: 'A tenant submits an intent for a data store, ledger-store, carrying a residency
+    constraint naming the eu-sovereign jurisdiction. Two providers are registered and otherwise
+    eligible by capability: prov-eu-01 (region eu) and prov-us-02 (region us). Success is REALIZATION
+    on a provider whose declared region satisfies the constraint. The constraint field exists on
+    the intent schema and every provider declares an immutable region at registration — so the data
+    to enforce residency is all present. What the sovereignty authority needs is an enforcement
+    point BEFORE realization: wrong-region providers must be excluded from eligibility, and a
+    constraint no region can meet must be refused, never realized in the wrong jurisdiction.'
+  actor:
+    persona: application-team-member
+    profile: standard
+  intent: Realize a resource under a declared residency constraint, on a provider whose region
+    satisfies it
+  success_criteria:
+  - The intent is realized on a provider whose declared region satisfies the residency constraint
+  - An enforcement point before realization excludes wrong-region providers from the eligible set
+  - A residency constraint that no registered provider's region can satisfy is refused before
+    realization, not realized in the wrong jurisdiction
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: single_no_deps
+    policy_complexity: cross_domain_constraint
+    provider_landscape: multiple_eligible
+    governance_context: sovereignty_enforced
+    failure_mode: happy_path
+  profile: standard
+  perspectives:
+  - sovereignty-authority
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-30T00:00:00.000000+00:00'
+success_semantics: realize
+tags:
+- fixture
+- must-realize
+- residency
+- placement

@@ -1,0 +1,44 @@
+uuid: uc-fx00000028
+handle: must-reject/fx-peer-caller-tenancy
+version: 1.0.0
+scenario:
+  description: Instance A dispatches an intent to peer B on behalf of a caller. The intent
+    references, by id, a resource on peer B that the ORIGINATING caller's tenant may not
+    access — though the dispatching instance itself has broad standing with the peer. Success
+    is the REFUSAL. The peer must evaluate tenancy against the originating caller, not the
+    instance, and refuse with TENANCY_DENIED, distinct from NOT_FOUND. The instance's own
+    standing must not widen what the caller can reach through federation.
+  actor:
+    persona: application-team-member
+    profile: standard
+  intent: Have a dispatched intent that references a resource outside the originating caller's
+    tenant refused by the peer against the caller's identity, not the instance's
+  success_criteria:
+  - The peer evaluates tenancy and policy against the ORIGINATING caller identity carried on
+    the dispatch (70-federation.md)
+  - The out-of-tenant reference is refused with reason_code TENANCY_DENIED, not NOT_FOUND (10-refusal-contract.md §1)
+  - The dispatching instance's own standing with the peer does not widen the caller's access
+  - No dependency edge into the referenced tenant's resource is created on the peer
+  dimensions:
+    lifecycle_phase: new_request
+    resource_complexity: hard_dependencies
+    policy_complexity: cross_domain_constraint
+    provider_landscape: single_eligible
+    governance_context: standard_governance
+    failure_mode: policy_violation
+  profile: standard
+  perspectives:
+  - federation-peer-operator
+  - tenancy-authority
+generated_by:
+  mode: authoring
+  source: human-authored
+  model: claude
+  prompt_version: fixture-2026-07-27
+  timestamp: '2026-07-30T00:00:00.000000+00:00'
+success_semantics: refuse
+tags:
+- fixture
+- must-reject
+- federation
+- control
