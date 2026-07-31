@@ -66,6 +66,8 @@ spec:
                   value: "{{ dav_fixture_battery_inference_url }}"
                 - name: DAV_FIXTURES_PROJECT
                   value: "{{ dav_fixture_battery_project }}"
+                - name: BATTERY_ENABLE_THINKING
+                  value: "{{ dav_fixture_battery_enable_thinking | default('') }}"
                 - name: BATTERY_CEILING_MIN
                   value: "{{ dav_fixture_battery_ceiling_min | default(120) }}"
                 - name: SAMPLE_COUNT

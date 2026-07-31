@@ -316,6 +316,14 @@ spec:
         the delta.
       default: ""
 
+    - name: enable-thinking
+      type: string
+      default: ""
+      description: >-
+        Tri-state reasoning toggle for Qwen3-style templates. "false" forwards
+        --no-enable-thinking (chat_template_kwargs enable_thinking=false on the
+        wire); empty keeps the model default (thinking on). The no-think A/B
+        lever (task #31); same shape as cache-prompt.
     - name: derived-verdicts
       type: string
       description: |
@@ -444,6 +452,9 @@ spec:
         fi
         if [ "$(params.halt-on-error)" = "true" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --halt-on-error"
+        fi
+        if [ "$(params.enable-thinking)" = "false" ]; then
+          OPTIONAL_ARGS="$OPTIONAL_ARGS --no-enable-thinking"
         fi
         # cache-prompt is tri-state. "true"/"false" forward the matching
         # flag; empty falls through to the engine's per-mode default. An
