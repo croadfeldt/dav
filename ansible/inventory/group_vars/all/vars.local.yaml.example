@@ -102,6 +102,9 @@ consumer_corpus_repo_url: "https://github.com/your-org/your-corpus-repo.git"
 # Hostname for the GitHub webhook receiver (Tekton EventListener route).
 # Must be a valid DNS name on your cluster's apps domain.
 # Example for OpenShift: dav-webhook.apps.<cluster>.<basedomain>
+# MUST differ from review_console_hostname below: two Routes cannot share a
+# host — OpenShift admits the older one and marks the other HostAlreadyClaimed,
+# silently. The playbook asserts they differ.
 dav_webhook_hostname: "dav-webhook.apps.your-cluster.example.com"
 
 # --- Review Console ---
