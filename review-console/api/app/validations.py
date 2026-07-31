@@ -185,6 +185,7 @@ def _mk_pipelinerun(
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
+    enable_thinking: Optional[str] = None,
     request_timeout_seconds: Optional[int] = None,
     stage2_context: Optional[str] = None,
     uc_count: Optional[int] = None,
@@ -293,6 +294,8 @@ def _mk_pipelinerun(
         params.append({"name": "stage2-two-pass", "value": stage2_two_pass})
     if grounding_nudge is not None:
         params.append({"name": "grounding-nudge", "value": grounding_nudge})
+    if enable_thinking is not None:
+        params.append({"name": "enable-thinking", "value": enable_thinking})
     if stage2_context:
         params.append({"name": "stage2-context", "value": stage2_context})
 
@@ -367,6 +370,7 @@ def trigger_run(
     stage2_two_pass: Optional[str] = None,
     max_tokens: Optional[int] = None,
     grounding_nudge: Optional[str] = None,
+    enable_thinking: Optional[str] = None,
     request_timeout_seconds: Optional[int] = None,
     stage2_context: Optional[str] = None,
     uc_count: Optional[int] = None,
@@ -412,6 +416,7 @@ def trigger_run(
         stage2_two_pass=stage2_two_pass,
         max_tokens=max_tokens,
         grounding_nudge=grounding_nudge,
+        enable_thinking=enable_thinking,
         request_timeout_seconds=request_timeout_seconds,
         stage2_context=stage2_context,
         uc_count=uc_count,

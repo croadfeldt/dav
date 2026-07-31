@@ -244,6 +244,9 @@ dav_fixture_battery_inference_url: "{{ inference_primary_endpoint | default('htt
 # Model-dependent: fast models fit the 120 default; slow/thinking models on
 # the 28-UC suite need 360+.
 dav_fixture_battery_ceiling_min: 120
+# Tri-state reasoning toggle for the battery ("false" = no-think config;
+# "" = model default). A/B lever for Qwen3-style thinking models.
+dav_fixture_battery_enable_thinking: ""
 dav_fixture_battery_project: "760"
 dav_fixture_battery_sample_count: 3
 

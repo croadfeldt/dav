@@ -1724,6 +1724,10 @@ class RunTriggerIn(BaseModel):
     # Per-run grounding-nudge toggle (forwarded as Tekton grounding-nudge
     # "true"/"false"; None = engine default).
     grounding_nudge: Optional[bool] = None
+    # Per-run reasoning toggle for Qwen3-style chat templates. False forwards
+    # --no-enable-thinking (chat_template_kwargs enable_thinking=false on the
+    # wire); None = model default (thinking on). The no-think A/B lever.
+    enable_thinking: Optional[bool] = None
     # E1: enable the post-sample untagged-gap classifier for this run.
     # None/False = off (default until the fixture battery proves the delta).
     tag_untagged_gaps: Optional[bool] = None
@@ -3959,6 +3963,8 @@ async def trigger_run(payload: RunTriggerIn, request: Request):
             max_tokens=payload.max_tokens,
             grounding_nudge=(None if payload.grounding_nudge is None
                              else ("true" if payload.grounding_nudge else "false")),
+            enable_thinking=(None if payload.enable_thinking is None
+                             else ("true" if payload.enable_thinking else "false")),
             request_timeout_seconds=payload.request_timeout_seconds,
             stage2_context=_stage2_ctx,
             uc_count=_trig_uc_count,

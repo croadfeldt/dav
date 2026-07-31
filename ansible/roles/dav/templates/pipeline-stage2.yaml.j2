@@ -184,6 +184,9 @@ spec:
     - name: grounding-nudge
       type: string
       default: "0"
+    - name: enable-thinking
+      type: string
+      default: ""
     # Per-run inference constraints. Empty = use the run-corpus task defaults
     # (max-tokens {{ dav_stage2_max_tokens | default(10240) }}, request timeout 900s).
     # The console (RunTriggerIn) sets these only when the caller overrides them;
@@ -377,6 +380,8 @@ spec:
           value: $(params.stage2-two-pass)
         - name: grounding-nudge
           value: $(params.grounding-nudge)
+        - name: enable-thinking
+          value: $(params.enable-thinking)
         - name: max-tokens
           value: $(params.max-tokens)
         - name: request-timeout-seconds
