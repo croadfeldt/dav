@@ -34,7 +34,12 @@ spec:
     spec:
       backoffLimit: 0            # a failed battery is a signal, not a retry case
       # runner polls up to 120 min; give the pod a hard ceiling just past that
-      activeDeadlineSeconds: 8400
+      # Derived from the SAME knob as the script's polling ceiling (dav#132)
+      # plus 30 min of slack for clone/ingest/compute. A fixed 8400 here
+      # killed the wrapper pod at 2.3h while its run (and the script, whose
+      # ceiling HAD been raised) were healthy — the third fixed-timeout layer
+      # of the same incident. One variable, all layers.
+      activeDeadlineSeconds: {{ (dav_fixture_battery_ceiling_min | default(120) | int + 30) * 60 }}
       ttlSecondsAfterFinished: 86400
       template:
         metadata:
