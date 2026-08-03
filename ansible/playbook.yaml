@@ -67,6 +67,12 @@
           - dav_webhook_hostname | length > 0
           - review_console_hostname is defined
           - review_console_hostname | length > 0
+          # Two Routes, two vars, one host = one Route silently never admits.
+          # OpenShift gives the host to the OLDER Route and marks the other
+          # HostAlreadyClaimed; nothing fails, nothing logs, and the loser
+          # 503s forever. Observed live 2026-07-31: dav-review-ui rejected
+          # since April because dav-webhook (older) held dav.roadfeldt.com.
+          - review_console_hostname != dav_webhook_hostname
         fail_msg: |
 
           ─────────────────────────────────────────────────
@@ -85,8 +91,15 @@
             - inference_primary_endpoint
             - consumer_spec_repo_url
             - consumer_corpus_repo_url
-            - dav_webhook_hostname
-            - review_console_hostname
+            - dav_webhook_hostname      (MUST differ from the next one)
+            - review_console_hostname   (MUST differ from the previous one)
+
+          If the failure is the hostname-collision check: the console Route
+          and the Tekton webhook Route cannot share a host. OpenShift admits
+          only the older one and marks the other HostAlreadyClaimed — with no
+          error at deploy time. Give the webhook its own name, e.g.
+          dav-webhook.apps.<cluster>, and keep the console on the hostname
+          your users type.
 
           Optional:
             - inference_fallback_endpoint  (engine retries here if the
