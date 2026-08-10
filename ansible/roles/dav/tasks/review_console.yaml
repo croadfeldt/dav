@@ -151,13 +151,36 @@
     - review_console_build_images | bool
     - review_api_bc_check.resources | length == 0
 
+- name: Stamp build provenance onto the API BuildConfig
+  # `oc start-build --build-arg` is ACCEPTED AND SILENTLY DROPPED for Binary builds --
+  # the resulting Build carries no buildArgs, so every console image since the beginning
+  # was labeled `revision=unknown` and the in-app build stamp rendered "unknown", exactly
+  # defeating the "makes a stale browser cache obvious" purpose it was added for.
+  # Verified 2026-08-09 on builds 418/419/420 (all empty) vs 421 (patched BC -> real sha).
+  # buildArgs set on the BUILDCONFIG do survive, so set them here, before the build.
+  # (engine.yaml dodges this differently -- it bakes a BUILD_COMMIT file into the context.)
+  kubernetes.core.k8s:
+    state: patched
+    kind: BuildConfig
+    api_version: build.openshift.io/v1
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-api
+    definition:
+      spec:
+        strategy:
+          dockerStrategy:
+            buildArgs:
+              - name: DAV_REPO_COMMIT
+                value: "{{ dav_repo_commit }}"
+              - name: DAV_REPO_DIRTY
+                value: "{{ dav_repo_dirty }}"
+  when: review_console_build_images | bool
+
 - name: Start binary build for review console API
   ansible.builtin.command:
     cmd: >-
       timeout 1200 oc start-build dav-review-api
       --from-dir=/tmp/dav-review-build/api
-      --build-arg=DAV_REPO_COMMIT={{ dav_repo_commit }}
-      --build-arg=DAV_REPO_DIRTY={{ dav_repo_dirty }}
       -n {{ dav_namespace }}
       --wait
   register: review_api_build
@@ -225,13 +248,36 @@
     - review_console_build_images | bool
     - review_ui_bc_check.resources | length == 0
 
+- name: Stamp build provenance onto the UI BuildConfig
+  # `oc start-build --build-arg` is ACCEPTED AND SILENTLY DROPPED for Binary builds --
+  # the resulting Build carries no buildArgs, so every console image since the beginning
+  # was labeled `revision=unknown` and the in-app build stamp rendered "unknown", exactly
+  # defeating the "makes a stale browser cache obvious" purpose it was added for.
+  # Verified 2026-08-09 on builds 418/419/420 (all empty) vs 421 (patched BC -> real sha).
+  # buildArgs set on the BUILDCONFIG do survive, so set them here, before the build.
+  # (engine.yaml dodges this differently -- it bakes a BUILD_COMMIT file into the context.)
+  kubernetes.core.k8s:
+    state: patched
+    kind: BuildConfig
+    api_version: build.openshift.io/v1
+    namespace: "{{ dav_namespace }}"
+    name: dav-review-ui
+    definition:
+      spec:
+        strategy:
+          dockerStrategy:
+            buildArgs:
+              - name: DAV_REPO_COMMIT
+                value: "{{ dav_repo_commit }}"
+              - name: DAV_REPO_DIRTY
+                value: "{{ dav_repo_dirty }}"
+  when: review_console_build_images | bool
+
 - name: Start binary build for review console UI
   ansible.builtin.command:
     cmd: >-
       timeout 1200 oc start-build dav-review-ui
       --from-dir=/tmp/dav-review-build/ui
-      --build-arg=DAV_REPO_COMMIT={{ dav_repo_commit }}
-      --build-arg=DAV_REPO_DIRTY={{ dav_repo_dirty }}
       -n {{ dav_namespace }}
       --wait
   register: review_ui_build

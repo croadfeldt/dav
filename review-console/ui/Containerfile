@@ -10,7 +10,9 @@
 
 FROM registry.access.redhat.com/ubi9/nginx-124:latest
 
-# Source provenance — populated by Ansible at build time via --build-arg.
+# Source provenance — set by Ansible as buildArgs ON THE BUILDCONFIG, not via
+# `oc start-build --build-arg` (silently dropped for Binary builds; see the
+# stamping task in ansible/roles/dav/tasks/review_console.yaml).
 ARG DAV_REPO_COMMIT=unknown
 ARG DAV_REPO_DIRTY=unknown
 LABEL org.opencontainers.image.title="dav-review-ui" \
