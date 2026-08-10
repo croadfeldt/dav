@@ -11963,6 +11963,100 @@ async def list_repo_roles():
     return {"roles": sorted(_repos.VALID_ROLES)}
 
 
+@app.get("/api/analysis/enablement")
+async def query_enablement(
+    request: Request,
+    uc_uuid: Optional[str] = Query(None, description="filter by UC uuid"),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    """The affirmative projection: what this architecture DOES support, and what carries it.
+
+    DAV is gap-rich and enablement-poor — it computes "what is missing" well and surfaces it
+    everywhere, while the same analysis already records the positive side (uc_capabilities:
+    which capabilities deliver a use case, in what usage, with what rationale) and shows it
+    almost nowhere. There is more affirmative data than gap data. This endpoint is that data
+    inverted into an answer, which is what the Customer and Stakeholder lenses consume.
+
+    Latest analysis per UC (not the full history the gaps endpoint returns): a consumer asks
+    "what is true now", not "what has ever been true". Same project scoping and auth as
+    /api/analysis/gaps, so nothing leaks across projects.
+    """
+    async with pool.acquire() as conn:
+        pid = await _active_project_id(request, conn)
+        await _require_priv_conn(conn, request, rbac.P_PROJECT_READ, pid)
+        default_pid = await _default_project_id(conn)
+
+        args: list = [pid, default_pid]
+        scope_clause = ("($1::bigint IS NULL OR ar.project_id = $1 "
+                        "OR (ar.project_id IS NULL AND $1 = $2))")
+        uc_clause = ""
+        if uc_uuid:
+            args.append(uc_uuid)
+            uc_clause = f" AND ua.uc_uuid = ${len(args)}"
+
+        rows = await conn.fetch(
+            f"""WITH latest AS (
+                    SELECT DISTINCT ON (ua.uc_uuid)
+                           ua.id, ua.uc_uuid, ua.uc_handle, ua.verdict, ua.analyzed_at
+                    FROM uc_analyses ua
+                    JOIN analysis_runs ar ON ar.run_id = ua.run_id
+                    WHERE {scope_clause}{uc_clause}
+                    ORDER BY ua.uc_uuid, ua.analyzed_at DESC
+                )
+                SELECT l.uc_uuid, l.uc_handle, l.verdict, l.analyzed_at,
+                       c.capability_id, c.usage, c.rationale,
+                       c.confidence, c.confidence_score, c.namespace
+                FROM latest l
+                JOIN uc_capabilities c ON c.analysis_id = l.id
+                ORDER BY l.uc_handle, c.capability_id
+                LIMIT ${len(args)+1}""",
+            *args, limit,
+        )
+
+    by_uc: dict = {}
+    by_cap: dict = {}
+    for r in rows:
+        uc = by_uc.setdefault(r["uc_uuid"], {
+            "uc_uuid": r["uc_uuid"], "uc_handle": r["uc_handle"],
+            "verdict": r["verdict"],
+            "analyzed_at": r["analyzed_at"].isoformat() if r["analyzed_at"] else None,
+            "capabilities": [],
+        })
+        uc["capabilities"].append({
+            "capability_id": r["capability_id"], "usage": r["usage"],
+            "rationale": r["rationale"], "confidence": r["confidence"],
+            "confidence_score": r["confidence_score"], "namespace": r["namespace"],
+        })
+        cap = by_cap.setdefault(r["capability_id"], {
+            "capability_id": r["capability_id"], "namespace": r["namespace"],
+            "use_cases": [], "supported": 0, "partial": 0,
+        })
+        cap["use_cases"].append(r["uc_handle"])
+        if r["verdict"] == "supported":
+            cap["supported"] += 1
+        elif r["verdict"] == "partially_supported":
+            cap["partial"] += 1
+
+    # Load-bearing first: a capability carrying many use cases is the architecture's spine,
+    # and is also the thing whose absence would hurt most — useful to both consumer lenses.
+    caps = sorted(by_cap.values(), key=lambda c: (-len(c["use_cases"]), c["capability_id"]))
+    for c in caps:
+        c["uc_count"] = len(c["use_cases"])
+
+    ucs = sorted(by_uc.values(), key=lambda u: (u["uc_handle"] or ""))
+    return {
+        "use_cases": ucs,
+        "capabilities": caps,
+        "totals": {
+            "use_cases": len(ucs),
+            "capabilities": len(caps),
+            "supported": sum(1 for u in ucs if u["verdict"] == "supported"),
+            "partially_supported": sum(1 for u in ucs if u["verdict"] == "partially_supported"),
+            "claims": len(rows),
+        },
+    }
+
+
 @app.get("/api/analysis/gaps")
 async def query_gaps(
     request: Request,
