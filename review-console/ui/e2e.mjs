@@ -207,6 +207,12 @@ async function runRole(role) {
      `matrix=${!!document.getElementById('roleBindingsMatrix')}`);
   // The separate Projects / Users & roles left-nav views are retired for everyone (→ Config → Platform):
   // no domain anchor and no view sub-tab exists for them.
+  // Enablement is the affirmative projection — the half of the analysis the Customer and
+  // Stakeholder lenses consume. It lives under Roadmaps so BOTH those personas reach it
+  // (customer: roadmap+execute, stakeholder: roadmap only).
+  ck('enablement view present',
+     !!document.getElementById('view-enablement') && shown(domDisp('roadmap')),
+     `section=${!!document.getElementById('view-enablement')} roadmapDomain=${domDisp('roadmap')}`);
   ck('separate Users/Projects nav retired',
      domDisp('users') === '(missing)' && domDisp('projects') === '(missing)' && navView('users') === '(missing)' && navView('projects') === '(missing)',
      `users=${domDisp('users')} projects=${domDisp('projects')}`);
