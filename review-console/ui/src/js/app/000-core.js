@@ -2219,6 +2219,7 @@ function switchView(name) {
   if (name === 'customers') loadCustomers();
   if (name === 'projects')  loadProjectsTab();
   if (name === 'capmap')   loadCapMap();
+  if (name === 'enablement') loadEnablement();
   if (name === 'audit')    loadAudit();
   if (name === 'assess')   loadAssessments();
   if (name === 'maturity') loadMaturityWall();
