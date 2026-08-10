@@ -102,6 +102,16 @@ def main() -> int:
             out = call("POST", f"{API}/api/fixture-scores/compute",
                        {"run_id": run_id, "expected": expected, "source": "nightly"})
             print(json.dumps(out, indent=2))
+            # The scores are still worth recording for a failed run, but the JOB must
+            # not report success. `ok` in the payload above is the SCORING API saying
+            # scoring worked — not a statement about the run. Exiting 0 on phase=Failed
+            # is why ten consecutive nights of 22-of-28 UC losses showed up as a green
+            # CronJob and nobody noticed (2026-07-31 .. 2026-08-09).
+            if phase == "Failed":
+                print(f"FAILING THE JOB: run {run_id} finished with phase={phase} — "
+                      f"scores above are from a partial run and are not a quality signal",
+                      flush=True)
+                return 2
             return 0
         except urllib.error.HTTPError as e:
             if e.code != 409:

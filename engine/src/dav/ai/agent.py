@@ -106,6 +106,40 @@ def _extract_json_object(text: str) -> str:
 
 log = logging.getLogger(__name__)
 
+
+def _coerce_tool_args(raw: Any) -> tuple[dict, str, str | None]:
+    """Return (parsed_args, wire_json, repair_note) for one tool call's arguments.
+
+    Servers re-parse `assistant.tool_calls[].function.arguments` when the message is
+    sent back on the next turn, so anything we store must be valid JSON. vLLM's
+    qwen3_xml tool parser can emit valid JSON followed by trailing garbage — most
+    often a stray closing brace:
+
+        {"handle": "dcm/DCM-Capabilities-Matrix.md", "section_title": "FIX-..."}}
+
+    Echoing that back returns 400 "Extra data: line 1 column N (char N-1)" and kills
+    the run. Because the damage is a *suffix*, the model's actual intent is recoverable:
+    json.raw_decode parses the leading value and reports where it stopped. We keep that
+    and drop the tail, so a parser bug costs a few junk characters instead of the UC.
+
+    Falls back to {} only when nothing parses at all.
+    """
+    if not isinstance(raw, str):
+        return (raw if isinstance(raw, dict) else {}), json.dumps(raw if isinstance(raw, dict) else {}), None
+    text = raw.strip() or "{}"
+    try:
+        parsed = json.loads(text)
+        return (parsed if isinstance(parsed, dict) else {}), text, None
+    except json.JSONDecodeError:
+        pass
+    try:
+        parsed, end = json.JSONDecoder().raw_decode(text)
+        if isinstance(parsed, dict):
+            return parsed, json.dumps(parsed), f"dropped {len(text) - end} trailing char(s)"
+    except json.JSONDecodeError:
+        pass
+    return {}, "{}", "unparseable, replaced with {}"
+
 # Known field aliases from model output → dataclass field name.
 # When the schema has semantically-overlapping fields with different names
 # across dataclasses (role vs usage vs description), the model will drift
@@ -751,10 +785,32 @@ class Stage2Agent:
 
             # If the model wants to call tools, execute them and loop
             if response.tool_calls:
+                # Sanitize BEFORE the message enters `messages`. The repair below used to
+                # live only in the execution loop, which fixed what we CALLED but left the
+                # malformed text in the conversation — so the next turn posted it back and
+                # the server rejected the whole request. Repair once, here, and reuse.
+                _args_by_tc: dict[str, dict] = {}
+                sanitized_calls = []
+                for _tc in response.tool_calls:
+                    _fn = dict(_tc.get("function") or {})
+                    _parsed, _wire, _note = _coerce_tool_args(_fn.get("arguments") or "{}")
+                    if _note:
+                        log.warning(
+                            "tool %s had malformed arg JSON (%s): %r",
+                            _fn.get("name"), _note, _fn.get("arguments"),
+                        )
+                    _fn["arguments"] = _wire
+                    _call = dict(_tc)
+                    _call["function"] = _fn
+                    sanitized_calls.append(_call)
+                    if _tc.get("id"):
+                        _args_by_tc[_tc["id"]] = _parsed
+                response.tool_calls = sanitized_calls
+
                 assistant_msg = ChatMessage(
                     role="assistant",
                     content=response.content or "",
-                    tool_calls=response.tool_calls,
+                    tool_calls=sanitized_calls,
                 )
                 messages.append(assistant_msg)
 
@@ -770,12 +826,8 @@ class Stage2Agent:
                 _exec_cache: dict[tuple, tuple[str, str]] = {}
                 for tc in response.tool_calls:
                     tool_name = tc["function"]["name"]
-                    try:
-                        raw_args = tc["function"].get("arguments") or "{}"
-                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                    except json.JSONDecodeError:
-                        args = {}
-                        log.warning("tool %s had malformed arg JSON: %r", tool_name, raw_args)
+                    # already repaired above; keyed by tool_call_id
+                    args = _args_by_tc.get(tc.get("id"), {})
                     dedup_key = (tool_name, json.dumps(args, sort_keys=True, default=str))
 
                     if dedup_key in _exec_cache:
