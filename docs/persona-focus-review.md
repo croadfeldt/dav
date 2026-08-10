@@ -97,7 +97,7 @@ must survive the server re-parsing it.
 | `check_migrations.py` | OK |
 | `pytest test_tool_arg_repair.py` | 10 passed |
 | deployed digests vs ImageStream `latest` | MATCH, both images |
-| served page stamp | `142f78a…` = branch tip |
+| served page stamp | `142f78a…` — the last code commit; the branch tip is one docs-only commit ahead |
 | `/api/analysis/enablement` live | 200, real data |
 | regression: `/api/analysis/gaps`, `/api/projects`, `/api/runs` | 200 |
 
