@@ -42,26 +42,36 @@ freshness concern.
 
 ## Build order
 
-Taken from the design, with one deliberate reordering (see note):
+Taken from the design. **Corrected after checking the code:** steps 0 and 1 as I first
+wrote them were already done, and I had them wrong in two ways worth recording, because
+both came from reading greps instead of the source:
 
-0. **Split the shell.** `index.html` is 18,042 lines. Every subsequent step is surgery
-   on that single file, which is likely a real part of why this stalled. Doing this
-   first makes steps 1-4 cheap and reviewable. *(Not in the original order; added
-   because the tax is paid on every later step.)*
-1. **Retire the run selector; scope = UC/Set.** The single most visible change: every
-   screen stops being "a view of a run" and becomes "a view of the thing you care
-   about". Runs become the operator freshness view they were always meant to be.
-2. **Outcome/Initiative object.** The consumer lenses have nothing to project without
-   it; this is why Customer and Stakeholder cannot meaningfully exist today.
-3. **Persona as a real lens.** Generalize beyond the dropdown: each persona selects a
+- *"Split the 18,042-line `index.html`"* — `index.html` is a **generated artifact**.
+  `src/` holds the real sources (`views/*.html`, `js/app/*.js`), `build.mjs` assembles
+  them, and `build.mjs --check` fails the build on drift. The shell was split already;
+  I was measuring the output.
+- *"Retire the run selector"* — already retired. Scope is UC/Set. What I mistook for a
+  selector is a read-only run **status chip**.
+
+What actually remains:
+
+1. ~~Split the shell~~ — **already done** (`src/` + `build.mjs`).
+2. ~~Retire the run selector; scope = UC/Set~~ — **already done**.
+3. **Enablement projection.** Invert the analysis to answer affirmatively: what this
+   architecture *does* support, and which capabilities carry it. **Done tonight** —
+   moved ahead of the data-model work because it needs no new objects and no ruling
+   from you; it reads data that already exists.
+4. **Outcome/Initiative object.** The consumer lenses have little to project without it.
+   Needs your ruling — it is a data-model change.
+5. **Persona as a real lens.** Generalize beyond the dropdown: each persona selects a
    question + projection over the same analysis.
-4. **Enablement projection.** Invert the existing gap data to answer affirmatively.
-5. **Stakeholder value projection.**
+6. **Stakeholder value projection.** Depends on 4.
 
 ## Tonight's scope
 
-Steps 0 and 1, deployed and verified. Steps 2-5 are left for review-then-build: they
-change the data model and the product surface, which is not work to do unattended.
+Step 3, deployed and verified, plus a build-provenance defect found while verifying it.
+Steps 4-6 are left for review-then-build: they change the data model and the product
+surface, which is not work to do unattended.
 
 ## How to review
 
