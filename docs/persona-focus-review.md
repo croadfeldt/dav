@@ -5,6 +5,9 @@
 Nothing is merged to `main`. The console at https://10.0.90.22:8843 **is running this
 branch right now** — that was the point, so you can look at it rather than read about it.
 
+**Read section 0 first.** The first version of this deployed broken and you found it before
+I did.
+
 Rollback, if you want the old console back before reading any further:
 
 ```
@@ -17,6 +20,31 @@ oc start-build dav-review-ui  --from-dir=/tmp/dav-review-build/ui  -n dav --wait
 Diff: `git diff function-focus..feat/persona-focus`
 
 ---
+
+## 0. The view shipped empty — my defect, caught by you
+
+You looked at it and saw nothing, and you were right.
+
+Registering a view in this console is **two** edits: add it to `DOMAINS` (nav item appears)
+and add a line to the loader dispatch in `switchView()`. I made one. `loadEnablement()` was
+defined and never called, so the view painted an empty shell that looked structurally
+correct in the DOM.
+
+**The part that should bother us more than the miss:** the e2e assertion I wrote alongside
+it checked that the section *existed* and its domain was reachable. Both are true of a
+completely broken view. **It passed on the broken build**, and I reported 127/127 green as
+evidence the feature worked.
+
+Fixed in `58edb67`, with the check replaced by a behavioral one — switch to the view, then
+require that it requested `/api/analysis/enablement` and painted rows. I then verified the
+guard has teeth by reverting the dispatch line: 2 failures per role with it out, 0 with it
+in, while the old "view present" check passed either way. e2e now 133/133, and I ran the
+suite against the **bytes the cluster is actually serving**, not my local build — all 133
+pass there too.
+
+This is the same failure I spent the week flagging in your infrastructure: a check that
+agrees with itself instead of with reality. Worth assuming the rest of my green results this
+week deserve the same scrutiny.
 
 ## 1. Enablement — the affirmative half of the analysis
 
@@ -71,7 +99,7 @@ context), which is why engine provenance works and the console's never did.
 **Fixed at the source**, per your standing rule: the ansible role now patches `buildArgs`
 onto the BuildConfig immediately before the build, and the two Containerfile comments that
 asserted the `--build-arg` path was live are corrected. The deployed images now carry
-`142f78a` in the label *and* the served page.
+a real commit sha in the label *and* the served page.
 
 This is the same family as the rest of this week — a signal that agreed with itself instead
 of with reality.
@@ -92,12 +120,12 @@ must survive the server re-parsing it.
 |---|---|
 | `node build.mjs --check` | OK — `index.html` matches `src/` |
 | `./lint.sh` | PASS |
-| `node e2e.mjs` | **127 PASS / 0 FAIL** (124 before; +3 for enablement) |
+| `node e2e.mjs` | **133 PASS / 0 FAIL** (124 before; +9 for enablement, incl. behavioral load/render) |
 | `check_routes.py` | OK — 296 routes, no shadowing |
 | `check_migrations.py` | OK |
 | `pytest test_tool_arg_repair.py` | 10 passed |
 | deployed digests vs ImageStream `latest` | MATCH, both images |
-| served page stamp | `142f78a…` — the last code commit; the branch tip is one docs-only commit ahead |
+| served page stamp | `58edb67` = current code tip; e2e re-run against the served bytes, 133/133 |
 | `/api/analysis/enablement` live | 200, real data |
 | regression: `/api/analysis/gaps`, `/api/projects`, `/api/runs` | 200 |
 
@@ -108,6 +136,8 @@ Verified after the rollout completed, not at t+0.
 Three corrections are already folded into `docs/persona-focus-plan.md`, but they belong here
 too, because the pattern matters more than the items:
 
+0. I shipped the enablement view unwired and called it verified (section 0). The e2e check
+   I wrote to prove it worked passed on the broken build.
 1. I planned to "split the 18,042-line `index.html`". It is a **generated artifact** —
    `src/` is the real source and `build.mjs --check` already guards drift. I was measuring
    the output.
@@ -117,6 +147,22 @@ too, because the pattern matters more than the items:
 
 All three came from reading greps instead of the source. The cost was only planning time —
 but had I acted on (1) I would have hand-edited a generated file.
+
+## Project data, since you asked which one I used
+
+I verified against **project 20 (DCM)** via the `X-DAV-Project` header. Data as it stands:
+
+| project | runs | capability claims |
+|---|---|---|
+| 1 Default | 0 | 0 |
+| **20 DCM** | 33 | 541 |
+| 727 DAV | **0** | **0** |
+| **760 Fixtures** | 54 | 3,136 |
+
+Your account defaults to **20**, which has data — so the blank screen you saw was my bug,
+not a project mismatch. But note 727 (DAV) is completely empty: if the switcher is ever
+parked there, *every* analysis view reads blank, and nothing in the UI says why. That is a
+separate UX problem and I have not touched it.
 
 ## Needs your ruling
 
