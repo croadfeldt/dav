@@ -624,8 +624,8 @@ let _navRbac = {};  // {navId: allowed} — RBAC baseline computed by _applyAcce
 const PERSONAS = [
   { key:'architect',   label:'Architect',   domains:['author','execute','roadmap','catalog','improve','org'] },
   { key:'engineer',    label:'Engineer',    domains:['roadmap','execute','catalog'] },
-  { key:'customer',    label:'Customer',    domains:['roadmap','execute'] },         // + Outcomes when built
-  { key:'stakeholder', label:'Stakeholder', domains:['roadmap'] },                   // + Value/Outcomes when built
+  { key:'customer',    label:'Customer',    domains:['roadmap','execute'] },         // Enablement live; + Outcomes when built
+  { key:'stakeholder', label:'Stakeholder', domains:['roadmap'] },                   // Enablement live; + Value/Outcomes when built
   { key:'assessor',    label:'Assessor',    domains:['assess','catalog','roadmap','org'] },
   { key:'operator',    label:'Operator',    domains:['org','config','catalog','improve','audit'] },
 ];
@@ -2114,6 +2114,10 @@ const DOMAINS = [
       { view:'results', label:'Results',    badge:'badgeResults' },
   ]},
   { key:'roadmap', label:'Roadmaps',   icon:'✦', focus:'architecture', subviews:[
+      // Enablement first: it answers "what does this support?", which is what the
+      // Customer and Stakeholder lenses arrive asking. The gap-shaped views that
+      // follow answer "what is missing?" — the same analysis, read the other way.
+      { view:'enablement',  label:'Enablement' },
       { view:'review',      label:'Arch Review' },
       { view:'enhancement', label:'Enhancement / PR' },
       { view:'engineering', label:'Engineering Roadmap' },
@@ -2215,6 +2219,7 @@ function switchView(name) {
   if (name === 'customers') loadCustomers();
   if (name === 'projects')  loadProjectsTab();
   if (name === 'capmap')   loadCapMap();
+  if (name === 'enablement') loadEnablement();
   if (name === 'audit')    loadAudit();
   if (name === 'assess')   loadAssessments();
   if (name === 'maturity') loadMaturityWall();

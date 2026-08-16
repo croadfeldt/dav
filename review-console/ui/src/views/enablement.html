@@ -1,0 +1,22 @@
+    <section class="pf-view" id="view-enablement">
+      <div style="flex:1;overflow-y:auto;padding:14px 18px;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">
+          <strong style="font-size:13px;">What this architecture supports</strong>
+          <span id="enTotals" style="font-size:11px;color:var(--text-dim);"></span>
+          <button class="btn ghost btn-sm" id="enReloadBtn" title="Reload" style="margin-left:auto;">↻</button>
+        </div>
+        <!-- The affirmative half of the same analysis the gap views read. DAV computes both
+             sides on every run and has historically surfaced only the deficit; this is the
+             answer a Customer or Stakeholder actually arrives asking for. -->
+        <div style="font-size:11px;color:var(--text-faint);margin-bottom:10px;">
+          The capabilities that deliver each use case, with the reasoning recorded at analysis time.
+          Same data as the gap views, read forward.
+        </div>
+        <div id="enStatus" style="font-size:11px;color:var(--text-faint);margin-bottom:8px;">Loading…</div>
+        <div style="display:flex;gap:4px;margin-bottom:10px;" id="enModeTabs">
+          <button class="btn ghost btn-sm" data-enmode="uc">By use case</button>
+          <button class="btn ghost btn-sm" data-enmode="cap">By capability</button>
+        </div>
+        <div id="enBody"></div>
+      </div>
+    </section>

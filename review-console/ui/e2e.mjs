@@ -52,6 +52,16 @@ function meFor(role) {
 // Permissive default body so the many boot loaders don't false-fail on shape.
 function bodyFor(path, me) {
   if (path === '/api/me') return me;
+  if (path === '/api/analysis/enablement') return {
+    use_cases: [{ uc_uuid: 'u1', uc_handle: 'demo/uc-one', verdict: 'supported',
+                  analyzed_at: '2026-08-09T00:00:00Z',
+                  capabilities: [{ capability_id: 'CAP-001', namespace: 'demo',
+                                   usage: 'does the thing', rationale: 'because',
+                                   confidence: 'high', confidence_score: 90 }] }],
+    capabilities: [{ capability_id: 'CAP-001', namespace: 'demo',
+                     use_cases: ['demo/uc-one'], supported: 1, partial: 0, uc_count: 1 }],
+    totals: { use_cases: 1, capabilities: 1, supported: 1, partially_supported: 0, claims: 1 },
+  };
   return {
     ok: true, count: 0,
     items: [], projects: [], runs: [], results: [], sets: [], use_cases: [],
@@ -63,6 +73,7 @@ function bodyFor(path, me) {
 
 async function runRole(role) {
   const errors = [];
+  const fetched = [];
   const vc = new VirtualConsole();
   vc.on('jsdomError', (e) => errors.push('jsdomError: ' + (e && (e.message || e.detail || e))));
   const me = meFor(role);
@@ -75,6 +86,7 @@ async function runRole(role) {
     beforeParse(window) {
       window.fetch = async (url) => {
         const path = new URL(url, 'http://localhost').pathname;
+        fetched.push(path);
         const body = bodyFor(path, me);
         return { ok: true, status: 200, headers: { get: () => null },
                  json: async () => body, text: async () => JSON.stringify(body) };
@@ -207,6 +219,24 @@ async function runRole(role) {
      `matrix=${!!document.getElementById('roleBindingsMatrix')}`);
   // The separate Projects / Users & roles left-nav views are retired for everyone (→ Config → Platform):
   // no domain anchor and no view sub-tab exists for them.
+  // Enablement is the affirmative projection — the half of the analysis the Customer and
+  // Stakeholder lenses consume. It lives under Roadmaps so BOTH those personas reach it
+  // (customer: roadmap+execute, stakeholder: roadmap only).
+  ck('enablement view present',
+     !!document.getElementById('view-enablement') && shown(domDisp('roadmap')),
+     `section=${!!document.getElementById('view-enablement')} roadmapDomain=${domDisp('roadmap')}`);
+  // A registered view whose loader is never dispatched from switchView() renders as an
+  // empty shell that LOOKS fine in the DOM — which is exactly what shipped on 2026-08-09.
+  // So assert the wiring behaviorally: switch to it, and require that it fetched its data
+  // and painted rows. Presence of the section proves nothing.
+  dom.window.switchView('enablement');
+  await new Promise((r) => setTimeout(r, 250));
+  ck('enablement view actually loads its data',
+     fetched.includes('/api/analysis/enablement'),
+     `requested=${fetched.filter(p => p.includes('enablement')).join(',') || 'NOTHING'}`);
+  ck('enablement view renders rows',
+     (document.getElementById('enBody')?.innerHTML || '').includes('CAP-001'),
+     `enBody=${(document.getElementById('enBody')?.innerHTML || '(missing)').slice(0, 60)}`);
   ck('separate Users/Projects nav retired',
      domDisp('users') === '(missing)' && domDisp('projects') === '(missing)' && navView('users') === '(missing)' && navView('projects') === '(missing)',
      `users=${domDisp('users')} projects=${domDisp('projects')}`);
