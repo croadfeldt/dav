@@ -241,9 +241,20 @@ dav_fixture_battery_branch: "main"
 dav_fixture_battery_secret: "dav-fixture-cron"
 dav_fixture_battery_inference_url: "{{ inference_primary_endpoint | default('https://r9700.llm.ocp.roadfeldt.com/v1') }}"
 # Minutes the battery waits for its run to finish+ingest before giving up.
-# Model-dependent: fast models fit the 120 default; slow/thinking models on
-# the 28-UC suite need 360+.
-dav_fixture_battery_ceiling_min: 120
+# Model-dependent: fast models fit 120; slow/thinking models on the 28-UC
+# suite need 360+.
+#
+# Raised 120 -> 480 on 2026-08-16. This knob was sized while the tool-arg
+# parser bug (b03e355) was killing 22 of 28 UCs on a 400 within seconds: a
+# BROKEN run finished in 81 min, so 120 looked generous. Once the UCs actually
+# completed, runs took 357-416 min — past the derived pod ceiling — so the
+# wrapper was killed mid-poll every night from 08-10 to 08-16 while the engine
+# run completed fine server-side. Nothing scored it: SEVEN nights of
+# precision/recall lost, with the CronJob failing DeadlineExceeded unnoticed.
+# The fix that made the runs healthy is what exposed the timeout.
+# 480 = ~15% headroom over the worst observed (416 min); at the 09:00 schedule
+# the derived deadline (510 min) lands ~17:30, well clear of the next fire.
+dav_fixture_battery_ceiling_min: 480
 # Tri-state reasoning toggle for the battery ("false" = no-think config;
 # "" = model default). A/B lever for Qwen3-style thinking models.
 dav_fixture_battery_enable_thinking: ""
