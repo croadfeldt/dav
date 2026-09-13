@@ -320,9 +320,13 @@ spec:
       type: string
       default: ""
       description: >-
-        Tri-state reasoning toggle for Qwen3-style templates. "false" forwards
-        --no-enable-thinking (chat_template_kwargs enable_thinking=false on the
-        wire); empty keeps the model default (thinking on). The no-think A/B
+        Reasoning toggle for Qwen3-style templates. Only "true" enables
+        thinking (no flag → the server chat template decides); empty or
+        "false" forward --no-enable-thinking (chat_template_kwargs
+        enable_thinking=false on the wire), which is the default so existing
+        runs keep their no-think behaviour. Before this the step ALSO passed
+        --no-enable-thinking unconditionally, so "true" was a no-op (the
+        per-run toggle from #133 never actually worked). The thinking A/B
         lever (task #31); same shape as cache-prompt.
     - name: derived-verdicts
       type: string
@@ -453,7 +457,10 @@ spec:
         if [ "$(params.halt-on-error)" = "true" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --halt-on-error"
         fi
-        if [ "$(params.enable-thinking)" = "false" ]; then
+        # Reasoning is OFF unless the run explicitly asks for it ("true"):
+        # empty/"false" forward --no-enable-thinking (the historical default);
+        # only "true" lets the server chat template enable thinking.
+        if [ "$(params.enable-thinking)" != "true" ]; then
           OPTIONAL_ARGS="$OPTIONAL_ARGS --no-enable-thinking"
         fi
         # cache-prompt is tri-state. "true"/"false" forward the matching
@@ -505,8 +512,9 @@ spec:
           OPTIONAL_ARGS="$OPTIONAL_ARGS --pass1-inference-endpoint $(params.pass1-inference-endpoint) --pass1-inference-model $(params.pass1-inference-model)"
         fi
 
-        # Note: --no-enable-thinking is the recommended default for
-        # Qwen3 stage 2 runs (see prompts.py rationale). We hardcode
+        # Note: thinking is off by default via the enable-thinking guard in
+        # OPTIONAL_ARGS above (see prompts.py rationale); an explicit
+        # enable-thinking="true" on the run turns it on. We hardcode
         # it on; if a non-Qwen3 endpoint is used, the flag is harmless.
         # Per-(model, use) override args. Only forwarded when set so the
         # engine's "missing flag = use defaults" branch fires correctly.
@@ -541,7 +549,6 @@ spec:
           --mcp-url "$(params.mcp-url)" \
           --mode "$(params.mode)" \
           --max-tool-calls "$(params.max-tool-calls)" \
-          --no-enable-thinking \
           --log-level "$(params.log-level)" \
           $OPTIONAL_ARGS
   # Projected ServiceAccount token the engine presents to the console API
