@@ -63,14 +63,18 @@ def main() -> int:
     run_name = call("POST", f"{API}/api/runs", {
         "mode": "verification", "selection_mode": "corpus",
         "name": f"NIGHTLY battery ({model} n={N}"
-                + (" no-think)" if os.environ.get("BATTERY_ENABLE_THINKING") == "false" else ")"), "category": "ad-hoc",
+                + {"false": " no-think)", "true": " think)"}.get(
+                    os.environ.get("BATTERY_ENABLE_THINKING", ""), ")"), "category": "ad-hoc",
         "inference_endpoint": INFER, "inference_model": model,
         "sample_count": N, "uc_concurrency": 2,
         "corpus_namespaces": ["fixtures"], "spec_namespaces": ["fixtures-spec"],
-        # Tri-state: BATTERY_ENABLE_THINKING env "false" runs the no-think
-        # config; unset/empty keeps the model default. Stamped in the run
-        # name so calibration rows are self-describing.
-        **({"enable_thinking": False} if os.environ.get("BATTERY_ENABLE_THINKING") == "false" else {}),
+        # Tri-state: BATTERY_ENABLE_THINKING "false" → no-think, "true" →
+        # thinking on (only reaches the model since the run-corpus Task honours
+        # the toggle — before that "true" was silently no-think), unset/empty →
+        # the Task default (off). Stamped in the run name so calibration rows
+        # are self-describing.
+        **({"enable_thinking": os.environ["BATTERY_ENABLE_THINKING"] == "true"}
+           if os.environ.get("BATTERY_ENABLE_THINKING") in ("true", "false") else {}),
     })["run"]["name"]
     print(f"run: {run_name}", flush=True)
 
