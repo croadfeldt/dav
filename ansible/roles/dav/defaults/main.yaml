@@ -239,7 +239,12 @@ dav_fixture_battery_schedule: "0 9 * * *"        # 09:00 UTC = 3am Central
 dav_fixture_battery_repo: "https://github.com/croadfeldt/dav.git"
 dav_fixture_battery_branch: "main"
 dav_fixture_battery_secret: "dav-fixture-cron"
-dav_fixture_battery_inference_url: "{{ inference_primary_endpoint | default('https://r9700.llm.ocp.roadfeldt.com/v1') }}"
+# The battery runs IN-CLUSTER, so it must use the stable in-cluster Service,
+# not a Route: the external llm-public route is not reachable from dav-ns
+# pods (hairpin), and a model-specific hostname dies with its ISVC (the
+# 2026-09 cron was pointed at the long-gone qwen3-32b route and failed
+# nightly). r9700-llm follows whichever model holds the R9700s.
+dav_fixture_battery_inference_url: "http://r9700-llm.llm-serving.svc/v1"
 # Minutes the battery waits for its run to finish+ingest before giving up.
 # Model-dependent: fast models fit 120; slow/thinking models on the 28-UC
 # suite need 360+.
@@ -258,6 +263,10 @@ dav_fixture_battery_ceiling_min: 480
 # Tri-state reasoning toggle for the battery ("false" = no-think config;
 # "" = model default). A/B lever for Qwen3-style thinking models.
 dav_fixture_battery_enable_thinking: ""
+# Per-request HTTP timeout forwarded to the engine (seconds). 900 (engine
+# default) is too short for thinking-mode turns; 3600 finished the 2026-09
+# qwen38 batteries with zero client timeouts. Empty keeps the engine default.
+dav_fixture_battery_request_timeout: 3600
 dav_fixture_battery_project: "760"
 dav_fixture_battery_sample_count: 3
 

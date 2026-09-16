@@ -75,6 +75,12 @@ def main() -> int:
         # are self-describing.
         **({"enable_thinking": os.environ["BATTERY_ENABLE_THINKING"] == "true"}
            if os.environ.get("BATTERY_ENABLE_THINKING") in ("true", "false") else {}),
+        # Per-request HTTP timeout for the engine's model calls. The engine
+        # default (900 s) is too short for thinking-mode turns: the 2026-09
+        # qwen38 batteries needed 3600 s to finish without client read
+        # timeouts. Unset keeps the engine default.
+        **({"request_timeout_seconds": int(os.environ["BATTERY_REQUEST_TIMEOUT"])}
+           if os.environ.get("BATTERY_REQUEST_TIMEOUT", "").isdigit() else {}),
     })["run"]["name"]
     print(f"run: {run_name}", flush=True)
 

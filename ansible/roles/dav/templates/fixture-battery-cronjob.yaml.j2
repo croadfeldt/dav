@@ -74,7 +74,9 @@ spec:
                 - name: BATTERY_ENABLE_THINKING
                   value: "{{ dav_fixture_battery_enable_thinking | default('') }}"
                 - name: BATTERY_CEILING_MIN
-                  value: "{{ dav_fixture_battery_ceiling_min | default(120) }}"
+                  value: "{{ dav_fixture_battery_ceiling_min | default(480) }}"
+                - name: BATTERY_REQUEST_TIMEOUT
+                  value: "{{ dav_fixture_battery_request_timeout | default('') }}"
                 - name: SAMPLE_COUNT
                   value: "{{ dav_fixture_battery_sample_count }}"
               resources:
