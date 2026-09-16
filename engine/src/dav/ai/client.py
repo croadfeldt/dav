@@ -23,6 +23,26 @@ import requests
 
 log = logging.getLogger(__name__)
 
+
+_THINK_CLOSE = "</think>"
+
+
+def _split_text_reasoning(content: str) -> tuple[str, str]:
+    """Separate a plain-text think block from the answer.
+
+    Returns (reasoning, answer). Handles both `<think>…</think>answer` and the
+    Qwen3.8 shape where only the closing tag appears in the output because the
+    chat template already opened the block in the prompt. Content without a
+    closing tag is returned unchanged as the answer.
+    """
+    if not content or _THINK_CLOSE not in content:
+        return "", content
+    head, _, tail = content.rpartition(_THINK_CLOSE)
+    head = head.lstrip()
+    if head.lower().startswith("<think>"):
+        head = head[len("<think>"):]
+    return head.strip(), tail.lstrip("\n ")
+
 class InferenceError(Exception):
     pass
 
@@ -320,7 +340,11 @@ class InferenceClient:
         max_tokens: int = 4096,
         guided_json_schema: dict[str, Any] | None = None,
         seed: int | None = None,
+        chat_template_kwargs: dict[str, Any] | None = None,
     ) -> ChatResponse:
+        """`chat_template_kwargs`, when given, is merged OVER the endpoint's
+        configured kwargs for this one request (e.g. {"enable_thinking": False}
+        on a final-emit re-ask). The endpoint config itself is untouched."""
         if _is_anthropic(self.primary):
             return self._chat_anthropic(self.primary, messages, tools,
                                         temperature, max_tokens, seed)
@@ -328,7 +352,8 @@ class InferenceClient:
         # answer is not starved by the thinking that precedes it.
         effective_max_tokens = self._reasoning_budget(max_tokens)
         body = self._build_body(self.primary, messages, tools, temperature,
-                                 effective_max_tokens, guided_json_schema, seed)
+                                 effective_max_tokens, guided_json_schema, seed,
+                                 chat_template_kwargs)
         try:
             resp = self._post(self.primary, body)
             # Empty content + reasoning + no tool calls = the model thought until it
@@ -348,7 +373,8 @@ class InferenceClient:
                 )
                 retry_body = self._build_body(self.primary, messages, tools,
                                               temperature, widened,
-                                              guided_json_schema, seed)
+                                              guided_json_schema, seed,
+                                              chat_template_kwargs)
                 resp = self._post(self.primary, retry_body)
             return resp
         except InferenceError as e:
@@ -358,7 +384,8 @@ class InferenceClient:
                         self.primary.label, e, self.fallback.label)
             # Rebuild for fallback: model and chat_template_kwargs may differ.
             body = self._build_body(self.fallback, messages, tools, temperature,
-                                     max_tokens, guided_json_schema, seed)
+                                     max_tokens, guided_json_schema, seed,
+                                     chat_template_kwargs)
             return self._post(self.fallback, body)
 
     # --- Anthropic native path (prompt caching + Messages-API format) ---
@@ -514,6 +541,7 @@ class InferenceClient:
         max_tokens: int,
         guided_json_schema: dict[str, Any] | None,
         seed: int | None,
+            chat_template_kwargs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": endpoint.model,
@@ -591,8 +619,11 @@ class InferenceClient:
                 pass  # dropped — see endpoint.capabilities
             else:
                 body["min_p"] = endpoint.min_p
-        if endpoint.chat_template_kwargs:
-            body["chat_template_kwargs"] = endpoint.chat_template_kwargs
+        merged = dict(endpoint.chat_template_kwargs or {})
+        if chat_template_kwargs:
+            merged.update(chat_template_kwargs)
+        if merged:
+            body["chat_template_kwargs"] = merged
         return body
 
     def _post(self, endpoint: EndpointConfig, body: dict[str, Any]) -> ChatResponse:
@@ -686,6 +717,14 @@ class InferenceClient:
         content = msg.get("content") or ""
         reasoning = msg.get("reasoning_content") or ""
         tool_calls = msg.get("tool_calls") or []
+        if not reasoning:
+            # Models whose chat template emits the think block as PLAIN TEXT
+            # (Qwen3.8: the template opens `<think>`, the model closes it with
+            # a literal `</think>`; the tokens are not special, so vLLM's
+            # token-ID reasoning parsers cannot populate reasoning_content).
+            # Split on the last `</think>` so `content` is the answer only and
+            # the reasoning-budget guards below see the reasoning they key on.
+            reasoning, content = _split_text_reasoning(content)
 
         # Defensive: if content is empty, reasoning_content is non-empty, and
         # there are no tool_calls, the model emitted thinking-mode output

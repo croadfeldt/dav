@@ -1040,6 +1040,11 @@ class Stage2Agent:
                             include_criteria=self._wants_criteria(use_case)),
                         seed=self._sample_seed if self._sample_seed is not None
                              else self.config.seed,
+                        # The analysis is already formed; this re-ask only fixes
+                        # the format. Thinking here starves the JSON of budget —
+                        # the 2026-09 qwen38 xhigh battery lost its one UC to a
+                        # truncated re-emit — so it runs thinking-off.
+                        chat_template_kwargs={"enable_thinking": False},
                     )
                     self._total_tokens += retry.usage.get("total_tokens", 0)
                     return self._parse_final(retry.content, use_case, run_id)
