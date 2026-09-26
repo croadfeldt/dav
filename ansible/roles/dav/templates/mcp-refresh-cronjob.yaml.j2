@@ -81,7 +81,7 @@ spec:
           serviceAccountName: {{ dav_docs_mcp_refresh_service_account }}
           containers:
             - name: rollout-restart
-              image: registry.redhat.io/openshift4/ose-cli:latest
+              image: "{{ dav_oc_image }}"
               command:
                 - /bin/sh
                 - -c
