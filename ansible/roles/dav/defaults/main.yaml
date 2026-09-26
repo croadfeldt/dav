@@ -280,3 +280,13 @@ dav_target_readiness_schedule: "30 10 * * *"     # 10:30 UTC = 4:30am Central
 dav_target_readiness_project: "20"
 dav_target_readiness_set_id: 29
 dav_target_readiness_sample_count: 3
+
+# Image for the small `oc`/curl CronJobs (docs-mcp refresh, review-console
+# cert-renewal restart, target readiness). The cluster's own cli image: always
+# matches the cluster version and pulls from the internal registry with no
+# registry.redhat.io credentials. Replaced registry.redhat.io/openshift4/ose-cli:latest
+# on 2026-09-26 — that repository stopped serving a `latest` tag
+# ("This repository does not use the latest tag") and publishes no 4.19 tags,
+# which had broken all three CronJobs since 2026-09-23. Note: this image has
+# oc and curl but no git or jq.
+dav_oc_image: "image-registry.openshift-image-registry.svc:5000/openshift/cli:latest"

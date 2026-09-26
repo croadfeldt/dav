@@ -38,7 +38,7 @@ spec:
           restartPolicy: Never
           containers:
             - name: trigger
-              image: registry.redhat.io/openshift4/ose-cli:latest
+              image: "{{ dav_oc_image }}"
               command:
                 - /bin/sh
                 - -c
